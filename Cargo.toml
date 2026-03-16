@@ -70,6 +70,7 @@ keyring = { version = "3.6", features = [
   "windows-native",
   "sync-secret-service",
 ] }
+egui_extras = { version = "0.31.1", features = ["all_loaders"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

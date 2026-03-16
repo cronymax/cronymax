@@ -46,6 +46,8 @@ pub struct FrameWidget<'a> {
 
 impl Widget for FrameWidget<'_> {
     fn render<'a>(&mut self, #[allow(unused)] mut f: Fragment<'a, egui::Context>) {
+        egui_extras::install_image_loaders(f.ctx());
+
         ui::draw_all(
             ui::tiles::TilesPanel {
                 tile_tree: self.tile_tree,

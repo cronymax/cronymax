@@ -1,7 +1,5 @@
 //! Behavior struct constructor and egui_tiles::Behavior trait implementation.
 
-use crate::ui::icons::icon_texture;
-
 use super::browser::BrowserPaneView;
 use super::channel::ChannelPaneView;
 use super::terminal::TerminalPaneView;
@@ -452,42 +450,28 @@ impl<'a> egui_tiles::Behavior<Pane> for Behavior<'a> {
 
             // Reuse pointer_in_tab from hover animation above.
             if state.closable && pointer_in_tab {
-                let close_btn_rect = egui::Align2::RIGHT_CENTER
-                    .align_size_within_rect(close_btn_size, tab_rect.shrink(x_margin));
-                // Paint the close icon directly (not inside on_hover_ui)
-                // so it is visible as soon as the pointer enters the tab.
-                let close_btn_response = ui
-                    .interact(close_btn_rect, id.with("close"), egui::Sense::click())
-                    .on_hover_cursor(egui::CursorIcon::Default);
-
-                if ui.is_rect_visible(close_btn_rect) {
-                    let icon_color = if close_btn_response.hovered() {
-                        // Subtle hover background.
-                        ui.painter().rect_filled(
-                            close_btn_rect,
-                            styles.spacing.small,
-                            egui::Color32::from_rgba_unmultiplied(128, 128, 128, 40),
-                        );
-                        colors.text_title
-                    } else {
-                        colors.text_caption
-                    };
-                    let texture = icon_texture(
-                        ui.ctx(),
-                        Icon::ChromeClose,
-                        icon_color,
-                        styles.typography.title5 as u32,
-                    );
-                    ui.painter().image(
-                        texture.id(),
-                        egui::Rect::from_center_size(
-                            close_btn_rect.center(),
-                            egui::vec2(styles.typography.title5, styles.typography.title5),
-                        ),
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                }
+                // Place close button at the right edge inside the tab rect.
+                let btn_size = self.fragment.styles.typography.body0
+                    + self.fragment.styles.spacing.small;
+                let close_rect = egui::Rect::from_center_size(
+                    egui::pos2(
+                        tab_rect.right() - btn_size / 2.0 - self.fragment.styles.spacing.small / 2.0,
+                        tab_rect.center().y,
+                    ),
+                    egui::vec2(btn_size, btn_size),
+                );
+                let close_btn_response = crate::ui::icons::icon_button_at(
+                    ui,
+                    close_rect,
+                    icons::IconButtonCfg {
+                        icon: Icon::Close,
+                        tooltip: t("browser.close"),
+                        base_color: ui.visuals().weak_text_color(),
+                        hover_color: ui.visuals().text_color(),
+                        pixel_size: self.fragment.styles.typography.body0,
+                        margin: self.fragment.styles.spacing.small,
+                    },
+                );
 
                 if close_btn_response.clicked() && self.on_tab_close(tiles, tile_id) {
                     tiles.remove(tile_id);
