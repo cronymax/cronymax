@@ -117,6 +117,7 @@ impl Pty {
             // fork+exec can race with temp-file cleanup.
             let sbpl = crate::profile::sandbox::platform::macos::sbpl_from_policy(policy);
             let mut cmd = CommandBuilder::new("sandbox-exec");
+            cmd.env("TERM", "xterm-256color");
             cmd.arg("-p");
             cmd.arg(&sbpl);
             cmd.arg(shell);

@@ -19,9 +19,11 @@ pub(super) fn handle_split(state: &mut AppState, action: &UiAction) {
             .shell
             .clone()
             .unwrap_or_else(crate::renderer::platform::default_shell);
+        let phys = state.window.inner_size();
+        let logical = phys.to_logical::<f32>(state.window.scale_factor());
         let (_, cols, rows) = ui::compute_single_pane(
-            state.window.inner_size().width,
-            state.window.inner_size().height,
+            logical.width as u32,
+            logical.height as u32,
             &state.renderer.cell_size,
             &state.styles,
         );

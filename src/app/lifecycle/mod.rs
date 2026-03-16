@@ -64,10 +64,11 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
 
     // Compute initial viewport and grid size.
     let size = window.inner_size();
+    let logical_size = size.to_logical::<f32>(window.scale_factor());
     // Apply system dark/light palette before first use.
     let styles = app.config.styles.clone();
     let (viewport, cols, rows) =
-        ui::compute_single_pane(size.width, size.height, &renderer.cell_size, &styles);
+        ui::compute_single_pane(logical_size.width as u32, logical_size.height as u32, &renderer.cell_size, &styles);
 
     // Initialize egui integration.
     let egui = EguiIntegration::new(&window, &gpu.device, gpu.surface_config.format);
@@ -447,9 +448,11 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                     .shell
                     .clone()
                     .unwrap_or_else(crate::renderer::platform::default_shell);
+                let phys = state.window.inner_size();
+                let logical = phys.to_logical::<f32>(state.window.scale_factor());
                 let (_, cols, rows) = crate::ui::compute_single_pane(
-                    state.window.inner_size().width,
-                    state.window.inner_size().height,
+                    logical.width as u32,
+                    logical.height as u32,
                     &state.renderer.cell_size,
                     &state.styles,
                 );

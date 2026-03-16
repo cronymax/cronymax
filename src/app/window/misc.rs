@@ -6,10 +6,16 @@ pub(super) fn handle_resize(state: &mut AppState, new_size: winit::dpi::Physical
     log::debug!("Window resized to {}x{}", new_size.width, new_size.height);
     state.gpu.resize(new_size.width, new_size.height);
 
+    // Convert physical pixels to logical for grid dimension calc.
+    // cell_size is in logical units, so we must use logical window dims.
+    let logical = new_size.to_logical::<f32>(state.window.scale_factor());
+    let lw = logical.width as u32;
+    let lh = logical.height as u32;
+
     if let Some(ref split) = state.split {
         let (viewport, cols, rows) = split.terminal_grid(
-            new_size.width,
-            new_size.height,
+            lw,
+            lh,
             &state.renderer.cell_size,
             &state.styles,
         );
@@ -27,8 +33,8 @@ pub(super) fn handle_resize(state: &mut AppState, new_size: winit::dpi::Physical
         }
     } else {
         let (viewport, cols, rows) = ui::compute_single_pane(
-            new_size.width,
-            new_size.height,
+            lw,
+            lh,
             &state.renderer.cell_size,
             &state.styles,
         );

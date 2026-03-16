@@ -200,6 +200,9 @@ impl TerminalSession {
 
     /// Write raw bytes to the PTY (keyboard input).
     pub fn write_to_pty(&mut self, data: &[u8]) {
+        // Snap viewport to bottom so the user sees the cursor/prompt.
+        self.state.scroll_to_bottom();
+
         if let Err(e) = self.pty_writer.write_all(data) {
             log::error!("PTY write error: {}", e);
             return;

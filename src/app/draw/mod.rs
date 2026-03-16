@@ -237,13 +237,16 @@ pub(super) fn handle_redraw(state: &mut AppState, event_loop: &ActiveEventLoop) 
     }
 
     // Per-pane PTY resize when grid dimensions change.
-    let scale = state.window.scale_factor() as f32;
+    // egui rects are in logical pixels; cell_size is also logical.
+    // Do NOT multiply by scale here — that would inflate grid dims by the DPI factor.
+    // Subtract terminal_padding so the grid fits the padded content area.
+    let term_pad = state.config.styles.spacing.medium;
     for tr in &dirties.tile_rects {
         if let tiles::TileRect::Terminal { session_id, rect } = tr {
-            let pw = rect.width() * scale;
-            let ph = rect.height() * scale;
-            let new_cols = (pw / state.renderer.cell_size.width).floor().max(1.0) as u16;
-            let new_rows = (ph / state.renderer.cell_size.height).floor().max(1.0) as u16;
+            let inner_w = (rect.width() - 2.0 * term_pad).max(0.0);
+            let inner_h = (rect.height() - 2.0 * term_pad).max(0.0);
+            let new_cols = (inner_w / state.renderer.cell_size.width).floor().max(1.0) as u16;
+            let new_rows = (inner_h / state.renderer.cell_size.height).floor().max(1.0) as u16;
             let prev = state.prev_grid_sizes.get(session_id).copied();
             if prev != Some((new_cols, new_rows)) {
                 state
@@ -256,6 +259,7 @@ pub(super) fn handle_redraw(state: &mut AppState, event_loop: &ActiveEventLoop) 
         }
     }
 
+    let scale = state.window.scale_factor() as f32;
     // Position webview panes that are embedded in the tile tree.
     // Inset pane bounds that touch window edges so the rounded
     // corners (16px radius) of the window background remain visible.

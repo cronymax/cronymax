@@ -316,6 +316,27 @@ pub(in crate::app) fn handle_window_event(
                     state.scheduler.mark_dirty();
                     return;
                 }
+                // Mouse wheel → terminal scroll (instead of egui).
+                if let WindowEvent::MouseWheel { delta, .. } = event {
+                    let lines = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
+                        winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                            let cell_h = state.renderer.cell_size.height;
+                            if cell_h > 0.0 { pos.y as f32 / cell_h } else { 0.0 }
+                        }
+                    };
+                    if let Some(sid) = focused_sid
+                        && let Some(session) = state.sessions.get_mut(&sid)
+                    {
+                        if lines > 0.0 {
+                            session.state.scroll_up(lines.ceil() as i32);
+                        } else if lines < 0.0 {
+                            session.state.scroll_down((-lines).ceil() as i32);
+                        }
+                    }
+                    state.scheduler.mark_dirty();
+                    return;
+                }
                 if let WindowEvent::KeyboardInput {
                     event: key_ev,
                     is_synthetic: false,

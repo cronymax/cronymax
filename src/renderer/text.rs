@@ -5,6 +5,7 @@
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Term;
+use alacritty_terminal::term::cell::Flags as CellFlags;
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, TextArea, TextBounds};
 
 use crate::renderer::terminal::state::EventProxy;
@@ -36,6 +37,8 @@ pub fn build_terminal_buffer_reuse(
     params: &TerminalFontParams<'_>,
     scratch: &mut String,
 ) -> Buffer {
+    use unicode_width::UnicodeWidthChar;
+
     let metrics = Metrics::new(params.font_size, params.line_height);
     let mut buffer = Buffer::new(font_system, metrics);
 
@@ -65,33 +68,117 @@ pub fn build_terminal_buffer_reuse(
     let cols = params.cols.min(grid_cols);
     let rows = params.rows.min(grid_rows);
 
+    // Account for scrollback: shift line indices by -display_offset so we
+    // read the correct slice of the grid when scrolled up.
+    let display_offset = term.grid().display_offset() as i32;
+
+    // Track which characters are wide (CJK) so we can use a different
+    // font family for them. cosmic-text produces w=inf for CJK glyphs
+    // when using Family::Monospace, so we fall back to Family::SansSerif
+    // for wide characters.
+    let mut is_wide_char: Vec<bool> = Vec::with_capacity(cols * rows);
+
     for row_idx in 0..rows {
-        let line = alacritty_terminal::index::Line(row_idx as i32);
+        let line = alacritty_terminal::index::Line(row_idx as i32 - display_offset);
         for col_idx in 0..cols {
             let col = alacritty_terminal::index::Column(col_idx);
             let cell = &grid[line][col];
+            let flags = cell.flags;
+
+            // Skip spacer cells that follow a wide (CJK) character.
+            if flags.contains(CellFlags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+
+            // A leading wide-char spacer occupies the last column when
+            // the actual wide character wrapped to the next row.
+            if flags.contains(CellFlags::LEADING_WIDE_CHAR_SPACER) {
+                scratch.push(' ');
+                is_wide_char.push(false);
+                continue;
+            }
+
             let c = cell.c;
             if c.is_control() || c == '\0' {
                 scratch.push(' ');
+                is_wide_char.push(false);
             } else {
                 scratch.push(c);
+                // Use the cell flag or Unicode width to detect wide chars.
+                let wide = flags.contains(CellFlags::WIDE_CHAR)
+                    || c.width().unwrap_or(0) > 1;
+                is_wide_char.push(wide);
             }
         }
         // Trim trailing spaces for the line
         let trimmed_len = scratch.len() - scratch.chars().rev().take_while(|c| *c == ' ').count();
+        let chars_removed = scratch[trimmed_len..].chars().count();
         scratch.truncate(trimmed_len);
+        is_wide_char.truncate(is_wide_char.len() - chars_removed);
         if row_idx < rows - 1 {
             scratch.push('\n');
+            is_wide_char.push(false);
         }
     }
 
-    buffer.set_text(
-        font_system,
-        scratch,
-        &Attrs::new().family(family_val),
-        Shaping::Advanced,
-        None,
-    );
+    // Check if any wide chars exist; if not, use the fast path.
+    let has_wide = is_wide_char.iter().any(|w| *w);
+
+    if !has_wide {
+        // Fast path: all ASCII/narrow — use set_text with monospace font.
+        buffer.set_text(
+            font_system,
+            scratch,
+            &Attrs::new().family(family_val),
+            Shaping::Advanced,
+            None,
+        );
+    } else {
+        // Slow path: split into spans with different font families.
+        // CJK/wide chars use SansSerif (which has correct glyph metrics),
+        // narrow chars use the configured monospace font.
+        let mut spans: Vec<(&str, Attrs)> = Vec::new();
+        let mut span_start_byte = 0;
+        let mut current_is_wide = false;
+        let mut char_idx = 0;
+
+        let make_attrs = |wide: bool| -> Attrs {
+            if wide {
+                Attrs::new().family(Family::SansSerif)
+            } else {
+                Attrs::new().family(family_val)
+            }
+        };
+
+        for (byte_pos, _c) in scratch.char_indices() {
+            let w = is_wide_char.get(char_idx).copied().unwrap_or(false);
+            if char_idx > 0 && w != current_is_wide {
+                spans.push((
+                    &scratch[span_start_byte..byte_pos],
+                    make_attrs(current_is_wide),
+                ));
+                span_start_byte = byte_pos;
+            }
+            current_is_wide = w;
+            char_idx += 1;
+        }
+        if span_start_byte < scratch.len() {
+            spans.push((
+                &scratch[span_start_byte..],
+                make_attrs(current_is_wide),
+            ));
+        }
+
+        let default_attrs = Attrs::new().family(family_val);
+        buffer.set_rich_text(
+            font_system,
+            spans,
+            &default_attrs,
+            Shaping::Advanced,
+            None,
+        );
+    }
+
     buffer.shape_until_scroll(font_system, false);
 
     buffer

@@ -30,10 +30,12 @@ pub(super) fn render_terminal_panes(
             .iter()
             .filter_map(|tr| match tr {
                 tiles::TileRect::Terminal { session_id, rect } => {
-                    let px = rect.left() * scale;
-                    let py = rect.top() * scale;
-                    let pw = rect.width() * scale;
-                    let ph = rect.height() * scale;
+                    // Inset the pane rect by terminal_padding (logical → physical).
+                    let pad = state.config.styles.spacing.medium * scale;
+                    let px = rect.left() * scale + pad;
+                    let py = rect.top() * scale + pad;
+                    let pw = (rect.width() * scale - 2.0 * pad).max(0.0);
+                    let ph = (rect.height() * scale - 2.0 * pad).max(0.0);
                     Some((*session_id, px, py, pw, ph))
                 }
                 _ => None,
@@ -60,17 +62,21 @@ pub(super) fn render_terminal_panes(
 
             // Cursor quad for this pane.
             let term = session.state.term();
+            let display_offset = session.state.display_offset();
             let cursor_point = term.grid().cursor.point;
             let cursor_col = cursor_point.column.0.min(cols.saturating_sub(1));
-            let cursor_row = (cursor_point.line.0 as usize).min(rows.saturating_sub(1));
+            // When scrolled, offset cursor row by display_offset so it
+            // stays visually aligned with the shifted text content.
+            let cursor_visual_row = cursor_point.line.0 as usize + display_offset;
             let phys_cell = crate::renderer::atlas::CellSize {
                 width: phys_cell_w,
                 height: phys_cell_h,
             };
-            if state.cursor_visible {
+            // Only show cursor if it falls within the visible viewport.
+            if state.cursor_visible && cursor_visual_row < rows {
                 let cursor_rect = CursorRect::new(
                     cursor_col,
-                    cursor_row,
+                    cursor_visual_row,
                     &phys_cell,
                     CursorShape::from_str(&state.config.terminal.cursor_style),
                     colors.primary.to_normalized_gamma_f32(),
@@ -83,6 +89,25 @@ pub(super) fn render_terminal_panes(
                     width: cursor_rect.width,
                     height: cursor_rect.height,
                     color: cursor_rect.color,
+                });
+            }
+
+            // Scrollbar indicator (thin bar on the right edge).
+            let history = session.state.history_size();
+            if history > 0 {
+                let total = history + rows;
+                let thumb_frac = rows as f32 / total as f32;
+                let thumb_h = (vp_h * thumb_frac).max(10.0 * scale);
+                let scroll_frac = display_offset as f32 / history as f32;
+                // thumb_y: scrolled-to-bottom → thumb at bottom; scrolled-to-top → thumb at top
+                let thumb_y = vp_y + (vp_h - thumb_h) * (1.0 - scroll_frac);
+                let bar_width = 4.0 * scale;
+                all_quads.push(crate::renderer::quad::Quad {
+                    x: vp_x + vp_w - bar_width,
+                    y: thumb_y,
+                    width: bar_width,
+                    height: thumb_h,
+                    color: [1.0, 1.0, 1.0, 0.3],
                 });
             }
 
