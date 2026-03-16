@@ -33,6 +33,7 @@ mod filter;
 pub mod frame;
 pub mod i18n;
 pub mod icons;
+pub mod overlay;
 pub mod prompt;
 mod relaunch_dialog;
 pub mod settings;

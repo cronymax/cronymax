@@ -70,9 +70,9 @@ pub(in crate::app) fn handle_ui_action_channel(
                     let runtime = state.runtime.clone();
                     let ss = state.secret_store.clone();
                     runtime.spawn(async move {
-                        let mut mgr = crate::channel::ChannelManager::new(proxy);
+                        let mut mgr = crate::channels::ChannelManager::new(proxy);
                         if let Err(e) =
-                            crate::channel::register_channels(&mut mgr, &claw_config, ss).await
+                            crate::channels::register_channels(&mut mgr, &claw_config, ss).await
                         {
                             log::error!("Failed to register channels: {}", e);
                         }
@@ -101,7 +101,7 @@ pub(in crate::app) fn handle_ui_action_channel(
                 state.general_ui_state.claw_mode_enabled = false;
                 state.ui_state.claw_enabled = false;
                 state.ui_state.channel_connection_state =
-                    crate::channel::ConnectionState::Disconnected;
+                    crate::channels::ConnectionState::Disconnected;
                 // Dismiss any active wizard.
                 state.onboarding_wizard_state = None;
             }
@@ -118,7 +118,7 @@ pub(in crate::app) fn handle_ui_action_channel(
                     .channels
                     .iter()
                     .map(|c| match c {
-                        crate::channel::config::ChannelConfig::Lark(cfg) => cfg,
+                        crate::channels::config::ChannelConfig::Lark(cfg) => cfg,
                     })
                     .next()
             {
@@ -145,7 +145,7 @@ pub(in crate::app) fn handle_ui_action_channel(
                     c.channels
                         .iter()
                         .map(|ch| match ch {
-                            crate::channel::config::ChannelConfig::Lark(cfg) => cfg.clone(),
+                            crate::channels::config::ChannelConfig::Lark(cfg) => cfg.clone(),
                         })
                         .next()
                 })
@@ -176,7 +176,7 @@ pub(in crate::app) fn handle_ui_action_channel(
                                 let runtime = state.runtime.clone();
                                 let ss = state.secret_store.clone();
                                 runtime.spawn(async move {
-                                    let lark = crate::channel::lark::LarkChannel::new(lark_cfg, ss);
+                                    let lark = crate::channels::lark::LarkChannel::new(lark_cfg, ss);
                                     let results = lark.check_bot_config().await;
 
                                     // Build summary for the simple test_status field.
@@ -267,9 +267,9 @@ pub(in crate::app) fn handle_ui_action_channel(
                 let runtime = state.runtime.clone();
                 let ss = state.secret_store.clone();
                 runtime.spawn(async move {
-                    let mut mgr = crate::channel::ChannelManager::new(proxy);
+                    let mut mgr = crate::channels::ChannelManager::new(proxy);
                     if let Err(e) =
-                        crate::channel::register_channels(&mut mgr, &claw_config, ss).await
+                        crate::channels::register_channels(&mut mgr, &claw_config, ss).await
                     {
                         log::error!("Failed to register channels: {}", e);
                     }
@@ -301,7 +301,7 @@ pub(in crate::app) fn handle_ui_action_channel(
             // Sync the Channels section toggle.
             state.channels_ui_state.lark_enabled = false;
             state.ui_state.claw_enabled = false;
-            state.ui_state.channel_connection_state = crate::channel::ConnectionState::Disconnected;
+            state.ui_state.channel_connection_state = crate::channels::ConnectionState::Disconnected;
         }
         UiAction::SaveChannelConfig => {
             // Save Lark channel config from UI state.
@@ -369,7 +369,7 @@ pub(in crate::app) fn handle_ui_action_channel(
             // Find the instance config from the in-memory config.
             let lark_cfg_opt = state.config.claw.as_ref().and_then(|c| {
                 c.channels.iter().find_map(|ch| match ch {
-                    crate::channel::config::ChannelConfig::Lark(cfg)
+                    crate::channels::config::ChannelConfig::Lark(cfg)
                         if cfg.instance_id == instance_id =>
                     {
                         Some(cfg.clone())
@@ -407,7 +407,7 @@ pub(in crate::app) fn handle_ui_action_channel(
                                 let ss = state.secret_store.clone();
                                 let iid = instance_id.clone();
                                 runtime.spawn(async move {
-                                    let lark = crate::channel::lark::LarkChannel::new(lark_cfg, ss);
+                                    let lark = crate::channels::lark::LarkChannel::new(lark_cfg, ss);
                                     let results = lark.check_bot_config().await;
                                     let all_passed = results.iter().all(|r| r.passed);
                                     let failed_count = results.iter().filter(|r| !r.passed).count();

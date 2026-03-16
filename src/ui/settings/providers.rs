@@ -44,7 +44,7 @@ pub struct ProvidersSettingsState {
     /// Inline secret input for storing in keychain (transient, never persisted).
     pub keychain_secret_input: String,
     /// Shared secret store (avoids repeated OS permission dialogs).
-    pub secret_store: std::sync::Arc<crate::secret::SecretStore>,
+    pub secret_store: std::sync::Arc<crate::services::secret::SecretStore>,
 }
 
 /// A single provider entry in the editable list.
@@ -59,10 +59,10 @@ pub struct ProviderEntry {
 }
 
 impl ProviderEntry {
-    pub fn from_config(cfg: &ProviderConfig, store: &crate::secret::SecretStore) -> Self {
-        let key = crate::secret::provider_api_key(&cfg.name);
+    pub fn from_config(cfg: &ProviderConfig, store: &crate::services::secret::SecretStore) -> Self {
+        let key = crate::services::secret::provider_api_key(&cfg.name);
         let has_keychain = store
-            .resolve(&key, None, &crate::secret::SecretStorage::Keychain)
+            .resolve(&key, None, &crate::services::secret::SecretStorage::Keychain)
             .ok()
             .flatten()
             .is_some();
@@ -96,7 +96,7 @@ impl ProviderEntry {
 
 impl Default for ProvidersSettingsState {
     fn default() -> Self {
-        let store = std::sync::Arc::new(crate::secret::SecretStore::default());
+        let store = std::sync::Arc::new(crate::services::secret::SecretStore::default());
         Self {
             providers: Vec::new(),
             editing_index: None,
@@ -116,7 +116,7 @@ impl Default for ProvidersSettingsState {
 
 impl ProvidersSettingsState {
     /// Create with a shared secret store (avoids extra OS keychain probes).
-    pub fn with_secret_store(store: std::sync::Arc<crate::secret::SecretStore>) -> Self {
+    pub fn with_secret_store(store: std::sync::Arc<crate::services::secret::SecretStore>) -> Self {
         let keychain_available = store.has_keychain();
         Self {
             providers: Vec::new(),

@@ -37,12 +37,12 @@ pub(super) fn find_files_recursive(
 
 /// Test Lark tenant access token endpoint.
 pub(super) async fn test_lark_connection(
-    secret_store: &crate::secret::SecretStore,
+    secret_store: &crate::services::secret::SecretStore,
     app_id: &str,
     app_secret_env: &str,
-    secret_storage: &crate::secret::SecretStorage,
+    secret_storage: &crate::services::secret::SecretStorage,
 ) -> serde_json::Value {
-    let key = crate::secret::channel_secret("lark", app_id);
+    let key = crate::services::secret::channel_secret("lark", app_id);
     let env_var = if app_secret_env.is_empty() {
         None
     } else {
@@ -53,7 +53,7 @@ pub(super) async fn test_lark_connection(
     let app_secret = match secret_store.resolve(
         &cred_key,
         None,
-        &crate::secret::SecretStorage::Keychain,
+        &crate::services::secret::SecretStorage::Keychain,
     ) {
         Ok(Some(v)) => v,
         _ => match secret_store.resolve(&key, env_var, secret_storage) {
@@ -145,11 +145,11 @@ pub(super) fn update_info_block(state: &mut AppState, sid: SessionId, text: &str
 // ─── Sandbox Helpers ─────────────────────────────────────────────────────────
 
 /// Retrieve the active profile's sandbox policy, falling back to the default.
-pub(super) fn active_sandbox_policy(state: &AppState) -> crate::sandbox::policy::SandboxPolicy {
+pub(super) fn active_sandbox_policy(state: &AppState) -> crate::profile::sandbox::policy::SandboxPolicy {
     let mgr = state.profile_manager.lock().unwrap();
     mgr.active()
         .and_then(|p| p.sandbox.clone())
-        .unwrap_or_else(crate::sandbox::policy::SandboxPolicy::from_default)
+        .unwrap_or_else(crate::profile::sandbox::policy::SandboxPolicy::from_default)
 }
 
 // ─── LLM Config Helpers ──────────────────────────────────────────────────────

@@ -179,16 +179,16 @@ impl Widget for TitlebarWidget {
                         // Feishu/Lark channel icon (visible only when Claw mode is enabled).
                         if ui_state.claw_enabled {
                             let (status_color, tooltip) = match ui_state.channel_connection_state {
-                                crate::channel::ConnectionState::Connected => (
+                                crate::channels::ConnectionState::Connected => (
                                     Some(colors.success), //from_rgb(40, 200, 64)),
                                     "Feishu (Connected)",
                                 ),
-                                crate::channel::ConnectionState::Connecting
-                                | crate::channel::ConnectionState::Reconnecting => (
+                                crate::channels::ConnectionState::Connecting
+                                | crate::channels::ConnectionState::Reconnecting => (
                                     Some(colors.warning), //from_rgb(255, 189, 46)),
                                     "Feishu (Connecting...)",
                                 ),
-                                crate::channel::ConnectionState::Error => (
+                                crate::channels::ConnectionState::Error => (
                                     Some(colors.danger), //from_rgb(255, 96, 92)),
                                     "Feishu (Error)",
                                 ),

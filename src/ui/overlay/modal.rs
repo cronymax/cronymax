@@ -1,5 +1,3 @@
-use super::modal_panel::ModalPanel;
-
 use std::sync::{Arc, Mutex};
 
 use raw_window_handle::HasWindowHandle;
@@ -7,9 +5,10 @@ use winit::window::Window;
 
 use crate::config::AppConfig;
 use crate::renderer::overlay::{Overlay, Renderer};
+use crate::renderer::panels::ModalPanel;
 use crate::ui::UiAction;
 use crate::ui::types::TooltipRequest;
-use crate::{renderer::egui_pass::ScreenDescriptor, webview::BrowserRenderResult};
+use crate::{renderer::egui_pass::ScreenDescriptor, renderer::webview::BrowserRenderResult};
 
 /// Tier 2: A child window that floats above native webviews.
 ///
@@ -135,12 +134,14 @@ impl Modal {
         // Handle clipboard output from standalone egui context.
         for cmd in &full_output.platform_output.commands {
             if let egui::OutputCommand::CopyText(text) = cmd {
-                crate::terminal::input::copy_to_clipboard(text);
+                crate::renderer::terminal::input::copy_to_clipboard(text);
             }
         }
         #[allow(deprecated)]
         if !full_output.platform_output.copied_text.is_empty() {
-            crate::terminal::input::copy_to_clipboard(&full_output.platform_output.copied_text);
+            crate::renderer::terminal::input::copy_to_clipboard(
+                &full_output.platform_output.copied_text,
+            );
         }
 
         let primitives = self

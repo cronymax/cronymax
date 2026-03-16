@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
-use crate::sandbox::policy::SandboxPolicy;
+use crate::profile::sandbox::policy::SandboxPolicy;
 
 /// Wraps a portable-pty master, providing reader/writer access and resize.
 pub struct Pty {
@@ -115,7 +115,7 @@ impl Pty {
             // Generate SBPL profile string and pass inline via -p flag.
             // We use -p instead of -f (temp file) because portable_pty's
             // fork+exec can race with temp-file cleanup.
-            let sbpl = crate::sandbox::platform::macos::sbpl_from_policy(policy);
+            let sbpl = crate::profile::sandbox::platform::macos::sbpl_from_policy(policy);
             let mut cmd = CommandBuilder::new("sandbox-exec");
             cmd.arg("-p");
             cmd.arg(&sbpl);

@@ -8,7 +8,7 @@ use std::time::Duration;
 use super::messages::handle_event_payload;
 use super::protocol::Frame;
 use super::{LarkChannel, parse_endpoint_response};
-use crate::channel::{ChannelMessage, ChannelStatus, ConnectionState};
+use crate::channels::{ChannelMessage, ChannelStatus, ConnectionState};
 
 impl LarkChannel {
     /// Start the WebSocket event loop using the Lark binary protobuf protocol.

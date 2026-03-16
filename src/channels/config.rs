@@ -144,7 +144,7 @@ pub struct LarkChannelConfig {
     pub profile_id: String,
     /// Secret storage preference for the app secret.
     #[serde(default)]
-    pub secret_storage: crate::secret::SecretStorage,
+    pub secret_storage: crate::services::secret::SecretStorage,
 }
 
 fn default_lark_api_base() -> String {
@@ -169,7 +169,7 @@ impl LarkChannelConfig {
             anyhow::bail!("Lark app_id must start with 'cli_' (got '{}')", self.app_id);
         }
         // In keychain-only mode, app_secret_env can be empty.
-        if self.secret_storage != crate::secret::SecretStorage::Keychain
+        if self.secret_storage != crate::services::secret::SecretStorage::Keychain
             && self.app_secret_env.is_empty()
         {
             anyhow::bail!(
@@ -188,9 +188,9 @@ impl LarkChannelConfig {
     /// Resolve the app secret from keychain / environment variable.
     pub fn resolve_app_secret(
         &self,
-        secret_store: &crate::secret::SecretStore,
+        secret_store: &crate::services::secret::SecretStore,
     ) -> anyhow::Result<String> {
-        let key = crate::secret::channel_secret("lark", &self.app_id);
+        let key = crate::services::secret::channel_secret("lark", &self.app_id);
         let env_var = if self.app_secret_env.is_empty() {
             None
         } else {

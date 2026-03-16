@@ -23,8 +23,8 @@ use serde_json::Value;
 use crate::ai::context::{ChatMessage, MessageImportance, MessageRole};
 use crate::ai::skills::SkillHandler;
 use crate::ai::stream::{TokenUsage, ToolCallInfo};
-use crate::channel::ChannelMessage;
-use crate::channel::memory::ChannelMemoryStore;
+use crate::channels::ChannelMessage;
+use crate::channels::memory::ChannelMemoryStore;
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 //! LLM provider auto-detection for lifecycle initialization.
 
-use crate::secret::SecretStore;
+use crate::services::secret::SecretStore;
 
 /// Auto-detect the best available LLM provider from keychain + env vars.
 pub(super) fn detect_provider(
@@ -12,27 +12,27 @@ pub(super) fn detect_provider(
 ) {
     let has_gh = secret_store
         .resolve(
-            &crate::secret::provider_api_key("copilot"),
+            &crate::services::secret::provider_api_key("copilot"),
             Some("GH_TOKEN"),
-            &crate::secret::SecretStorage::Auto,
+            &crate::services::secret::SecretStorage::Auto,
         )
         .ok()
         .flatten()
         .is_some();
     let has_openai = secret_store
         .resolve(
-            &crate::secret::provider_api_key("openai"),
+            &crate::services::secret::provider_api_key("openai"),
             Some("OPENAI_API_KEY"),
-            &crate::secret::SecretStorage::Auto,
+            &crate::services::secret::SecretStorage::Auto,
         )
         .ok()
         .flatten()
         .is_some();
     let has_anthropic = secret_store
         .resolve(
-            &crate::secret::provider_api_key("anthropic"),
+            &crate::services::secret::provider_api_key("anthropic"),
             Some("ANTHROPIC_API_KEY"),
-            &crate::secret::SecretStorage::Auto,
+            &crate::services::secret::SecretStorage::Auto,
         )
         .ok()
         .flatten()

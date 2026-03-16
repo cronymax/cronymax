@@ -1,6 +1,6 @@
 // macOS sandbox — Seatbelt SBPL generation + sandbox-exec.
 
-use crate::sandbox::policy::SandboxPolicy;
+use crate::profile::sandbox::policy::SandboxPolicy;
 use std::io;
 
 /// Generate a Seatbelt SBPL profile string from a SandboxPolicy.

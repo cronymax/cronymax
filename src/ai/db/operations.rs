@@ -7,7 +7,7 @@ pub struct WizardStepUpdate<'a> {
     pub lark_app_id: Option<&'a str>,
     pub oauth_token: Option<&'a str>,
     pub tenant_id: Option<&'a str>,
-    pub secret_store: &'a crate::secret::SecretStore,
+    pub secret_store: &'a crate::services::secret::SecretStore,
 }
 
 impl DbStore {
@@ -182,7 +182,7 @@ impl DbStore {
         // Store OAuth token in keychain when available, sentinel in DB.
         let db_token = if let Some(token) = upd.oauth_token {
             if upd.secret_store.has_keychain() {
-                let key = crate::secret::oauth_token("lark");
+                let key = crate::services::secret::oauth_token("lark");
                 upd.secret_store.store(&key, token)?;
                 Some("[keychain]")
             } else {
@@ -218,7 +218,7 @@ impl DbStore {
     /// token is resolved from the system keychain.
     pub fn get_active_wizard(
         &self,
-        secret_store: &crate::secret::SecretStore,
+        secret_store: &crate::services::secret::SecretStore,
     ) -> anyhow::Result<Option<OnboardingWizardRow>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
         let mut stmt = conn.prepare(
@@ -245,9 +245,9 @@ impl DbStore {
             Some(Ok(mut row)) => {
                 // Resolve token from keychain if sentinel is present.
                 if row.oauth_token.as_deref() == Some("[keychain]") {
-                    let key = crate::secret::oauth_token("lark");
+                    let key = crate::services::secret::oauth_token("lark");
                     row.oauth_token = secret_store
-                        .resolve(&key, None, &crate::secret::SecretStorage::Keychain)
+                        .resolve(&key, None, &crate::services::secret::SecretStorage::Keychain)
                         .ok()
                         .flatten();
                 }
@@ -271,7 +271,7 @@ impl DbStore {
     /// system keychain. Replaces the SQLite column value with a sentinel.
     pub fn migrate_oauth_token_to_keychain(
         &self,
-        secret_store: &crate::secret::SecretStore,
+        secret_store: &crate::services::secret::SecretStore,
     ) -> anyhow::Result<u32> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
         let store = secret_store;
@@ -296,7 +296,7 @@ impl DbStore {
             if token.is_empty() {
                 continue;
             }
-            let key = crate::secret::oauth_token("lark");
+            let key = crate::services::secret::oauth_token("lark");
             if let Err(e) = store.store(&key, token) {
                 log::error!(
                     "Failed to migrate OAuth token (row {}) to keychain: {}",

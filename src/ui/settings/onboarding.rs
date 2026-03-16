@@ -135,11 +135,11 @@ impl OnboardingWizardState {
         }
     }
 
-    pub fn selected_secret_storage(&self) -> crate::secret::SecretStorage {
+    pub fn selected_secret_storage(&self) -> crate::services::secret::SecretStorage {
         if self.store_secret_in_keychain {
-            crate::secret::SecretStorage::Keychain
+            crate::services::secret::SecretStorage::Keychain
         } else {
-            crate::secret::SecretStorage::Env
+            crate::services::secret::SecretStorage::Env
         }
     }
 

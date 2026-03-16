@@ -138,7 +138,7 @@ pub(super) fn handle_theme_changed(state: &mut AppState) {
 pub(super) fn handle_scale_change(state: &mut AppState) {
     let scale = state.window.scale_factor();
     for tab in &state.webview_tabs {
-        crate::webview::bridge::send_scale_to_webview(&tab.manager.webview, scale);
+        crate::renderer::webview::bridge::send_scale_to_webview(&tab.manager.webview, scale);
     }
 
     // Update Float surface for new DPI scale.

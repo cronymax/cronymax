@@ -1,34 +1,5 @@
-//! Three-tier renderer container architecture: Base -> Overlay -> Float.
-//!
-//! ## Z-index hierarchy
-//!
-//! ```text
-//! +-----------------------------------------------------+
-//! |  Float  (tooltips, popovers)                 |  z = 3
-//! +-----------------------------------------------------+
-//! |  Modal  (browser overlays, settings)       |  z = 2
-//! +-----------------------------------------------------+
-//! |  BaseRenderer  (main window, terminals, egui)        |  z = 1
-//! +-----------------------------------------------------+
-//! ```
-//!
-//! Each tier wraps a platform window + GPU surface + egui context:
-//!
-//! - **[`Modal`]**: A child window (NSPanel / owned popup) that floats
-//!   above native webviews.
-//! - **[`Float`]**: A non-interactive child window for tooltips that floats
-//!   above everything. Click-through, ignores mouse events, highest z-order.
-pub mod float;
-pub mod float_panel;
-pub mod modal;
-pub mod modal_panel;
 
 use crate::renderer::egui_pass::EguiIntegration;
-
-pub use float::Float;
-pub use float_panel::{FloatPanel, FloatPanelState};
-pub use modal::Modal;
-pub use modal_panel::ModalPanel;
 
 // ── macOS coordinate helpers ────────────────────────────────────────────────
 

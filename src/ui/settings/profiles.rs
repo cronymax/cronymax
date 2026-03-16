@@ -47,7 +47,7 @@ impl Default for ProfilesSettingsState {
             save_status: None,
             available_models: Vec::new(),
             show_relaunch_dialog: false,
-            edit_allowed_skills: crate::profile::store::default_allowed_skills(),
+            edit_allowed_skills: crate::profile::Profile::default_allowed_skills(),
         }
     }
 }

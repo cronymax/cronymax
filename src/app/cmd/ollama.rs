@@ -3,7 +3,7 @@
 use crate::ai::client::ollama_manager::OllamaManager;
 use crate::ai::stream::AppEvent;
 use crate::app::state::AppState;
-use crate::terminal::SessionId;
+use crate::renderer::terminal::SessionId;
 
 /// Show an info message in the active chat session (both chat + prompt editor block).
 fn show_info(state: &mut AppState, text: &str) {
@@ -385,7 +385,7 @@ fn handle_ollama_use(state: &mut AppState, model: &str) {
             .as_ref()
             .map(|c| c.config().auto_compact)
             .unwrap_or(true),
-        secret_storage: crate::secret::SecretStorage::Auto,
+        secret_storage: crate::services::secret::SecretStorage::Auto,
     };
 
     let mut new_client = crate::ai::client::LlmClient::new(&new_config, &state.secret_store);

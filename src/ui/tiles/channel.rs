@@ -43,15 +43,15 @@ impl ChannelPane {
                 ui.add_space(styles.spacing.medium);
 
                 let (dot_color, status_label) = match conn_state {
-                    crate::channel::ConnectionState::Connected => (colors.success, "Connected"),
-                    crate::channel::ConnectionState::Connecting => {
+                    crate::channels::ConnectionState::Connected => (colors.success, "Connected"),
+                    crate::channels::ConnectionState::Connecting => {
                         (colors.warning, "Connecting...")
                     }
-                    crate::channel::ConnectionState::Reconnecting => {
+                    crate::channels::ConnectionState::Reconnecting => {
                         (colors.warning, "Reconnecting...")
                     }
-                    crate::channel::ConnectionState::Error => (colors.danger, "Error"),
-                    crate::channel::ConnectionState::Disconnected => {
+                    crate::channels::ConnectionState::Error => (colors.danger, "Error"),
+                    crate::channels::ConnectionState::Disconnected => {
                         (colors.warning, "Disconnected")
                     }
                 };
@@ -90,7 +90,7 @@ impl ChannelPane {
     fn render_message(
         &self,
         ui: &mut egui::Ui,
-        msg: &crate::channel::ChannelDisplayMessage,
+        msg: &crate::channels::ChannelDisplayMessage,
         avail_w: f32,
         styles: &crate::ui::styles::Styles,
         colors: &Colors,

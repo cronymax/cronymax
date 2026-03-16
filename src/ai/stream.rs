@@ -116,19 +116,19 @@ pub enum AppEvent {
     // ── Channel subsystem events (Claw mode) ─────────────────────────────
     /// A message was received from a channel (already authorized).
     ChannelMessageReceived {
-        message: crate::channel::ChannelMessage,
+        message: crate::channels::ChannelMessage,
     },
 
     /// Request to send a reply through a channel.
     ChannelSendReply {
-        target: crate::channel::ReplyTarget,
+        target: crate::channels::ReplyTarget,
         content: String,
     },
 
     /// Channel connection status changed.
     ChannelStatusChanged {
         channel_id: String,
-        status: crate::channel::ChannelStatus,
+        status: crate::channels::ChannelStatus,
     },
 
     /// Result of a channel connection test.
@@ -136,7 +136,7 @@ pub enum AppEvent {
 
     /// Result of a comprehensive bot configuration check.
     ChannelBotCheckResult {
-        results: Vec<crate::channel::BotCheckResult>,
+        results: Vec<crate::channels::BotCheckResult>,
     },
 
     /// Instance-scoped channel test result.
@@ -149,7 +149,7 @@ pub enum AppEvent {
     /// Instance-scoped bot configuration check result.
     ChannelBotCheckResultById {
         instance_id: String,
-        results: Vec<crate::channel::BotCheckResult>,
+        results: Vec<crate::channels::BotCheckResult>,
     },
 
     // ── Skills events ────────────────────────────────────────────────────

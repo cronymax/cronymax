@@ -1,7 +1,7 @@
 //! File picker widget, state update, and keyboard handling.
 
 use crate::{
-    terminal::SessionId,
+    renderer::terminal::SessionId,
     ui::{
         file_picker::FilePickerState,
         i18n::{t, t_fmt},

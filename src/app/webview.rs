@@ -79,7 +79,7 @@ pub(super) fn open_webview(
     // frame (address bar + content); the webview is offset below the
     // browser/address-bar area.  Falls back to a plain child-of-window
     // webview on platforms that don't support child windows.
-    let wv_result = BrowserView::new_overlay(&crate::webview::OverlayConfig {
+    let wv_result = BrowserView::new_overlay(&crate::renderer::webview::OverlayConfig {
         parent: &state.window,
         event_loop: Some(event_loop),
         url,

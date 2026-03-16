@@ -39,7 +39,7 @@ pub struct SkillDependencies {
     /// Profile ID for persistent memory skills.
     pub profile_id: String,
     /// Secret store for credential management skills.
-    pub secret_store: Option<std::sync::Arc<crate::secret::SecretStore>>,
+    pub secret_store: Option<std::sync::Arc<crate::services::secret::SecretStore>>,
 }
 
 /// A tool skill definition (name, description, parameter JSON schema, category).

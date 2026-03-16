@@ -18,7 +18,7 @@ pub(in crate::app) fn handle_channel_event(
             );
 
             // Store for display in channel conversation tab.
-            let display_msg = crate::channel::ChannelDisplayMessage {
+            let display_msg = crate::channels::ChannelDisplayMessage {
                 sender: message
                     .sender_name
                     .clone()
@@ -51,7 +51,7 @@ pub(in crate::app) fn handle_channel_event(
                     c.channels
                         .iter()
                         .map(|ch| match ch {
-                            crate::channel::config::ChannelConfig::Lark(cfg) => {
+                            crate::channels::config::ChannelConfig::Lark(cfg) => {
                                 cfg.profile_id.clone()
                             }
                         })
@@ -64,8 +64,8 @@ pub(in crate::app) fn handle_channel_event(
                 let mgr = state.profile_manager.lock().unwrap();
                 mgr.profiles
                     .get(&profile_id)
-                    .map(|p| p.allowed_skills.clone())
-                    .unwrap_or_else(crate::profile::store::default_allowed_skills)
+                    .map(|p| p.permissions.allowed_skills.clone())
+                    .unwrap_or_else(crate::profile::Profile::default_allowed_skills)
             };
 
             // Build filtered tool definitions and handlers.
@@ -99,17 +99,17 @@ pub(in crate::app) fn handle_channel_event(
                 }
             }
 
-            let deps = crate::channel::agent_loop::AgentLoopDeps {
+            let deps = crate::channels::agent_loop::AgentLoopDeps {
                 openai_client,
                 model,
                 system_prompt,
                 tools,
                 skill_handlers,
             };
-            let loop_config = crate::channel::agent_loop::AgentLoopConfig::default();
+            let loop_config = crate::channels::agent_loop::AgentLoopConfig::default();
 
             // Create ChannelMemoryStore (without embedder for now).
-            let memory = crate::channel::memory::ChannelMemoryStore::new(
+            let memory = crate::channels::memory::ChannelMemoryStore::new(
                 std::sync::Arc::new(state.db_store.clone().unwrap_or_else(|| {
                     // Fallback: open a transient in-memory db.
                     crate::ai::db::DbStore::open(&std::path::PathBuf::from(":memory:"))
@@ -122,7 +122,7 @@ pub(in crate::app) fn handle_channel_event(
             let proxy = state.proxy.clone();
 
             state.runtime.spawn(async move {
-                match crate::channel::agent_loop::process_message(
+                match crate::channels::agent_loop::process_message(
                     &message,
                     &loop_config,
                     &memory,
@@ -157,7 +157,7 @@ pub(in crate::app) fn handle_channel_event(
             );
 
             // Store for display in channel conversation tab.
-            let display_msg = crate::channel::ChannelDisplayMessage {
+            let display_msg = crate::channels::ChannelDisplayMessage {
                 sender: "Bot".to_string(),
                 content: content.clone(),
                 is_outgoing: true,
@@ -182,7 +182,7 @@ pub(in crate::app) fn handle_channel_event(
                     c.channels
                         .iter()
                         .map(|ch| match ch {
-                            crate::channel::config::ChannelConfig::Lark(cfg) => cfg.clone(),
+                            crate::channels::config::ChannelConfig::Lark(cfg) => cfg.clone(),
                         })
                         .next()
                 })
@@ -195,7 +195,7 @@ pub(in crate::app) fn handle_channel_event(
                 let runtime = state.runtime.clone();
                 let ss = state.secret_store.clone();
                 runtime.spawn(async move {
-                    let lark = crate::channel::lark::LarkChannel::new(lark_cfg, ss);
+                    let lark = crate::channels::lark::LarkChannel::new(lark_cfg, ss);
                     if let Err(e) = lark.send_message(&reply_target, &reply_content).await {
                         log::error!("Failed to send channel reply: {}", e);
                     }

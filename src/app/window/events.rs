@@ -219,7 +219,7 @@ pub(in crate::app) fn handle_window_event(
                             let col = (px / cell.width) as usize;
                             let row = (py / cell.height) as usize;
                             let (grid_cols, _) = vp.grid_dimensions(cell);
-                            let link = crate::terminal::links::link_at(
+                            let link = crate::renderer::terminal::links::link_at(
                                 session.state.term(),
                                 col,
                                 row,
@@ -498,14 +498,14 @@ pub(in crate::app) fn handle_window_event(
                         let col = (px / cell.width) as usize;
                         let row = (py / cell.height) as usize;
                         let (grid_cols, _) = vp.grid_dimensions(cell);
-                        if let Some(link) = crate::terminal::links::link_at(
+                        if let Some(link) = crate::renderer::terminal::links::link_at(
                             session.state.term(),
                             col,
                             row,
                             grid_cols as usize,
                         ) {
                             let url = if link.is_path {
-                                let resolved = crate::terminal::links::resolve_path(&link.url);
+                                let resolved = crate::renderer::terminal::links::resolve_path(&link.url);
                                 format!("file://{}", resolved)
                             } else {
                                 link.url.clone()

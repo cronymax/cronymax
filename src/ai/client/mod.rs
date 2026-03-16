@@ -64,7 +64,7 @@ pub struct LlmConfig {
     pub reserve_tokens: usize,
     pub system_prompt: Option<String>,
     pub auto_compact: bool,
-    pub secret_storage: crate::secret::SecretStorage,
+    pub secret_storage: crate::services::secret::SecretStorage,
 }
 
 impl Default for LlmConfig {
@@ -78,7 +78,7 @@ impl Default for LlmConfig {
             reserve_tokens: 4096,
             system_prompt: Some("You are a helpful terminal assistant.".into()),
             auto_compact: false,
-            secret_storage: crate::secret::SecretStorage::Auto,
+            secret_storage: crate::services::secret::SecretStorage::Auto,
         }
     }
 }
@@ -209,14 +209,14 @@ pub struct LlmClient {
     /// Additional provider endpoints from config.toml to include in model fetching.
     configured_providers: Vec<crate::config::ProviderConfig>,
     /// Secret store for resolving API keys from the system keychain.
-    secret_store: crate::secret::SecretStore,
+    secret_store: crate::services::secret::SecretStore,
     /// Raw GitHub token for Copilot token exchange (re-exchange on expiry).
     copilot_github_token: Option<String>,
 }
 
 impl LlmClient {
     /// Create a new LLM client from the given configuration.
-    pub fn new(config: &LlmConfig, secret_store: &crate::secret::SecretStore) -> Self {
+    pub fn new(config: &LlmConfig, secret_store: &crate::services::secret::SecretStore) -> Self {
         let mut copilot_github_token = None;
         let openai_client = match config.provider {
             LlmProvider::OpenAI | LlmProvider::Custom => {
@@ -224,7 +224,7 @@ impl LlmClient {
 
                 // Set API key from keychain / env var.
                 let key_name =
-                    crate::secret::provider_api_key(if config.provider == LlmProvider::Custom {
+                    crate::services::secret::provider_api_key(if config.provider == LlmProvider::Custom {
                         "custom"
                     } else {
                         "openai"
@@ -292,7 +292,7 @@ impl LlmClient {
                 let mut oai_config = OpenAIConfig::new().with_api_base(base);
 
                 let env_var = config.api_key_env.as_deref().unwrap_or("ANTHROPIC_API_KEY");
-                let key_name = crate::secret::provider_api_key("anthropic");
+                let key_name = crate::services::secret::provider_api_key("anthropic");
                 if let Ok(Some(key)) =
                     secret_store.resolve(&key_name, Some(env_var), &config.secret_storage)
                 {

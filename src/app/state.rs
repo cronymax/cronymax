@@ -86,11 +86,11 @@ pub(crate) struct AppState {
     /// Float renderer (tier 3) — tooltip window above all overlays.
     /// Created lazily on first tooltip request.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub(crate) float_renderer: Option<crate::renderer::overlay::Float>,
+    pub(crate) float_renderer: Option<crate::ui::overlay::Float>,
     /// Overlay renderer (tier 2) for the Settings page.
     /// Created lazily when settings are opened.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub(crate) settings_overlay: Option<crate::renderer::overlay::Modal>,
+    pub(crate) settings_overlay: Option<crate::ui::overlay::Modal>,
     /// Split layout when webview is open.
     pub(crate) split: Option<VerticalSplit>,
     /// Accumulated input buffer for command mode.
@@ -103,7 +103,7 @@ pub(crate) struct AppState {
     pub(crate) mouse_x: f32,
     pub(crate) mouse_y: f32,
     /// Currently hovered link (when Cmd/Ctrl held + mouse over link).
-    pub(crate) hovered_link: Option<crate::terminal::links::DetectedLink>,
+    pub(crate) hovered_link: Option<crate::renderer::terminal::links::DetectedLink>,
     /// Whether an IME composition (preedit) is currently active.
     pub(crate) ime_composing: bool,
     /// Whether the IME input method is enabled (between Ime::Enabled and Ime::Disabled).
@@ -172,7 +172,7 @@ pub(crate) struct AppState {
     // ── Channel subsystem (Claw mode) ─────────────────────────────────
     /// Channel manager orchestrating all registered channels.
     /// `None` when Claw mode is disabled.
-    pub(crate) channel_manager: Option<crate::channel::ChannelManager>,
+    pub(crate) channel_manager: Option<crate::channels::ChannelManager>,
     /// UI state for the Channels settings section.
     pub(crate) channels_ui_state: crate::ui::settings::channels::ChannelsSettingsState,
     /// Onboarding wizard state (visible when first enabling Claw with no channels).
@@ -180,21 +180,21 @@ pub(crate) struct AppState {
         Option<crate::ui::settings::onboarding::OnboardingWizardState>,
     /// Shared system keychain secret store (single instance to avoid
     /// repeated OS permission dialogs).
-    pub(crate) secret_store: Arc<crate::secret::SecretStore>,
+    pub(crate) secret_store: Arc<crate::services::secret::SecretStore>,
     /// Pending reply targets for channel messages being processed by the LLM.
     /// Key is the LLM session_id (900000+), value is the ReplyTarget.
-    pub(crate) pending_channel_replies: HashMap<u32, crate::channel::ReplyTarget>,
+    pub(crate) pending_channel_replies: HashMap<u32, crate::channels::ReplyTarget>,
     /// Counter for channel message session IDs.
     pub(crate) _messages_received_channel_counter: u32,
     /// Channel conversation messages for display in channel tabs.
     /// Key is channel_id, value is ordered list of messages.
-    pub(crate) channel_messages: HashMap<String, Vec<crate::channel::ChannelDisplayMessage>>,
+    pub(crate) channel_messages: HashMap<String, Vec<crate::channels::ChannelDisplayMessage>>,
 
     // ── Sandbox ──────────────────────────────────────────────────────────
     /// The sandbox policy that was applied at PTY spawn time.
     /// Compared against the current profile's policy to detect changes
     /// requiring a relaunch.
-    pub(crate) applied_sandbox_policy: crate::sandbox::policy::SandboxPolicy,
+    pub(crate) applied_sandbox_policy: crate::profile::sandbox::policy::SandboxPolicy,
 
     // ── Agent execution infrastructure ───────────────────────────────────
     /// Shared pending results map for async skill result delivery.

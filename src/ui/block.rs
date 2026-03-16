@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use crate::terminal::SessionId;
+use crate::renderer::terminal::SessionId;
 use crate::ui::i18n::{t, t_fmt};
 use crate::ui::styles::Styles;
 use crate::ui::styles::colors::Colors;

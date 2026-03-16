@@ -1,62 +1,13 @@
-// Profile store — disk persistence, session/memory CRUD.
-
-use std::collections::HashMap;
-use std::path::PathBuf;
+// Memory service — cross-session LLM memory & context, scoped by profile.
+//
+// Provides long-term memory entries with tag-based categorization, full-text search,
+// and token-budget-aware prompt injection. Each profile maintains its own memory store.
 
 use serde::{Deserialize, Serialize};
 
-use crate::ai::context::ChatMessage;
+// ─── Memory Configuration ────────────────────────────────────────────────────
 
-/// A named profile with LLM config, sandbox reference, and creation timestamp.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Profile {
-    pub id: String,
-    pub name: String,
-    /// Legacy path reference (kept for backward compat, ignored on new saves).
-    pub sandbox_policy: Option<String>,
-    /// Embedded sandbox policy — saved directly in profile.toml.
-    #[serde(default)]
-    pub sandbox: Option<crate::sandbox::policy::SandboxPolicy>,
-    pub created_at: String,
-    pub memory: MemoryConfig,
-    /// Skill categories this profile permits for channel agent loops.
-    /// Valid values: `sandbox`, `chat`, `browser`, `terminal`, `tab`, `webview`, `external`, `general`, `channels`, `scheduler`.
-    #[serde(default = "default_allowed_skills")]
-    pub allowed_skills: Vec<String>,
-}
-
-/// Default skill allowlist — all categories enabled.
-pub fn default_allowed_skills() -> Vec<String> {
-    vec![
-        "sandbox".into(),
-        "chat".into(),
-        "browser".into(),
-        "terminal".into(),
-        "tab".into(),
-        "webview".into(),
-        "external".into(),
-        "general".into(),
-        "channels".into(),
-        "scheduler".into(),
-    ]
-}
-
-impl Default for Profile {
-    fn default() -> Self {
-        Self {
-            id: "default".into(),
-            name: "Default".into(),
-            sandbox_policy: None,
-            sandbox: None,
-            created_at: String::new(),
-            memory: MemoryConfig::default(),
-            allowed_skills: default_allowed_skills(),
-        }
-    }
-}
-
-/// Memory configuration per profile.
+/// Memory configuration per profile — controls memory behavior and limits.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemoryConfig {
@@ -79,7 +30,9 @@ impl Default for MemoryConfig {
     }
 }
 
-/// Memory tag categories.
+// ─── Memory Tag ──────────────────────────────────────────────────────────────
+
+/// Memory tag categories — used for prioritized retrieval and filtering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryTag {
@@ -105,7 +58,9 @@ impl MemoryTag {
     }
 }
 
-/// A single memory entry.
+// ─── Memory Entry ────────────────────────────────────────────────────────────
+
+/// A single memory entry — a fact, preference, or context note stored per profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub id: String,
@@ -123,7 +78,9 @@ pub struct MemoryEntry {
     pub access_count: u32,
 }
 
-/// In-memory store for profile memories.
+// ─── Memory Store ────────────────────────────────────────────────────────────
+
+/// In-memory store for profile memories — CRUD, search, prompt rendering, LRU eviction.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MemoryStore {
     #[serde(default)]
@@ -198,12 +155,9 @@ impl MemoryStore {
 
         let mut sorted: Vec<&MemoryEntry> = self.entries.iter().collect();
         sorted.sort_by(|a, b| {
-            // Pinned first.
             b.pinned
                 .cmp(&a.pinned)
-                // Then by tag sort priority.
                 .then(b.tag.sort_priority().cmp(&a.tag.sort_priority()))
-                // Then by access count.
                 .then(b.access_count.cmp(&a.access_count))
         });
 
@@ -229,7 +183,6 @@ impl MemoryStore {
         if self.entries.len() <= max_entries {
             return;
         }
-        // Sort by pinned (keep), then by last_used_at ascending (oldest first to evict).
         self.entries.sort_by(|a, b| {
             b.pinned
                 .cmp(&a.pinned)
@@ -238,34 +191,3 @@ impl MemoryStore {
         self.entries.truncate(max_entries);
     }
 }
-
-/// An LLM session that persists across app restarts.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmSession {
-    pub profile_id: String,
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default)]
-    pub system_prompt: String,
-    #[serde(default)]
-    pub messages: Vec<ChatMessage>,
-    #[serde(default)]
-    pub token_count: u32,
-    #[serde(default)]
-    pub created_at: u64,
-    #[serde(default)]
-    pub updated_at: u64,
-}
-
-/// Filename constants for profile data files.
-const PROFILE_TOML: &str = "profile.toml";
-const POLICY_TOML: &str = "policy.toml";
-const SESSION_JSON: &str = "session.json";
-const MEMORY_JSON: &str = "memory.json";
-const WEBDATA_DIR: &str = "webdata";
-
-/// Manages profiles on disk.
-mod manager;
-pub use manager::*;

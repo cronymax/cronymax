@@ -151,7 +151,7 @@ pub struct UiState {
     /// Whether Claw mode (channels) is enabled — controls Feishu icon visibility.
     pub claw_enabled: bool,
     /// Current channel connection state (for titlebar status indicator).
-    pub channel_connection_state: crate::channel::ConnectionState,
+    pub channel_connection_state: crate::channels::ConnectionState,
 
     // ── Profile picker (titlebar) ─────────────────────────────────────────
     /// Available profiles: `(id, display_name)` pairs.
@@ -376,7 +376,7 @@ impl UiState {
             overlay_panel_rect: None,
             docked_tooltip: None,
             claw_enabled: false,
-            channel_connection_state: crate::channel::ConnectionState::Disconnected,
+            channel_connection_state: crate::channels::ConnectionState::Disconnected,
             profile_list: Vec::new(),
             active_profile_id: String::new(),
             show_profile_relaunch_dialog: false,

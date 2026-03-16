@@ -1,5 +1,5 @@
 use crate::{
-    terminal::SessionId,
+    renderer::terminal::SessionId,
     ui::{CommandEntry, prompt::PromptState, widget::Widget},
 };
 

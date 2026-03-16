@@ -91,7 +91,7 @@ pub(crate) fn build_channel_context(config: &crate::config::AppConfig) -> Option
     );
     for ch in &claw.channels {
         match ch {
-            crate::channel::config::ChannelConfig::Lark(lark) => {
+            crate::channels::config::ChannelConfig::Lark(lark) => {
                 lines.push(format!(
                     "- Feishu/Lark: app_id={}, api_base={}, instance_id={}",
                     lark.app_id, lark.api_base, lark.instance_id

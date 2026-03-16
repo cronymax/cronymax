@@ -8,7 +8,7 @@ use linkify::{LinkFinder, LinkKind};
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::terminal::state::EventProxy;
+use crate::renderer::terminal::state::EventProxy;
 
 /// A detected link in the terminal grid.
 #[derive(Debug, Clone)]

@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
 
-use crate::channel::config::LarkChannelConfig;
-use crate::channel::{BotCheckResult, ChannelStatus, ConnectionState};
+use crate::channels::config::LarkChannelConfig;
+use crate::channels::{BotCheckResult, ChannelStatus, ConnectionState};
 
 /// Callback type for connection status changes.
 type StatusChangeCallback = Arc<Box<dyn Fn(ChannelStatus) + Send + Sync>>;
@@ -169,12 +169,12 @@ pub struct LarkChannel {
     /// Optional callback fired when connection state changes.
     on_status_change: Option<StatusChangeCallback>,
     /// System keychain secret store.
-    secret_store: Arc<crate::secret::SecretStore>,
+    secret_store: Arc<crate::services::secret::SecretStore>,
 }
 
 impl LarkChannel {
     /// Create a new Lark channel from configuration.
-    pub fn new(config: LarkChannelConfig, secret_store: Arc<crate::secret::SecretStore>) -> Self {
+    pub fn new(config: LarkChannelConfig, secret_store: Arc<crate::services::secret::SecretStore>) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .connect_timeout(std::time::Duration::from_secs(10))

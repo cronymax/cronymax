@@ -79,8 +79,8 @@ pub enum UiAction {
     FilterPrev,
     /// Dock a dragged tab as a split relative to a target pane.
     DockTab {
-        source: crate::terminal::SessionId,
-        target: crate::terminal::SessionId,
+        source: crate::renderer::terminal::SessionId,
+        target: crate::renderer::terminal::SessionId,
         direction: crate::ui::tiles::DockDirection,
     },
     /// Split active pane horizontally, new pane to the left.
@@ -149,7 +149,7 @@ pub enum UiAction {
         api_base: String,
         allowed_users: Vec<String>,
         profile_id: String,
-        secret_storage: crate::secret::SecretStorage,
+        secret_storage: crate::services::secret::SecretStorage,
     },
     /// Run a best-effort Lark Developer Console automation in the browser overlay.
     OnboardingAutomateLarkSetup {

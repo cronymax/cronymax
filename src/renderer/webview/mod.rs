@@ -1,13 +1,10 @@
 // Re-export for backward compat during transition (if needed delete later).
-pub use crate::renderer::bridge;
-use crate::renderer::overlay::ModalPanel;
-pub use crate::renderer::panel;
+pub use super::bridge;
+use super::panels::ModalPanel;
 
 pub mod manager;
 pub mod split;
 
-// Re-export FloatPanelState from the canonical containers module.
-pub use crate::renderer::overlay::FloatPanelState;
 use crate::ui::TooltipRequest;
 use crate::ui::UiAction;
 
@@ -22,7 +19,7 @@ use wry::{WebView, WebViewBuilder};
 use bridge::{IPC_BRIDGE_SCRIPT, WebviewToRust};
 use split::Bounds;
 
-use crate::renderer::overlay::Modal;
+use crate::ui::overlay::Modal;
 
 /// Configuration for creating an overlay webview panel.
 pub struct OverlayConfig<'a> {

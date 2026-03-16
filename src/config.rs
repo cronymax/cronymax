@@ -19,7 +19,7 @@ pub struct AppConfig {
     /// Profile management configuration (optional).
     pub profiles: Option<ProfilesConfig>,
     /// Claw mode (channels subsystem) configuration (optional).
-    pub claw: Option<crate::channel::config::ClawConfig>,
+    pub claw: Option<crate::channels::config::ClawConfig>,
     /// Skills subsystem configuration (optional).
     pub skills: Option<SkillsConfig>,
 }
@@ -70,7 +70,7 @@ pub struct ProviderConfig {
     pub api_key_env: Option<String>,
     /// Secret storage preference for the API key.
     #[serde(default)]
-    pub secret_storage: crate::secret::SecretStorage,
+    pub secret_storage: crate::services::secret::SecretStorage,
 }
 
 /// Profile management configuration.
@@ -275,7 +275,7 @@ pub fn save_claw_enabled(enabled: bool) -> Result<(), String> {
 ///
 /// Writes both legacy `[claw.lark]` (backward compat) and `[[claw.channels]]`
 /// (new format) so that `channels` Vec is populated on next load.
-pub fn save_lark_config(lark: &crate::channel::config::LarkChannelConfig) -> Result<(), String> {
+pub fn save_lark_config(lark: &crate::channels::config::LarkChannelConfig) -> Result<(), String> {
     let path = AppConfig::config_path();
     let contents = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc: toml_edit::DocumentMut = contents
@@ -294,11 +294,11 @@ pub fn save_lark_config(lark: &crate::channel::config::LarkChannelConfig) -> Res
         }
         tbl["app_id"] = toml_edit::value(&lark.app_id);
         tbl["app_secret_env"] = toml_edit::value(&lark.app_secret_env);
-        if lark.secret_storage != crate::secret::SecretStorage::Auto {
+        if lark.secret_storage != crate::services::secret::SecretStorage::Auto {
             tbl["secret_storage"] = toml_edit::value(match lark.secret_storage {
-                crate::secret::SecretStorage::Auto => "auto",
-                crate::secret::SecretStorage::Keychain => "keychain",
-                crate::secret::SecretStorage::Env => "env",
+                crate::services::secret::SecretStorage::Auto => "auto",
+                crate::services::secret::SecretStorage::Keychain => "keychain",
+                crate::services::secret::SecretStorage::Env => "env",
             });
         }
 
@@ -337,7 +337,7 @@ pub fn save_lark_config(lark: &crate::channel::config::LarkChannelConfig) -> Res
 /// Writes `[[claw.channels]]` array with all instances and keeps legacy
 /// `[claw.lark]` pointing at the first instance for backward compat.
 pub fn save_channel_configs(
-    channels: &[crate::channel::config::ChannelConfig],
+    channels: &[crate::channels::config::ChannelConfig],
 ) -> Result<(), String> {
     let path = AppConfig::config_path();
     let contents = std::fs::read_to_string(&path).unwrap_or_default();
@@ -354,17 +354,17 @@ pub fn save_channel_configs(
         let mut channels_arr = toml_edit::ArrayOfTables::new();
         for ch in channels {
             match ch {
-                crate::channel::config::ChannelConfig::Lark(lark) => {
+                crate::channels::config::ChannelConfig::Lark(lark) => {
                     let mut tbl = toml_edit::Table::new();
                     tbl["type"] = toml_edit::value("lark");
                     tbl["instance_id"] = toml_edit::value(&lark.instance_id);
                     tbl["app_id"] = toml_edit::value(&lark.app_id);
                     tbl["app_secret_env"] = toml_edit::value(&lark.app_secret_env);
-                    if lark.secret_storage != crate::secret::SecretStorage::Auto {
+                    if lark.secret_storage != crate::services::secret::SecretStorage::Auto {
                         tbl["secret_storage"] = toml_edit::value(match lark.secret_storage {
-                            crate::secret::SecretStorage::Auto => "auto",
-                            crate::secret::SecretStorage::Keychain => "keychain",
-                            crate::secret::SecretStorage::Env => "env",
+                            crate::services::secret::SecretStorage::Auto => "auto",
+                            crate::services::secret::SecretStorage::Keychain => "keychain",
+                            crate::services::secret::SecretStorage::Env => "env",
                         });
                     }
 
@@ -387,15 +387,15 @@ pub fn save_channel_configs(
         claw.insert("channels", toml_edit::Item::ArrayOfTables(channels_arr));
 
         // Keep legacy [claw.lark] pointing at the first Lark instance.
-        if let Some(crate::channel::config::ChannelConfig::Lark(first)) = channels.first() {
+        if let Some(crate::channels::config::ChannelConfig::Lark(first)) = channels.first() {
             let mut legacy = toml_edit::Table::new();
             legacy["app_id"] = toml_edit::value(&first.app_id);
             legacy["app_secret_env"] = toml_edit::value(&first.app_secret_env);
-            if first.secret_storage != crate::secret::SecretStorage::Auto {
+            if first.secret_storage != crate::services::secret::SecretStorage::Auto {
                 legacy["secret_storage"] = toml_edit::value(match first.secret_storage {
-                    crate::secret::SecretStorage::Auto => "auto",
-                    crate::secret::SecretStorage::Keychain => "keychain",
-                    crate::secret::SecretStorage::Env => "env",
+                    crate::services::secret::SecretStorage::Auto => "auto",
+                    crate::services::secret::SecretStorage::Keychain => "keychain",
+                    crate::services::secret::SecretStorage::Env => "env",
                 });
             }
             let mut users_arr = toml_edit::Array::new();

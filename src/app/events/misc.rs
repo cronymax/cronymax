@@ -229,11 +229,11 @@ pub(in crate::app) fn handle_misc_event(
                     let policy = profile
                         .sandbox
                         .clone()
-                        .unwrap_or_else(crate::sandbox::policy::SandboxPolicy::from_default);
+                        .unwrap_or_else(crate::profile::sandbox::policy::SandboxPolicy::from_default);
                     policy.check_command(&command).err()
                 } else {
                     // No active profile — use default policy.
-                    crate::sandbox::policy::SandboxPolicy::from_default()
+                    crate::profile::sandbox::policy::SandboxPolicy::from_default()
                         .check_command(&command)
                         .err()
                 }

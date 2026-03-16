@@ -157,7 +157,7 @@ pub(in crate::app) fn handle_onboard_event(
                     (
                         String::new(),
                         "LARK_APP_SECRET".to_string(),
-                        crate::secret::SecretStorage::Auto,
+                        crate::services::secret::SecretStorage::Auto,
                     )
                 });
             state.runtime.spawn(async move {
@@ -206,7 +206,7 @@ pub(in crate::app) fn handle_onboard_event(
                 .filter(|s| !s.is_empty())
                 .collect();
 
-            let lark_config = crate::channel::config::LarkChannelConfig {
+            let lark_config = crate::channels::config::LarkChannelConfig {
                 instance_id: "lark".into(),
                 app_id: wiz.app_id.clone(),
                 app_secret_env: if wiz.app_secret_env.is_empty() {
@@ -227,11 +227,11 @@ pub(in crate::app) fn handle_onboard_event(
                 },
                 secret_storage,
             };
-            let channel_cfg = crate::channel::config::ChannelConfig::Lark(lark_config.clone());
+            let channel_cfg = crate::channels::config::ChannelConfig::Lark(lark_config.clone());
             let claw_cfg = state.config.claw.get_or_insert_with(Default::default);
             claw_cfg
                 .channels
-                .retain(|c| !matches!(c, crate::channel::config::ChannelConfig::Lark(_)));
+                .retain(|c| !matches!(c, crate::channels::config::ChannelConfig::Lark(_)));
             claw_cfg.channels.push(channel_cfg);
             claw_cfg.enabled = true;
 
@@ -274,8 +274,8 @@ pub(in crate::app) fn handle_onboard_event(
             let runtime = state.runtime.clone();
             let ss = state.secret_store.clone();
             runtime.spawn(async move {
-                let mut mgr = crate::channel::ChannelManager::new(proxy);
-                if let Err(e) = crate::channel::register_channels(&mut mgr, &claw_config, ss).await
+                let mut mgr = crate::channels::ChannelManager::new(proxy);
+                if let Err(e) = crate::channels::register_channels(&mut mgr, &claw_config, ss).await
                 {
                     log::error!("Failed to register channels after skill onboarding: {}", e);
                 } else {

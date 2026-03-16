@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::config::AppConfig;
-use crate::terminal::SessionId;
+use crate::renderer::terminal::SessionId;
 use crate::ui;
 use crate::ui::block::Block;
 use crate::ui::prompt::PromptState;
@@ -22,7 +22,7 @@ pub struct FrameWidget<'a> {
     pub blocks: HashMap<SessionId, Block>,
     pub session_chats: &'a mut HashMap<SessionId, crate::ui::chat::SessionChat>,
     pub live_outputs: HashMap<SessionId, String>,
-    pub channel_messages: &'a HashMap<String, Vec<crate::channel::ChannelDisplayMessage>>,
+    pub channel_messages: &'a HashMap<String, Vec<crate::channels::ChannelDisplayMessage>>,
     pub pane_widgets: &'a mut tiles::PaneWidgetStore,
     // ── Settings overlay ────────────────────────────────────────────────
     pub settings_in_child: bool,

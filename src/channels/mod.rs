@@ -85,7 +85,7 @@ use std::collections::HashMap;
 use winit::event_loop::EventLoopProxy;
 
 use crate::ai::stream::AppEvent;
-use crate::channel::config::{ChannelConfig, ClawConfig};
+use crate::channels::config::{ChannelConfig, ClawConfig};
 
 // ─── Core Types ──────────────────────────────────────────────────────────────
 
@@ -423,7 +423,7 @@ impl ChannelManager {
 pub async fn register_channels(
     manager: &mut ChannelManager,
     config: &ClawConfig,
-    secret_store: std::sync::Arc<crate::secret::SecretStore>,
+    secret_store: std::sync::Arc<crate::services::secret::SecretStore>,
 ) -> anyhow::Result<()> {
     if !config.enabled {
         log::info!("Claw mode disabled, skipping channel registration");

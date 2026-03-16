@@ -3,8 +3,8 @@
 
 // Draw method is implemented in channels_draw.rs as `impl ChannelsSettingsState`.
 
-use crate::channel::ConnectionState;
-use crate::channel::config::{ChannelConfig, ClawConfig, LarkChannelConfig};
+use crate::channels::ConnectionState;
+use crate::channels::config::{ChannelConfig, ClawConfig, LarkChannelConfig};
 
 /// Per-instance UI state for a single Lark channel.
 #[derive(Debug, Clone)]
@@ -31,7 +31,7 @@ pub struct LarkInstanceState {
     pub save_status: Option<(String, f64)>,
     pub test_status: Option<(String, f64)>,
     pub testing: bool,
-    pub bot_check_results: Option<Vec<crate::channel::BotCheckResult>>,
+    pub bot_check_results: Option<Vec<crate::channels::BotCheckResult>>,
     pub keychain_available: bool,
     pub has_keychain_secret: bool,
     pub keychain_secret_input: String,
@@ -43,7 +43,7 @@ impl LarkInstanceState {
     /// Create a new empty instance with defaults.
     pub fn new_empty(
         instance_id: String,
-        store: &std::sync::Arc<crate::secret::SecretStore>,
+        store: &std::sync::Arc<crate::services::secret::SecretStore>,
     ) -> Self {
         Self {
             instance_id,
@@ -75,7 +75,7 @@ pub struct ChannelsSettingsState {
     /// All channel instance UI states.
     pub instances: Vec<LarkInstanceState>,
     /// Shared secret store (avoids repeated OS permission dialogs).
-    pub secret_store: std::sync::Arc<crate::secret::SecretStore>,
+    pub secret_store: std::sync::Arc<crate::services::secret::SecretStore>,
 
     // ── Legacy single-instance fields (kept for backward compat during migration) ──
     /// Whether the Lark channel is enabled.
@@ -92,7 +92,7 @@ pub struct ChannelsSettingsState {
     pub save_status: Option<(String, f64)>,
     pub test_status: Option<(String, f64)>,
     pub testing: bool,
-    pub bot_check_results: Option<Vec<crate::channel::BotCheckResult>>,
+    pub bot_check_results: Option<Vec<crate::channels::BotCheckResult>>,
     pub keychain_available: bool,
     pub has_keychain_secret: bool,
     pub keychain_secret_input: String,
@@ -100,7 +100,7 @@ pub struct ChannelsSettingsState {
 
 impl Default for ChannelsSettingsState {
     fn default() -> Self {
-        let store = std::sync::Arc::new(crate::secret::SecretStore::default());
+        let store = std::sync::Arc::new(crate::services::secret::SecretStore::default());
         Self {
             instances: Vec::new(),
             secret_store: store.clone(),
@@ -127,7 +127,7 @@ impl Default for ChannelsSettingsState {
 
 impl ChannelsSettingsState {
     /// Create with a shared secret store (avoids extra OS keychain probes).
-    fn base_with_store(store: std::sync::Arc<crate::secret::SecretStore>) -> Self {
+    fn base_with_store(store: std::sync::Arc<crate::services::secret::SecretStore>) -> Self {
         let keychain_available = store.has_keychain();
         Self {
             instances: Vec::new(),
@@ -158,7 +158,7 @@ impl ChannelsSettingsState {
         Self::from_config_with_store(
             lark_cfg,
             enabled,
-            std::sync::Arc::new(crate::secret::SecretStore::default()),
+            std::sync::Arc::new(crate::services::secret::SecretStore::default()),
         )
     }
 
@@ -166,15 +166,15 @@ impl ChannelsSettingsState {
     pub fn from_config_with_store(
         lark_cfg: Option<&LarkChannelConfig>,
         enabled: bool,
-        store: std::sync::Arc<crate::secret::SecretStore>,
+        store: std::sync::Arc<crate::services::secret::SecretStore>,
     ) -> Self {
         let base = Self::base_with_store(store);
         match lark_cfg {
             Some(cfg) => {
-                let key = crate::secret::channel_secret("lark", &cfg.app_id);
+                let key = crate::services::secret::channel_secret("lark", &cfg.app_id);
                 let has_keychain = base
                     .secret_store
-                    .resolve(&key, None, &crate::secret::SecretStorage::Keychain)
+                    .resolve(&key, None, &crate::services::secret::SecretStorage::Keychain)
                     .ok()
                     .flatten()
                     .is_some();
@@ -200,7 +200,7 @@ impl ChannelsSettingsState {
     pub fn from_claw_config(claw: Option<&ClawConfig>) -> Self {
         Self::from_claw_config_with_store(
             claw,
-            std::sync::Arc::new(crate::secret::SecretStore::default()),
+            std::sync::Arc::new(crate::services::secret::SecretStore::default()),
         )
     }
 
@@ -208,7 +208,7 @@ impl ChannelsSettingsState {
     /// Populates the `instances` Vec from all channels in the config.
     pub fn from_claw_config_with_store(
         claw: Option<&ClawConfig>,
-        store: std::sync::Arc<crate::secret::SecretStore>,
+        store: std::sync::Arc<crate::services::secret::SecretStore>,
     ) -> Self {
         let mut base = Self::base_with_store(store.clone());
         let claw = match claw {
@@ -221,9 +221,9 @@ impl ChannelsSettingsState {
         if instances.is_empty()
             && let Some(ref legacy) = claw.lark
         {
-            let key = crate::secret::channel_secret("lark", &legacy.app_id);
+            let key = crate::services::secret::channel_secret("lark", &legacy.app_id);
             let has_keychain = store
-                .resolve(&key, None, &crate::secret::SecretStorage::Keychain)
+                .resolve(&key, None, &crate::services::secret::SecretStorage::Keychain)
                 .ok()
                 .flatten()
                 .is_some();
@@ -363,7 +363,7 @@ impl ChannelsSettingsState {
     /// Build `Vec<LarkInstanceState>` from a `ClawConfig`.
     pub fn instances_from_claw_config(
         claw: Option<&ClawConfig>,
-        store: &std::sync::Arc<crate::secret::SecretStore>,
+        store: &std::sync::Arc<crate::services::secret::SecretStore>,
     ) -> Vec<LarkInstanceState> {
         let claw = match claw {
             Some(c) => c,
@@ -373,9 +373,9 @@ impl ChannelsSettingsState {
             .iter()
             .map(|ch| match ch {
                 ChannelConfig::Lark(cfg) => {
-                    let key = crate::secret::channel_secret(&cfg.instance_id, &cfg.app_id);
+                    let key = crate::services::secret::channel_secret(&cfg.instance_id, &cfg.app_id);
                     let has_keychain = store
-                        .resolve(&key, None, &crate::secret::SecretStorage::Keychain)
+                        .resolve(&key, None, &crate::services::secret::SecretStorage::Keychain)
                         .ok()
                         .flatten()
                         .is_some();

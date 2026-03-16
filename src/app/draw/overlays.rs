@@ -134,7 +134,7 @@ pub(super) fn render_settings_overlay(state: &mut AppState, event_loop: &ActiveE
 
             // Lazy-create the Modal for Settings.
             if state.settings_overlay.is_none() {
-                match crate::renderer::overlay::ModalPanel::new(
+                match crate::renderer::panels::ModalPanel::new(
                     &state.window,
                     Some(event_loop),
                     lx,
@@ -146,7 +146,7 @@ pub(super) fn render_settings_overlay(state: &mut AppState, event_loop: &ActiveE
                     Ok(panel) => {
                         let phys_w = (lw * scale).round() as u32;
                         let phys_h = (lh * scale).round() as u32;
-                        match crate::renderer::overlay::Modal::new(
+                        match crate::ui::overlay::Modal::new(
                             &state.gpu,
                             panel,
                             phys_w.max(1),
@@ -259,13 +259,13 @@ pub(super) fn render_float_tooltips(state: &mut AppState, event_loop: &ActiveEve
             // Lazy-create the Float on first tooltip request.
             if state.float_renderer.is_none() {
                 let scale = state.window.scale_factor() as f32;
-                match crate::renderer::overlay::FloatPanel::new(
+                match crate::renderer::panels::FloatPanel::new(
                     &state.window,
                     Some(event_loop),
                     scale,
                 ) {
                     Ok(fp) => {
-                        match crate::renderer::overlay::Float::new(&state.gpu, fp, 200, 40, scale) {
+                        match crate::ui::overlay::Float::new(&state.gpu, fp, 200, 40, scale) {
                             Ok(fr) => {
                                 state.float_renderer = Some(fr);
                             }

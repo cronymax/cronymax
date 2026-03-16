@@ -1,6 +1,6 @@
 use super::profiles::*;
 use super::*;
-use crate::profile::store::Profile;
+use crate::profile::Profile;
 
 impl ProfilesSettingsState {
     /// Draw the profile detail form with editable fields.
@@ -147,7 +147,7 @@ impl ProfilesSettingsState {
     /// Load a profile's data into the editable state fields.
     pub(super) fn load_profile_into_state(&mut self, profile: &Profile) {
         self.edit_name = profile.name.clone();
-        self.edit_allowed_skills = profile.allowed_skills.clone();
+        self.edit_allowed_skills = profile.permissions.allowed_skills.clone();
         // Load embedded sandbox if present; otherwise set defaults
         // (load_sandbox_into_state will override from policy.toml if available).
         if let Some(ref sandbox) = profile.sandbox {
@@ -183,8 +183,8 @@ impl ProfilesSettingsState {
     }
 
     /// Extract a SandboxPolicy from the current edit state.
-    pub fn sandbox_policy_from_state(&self) -> crate::sandbox::policy::SandboxPolicy {
-        use crate::sandbox::policy::{FsPolicy, NetworkPolicy, SandboxPolicy};
+    pub fn sandbox_policy_from_state(&self) -> crate::profile::sandbox::policy::SandboxPolicy {
+        use crate::profile::sandbox::policy::{FsPolicy, NetworkPolicy, SandboxPolicy};
         let parse_csv = |s: &str| -> Vec<String> {
             s.split(',')
                 .map(|p| p.trim().to_string())

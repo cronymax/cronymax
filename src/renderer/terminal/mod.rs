@@ -7,8 +7,8 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::thread;
 
-use crate::terminal::pty::Pty;
-use crate::terminal::state::TermState;
+use crate::renderer::terminal::pty::Pty;
+use crate::renderer::terminal::state::TermState;
 
 /// Unique session identifier.
 pub type SessionId = u32;
@@ -54,7 +54,7 @@ impl TerminalSession {
         cols: u16,
         rows: u16,
         scrollback: usize,
-        sandbox: Option<&crate::sandbox::policy::SandboxPolicy>,
+        sandbox: Option<&crate::profile::sandbox::policy::SandboxPolicy>,
         event_proxy: Option<winit::event_loop::EventLoopProxy<crate::ai::stream::AppEvent>>,
     ) -> Self {
         let pty = Pty::spawn(shell, cols, rows, sandbox);

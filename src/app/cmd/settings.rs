@@ -78,7 +78,7 @@ pub(in crate::app) fn handle_ui_action_settings(
                         let panel_lx = ((win_size.width as f32 / scale) - panel_lw) / 2.0;
                         let panel_ly = ((win_size.height as f32 / scale) - panel_lh) / 2.0;
 
-                        match crate::renderer::overlay::ModalPanel::new(
+                        match crate::renderer::panels::ModalPanel::new(
                             &state.window,
                             Some(event_loop),
                             panel_lx,
@@ -107,7 +107,7 @@ pub(in crate::app) fn handle_ui_action_settings(
 
                                 // Create Modal for browser rendering.
                                 #[cfg(any(target_os = "macos", target_os = "windows"))]
-                                match crate::renderer::overlay::Modal::new(
+                                match crate::ui::overlay::Modal::new(
                                     &state.gpu,
                                     panel,
                                     phys_w,
@@ -390,7 +390,7 @@ pub(in crate::app) fn handle_ui_action_settings(
             // Load the new profile's sandbox policy *before* switching.
             let new_sandbox = mgr
                 .sandbox_policy(&pid)
-                .unwrap_or_else(|_| crate::sandbox::policy::SandboxPolicy::from_default());
+                .unwrap_or_else(|_| crate::profile::sandbox::policy::SandboxPolicy::from_default());
             match mgr.set_active(&pid) {
                 Ok(()) => {
                     log::info!("Switched active profile to '{}'", pid);

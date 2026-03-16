@@ -6,7 +6,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::secret::SecretStore;
+use crate::services::secret::SecretStore;
 
 // ─── Data Types ─────────────────────────────────────────────────────────────
 
@@ -129,7 +129,7 @@ pub fn credential_resolve(
 ) -> anyhow::Result<bool> {
     let kk = keyring_key(service, key);
     let exists = secret_store
-        .resolve(&kk, None, &crate::secret::SecretStorage::Keychain)?
+        .resolve(&kk, None, &crate::services::secret::SecretStorage::Keychain)?
         .is_some();
 
     if !exists {

@@ -3,11 +3,13 @@ pub mod bridge;
 pub mod cursor;
 pub mod egui_pass;
 pub mod overlay;
-pub mod panel;
+pub mod panels;
 pub mod platform;
 pub mod quad;
 pub mod scheduler;
+pub mod terminal;
 pub mod text;
+pub mod webview;
 
 use std::sync::Arc;
 use winit::window::Window;

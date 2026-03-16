@@ -72,8 +72,8 @@ pub(super) fn init_skills_and_channels(state: &mut AppState) {
         let runtime = state.runtime.clone();
         let ss = state.secret_store.clone();
         runtime.spawn(async move {
-            let mut mgr = crate::channel::ChannelManager::new(proxy);
-            if let Err(e) = crate::channel::register_channels(&mut mgr, &claw_config, ss).await {
+            let mut mgr = crate::channels::ChannelManager::new(proxy);
+            if let Err(e) = crate::channels::register_channels(&mut mgr, &claw_config, ss).await {
                 log::error!("Failed to auto-register channels on startup: {}", e);
             } else {
                 log::info!("Channels auto-registered on startup");

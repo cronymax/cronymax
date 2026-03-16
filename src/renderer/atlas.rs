@@ -107,8 +107,8 @@ impl TerminalRenderer {
         }
 
         CellSize {
-            width: cell_width.ceil(),
-            height: line_height.ceil(),
+            width: cell_width,
+            height: line_height,
         }
     }
 

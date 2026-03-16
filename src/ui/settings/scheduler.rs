@@ -1,5 +1,4 @@
 //! Settings > Scheduled Tasks section — list, create, edit, history.
-#![allow(dead_code)]
 
 use crate::ai::scheduler::{ExecutionRecord, ScheduledTaskStore, cron_description, validate_cron};
 use crate::ui::actions::UiAction;

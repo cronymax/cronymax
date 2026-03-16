@@ -1,5 +1,3 @@
-use super::float_panel::FloatPanel;
-
 use raw_window_handle::HasWindowHandle;
 use winit::window::Window;
 
@@ -8,6 +6,7 @@ use crate::{
     renderer::{
         egui_pass::ScreenDescriptor,
         overlay::{Overlay, Renderer},
+        panels::FloatPanel,
     },
 };
 

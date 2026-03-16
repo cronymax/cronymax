@@ -16,8 +16,8 @@ mod types;
 
 use std::collections::HashMap;
 
-use crate::channel::{ChannelDisplayMessage, ConnectionState};
-use crate::terminal::SessionId;
+use crate::channels::{ChannelDisplayMessage, ConnectionState};
+use crate::renderer::terminal::SessionId;
 use crate::ui::UiAction;
 use crate::ui::block::Block;
 use crate::ui::chat::SessionChat;
@@ -64,8 +64,8 @@ pub struct TilesPanel<'a> {
     pub session_chats: &'a mut std::collections::HashMap<SessionId, crate::ui::chat::SessionChat>,
     pub live_outputs: std::collections::HashMap<SessionId, String>,
     pub channel_messages:
-        &'a std::collections::HashMap<String, Vec<crate::channel::ChannelDisplayMessage>>,
-    pub channel_connection_state: crate::channel::ConnectionState,
+        &'a std::collections::HashMap<String, Vec<crate::channels::ChannelDisplayMessage>>,
+    pub channel_connection_state: crate::channels::ConnectionState,
     pub pane_widgets: &'a mut PaneWidgetStore,
 }
 

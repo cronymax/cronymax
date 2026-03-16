@@ -129,7 +129,7 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
         let mgr = profile_manager.lock().unwrap();
         mgr.active()
             .and_then(|p| p.sandbox.clone())
-            .unwrap_or_else(crate::sandbox::policy::SandboxPolicy::from_default)
+            .unwrap_or_else(crate::profile::sandbox::policy::SandboxPolicy::from_default)
     };
 
     // Spawn terminal session (sandboxed).
@@ -167,7 +167,7 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
         title: "cronymax".into(),
     });
 
-    let shared_secret_store = Arc::new(crate::secret::SecretStore::default());
+    let shared_secret_store = Arc::new(crate::services::secret::SecretStore::default());
 
     app.state = Some(AppState {
         window,
@@ -332,9 +332,9 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
             let has_key = |provider: &str, env: &str| {
                 auto_store
                     .resolve(
-                        &crate::secret::provider_api_key(provider),
+                        &crate::services::secret::provider_api_key(provider),
                         Some(env),
-                        &crate::secret::SecretStorage::Auto,
+                        &crate::services::secret::SecretStorage::Auto,
                     )
                     .ok()
                     .flatten()
@@ -457,7 +457,7 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                     let mgr = state.profile_manager.lock().unwrap();
                     mgr.active()
                         .and_then(|p| p.sandbox.clone())
-                        .unwrap_or_else(crate::sandbox::policy::SandboxPolicy::from_default)
+                        .unwrap_or_else(crate::profile::sandbox::policy::SandboxPolicy::from_default)
                 };
 
                 for tab in &restored_tabs {

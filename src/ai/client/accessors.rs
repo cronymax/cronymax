@@ -83,7 +83,7 @@ impl LlmClient {
             });
             let key = {
                 // Try keychain first, then env var.
-                let key_name = crate::secret::provider_api_key(&p.name);
+                let key_name = crate::services::secret::provider_api_key(&p.name);
                 self.secret_store
                     .resolve(&key_name, p.api_key_env.as_deref(), &p.secret_storage)
                     .ok()

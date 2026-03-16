@@ -64,7 +64,7 @@ impl ProfileManager {
                 sandbox: None,
                 created_at: chrono::Utc::now().to_rfc3339(),
                 memory: MemoryConfig::default(),
-                allowed_skills: default_allowed_skills(),
+                ..Default::default()
             };
 
             let profile_dir = base_dir.join("default");
@@ -128,7 +128,7 @@ impl ProfileManager {
             sandbox: None,
             created_at: chrono::Utc::now().to_rfc3339(),
             memory: MemoryConfig::default(),
-            allowed_skills: default_allowed_skills(),
+            ..Default::default()
         };
 
         // Create disk layout.
@@ -165,7 +165,7 @@ impl ProfileManager {
         &mut self,
         id: &str,
         name: Option<&str>,
-        sandbox: Option<crate::sandbox::policy::SandboxPolicy>,
+        sandbox: Option<crate::profile::sandbox::policy::SandboxPolicy>,
     ) -> anyhow::Result<()> {
         let profile = self
             .profiles
@@ -248,35 +248,39 @@ impl ProfileManager {
         let contents = std::fs::read_to_string(&path)?;
         let mut profile: Profile = toml::from_str(&contents)?;
 
+        // Migrate legacy `allowed_skills` flat field → `permissions.allowed_skills`.
+        profile.migrate_legacy();
+
         // Migrate legacy category names.
         let mut dirty = false;
         // onboarding → channels
         if let Some(pos) = profile
+            .permissions
             .allowed_skills
             .iter()
             .position(|s| s == "onboarding")
         {
-            profile.allowed_skills[pos] = "channels".into();
+            profile.permissions.allowed_skills[pos] = "channels".into();
             dirty = true;
         }
         // internal → sandbox (replace "internal" with "sandbox", ensure "chat" present).
-        if let Some(pos) = profile.allowed_skills.iter().position(|s| s == "internal") {
-            profile.allowed_skills[pos] = "sandbox".into();
+        if let Some(pos) = profile.permissions.allowed_skills.iter().position(|s| s == "internal") {
+            profile.permissions.allowed_skills[pos] = "sandbox".into();
             dirty = true;
         }
         // Add "chat" if not present (covers legacy "internal"-only profiles).
-        if !profile.allowed_skills.contains(&"chat".to_string()) {
-            profile.allowed_skills.push("chat".into());
+        if !profile.permissions.allowed_skills.contains(&"chat".to_string()) {
+            profile.permissions.allowed_skills.push("chat".into());
             dirty = true;
         }
         // Add "sandbox" if not present (covers profiles without either internal or sandbox).
-        if !profile.allowed_skills.contains(&"sandbox".to_string()) {
-            profile.allowed_skills.push("sandbox".into());
+        if !profile.permissions.allowed_skills.contains(&"sandbox".to_string()) {
+            profile.permissions.allowed_skills.push("sandbox".into());
             dirty = true;
         }
         // Add "scheduler" if missing.
-        if !profile.allowed_skills.contains(&"scheduler".to_string()) {
-            profile.allowed_skills.push("scheduler".into());
+        if !profile.permissions.allowed_skills.contains(&"scheduler".to_string()) {
+            profile.permissions.allowed_skills.push("scheduler".into());
             dirty = true;
         }
         if dirty {
@@ -310,12 +314,12 @@ impl ProfileManager {
     pub fn sandbox_policy(
         &self,
         profile_id: &str,
-    ) -> anyhow::Result<crate::sandbox::policy::SandboxPolicy> {
+    ) -> anyhow::Result<crate::profile::sandbox::policy::SandboxPolicy> {
         let path = self.profile_dir(profile_id).join(POLICY_TOML);
         if path.exists() {
-            crate::sandbox::policy::SandboxPolicy::from_toml_file(&path)
+            crate::profile::sandbox::policy::SandboxPolicy::from_toml_file(&path)
         } else {
-            Ok(crate::sandbox::policy::SandboxPolicy::from_default())
+            Ok(crate::profile::sandbox::policy::SandboxPolicy::from_default())
         }
     }
 

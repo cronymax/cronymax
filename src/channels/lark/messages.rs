@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crate::channel::config::LarkChannelConfig;
-use crate::channel::{Channel, ChannelMessage, ChannelStatus, ConnectionState, ReplyTarget};
+use crate::channels::config::LarkChannelConfig;
+use crate::channels::{Channel, ChannelMessage, ChannelStatus, ConnectionState, ReplyTarget};
 
 use super::LarkChannel;
 

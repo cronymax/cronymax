@@ -10,7 +10,7 @@ use serde::Deserialize;
 use winit::event_loop::EventLoopProxy;
 
 use crate::ai::stream::AppEvent;
-use crate::terminal::SessionId;
+use crate::renderer::terminal::SessionId;
 
 const OLLAMA_BASE: &str = "http://localhost:11434";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);

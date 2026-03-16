@@ -243,10 +243,10 @@ impl ProvidersSettingsState {
             // ── Keychain Controls ─────────────────────────────────────────────
             if self.keychain_available && !self.edit_name.is_empty() {
                 ui.add_space(styles.spacing.medium);
-                let key_name = crate::secret::provider_api_key(&self.edit_name);
+                let key_name = crate::services::secret::provider_api_key(&self.edit_name);
                 let store = &self.secret_store;
                 let has_stored = store
-                    .resolve(&key_name, None, &crate::secret::SecretStorage::Keychain)
+                    .resolve(&key_name, None, &crate::services::secret::SecretStorage::Keychain)
                     .ok()
                     .flatten()
                     .is_some();

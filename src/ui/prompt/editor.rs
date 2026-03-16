@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::{
-    terminal::SessionId,
+    renderer::terminal::SessionId,
     ui::{
         CommandEntry,
         i18n::t,

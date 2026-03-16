@@ -16,7 +16,7 @@ use crate::ai::client::ModelListItem;
 use crate::ui::block::BlockMode;
 use crate::ui::widget::Widget;
 
-use crate::terminal::SessionId;
+use crate::renderer::terminal::SessionId;
 use crate::ui::file_picker::FilePickerState;
 use crate::ui::tiles::TerminalLayout;
 use crate::ui::types::CommandEntry;

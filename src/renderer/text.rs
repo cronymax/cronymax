@@ -7,7 +7,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Term;
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, TextArea, TextBounds};
 
-use crate::terminal::state::EventProxy;
+use crate::renderer::terminal::state::EventProxy;
 
 /// Terminal font/grid layout parameters for text buffer construction.
 pub struct TerminalFontParams<'a> {

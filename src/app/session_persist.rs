@@ -173,7 +173,7 @@ use crate::ui::tiles::Pane;
 pub fn serialize_layout(
     tree: &egui_tiles::Tree<Pane>,
     session_chats: &std::collections::HashMap<
-        crate::terminal::SessionId,
+        crate::renderer::terminal::SessionId,
         crate::ui::chat::SessionChat,
     >,
 ) -> SessionSnapshot {
@@ -202,7 +202,7 @@ fn serialize_tile(
     tree: &egui_tiles::Tree<Pane>,
     tile_id: egui_tiles::TileId,
     session_chats: &std::collections::HashMap<
-        crate::terminal::SessionId,
+        crate::renderer::terminal::SessionId,
         crate::ui::chat::SessionChat,
     >,
 ) -> LayoutNode {
@@ -251,7 +251,7 @@ fn serialize_tile(
 fn pane_to_descriptor(
     pane: &Pane,
     session_chats: &std::collections::HashMap<
-        crate::terminal::SessionId,
+        crate::renderer::terminal::SessionId,
         crate::ui::chat::SessionChat,
     >,
 ) -> TabDescriptor {
