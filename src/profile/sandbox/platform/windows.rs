@@ -3,7 +3,7 @@
 // Uses Win32 Security AppContainer APIs for process isolation.
 // Compile-gated with #[cfg(target_os = "windows")].
 
-use crate::sandbox::policy::SandboxPolicy;
+use crate::profile::sandbox::policy::SandboxPolicy;
 
 /// Spawn a sandboxed process using Windows AppContainer.
 ///

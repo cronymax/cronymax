@@ -468,8 +468,8 @@ impl<'a> egui_tiles::Behavior<Pane> for Behavior<'a> {
                         tooltip: t("browser.close"),
                         base_color: ui.visuals().weak_text_color(),
                         hover_color: ui.visuals().text_color(),
-                        pixel_size: self.fragment.styles.typography.body0,
-                        margin: self.fragment.styles.spacing.small,
+                        pixel_size: styles.typography.body0,
+                        margin: styles.spacing.small,
                     },
                 );
 
