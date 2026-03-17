@@ -1,4 +1,3 @@
-
 use crate::renderer::egui_pass::EguiIntegration;
 
 // ── macOS coordinate helpers ────────────────────────────────────────────────

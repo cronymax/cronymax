@@ -6,13 +6,13 @@
 /// key `AppsUseLightTheme`. A value of 0 means dark mode; 1 means light mode.
 /// Returns `true` (dark) on any registry error.
 pub fn is_dark_mode() -> bool {
-    use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let Ok(personalize) = hkcu.open_subkey(
-        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-    ) else {
+    let Ok(personalize) =
+        hkcu.open_subkey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
+    else {
         return true;
     };
     let Ok(value): Result<u32, _> = personalize.get_value("AppsUseLightTheme") else {

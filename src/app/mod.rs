@@ -41,10 +41,15 @@ use crate::renderer::GpuContext;
 use crate::renderer::atlas::TerminalRenderer;
 use crate::renderer::cursor::{CursorRect, CursorShape};
 use crate::renderer::egui_pass::{EguiIntegration, ScreenDescriptor};
+use crate::renderer::panels::FloatPanelState;
 use crate::renderer::scheduler::RenderSchedule;
-use crate::renderer::text;
 use crate::renderer::terminal::input;
 use crate::renderer::terminal::{SessionId, TerminalSession};
+use crate::renderer::text;
+use crate::renderer::webview::BrowserView;
+use crate::renderer::webview::bridge::WebviewToRust;
+use crate::renderer::webview::manager::{WebviewManager, ZLayer};
+use crate::renderer::webview::split::{Bounds, VerticalSplit};
 use crate::ui::block::{Block, BlockMode};
 use crate::ui::browser::{self, AddrBarButton};
 use crate::ui::i18n::{t, t_fmt};
@@ -52,11 +57,6 @@ use crate::ui::prompt::{CommandBlock, PromptState};
 use crate::ui::styles::Styles;
 use crate::ui::{self, tiles};
 use crate::ui::{AddressBarState, BrowserViewMode, TabInfo, UiAction, UiState};
-use crate::renderer::webview::BrowserView;
-use crate::renderer::panels::FloatPanelState;
-use crate::renderer::webview::bridge::WebviewToRust;
-use crate::renderer::webview::manager::{WebviewManager, ZLayer};
-use crate::renderer::webview::split::{Bounds, VerticalSplit};
 
 use crate::ai::stream::PendingResultMap;
 

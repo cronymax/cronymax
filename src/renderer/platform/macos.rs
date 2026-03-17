@@ -285,7 +285,8 @@ pub fn nsevent_to_egui(event: &objc2_app_kit::NSEvent, panel_height: f32) -> Vec
                     }
                     0x09 => {
                         // Cmd+V → Paste from system clipboard
-                        if let Some(text) = crate::renderer::terminal::input::paste_from_clipboard() {
+                        if let Some(text) = crate::renderer::terminal::input::paste_from_clipboard()
+                        {
                             events.push(egui::Event::Paste(text));
                         }
                         return events;

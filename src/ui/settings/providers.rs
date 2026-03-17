@@ -62,7 +62,11 @@ impl ProviderEntry {
     pub fn from_config(cfg: &ProviderConfig, store: &crate::services::secret::SecretStore) -> Self {
         let key = crate::services::secret::provider_api_key(&cfg.name);
         let has_keychain = store
-            .resolve(&key, None, &crate::services::secret::SecretStorage::Keychain)
+            .resolve(
+                &key,
+                None,
+                &crate::services::secret::SecretStorage::Keychain,
+            )
             .ok()
             .flatten()
             .is_some();

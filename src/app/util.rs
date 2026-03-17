@@ -145,7 +145,9 @@ pub(super) fn update_info_block(state: &mut AppState, sid: SessionId, text: &str
 // ─── Sandbox Helpers ─────────────────────────────────────────────────────────
 
 /// Retrieve the active profile's sandbox policy, falling back to the default.
-pub(super) fn active_sandbox_policy(state: &AppState) -> crate::profile::sandbox::policy::SandboxPolicy {
+pub(super) fn active_sandbox_policy(
+    state: &AppState,
+) -> crate::profile::sandbox::policy::SandboxPolicy {
     let mgr = state.profile_manager.lock().unwrap();
     mgr.active()
         .and_then(|p| p.sandbox.clone())

@@ -67,8 +67,12 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
     let logical_size = size.to_logical::<f32>(window.scale_factor());
     // Apply system dark/light palette before first use.
     let styles = app.config.styles.clone();
-    let (viewport, cols, rows) =
-        ui::compute_single_pane(logical_size.width as u32, logical_size.height as u32, &renderer.cell_size, &styles);
+    let (viewport, cols, rows) = ui::compute_single_pane(
+        logical_size.width as u32,
+        logical_size.height as u32,
+        &renderer.cell_size,
+        &styles,
+    );
 
     // Initialize egui integration.
     let egui = EguiIntegration::new(&window, &gpu.device, gpu.surface_config.format);
@@ -458,9 +462,9 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                 );
                 let sandbox = {
                     let mgr = state.profile_manager.lock().unwrap();
-                    mgr.active()
-                        .and_then(|p| p.sandbox.clone())
-                        .unwrap_or_else(crate::profile::sandbox::policy::SandboxPolicy::from_default)
+                    mgr.active().and_then(|p| p.sandbox.clone()).unwrap_or_else(
+                        crate::profile::sandbox::policy::SandboxPolicy::from_default,
+                    )
                 };
 
                 for tab in &restored_tabs {

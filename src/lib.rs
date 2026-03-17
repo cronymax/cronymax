@@ -12,14 +12,14 @@
 //
 // Dependency rule: each layer may depend on layers below it, never above.
 
-pub mod ai;         // 6. AI / LLM providers + agent runtime
-pub mod services;   // 5. Cross-session services (Memory, ScheduleTask, Block, Secret)
-pub mod channels;   // 4. Messaging platform bridges
-pub mod ui;         // 3. UI widget layer (+ overlay)
-pub mod sessions;   // 2. Session data models
-pub mod profile;    // 1. Profile, sandbox, permissions
-pub mod app;        // 0. App lifecycle & rendering
+pub mod ai; // 6. AI / LLM providers + agent runtime
+pub mod app;
+pub mod channels; // 4. Messaging platform bridges
+pub mod profile; // 1. Profile, sandbox, permissions
+pub mod services; // 5. Cross-session services (Memory, ScheduleTask, Block, Secret)
+pub mod sessions; // 2. Session data models
+pub mod ui; // 3. UI widget layer (+ overlay) // 0. App lifecycle & rendering
 
 // Cross-cutting modules
-pub mod config;     // Application configuration
-pub mod renderer;   // GPU/wgpu rendering, terminal PTY, webview management
+pub mod config; // Application configuration
+pub mod renderer; // GPU/wgpu rendering, terminal PTY, webview management

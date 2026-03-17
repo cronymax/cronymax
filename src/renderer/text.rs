@@ -105,8 +105,7 @@ pub fn build_terminal_buffer_reuse(
             } else {
                 scratch.push(c);
                 // Use the cell flag or Unicode width to detect wide chars.
-                let wide = flags.contains(CellFlags::WIDE_CHAR)
-                    || c.width().unwrap_or(0) > 1;
+                let wide = flags.contains(CellFlags::WIDE_CHAR) || c.width().unwrap_or(0) > 1;
                 is_wide_char.push(wide);
             }
         }
@@ -161,20 +160,11 @@ pub fn build_terminal_buffer_reuse(
             current_is_wide = w;
         }
         if span_start_byte < scratch.len() {
-            spans.push((
-                &scratch[span_start_byte..],
-                make_attrs(current_is_wide),
-            ));
+            spans.push((&scratch[span_start_byte..], make_attrs(current_is_wide)));
         }
 
         let default_attrs = Attrs::new().family(family_val);
-        buffer.set_rich_text(
-            font_system,
-            spans,
-            &default_attrs,
-            Shaping::Advanced,
-            None,
-        );
+        buffer.set_rich_text(font_system, spans, &default_attrs, Shaping::Advanced, None);
     }
 
     buffer.shape_until_scroll(font_system, false);

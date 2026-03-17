@@ -13,12 +13,8 @@ pub(super) fn handle_resize(state: &mut AppState, new_size: winit::dpi::Physical
     let lh = logical.height as u32;
 
     if let Some(ref split) = state.split {
-        let (viewport, cols, rows) = split.terminal_grid(
-            lw,
-            lh,
-            &state.renderer.cell_size,
-            &state.styles,
-        );
+        let (viewport, cols, rows) =
+            split.terminal_grid(lw, lh, &state.renderer.cell_size, &state.styles);
         state.viewport = viewport;
         for session in state.sessions.values_mut() {
             session.resize(cols, rows);
@@ -32,12 +28,8 @@ pub(super) fn handle_resize(state: &mut AppState, new_size: winit::dpi::Physical
             tab.manager.set_bounds(bounds);
         }
     } else {
-        let (viewport, cols, rows) = ui::compute_single_pane(
-            lw,
-            lh,
-            &state.renderer.cell_size,
-            &state.styles,
-        );
+        let (viewport, cols, rows) =
+            ui::compute_single_pane(lw, lh, &state.renderer.cell_size, &state.styles);
         state.viewport = viewport;
         for session in state.sessions.values_mut() {
             session.resize(cols, rows);

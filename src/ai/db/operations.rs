@@ -247,7 +247,11 @@ impl DbStore {
                 if row.oauth_token.as_deref() == Some("[keychain]") {
                     let key = crate::services::secret::oauth_token("lark");
                     row.oauth_token = secret_store
-                        .resolve(&key, None, &crate::services::secret::SecretStorage::Keychain)
+                        .resolve(
+                            &key,
+                            None,
+                            &crate::services::secret::SecretStorage::Keychain,
+                        )
                         .ok()
                         .flatten();
                 }

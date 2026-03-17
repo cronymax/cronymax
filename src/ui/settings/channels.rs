@@ -174,7 +174,11 @@ impl ChannelsSettingsState {
                 let key = crate::services::secret::channel_secret("lark", &cfg.app_id);
                 let has_keychain = base
                     .secret_store
-                    .resolve(&key, None, &crate::services::secret::SecretStorage::Keychain)
+                    .resolve(
+                        &key,
+                        None,
+                        &crate::services::secret::SecretStorage::Keychain,
+                    )
                     .ok()
                     .flatten()
                     .is_some();
@@ -223,7 +227,11 @@ impl ChannelsSettingsState {
         {
             let key = crate::services::secret::channel_secret("lark", &legacy.app_id);
             let has_keychain = store
-                .resolve(&key, None, &crate::services::secret::SecretStorage::Keychain)
+                .resolve(
+                    &key,
+                    None,
+                    &crate::services::secret::SecretStorage::Keychain,
+                )
                 .ok()
                 .flatten()
                 .is_some();
@@ -373,9 +381,14 @@ impl ChannelsSettingsState {
             .iter()
             .map(|ch| match ch {
                 ChannelConfig::Lark(cfg) => {
-                    let key = crate::services::secret::channel_secret(&cfg.instance_id, &cfg.app_id);
+                    let key =
+                        crate::services::secret::channel_secret(&cfg.instance_id, &cfg.app_id);
                     let has_keychain = store
-                        .resolve(&key, None, &crate::services::secret::SecretStorage::Keychain)
+                        .resolve(
+                            &key,
+                            None,
+                            &crate::services::secret::SecretStorage::Keychain,
+                        )
                         .ok()
                         .flatten()
                         .is_some();

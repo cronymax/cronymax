@@ -451,11 +451,13 @@ impl<'a> egui_tiles::Behavior<Pane> for Behavior<'a> {
             // Reuse pointer_in_tab from hover animation above.
             if state.closable && pointer_in_tab {
                 // Place close button at the right edge inside the tab rect.
-                let btn_size = self.fragment.styles.typography.body0
-                    + self.fragment.styles.spacing.small;
+                let btn_size =
+                    self.fragment.styles.typography.body0 + self.fragment.styles.spacing.small;
                 let close_rect = egui::Rect::from_center_size(
                     egui::pos2(
-                        tab_rect.right() - btn_size / 2.0 - self.fragment.styles.spacing.small / 2.0,
+                        tab_rect.right()
+                            - btn_size / 2.0
+                            - self.fragment.styles.spacing.small / 2.0,
                         tab_rect.center().y,
                     ),
                     egui::vec2(btn_size, btn_size),

@@ -52,9 +52,6 @@ impl Permissions {
 
     /// Return a filtered list of skills allowed by this permission set.
     pub fn filter_skills<'a>(&self, skills: &'a [String]) -> Vec<&'a String> {
-        skills
-            .iter()
-            .filter(|s| self.is_skill_allowed(s))
-            .collect()
+        skills.iter().filter(|s| self.is_skill_allowed(s)).collect()
     }
 }

@@ -246,7 +246,11 @@ impl ProvidersSettingsState {
                 let key_name = crate::services::secret::provider_api_key(&self.edit_name);
                 let store = &self.secret_store;
                 let has_stored = store
-                    .resolve(&key_name, None, &crate::services::secret::SecretStorage::Keychain)
+                    .resolve(
+                        &key_name,
+                        None,
+                        &crate::services::secret::SecretStorage::Keychain,
+                    )
                     .ok()
                     .flatten()
                     .is_some();

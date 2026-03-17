@@ -322,7 +322,11 @@ pub(in crate::app) fn handle_window_event(
                         winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
                         winit::event::MouseScrollDelta::PixelDelta(pos) => {
                             let cell_h = state.renderer.cell_size.height;
-                            if cell_h > 0.0 { pos.y as f32 / cell_h } else { 0.0 }
+                            if cell_h > 0.0 {
+                                pos.y as f32 / cell_h
+                            } else {
+                                0.0
+                            }
                         }
                     };
                     if let Some(sid) = focused_sid
@@ -526,7 +530,8 @@ pub(in crate::app) fn handle_window_event(
                             grid_cols as usize,
                         ) {
                             let url = if link.is_path {
-                                let resolved = crate::renderer::terminal::links::resolve_path(&link.url);
+                                let resolved =
+                                    crate::renderer::terminal::links::resolve_path(&link.url);
                                 format!("file://{}", resolved)
                             } else {
                                 link.url.clone()

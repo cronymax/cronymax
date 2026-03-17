@@ -85,9 +85,7 @@ pub enum BlockType {
         duration_ms: u64,
     },
     /// Informational message (system notice, status update).
-    Info {
-        text: String,
-    },
+    Info { text: String },
     /// Channel message (incoming or outgoing).
     ChannelMessage {
         sender: String,
@@ -132,9 +130,7 @@ impl Block {
             BlockType::ChatPrompt { content, .. } => {
                 format!("? {}", content.chars().take(80).collect::<String>())
             }
-            BlockType::ChatResponse { content, .. } => {
-                content.chars().take(80).collect::<String>()
-            }
+            BlockType::ChatResponse { content, .. } => content.chars().take(80).collect::<String>(),
             BlockType::ToolCall { name, .. } => format!("Tool: {}", name),
             BlockType::TerminalCommand { command, .. } => {
                 format!("$ {}", command.chars().take(80).collect::<String>())
@@ -148,7 +144,11 @@ impl Block {
             BlockType::ChannelMessage {
                 sender, content, ..
             } => {
-                format!("{}: {}", sender, content.chars().take(60).collect::<String>())
+                format!(
+                    "{}: {}",
+                    sender,
+                    content.chars().take(60).collect::<String>()
+                )
             }
         }
     }

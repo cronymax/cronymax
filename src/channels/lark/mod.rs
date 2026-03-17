@@ -174,7 +174,10 @@ pub struct LarkChannel {
 
 impl LarkChannel {
     /// Create a new Lark channel from configuration.
-    pub fn new(config: LarkChannelConfig, secret_store: Arc<crate::services::secret::SecretStore>) -> Self {
+    pub fn new(
+        config: LarkChannelConfig,
+        secret_store: Arc<crate::services::secret::SecretStore>,
+    ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .connect_timeout(std::time::Duration::from_secs(10))

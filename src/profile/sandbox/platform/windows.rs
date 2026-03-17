@@ -8,17 +8,14 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr;
 use windows_sys::Win32::Foundation::{CloseHandle, S_OK};
-use windows_sys::Win32::Security::{
-    FreeSid, PSID, SECURITY_CAPABILITIES,
-};
 use windows_sys::Win32::Security::Isolation::{
-    CreateAppContainerProfile, DeleteAppContainerProfile,
-    DeriveAppContainerSidFromAppContainerName,
+    CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
+use windows_sys::Win32::Security::{FreeSid, PSID, SECURITY_CAPABILITIES};
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-    UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW,
+    CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+    PROCESS_INFORMATION, STARTUPINFOEXW, UpdateProcThreadAttribute,
 };
 
 /// Encode a Rust string as a null-terminated wide (UTF-16) string.
@@ -80,11 +77,7 @@ pub fn spawn_sandboxed_windows(shell: &str, _policy: &SandboxPolicy) -> anyhow::
 }
 
 /// Inner function that launches the process, allowing the caller to handle SID cleanup.
-fn spawn_in_app_container(
-    shell: &str,
-    sid: PSID,
-    container_name: &str,
-) -> anyhow::Result<()> {
+fn spawn_in_app_container(shell: &str, sid: PSID, container_name: &str) -> anyhow::Result<()> {
     // ── 2. Build SECURITY_CAPABILITIES ───────────────────────────────────
     let security_caps = SECURITY_CAPABILITIES {
         AppContainerSid: sid,
@@ -104,9 +97,7 @@ fn spawn_in_app_container(
 
     let ok = unsafe { InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_size) };
     if ok == 0 {
-        return Err(anyhow::anyhow!(
-            "InitializeProcThreadAttributeList failed"
-        ));
+        return Err(anyhow::anyhow!("InitializeProcThreadAttributeList failed"));
     }
 
     let ok = unsafe {
@@ -158,9 +149,7 @@ fn spawn_in_app_container(
     unsafe { DeleteProcThreadAttributeList(attr_list) };
 
     if created == 0 {
-        return Err(anyhow::anyhow!(
-            "CreateProcessW in AppContainer failed"
-        ));
+        return Err(anyhow::anyhow!("CreateProcessW in AppContainer failed"));
     }
 
     unsafe {

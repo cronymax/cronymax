@@ -250,7 +250,8 @@ impl ChannelsSettingsState {
 
             // Keychain controls for app secret
             if self.instances[idx].keychain_available && !self.instances[idx].app_id.is_empty() {
-                let key_name = crate::services::secret::channel_secret(&iid, &self.instances[idx].app_id);
+                let key_name =
+                    crate::services::secret::channel_secret(&iid, &self.instances[idx].app_id);
                 ui.add_space(styles.spacing.medium);
                 ui.horizontal(|ui| {
                     if self.instances[idx].has_keychain_secret {

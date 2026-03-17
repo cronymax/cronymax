@@ -223,12 +223,13 @@ impl LlmClient {
                 let mut oai_config = OpenAIConfig::new();
 
                 // Set API key from keychain / env var.
-                let key_name =
-                    crate::services::secret::provider_api_key(if config.provider == LlmProvider::Custom {
+                let key_name = crate::services::secret::provider_api_key(
+                    if config.provider == LlmProvider::Custom {
                         "custom"
                     } else {
                         "openai"
-                    });
+                    },
+                );
                 if let Ok(Some(key)) = secret_store.resolve(
                     &key_name,
                     config.api_key_env.as_deref(),

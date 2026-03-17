@@ -264,22 +264,39 @@ impl ProfileManager {
             dirty = true;
         }
         // internal → sandbox (replace "internal" with "sandbox", ensure "chat" present).
-        if let Some(pos) = profile.permissions.allowed_skills.iter().position(|s| s == "internal") {
+        if let Some(pos) = profile
+            .permissions
+            .allowed_skills
+            .iter()
+            .position(|s| s == "internal")
+        {
             profile.permissions.allowed_skills[pos] = "sandbox".into();
             dirty = true;
         }
         // Add "chat" if not present (covers legacy "internal"-only profiles).
-        if !profile.permissions.allowed_skills.contains(&"chat".to_string()) {
+        if !profile
+            .permissions
+            .allowed_skills
+            .contains(&"chat".to_string())
+        {
             profile.permissions.allowed_skills.push("chat".into());
             dirty = true;
         }
         // Add "sandbox" if not present (covers profiles without either internal or sandbox).
-        if !profile.permissions.allowed_skills.contains(&"sandbox".to_string()) {
+        if !profile
+            .permissions
+            .allowed_skills
+            .contains(&"sandbox".to_string())
+        {
             profile.permissions.allowed_skills.push("sandbox".into());
             dirty = true;
         }
         // Add "scheduler" if missing.
-        if !profile.permissions.allowed_skills.contains(&"scheduler".to_string()) {
+        if !profile
+            .permissions
+            .allowed_skills
+            .contains(&"scheduler".to_string())
+        {
             profile.permissions.allowed_skills.push("scheduler".into());
             dirty = true;
         }

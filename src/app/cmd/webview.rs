@@ -197,35 +197,36 @@ pub(in crate::app) fn handle_ui_action_webview(
         UiAction::FilterNext | UiAction::FilterPrev => {
             // Navigate between search matches in the focused terminal.
             if let Some(sid) = state.ui_state.focused_terminal_session
-                && let Some(session) = state.sessions.get_mut(&sid) {
-                    let matches = session.state.search_text(&state.ui_state.filter.text);
-                    if !matches.is_empty() {
-                        let count = matches.len();
-                        let current = state.ui_state.filter.current_match;
-                        let next = match action {
-                            UiAction::FilterNext => {
-                                if current >= count {
-                                    1
-                                } else {
-                                    current + 1
-                                }
+                && let Some(session) = state.sessions.get_mut(&sid)
+            {
+                let matches = session.state.search_text(&state.ui_state.filter.text);
+                if !matches.is_empty() {
+                    let count = matches.len();
+                    let current = state.ui_state.filter.current_match;
+                    let next = match action {
+                        UiAction::FilterNext => {
+                            if current >= count {
+                                1
+                            } else {
+                                current + 1
                             }
-                            UiAction::FilterPrev => {
-                                if current <= 1 {
-                                    count
-                                } else {
-                                    current - 1
-                                }
+                        }
+                        UiAction::FilterPrev => {
+                            if current <= 1 {
+                                count
+                            } else {
+                                current - 1
                             }
-                            _ => unreachable!(),
-                        };
-                        state.ui_state.filter.current_match = next;
-                        state.ui_state.filter.match_count = count;
-                        let (line, _col) = matches[next - 1];
-                        session.state.scroll_to_line(line);
-                        session.is_dirty = true;
-                    }
+                        }
+                        _ => unreachable!(),
+                    };
+                    state.ui_state.filter.current_match = next;
+                    state.ui_state.filter.match_count = count;
+                    let (line, _col) = matches[next - 1];
+                    session.state.scroll_to_line(line);
+                    session.is_dirty = true;
                 }
+            }
         }
         UiAction::DockTab {
             source,

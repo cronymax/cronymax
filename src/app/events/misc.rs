@@ -226,10 +226,9 @@ pub(in crate::app) fn handle_misc_event(
             let sandbox_denied = {
                 let mgr = state.profile_manager.lock().unwrap();
                 if let Some(profile) = mgr.active() {
-                    let policy = profile
-                        .sandbox
-                        .clone()
-                        .unwrap_or_else(crate::profile::sandbox::policy::SandboxPolicy::from_default);
+                    let policy = profile.sandbox.clone().unwrap_or_else(
+                        crate::profile::sandbox::policy::SandboxPolicy::from_default,
+                    );
                     policy.check_command(&command).err()
                 } else {
                     // No active profile — use default policy.

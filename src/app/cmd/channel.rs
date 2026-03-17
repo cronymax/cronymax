@@ -176,7 +176,8 @@ pub(in crate::app) fn handle_ui_action_channel(
                                 let runtime = state.runtime.clone();
                                 let ss = state.secret_store.clone();
                                 runtime.spawn(async move {
-                                    let lark = crate::channels::lark::LarkChannel::new(lark_cfg, ss);
+                                    let lark =
+                                        crate::channels::lark::LarkChannel::new(lark_cfg, ss);
                                     let results = lark.check_bot_config().await;
 
                                     // Build summary for the simple test_status field.
@@ -301,7 +302,8 @@ pub(in crate::app) fn handle_ui_action_channel(
             // Sync the Channels section toggle.
             state.channels_ui_state.lark_enabled = false;
             state.ui_state.claw_enabled = false;
-            state.ui_state.channel_connection_state = crate::channels::ConnectionState::Disconnected;
+            state.ui_state.channel_connection_state =
+                crate::channels::ConnectionState::Disconnected;
         }
         UiAction::SaveChannelConfig => {
             // Save Lark channel config from UI state.
@@ -407,7 +409,8 @@ pub(in crate::app) fn handle_ui_action_channel(
                                 let ss = state.secret_store.clone();
                                 let iid = instance_id.clone();
                                 runtime.spawn(async move {
-                                    let lark = crate::channels::lark::LarkChannel::new(lark_cfg, ss);
+                                    let lark =
+                                        crate::channels::lark::LarkChannel::new(lark_cfg, ss);
                                     let results = lark.check_bot_config().await;
                                     let all_passed = results.iter().all(|r| r.passed);
                                     let failed_count = results.iter().filter(|r| !r.passed).count();
