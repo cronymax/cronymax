@@ -33,8 +33,7 @@ pub fn is_dark_mode() -> bool {
     }
     #[cfg(target_os = "windows")]
     {
-        // TODO: query Windows registry for AppsUseLightTheme
-        true
+        windows::is_dark_mode()
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {

@@ -152,6 +152,68 @@ impl TermState {
         self.term.screen_lines()
     }
 
+    /// Search all terminal content (scrollback + screen) for case-insensitive
+    /// occurrences of `query`. Returns a list of `(grid_line, start_col)`
+    /// pairs in top-to-bottom order, where `grid_line` uses alacritty's
+    /// coordinate system (negative = scrollback, 0.. = screen).
+    pub fn search_text(&self, query: &str) -> Vec<(i32, usize)> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let grid = self.term.grid();
+        let history = self.history_size() as i32;
+        let cols = self.term.columns();
+        let screen_lines = self.term.screen_lines() as i32;
+        let query_lower = query.to_lowercase();
+        let mut matches = Vec::new();
+
+        for vp_line in -history..screen_lines {
+            let line = alacritty_terminal::index::Line(vp_line);
+            let mut line_text = String::with_capacity(cols);
+            for col_idx in 0..cols {
+                let col = alacritty_terminal::index::Column(col_idx);
+                let cell = &grid[line][col];
+                let c = cell.c;
+                if c.is_control() || c == '\0' {
+                    line_text.push(' ');
+                } else {
+                    line_text.push(c);
+                }
+            }
+            let line_lower = line_text.to_lowercase();
+            let mut start = 0;
+            while let Some(pos) = line_lower[start..].find(&query_lower) {
+                matches.push((vp_line, start + pos));
+                start += pos + 1;
+            }
+        }
+        matches
+    }
+
+    /// Scroll the viewport so that the given grid line is visible.
+    /// `grid_line` uses the same coordinate system as `search_text` results.
+    pub fn scroll_to_line(&mut self, grid_line: i32) {
+        let screen_lines = self.term.screen_lines() as i32;
+        // Compute how far from the bottom this line is.
+        // display_offset = distance from bottom: 0 = showing the very bottom.
+        // The bottom-most visible line is at grid_line = screen_lines - 1 - display_offset..
+        // We want the target line roughly centered in the viewport.
+        let half_page = screen_lines / 2;
+        // Target: make grid_line appear at ~center. The last grid line is
+        // (screen_lines - 1). display_offset = (screen_lines - 1) - top_visible_line.
+        let target_top = grid_line - half_page;
+        let new_offset = (screen_lines - 1) - target_top;
+        let max_offset = self.history_size() as i32;
+        let clamped = new_offset.clamp(0, max_offset) as usize;
+        // Use Scroll::Bottom then Delta to set exact offset.
+        self.term
+            .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+        if clamped > 0 {
+            self.term
+                .scroll_display(alacritty_terminal::grid::Scroll::Delta(clamped as i32));
+        }
+    }
+
     /// Capture text from an absolute row range as a plain-text string.
     ///
     /// `abs_start`/`abs_end` use the same coordinate system as

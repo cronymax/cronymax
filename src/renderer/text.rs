@@ -140,7 +140,6 @@ pub fn build_terminal_buffer_reuse(
         let mut spans: Vec<(&str, Attrs)> = Vec::new();
         let mut span_start_byte = 0;
         let mut current_is_wide = false;
-        let mut char_idx = 0;
 
         let make_attrs = |wide: bool| -> Attrs {
             if wide {
@@ -150,7 +149,7 @@ pub fn build_terminal_buffer_reuse(
             }
         };
 
-        for (byte_pos, _c) in scratch.char_indices() {
+        for (char_idx, (byte_pos, _c)) in scratch.char_indices().enumerate() {
             let w = is_wide_char.get(char_idx).copied().unwrap_or(false);
             if char_idx > 0 && w != current_is_wide {
                 spans.push((
@@ -160,7 +159,6 @@ pub fn build_terminal_buffer_reuse(
                 span_start_byte = byte_pos;
             }
             current_is_wide = w;
-            char_idx += 1;
         }
         if span_start_byte < scratch.len() {
             spans.push((
