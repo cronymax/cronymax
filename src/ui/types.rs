@@ -33,6 +33,12 @@
 
 // ─── Tooltip Request ─────────────────────────────────────────────────────────
 
+use std::{collections::HashMap, sync::Arc};
+
+use crate::{
+    config::AppConfig, renderer::terminal::SessionId, services::secret::SecretStore, ui::{prompt::PromptState, tiles}
+};
+
 /// Tooltip request emitted by overlay browser rendering.
 ///
 /// Produced by `ChildWindowGpu::render_browser()` when a browser button is hovered,
@@ -105,15 +111,15 @@ pub enum BrowserViewMode {
 /// Centralized mutable state for all egui UI panels.
 #[derive(Debug)]
 pub struct UiState {
-    /// All tabs (terminal + webview) in display order.
+    /// All tabs (terminal + browser) in display order.
     pub tabs: Vec<TabInfo>,
     /// Active tab index (into `tabs`).
     pub active_tab: usize,
 
-    /// Which webview tab is focused (index into AppState::webview_tabs).
-    pub active_webview: Option<usize>,
-    /// ID of the active webview (derived in sync_ui_state for UI lookups).
-    pub active_webview_id: Option<u32>,
+    /// Which browser tab is focused (index into AppState::browser_tabs).
+    pub active_browser: Option<usize>,
+    /// ID of the active browser (derived in sync_ui_state for UI lookups).
+    pub active_browser_id: Option<u32>,
 
     /// Session IDs of pinned tabs (displayed in the titlebar).
     pub pinned_tabs: Vec<u32>,
@@ -128,22 +134,22 @@ pub struct UiState {
     /// Inline filter bar state.
     pub filter: FilterState,
 
-    /// Address bar state (for webview).
+    /// Address bar state (for browser).
     pub address_bar: AddressBarState,
 
     /// The actual egui-computed rect (in logical pixels) for the browser view
     /// overlay content area (below the address bar, inset from borders).
-    /// Set each frame by `draw_webview_overlay` so `app.rs` can position the
-    /// native WebView without duplicating geometry calculations.
+    /// Set each frame by `draw_browser_overlay` so `app.rs` can position the
+    /// native Browser without duplicating geometry calculations.
     pub overlay_content_rect: Option<[f32; 4]>,
 
     /// The full overlay panel rect (in logical pixels) including the address
     /// bar and border areas.  Used to position the NSPanel / popover window
-    /// so it covers the entire overlay, preventing docked webviews from
+    /// so it covers the entire overlay, preventing docked browsers from
     /// showing through the egui-rendered border.
     pub overlay_panel_rect: Option<[f32; 4]>,
 
-    /// Tooltip request from a docked webview address bar hover.
+    /// Tooltip request from a docked browser address bar hover.
     /// Set by [`TilesPanel::show()`] each frame; consumed by the app layer
     /// to route through the FloatPanel system.
     pub docked_tooltip: Option<TooltipRequest>,
@@ -160,6 +166,18 @@ pub struct UiState {
     pub active_profile_id: String,
     /// Whether a profile-switch relaunch dialog should be shown.
     pub show_profile_relaunch_dialog: bool,
+
+    pub prompt_editors: HashMap<SessionId, PromptState>,
+    pub pane_widgets: tiles::PaneWidgetStore,
+    pub settings_state: crate::ui::settings::SettingsState,
+    pub providers_ui_state: crate::ui::settings::providers::ProvidersSettingsState,
+    pub general_ui_state: crate::ui::settings::general::GeneralSettingsState,
+    pub channels_ui_state: crate::ui::settings::channels::ChannelsSettingsState,
+    pub onboarding_wizard_state: Option<crate::ui::settings::onboarding::OnboardingWizardState>,
+    pub agents_ui_state: crate::ui::settings::agents::AgentsSettingsState,
+    pub profiles_ui_state: crate::ui::settings::profiles::ProfilesSettingsState,
+    pub scheduler_ui_state: crate::ui::settings::scheduler::SchedulerSettingsState,
+    pub skills_panel_state: crate::ui::skills_panel::SkillsPanelState,
 }
 
 /// Unified tab entry — one per tab in the titlebar / tab bar.
@@ -358,12 +376,18 @@ impl AddressBarState {
 // ─── UiState Constructors ────────────────────────────────────────────────────
 
 impl UiState {
-    pub fn new() -> Self {
+    pub fn new(app_config: &AppConfig, shared_secret_store: Arc<SecretStore>) -> Self {
+        // Per-session prompt editors.
+        let mut prompt_editors = HashMap::new();
+        let mut prompt_editor = crate::ui::prompt::PromptState::new();
+        prompt_editor.visible = true;
+        prompt_editors.insert(1_u32, prompt_editor);
+
         Self {
             tabs: Vec::new(),
             active_tab: 0,
-            active_webview: None,
-            active_webview_id: None,
+            active_browser: None,
+            active_browser_id: None,
             pinned_tabs: Vec::new(),
             focused_terminal_session: None,
             command_suggestions: CommandSuggestionsState {
@@ -380,13 +404,29 @@ impl UiState {
             profile_list: Vec::new(),
             active_profile_id: String::new(),
             show_profile_relaunch_dialog: false,
-        }
-    }
-}
 
-impl Default for UiState {
-    fn default() -> Self {
-        Self::new()
+            prompt_editors,
+            pane_widgets: tiles::PaneWidgetStore::default(),
+            settings_state: crate::ui::settings::SettingsState::default(),
+            general_ui_state: {
+                let claw_enabled = app_config.claw.as_ref().is_some_and(|c| c.enabled);
+                crate::ui::settings::general::GeneralSettingsState::new(claw_enabled)
+            },
+            providers_ui_state:
+                crate::ui::settings::providers::ProvidersSettingsState::with_secret_store(
+                    shared_secret_store.clone(),
+                ),
+            scheduler_ui_state: crate::ui::settings::scheduler::SchedulerSettingsState::default(),
+            channels_ui_state:
+                crate::ui::settings::channels::ChannelsSettingsState::from_claw_config_with_store(
+                    app_config.claw.as_ref(),
+                    shared_secret_store.clone(),
+                ),
+            agents_ui_state: crate::ui::settings::agents::AgentsSettingsState::default(),
+            skills_panel_state: crate::ui::skills_panel::SkillsPanelState::new(),
+            profiles_ui_state: crate::ui::settings::profiles::ProfilesSettingsState::default(),
+            onboarding_wizard_state: None,
+        }
     }
 }
 

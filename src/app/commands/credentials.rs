@@ -147,7 +147,7 @@ Alias: `:creds`";
 
 /// Show an info message in the active chat session (both chat + prompt editor block).
 fn show_info(state: &mut AppState, text: &str) {
-    if let Some(sid) = crate::ui::tiles::active_terminal_session(&state.tile_tree) {
+    if let Some(sid) = crate::ui::tiles::active_terminal_session(&state.ui.tile_tree) {
         super::super::util::push_info_block(state, sid, text);
     }
 }

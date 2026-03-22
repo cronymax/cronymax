@@ -2,47 +2,6 @@
 
 use super::*;
 
-/// Inner implementation that takes the session by reference to avoid borrow conflicts.
-pub(super) fn freeze_last_live_terminal_with_session(
-    prompt_editors: &mut HashMap<SessionId, PromptState>,
-    sid: SessionId,
-    session: &TerminalSession,
-) {
-    let il = match prompt_editors.get_mut(&sid) {
-        Some(il) => il,
-        None => return,
-    };
-
-    // Find the last block; if it's a live terminal, freeze its output.
-    if let Some(BlockMode::Terminal {
-        block_id,
-        frozen_output,
-    }) = il.blocks.last_mut()
-        && frozen_output.is_none()
-    {
-        // Determine the row range for this command block.
-        let abs_start = il
-            .command_blocks
-            .get(*block_id)
-            .map(|b| b.abs_row)
-            .unwrap_or(0);
-        let abs_end = session.state.abs_cursor_row();
-        // Capture non-empty output (skip the prompt row itself).
-        let text = session.state.capture_text(abs_start + 1, abs_end);
-        *frozen_output = Some(text);
-    }
-}
-
-// ─── Cell Freeze Helpers ─────────────────────────────────────────────────────
-
-/// Freeze the last live terminal cell for a session, capturing its text output.
-/// Called before creating a new cell (chat or terminal) to ensure chronological ordering.
-pub(super) fn freeze_last_live_terminal(state: &mut AppState, sid: SessionId) {
-    if let Some(session) = state.sessions.get(&sid) {
-        freeze_last_live_terminal_with_session(&mut state.prompt_editors, sid, session);
-    }
-}
-
 // ─── Chat Submission Handler ─────────────────────────────────────────────────
 
 /// Parse an `@agent-name` prefix from user input and look up the agent manifest.

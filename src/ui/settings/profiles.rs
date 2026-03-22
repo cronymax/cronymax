@@ -22,8 +22,8 @@ pub struct ProfilesSettingsState {
     pub confirm_delete: Option<String>,
     /// Whether edit fields are loaded for the selected profile.
     pub fields_loaded_for: Option<String>,
-    /// Status message shown after save (message, egui time).
-    pub save_status: Option<(String, f64)>,
+    /// Status message shown after save (message, timestamp).
+    pub save_status: Option<(String, std::time::Instant)>,
     /// Available models grouped by provider display name: (provider_name, model_id).
     pub available_models: Vec<(String, String)>,
     /// Whether to show a "relaunch required" dialog after sandbox rules changed.
@@ -299,7 +299,7 @@ impl ProfilesSettingsState {
 
             // ── Save status indicator ─────────────────────────────
             if let Some((ref msg, timestamp)) = self.save_status {
-                let elapsed = ui.ctx().input(|i| i.time) - timestamp;
+                let elapsed = timestamp.elapsed().as_secs_f64();
                 if elapsed < 3.0 {
                     ui.add_space(styles.spacing.medium);
                     ui.colored_label(colors.primary, msg);

@@ -28,8 +28,8 @@ pub struct LarkInstanceState {
     pub messages_sent: u64,
 
     // ── UI transient ─────────────────────────────────────────────────────
-    pub save_status: Option<(String, f64)>,
-    pub test_status: Option<(String, f64)>,
+    pub save_status: Option<(String, std::time::Instant)>,
+    pub test_status: Option<(String, std::time::Instant)>,
     pub testing: bool,
     pub bot_check_results: Option<Vec<crate::channels::BotCheckResult>>,
     pub keychain_available: bool,
@@ -89,8 +89,8 @@ pub struct ChannelsSettingsState {
     pub last_error: Option<String>,
     pub messages_received: u64,
     pub messages_sent: u64,
-    pub save_status: Option<(String, f64)>,
-    pub test_status: Option<(String, f64)>,
+    pub save_status: Option<(String, std::time::Instant)>,
+    pub test_status: Option<(String, std::time::Instant)>,
     pub testing: bool,
     pub bot_check_results: Option<Vec<crate::channels::BotCheckResult>>,
     pub keychain_available: bool,

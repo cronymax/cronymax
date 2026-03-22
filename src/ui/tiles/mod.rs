@@ -34,6 +34,12 @@ use overlays::*;
 pub use tree::*;
 pub use types::*;
 
+/// Alias for `egui_tiles::LinearDir` — the direction of a tile split.
+///
+/// Re-exported through `ui::tiles` so that `app/` code can reference
+/// split directions without importing `egui_tiles` directly.
+pub type SplitDir = egui_tiles::LinearDir;
+
 /// Mutable per-frame state passed as `&mut` (exclusive access).
 ///
 /// Contains all mutable data that pane widgets may read or modify
@@ -58,15 +64,12 @@ pub struct FrameState<'a> {
 /// Tiles panel widget — wraps the egui_tiles tree + Behavior pattern.
 pub struct TilesPanel<'a> {
     pub tile_tree: &'a mut egui_tiles::Tree<Pane>,
-    pub prompt_editors:
-        &'a mut std::collections::HashMap<SessionId, crate::ui::prompt::PromptState>,
     pub blocks: std::collections::HashMap<SessionId, Block>,
     pub session_chats: &'a mut std::collections::HashMap<SessionId, crate::ui::chat::SessionChat>,
     pub live_outputs: std::collections::HashMap<SessionId, String>,
     pub channel_messages:
         &'a std::collections::HashMap<String, Vec<crate::channels::ChannelDisplayMessage>>,
     pub channel_connection_state: crate::channels::ConnectionState,
-    pub pane_widgets: &'a mut PaneWidgetStore,
 }
 
 impl Widget for TilesPanel<'_> {
@@ -90,8 +93,14 @@ impl Widget for TilesPanel<'_> {
             .count()
             .max(1);
 
+        // Take fields out of ui_state to enable split borrows:
+        // FrameState needs &mut prompt_editors, Behavior needs &mut pane_widgets,
+        // and Fragment::new needs &mut ui_state — all at the same time.
+        let mut prompt_editors = std::mem::take(&mut ui_state.prompt_editors);
+        let mut pane_widgets = std::mem::take(&mut ui_state.pane_widgets);
+
         let frame_state = FrameState {
-            prompt_editors: self.prompt_editors,
+            prompt_editors: &mut prompt_editors,
             session_chats: self.session_chats,
             blocks: std::mem::take(&mut self.blocks),
             live_outputs: std::mem::take(&mut self.live_outputs),
@@ -103,7 +112,7 @@ impl Widget for TilesPanel<'_> {
         let mut behavior = Behavior {
             fragment: Fragment::new(ctx, colors, styles, ui_state, dirties),
             state: frame_state,
-            widgets: self.pane_widgets,
+            widgets: &mut pane_widgets,
             address_bar_editing,
             pinned_tabs,
             tab_bar_width: ctx.screen_rect().width(),
@@ -141,5 +150,9 @@ impl Widget for TilesPanel<'_> {
 
         // Store tooltip so the orchestrator can route it to FloatPanel.
         behavior.fragment.ui_state.docked_tooltip = behavior.tooltip;
+
+        // Swap taken fields back into ui_state via the still-live borrows.
+        std::mem::swap(behavior.state.prompt_editors, &mut behavior.fragment.ui_state.prompt_editors);
+        std::mem::swap(behavior.widgets, &mut behavior.fragment.ui_state.pane_widgets);
     }
 }

@@ -9,6 +9,7 @@ use super::overlays::format_timestamp;
 /// Stateful widget for rendering a channel conversation pane.
 ///
 /// Persists across frames in `PaneWidgetStore::channel`.
+#[derive(Debug)]
 pub struct ChannelPane {
     pub channel_id: String,
     pub channel_name: String,

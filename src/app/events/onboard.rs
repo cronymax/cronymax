@@ -110,7 +110,7 @@ pub(in crate::app) fn handle_onboard_event(
                     // credentials.  This covers the skill-only flow where the user
                     // never opened the graphical wizard.
                     let wiz = state
-                        .onboarding_wizard_state
+                        .ui_state.onboarding_wizard_state
                         .get_or_insert_with(Default::default);
                     wiz.app_id = app_id.clone();
                     wiz.store_secret_in_keychain = true;
@@ -126,7 +126,7 @@ pub(in crate::app) fn handle_onboard_event(
                     })
                 }
                 Err(e) => {
-                    if let Some(wiz) = state.onboarding_wizard_state.as_mut() {
+                    if let Some(wiz) = state.ui_state.onboarding_wizard_state.as_mut() {
                         wiz.error = Some(format!("Failed to store app secret: {}", e));
                     }
                     serde_json::json!({ "stored": false, "error": format!("Failed to store app_secret: {}", e) })
@@ -144,7 +144,7 @@ pub(in crate::app) fn handle_onboard_event(
             let secret_store = state.secret_store.clone();
             let rid = request_id.clone();
             let (app_id, app_secret_env, secret_storage) = state
-                .onboarding_wizard_state
+                .ui_state.onboarding_wizard_state
                 .as_ref()
                 .map(|wiz| {
                     (
@@ -182,7 +182,7 @@ pub(in crate::app) fn handle_onboard_event(
             // Mirror the UI wizard's OnboardingWizardComplete logic:
             // Build LarkChannelConfig from the onboarding_wizard_state, save to
             // config.toml, start the channel WebSocket, and set claw_enabled.
-            let wiz = match state.onboarding_wizard_state.as_ref() {
+            let wiz = match state.ui_state.onboarding_wizard_state.as_ref() {
                 Some(w) if !w.app_id.is_empty() => w.clone(),
                 _ => {
                     let result = serde_json::json!({
@@ -236,7 +236,7 @@ pub(in crate::app) fn handle_onboard_event(
             claw_cfg.enabled = true;
 
             // Sync channels UI state.
-            state.channels_ui_state =
+            state.ui_state.channels_ui_state =
                 crate::ui::settings::channels::ChannelsSettingsState::from_claw_config_with_store(
                     state.config.claw.as_ref(),
                     state.secret_store.clone(),
@@ -244,7 +244,7 @@ pub(in crate::app) fn handle_onboard_event(
 
             // Mark wizard complete in DB and clear UI state.
             if let Some(db) = &state.db_store
-                && let Some(ref wiz_state) = state.onboarding_wizard_state
+                && let Some(ref wiz_state) = state.ui_state.onboarding_wizard_state
                 && let Some(db_id) = wiz_state.db_id
             {
                 let _ = db.update_wizard_step(crate::ai::db::WizardStepUpdate {
@@ -257,7 +257,7 @@ pub(in crate::app) fn handle_onboard_event(
                 });
                 let _ = db.clear_completed_wizards();
             }
-            state.onboarding_wizard_state = None;
+            state.ui_state.onboarding_wizard_state = None;
 
             // Persist the Lark config to config.toml.
             if let Err(e) = crate::config::save_lark_config(&lark_config) {
@@ -301,7 +301,7 @@ pub(in crate::app) fn handle_onboard_event(
         }
 
         AppEvent::OnboardingBrowserAutomationFinished { success, message } => {
-            if let Some(wiz) = state.onboarding_wizard_state.as_mut() {
+            if let Some(wiz) = state.ui_state.onboarding_wizard_state.as_mut() {
                 wiz.loading = false;
                 if success {
                     wiz.status_message = Some(message);

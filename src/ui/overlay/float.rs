@@ -1,72 +1,92 @@
-use raw_window_handle::HasWindowHandle;
+use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 use crate::{
     config::AppConfig,
     renderer::{
-        egui_pass::ScreenDescriptor,
-        overlay::{Overlay, Renderer},
-        panels::FloatPanel,
+        overlay::Overlay,
+        panel::{LogicalRect, Panel, PanelAttrs},
+        Renderer,
     },
+    ui::{TooltipRequest, View, ViewMut},
 };
 
+// ── FloatPanelState ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Default)]
+pub struct FloatPanelState {
+    pub tooltip: Option<TooltipRequest>,
+}
+
+impl FloatPanelState {
+    pub fn clear(&mut self) {
+        self.tooltip = None;
+    }
+}
 /// Tier 3: Non-interactive child window for tooltips.
 pub struct Float {
-    pub overlay: Overlay<FloatPanel>,
+    pub ow: Overlay,
     ctx_initialized: bool,
     pending_textures_delta: Option<egui::TexturesDelta>,
+    /// Opaque clear color for the wgpu surface, set before each render.
+    clear_color: wgpu::Color,
 }
 
 impl std::ops::Deref for Float {
-    type Target = Overlay<FloatPanel>;
+    type Target = Overlay;
     fn deref(&self) -> &Self::Target {
-        &self.overlay
+        &self.ow
     }
 }
 impl std::ops::DerefMut for Float {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.overlay
+        &mut self.ow
     }
 }
 
 impl Float {
-    #[cfg(target_os = "macos")]
     pub fn new(
+        parent: &Window,
+        event_loop: Option<&ActiveEventLoop>,
         gpu: &crate::renderer::GpuContext,
-        panel: FloatPanel,
         width: u32,
         height: u32,
         scale: f32,
     ) -> Result<Self, String> {
-        let wh = panel
-            .window_handle()
-            .map_err(|e| format!("Failed to get float panel window handle: {e}"))?
-            .as_raw();
-        let overlay = Overlay::new(panel, gpu, wh, width, height, scale)?;
-        Ok(Self {
-            overlay,
-            ctx_initialized: false,
-            pending_textures_delta: None,
-        })
-    }
+        let rect = LogicalRect {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+            scale,
+        };
+        let attrs = PanelAttrs {
+            shadow: true,
+            focusable: false,
+            click_through: true,
+            level_offset: 1,
+            initially_visible: false,
+            corner_radius: 8.0,
+            opaque: false,
+        };
+        let panel = Panel::new(parent, event_loop, rect, attrs)?;
+        let mut ow = Overlay::new(panel, gpu, width, height, scale)?;
 
-    #[cfg(target_os = "windows")]
-    pub fn new(
-        gpu: &crate::renderer::GpuContext,
-        panel: FloatPanel,
-        width: u32,
-        height: u32,
-        scale: f32,
-    ) -> Result<Self, String> {
-        let wh = panel
-            .window_handle()
-            .map_err(|e| format!("Failed to get float panel window handle: {e}"))?
-            .as_raw();
-        let overlay = Overlay::new(panel, gpu, wh, width, height, scale)?;
+        // Force the surface alpha_mode to Opaque so wgpu tells Metal the
+        // CAMetalLayer is opaque.  This prevents the compositor from
+        // alpha-blending the surface, eliminating the washed-out gray look.
+        ow.surface_config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
+        ow.surface.configure(&ow.device, &ow.surface_config);
+
+        // Re-apply layer masking after wgpu has created the CAMetalLayer.
+        #[cfg(target_os = "macos")]
+        ow.panel.configure_layer(8.0, false);
+
         Ok(Self {
-            overlay,
+            ow,
             ctx_initialized: false,
             pending_textures_delta: None,
+            clear_color: wgpu::Color::BLACK,
         })
     }
 
@@ -101,151 +121,142 @@ impl Float {
         };
 
         let text_owned = text.to_string();
-        let fg = colors.text_title;
-        let font_size = styles.typography.body0;
 
+        let mut tooltip_rect = egui::Rect::NOTHING;
         let full_output = self.egui.ctx.run(raw_input, |ctx| {
             ctx.set_visuals(visuals.clone());
-            egui::Area::new(egui::Id::new("float_measure"))
+            let resp = egui::Area::new(egui::Id::new("float_measure"))
                 .fixed_pos(egui::pos2(0.0, 0.0))
                 .order(egui::Order::Tooltip)
                 .interactable(false)
                 .show(ctx, |ui| {
                     egui::Frame::new()
-                        .corner_radius(egui::CornerRadius::same(styles.radii.sm as u8))
                         .inner_margin(egui::Margin::symmetric(
                             styles.spacing.medium as i8,
                             styles.spacing.small as i8,
                         ))
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(&text_owned).color(fg).size(font_size));
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                            ui.label(
+                                egui::RichText::new(&text_owned)
+                                    .color(colors.text_title)
+                                    .size(styles.typography.caption1),
+                            );
                         });
                 });
+            tooltip_rect = resp.response.rect;
         });
 
         self.ctx_initialized = true;
         self.pending_textures_delta = Some(full_output.textures_delta);
 
-        let used = self.egui.ctx.used_rect();
-        let w = used.width().max(30.0) + 2.0;
-        let h = used.height().max(16.0) + 2.0;
+        let w = tooltip_rect.width().max(30.0) + 2.0;
+        let h = tooltip_rect.height().max(16.0) + 2.0;
         (w, h)
     }
 
     /// Render a tooltip on the float panel surface.
     pub fn render_tooltip(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         text: &str,
         app_config: &AppConfig,
-    ) -> Result<(), String> {
-        let surface_texture = self
-            .overlay
-            .surface
-            .get_current_texture()
-            .map_err(|e| format!("Failed to get float surface texture: {e}"))?;
-
-        let view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("float_tooltip_encoder"),
-        });
-
-        let styles = &app_config.styles;
-        let colors = app_config.resolve_colors();
-        let visuals = styles.build_egui_visuals(&colors);
-        let fg = colors.text_title;
-        let font_size = styles.typography.body0;
-        let text_owned = text.to_string();
-
-        let raw_input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::pos2(0.0, 0.0),
-                egui::vec2(self.width, self.height),
-            )),
-            viewports: std::iter::once((
-                egui::ViewportId::ROOT,
-                egui::ViewportInfo {
-                    native_pixels_per_point: Some(self.scale),
-                    ..Default::default()
-                },
-            ))
-            .collect(),
-            ..Default::default()
+        ui_state: &mut crate::ui::UiState,
+    ) -> Result<crate::ui::widget::Dirties, wgpu::SurfaceError> {
+        // Set opaque clear color from theme so the entire surface is opaque,
+        // eliminating alpha compositing artifacts (ghosting).
+        let bg = app_config.resolve_colors().bg_float;
+        self.clear_color = wgpu::Color {
+            r: bg.r() as f64 / 255.0,
+            g: bg.g() as f64 / 255.0,
+            b: bg.b() as f64 / 255.0,
+            a: 1.0,
         };
-
-        let full_output = self.egui.ctx.run(raw_input, |ctx| {
-            ctx.set_visuals(visuals.clone());
+        let text_owned = text.to_string();
+        self.render(app_config, ui_state, |f| {
+            let styles = f.styles;
             egui::Area::new(egui::Id::new("float_tooltip"))
                 .fixed_pos(egui::pos2(0.0, 0.0))
                 .order(egui::Order::Tooltip)
                 .interactable(false)
-                .show(ctx, |ui| {
+                .show(f.painter, |ui| {
                     egui::Frame::new()
-                        .corner_radius(egui::CornerRadius::same(styles.radii.sm as u8))
                         .inner_margin(egui::Margin::symmetric(
                             styles.spacing.medium as i8,
                             styles.spacing.small as i8,
                         ))
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(&text_owned).color(fg).size(font_size));
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                            ui.label(
+                                egui::RichText::new(&text_owned)
+                                    .color(f.colors.text_title)
+                                    .size(styles.typography.caption1),
+                            );
                         });
                 });
-        });
-
-        let mut textures_delta = full_output.textures_delta;
-        if let Some(pending) = self.pending_textures_delta.take() {
-            for set in pending.set {
-                textures_delta.set.push(set);
-            }
-            for free in pending.free {
-                textures_delta.free.push(free);
-            }
-        }
-
-        let primitives = self
-            .overlay
-            .egui
-            .ctx
-            .tessellate(full_output.shapes, full_output.pixels_per_point);
-
-        let screen_desc = ScreenDescriptor {
-            width_px: self.surface_config.width,
-            height_px: self.surface_config.height,
-            pixels_per_point: self.scale,
-        };
-
-        self.egui
-            .render(crate::renderer::egui_pass::EguiRenderArgs {
-                device,
-                queue,
-                encoder: &mut encoder,
-                color_target: &view,
-                primitives: &primitives,
-                textures_delta: &textures_delta,
-                screen_descriptor: screen_desc,
-            });
-
-        queue.submit(std::iter::once(encoder.finish()));
-        surface_texture.present();
-
-        Ok(())
+        })
     }
 }
 
-impl Renderer for Float {
-    fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32, scale: f32) {
-        self.overlay.resize(device, width, height, scale);
+impl View for Float {
+    type Renderer = Overlay;
+    fn as_renderer(&self) -> &Self::Renderer {
+        &self.ow
+    }
+}
+
+impl ViewMut for Float {
+    fn as_mut_renderer(&mut self) -> &mut Self::Renderer {
+        &mut self.ow
     }
 
-    fn is_visible(&self) -> bool {
-        self.panel.visible
+    /// Override resize to re-apply CAMetalLayer corner masking after
+    /// `surface.configure()` (which wgpu calls inside `Overlay::resize`).
+    fn resize(&mut self, width: u32, height: u32, scale: f32) {
+        self.as_mut_renderer().resize(width, height, scale);
+        #[cfg(target_os = "macos")]
+        self.ow.panel.configure_layer(8.0, false);
     }
 
-    fn set_visible(&mut self, visible: bool) {
-        self.panel.set_visible(visible);
+    fn prepare_raw_input(&mut self) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(self.ow.width, self.ow.height),
+            )),
+            viewports: std::iter::once((
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    native_pixels_per_point: Some(self.ow.scale),
+                    ..Default::default()
+                },
+            ))
+            .collect(),
+            ..Default::default()
+        }
+    }
+    fn manipulate_full_output(&mut self, mut full_output: egui::FullOutput) -> egui::FullOutput {
+        // Merge extra textures.
+        if let Some(extra) = self.pending_textures_delta.take() {
+            full_output.textures_delta.set.extend(extra.set);
+            full_output.textures_delta.free.extend(extra.free);
+        }
+        full_output
+    }
+    fn present(
+        &mut self,
+        full_output: ::egui::FullOutput,
+        terminal_output: Option<crate::renderer::atlas::TerminalOutput>,
+    ) -> Result<(), wgpu::SurfaceError> {
+        // Use our opaque clear color instead of TRANSPARENT to prevent
+        // alpha-compositing ghosting on the Float tooltip surface.
+        let clear = self.clear_color;
+        let platform_output = self.as_mut_renderer().present(
+            full_output,
+            Some(clear),
+            None,
+            terminal_output,
+        )?;
+        self.handle_platform_output(platform_output);
+        Ok(())
     }
 }

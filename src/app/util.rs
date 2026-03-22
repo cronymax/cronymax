@@ -112,7 +112,7 @@ pub(super) fn push_info_block(state: &mut AppState, sid: SessionId, text: &str) 
     if let Some(chat) = state.session_chats.get_mut(&sid) {
         chat.add_info_message(text);
     }
-    if let Some(pe) = state.prompt_editors.get_mut(&sid) {
+    if let Some(pe) = state.ui_state.prompt_editors.get_mut(&sid) {
         let id = pe.next_chat_cell_id;
         pe.next_chat_cell_id += 1;
         pe.blocks.push(BlockMode::Info {
@@ -128,7 +128,7 @@ pub(super) fn update_info_block(state: &mut AppState, sid: SessionId, text: &str
     if let Some(chat) = state.session_chats.get_mut(&sid) {
         chat.update_last_info_message(text);
     }
-    if let Some(pe) = state.prompt_editors.get_mut(&sid) {
+    if let Some(pe) = state.ui_state.prompt_editors.get_mut(&sid) {
         if let Some(BlockMode::Info { text: t, .. }) = pe.blocks.last_mut() {
             *t = text.to_string();
         } else {
@@ -140,18 +140,6 @@ pub(super) fn update_info_block(state: &mut AppState, sid: SessionId, text: &str
             });
         }
     }
-}
-
-// ─── Sandbox Helpers ─────────────────────────────────────────────────────────
-
-/// Retrieve the active profile's sandbox policy, falling back to the default.
-pub(super) fn active_sandbox_policy(
-    state: &AppState,
-) -> crate::profile::sandbox::policy::SandboxPolicy {
-    let mgr = state.profile_manager.lock().unwrap();
-    mgr.active()
-        .and_then(|p| p.sandbox.clone())
-        .unwrap_or_else(crate::profile::sandbox::policy::SandboxPolicy::from_default)
 }
 
 // ─── LLM Config Helpers ──────────────────────────────────────────────────────
@@ -174,70 +162,20 @@ pub(super) fn llm_context_limits(state: &AppState) -> (usize, usize) {
         .unwrap_or((128_000, 4096))
 }
 
-/// Convert a winit `WindowEvent` to `egui::Event`(s) for child panel overlays.
-///
-/// This is the Windows equivalent of the macOS `nsevent_to_egui()` function in
-/// `child_panel.rs`.  Only a subset of events is handled — mouse, scroll, and
-/// keyboard — which is sufficient for the egui-rendered overlay browser.
-///
-/// `scale` converts physical pixel positions (from winit) to logical points
-/// (expected by egui).
-#[cfg(target_os = "windows")]
-pub(super) fn winit_event_to_egui(event: &WindowEvent, scale: f32) -> Vec<egui::Event> {
-    use winit::event::{ElementState, MouseButton, WindowEvent as WE};
+// ─── Split-borrow variants (used by handle_action with AppCtx) ──────────────
 
-    let mut out = Vec::new();
-    match event {
-        WE::CursorMoved { position, .. } => {
-            // Convert physical pixel positions to logical points.
-            out.push(egui::Event::PointerMoved(egui::pos2(
-                position.x as f32 / scale,
-                position.y as f32 / scale,
-            )));
-        }
-        WE::MouseInput {
-            state: st, button, ..
-        } => {
-            let btn = match button {
-                MouseButton::Left => egui::PointerButton::Primary,
-                MouseButton::Right => egui::PointerButton::Secondary,
-                MouseButton::Middle => egui::PointerButton::Middle,
-                _ => return out,
-            };
-            let pressed = *st == ElementState::Pressed;
-            // Emit a PointerMoved before the button event so egui
-            // can hit-test at the correct position (winit MouseInput
-            // does not carry a cursor position on Windows).
-            out.push(egui::Event::PointerButton {
-                pos: egui::Pos2::ZERO, // patched from last PointerMoved in event buffer
-                button: btn,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            });
-        }
-        WE::MouseWheel { delta, .. } => {
-            use winit::event::MouseScrollDelta;
-            let (dx, dy) = match delta {
-                MouseScrollDelta::LineDelta(x, y) => (*x * 24.0, *y * 24.0),
-                MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
-            };
-            out.push(egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(dx, dy),
-                modifiers: egui::Modifiers::NONE,
-            });
-        }
-        WE::KeyboardInput { event: key_ev, .. } => {
-            if key_ev.state == ElementState::Pressed
-                && let Some(text) = &key_ev.text
-            {
-                let s = text.as_str();
-                if !s.is_empty() && !s.chars().next().is_some_and(|c| c.is_control()) {
-                    out.push(egui::Event::Text(s.to_string()));
-                }
-            }
-        }
-        _ => {}
-    }
-    out
+/// Like [`llm_model_name`] but takes `AppCtx` instead of `AppState`.
+pub(super) fn llm_model_name_split(ctx: &crate::ui::model::AppCtx<'_>) -> String {
+    ctx.llm_client
+        .as_ref()
+        .map(|c| c.model_name().to_string())
+        .unwrap_or_else(|| "gpt-4o".into())
+}
+
+/// Like [`llm_context_limits`] but takes `AppCtx` instead of `AppState`.
+pub(super) fn llm_context_limits_split(ctx: &crate::ui::model::AppCtx<'_>) -> (usize, usize) {
+    ctx.llm_client
+        .as_ref()
+        .map(|c| (c.max_context_tokens(), c.reserve_tokens()))
+        .unwrap_or((128_000, 4096))
 }

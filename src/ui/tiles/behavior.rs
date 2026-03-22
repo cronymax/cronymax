@@ -1,6 +1,7 @@
 //! Behavior struct constructor and egui_tiles::Behavior trait implementation.
 
-use super::browser::BrowserPaneView;
+use crate::ui::tiles::browser::BrowserViewPane;
+
 use super::channel::ChannelPaneView;
 use super::terminal::TerminalPaneView;
 use super::*;
@@ -76,7 +77,7 @@ impl<'a> egui_tiles::Behavior<Pane> for Behavior<'a> {
                 self.fragment
                     .duplicate()
                     .with(ui)
-                    .add(BrowserPaneView { widget });
+                    .add::<BrowserViewPane, _>(widget);
                 // Sync state back from widget.
                 let widget = self.widgets.browser_widget(*webview_id);
                 url.clone_from(&widget.url);

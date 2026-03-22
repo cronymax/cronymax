@@ -36,7 +36,7 @@ pub struct ProvidersSettingsState {
     pub edit_api_base: String,
     pub edit_api_key_env: String,
     /// Status message shown after save.
-    pub save_status: Option<(String, f64)>,
+    pub save_status: Option<(String, std::time::Instant)>,
     /// Whether state has been loaded from config.
     pub loaded: bool,
     /// Whether the system keychain is available on this platform.

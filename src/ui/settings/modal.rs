@@ -1,17 +1,27 @@
 use super::*;
+use crate::ui::types::UiState;
 
-impl SettingsState {
-    pub fn draw_child(
+pub struct SettingsModal<'a> {
+    pub agent_registry: Option<&'a mut crate::ai::agent::AgentRegistry>,
+    pub profile_manager: Option<&'a mut crate::profile::ProfileManager>,
+    pub task_store: Option<&'a mut crate::ai::scheduler::ScheduledTaskStore>,
+    pub scheduler_history: &'a [crate::ai::scheduler::ExecutionRecord],
+}
+
+impl Widget<egui::Context> for SettingsModal<'_> {
+    fn render_with_context<'a>(
         &mut self,
-        ctx: &egui::Context,
-        styles: &Styles,
-        colors: &Colors,
-        sctx: SettingsDrawCtx<'_>,
-    ) -> Vec<UiAction> {
-        let mut actions = Vec::new();
-        if !self.open {
-            return actions;
+        #[allow(unused)] ui: <egui::Context as crate::ui::widget::Painter>::Ref<'a>,
+        #[allow(unused)] mut ctx: crate::ui::widget::Context<'a>,
+    ) {
+        if !ctx.ui_state.settings_state.open {
+            return;
         }
+
+        let ui_state = &mut *ctx.ui_state;
+        let styles = ctx.styles;
+        let colors = std::rc::Rc::clone(&ctx.colors);
+        let actions = &mut ctx.dirties.actions;
 
         egui::CentralPanel::default()
             .frame(
@@ -20,19 +30,19 @@ impl SettingsState {
                     .corner_radius(egui::CornerRadius::same(styles.radii.md as _))
                     .inner_margin(egui::Margin::same(0)),
             )
-            .show(ctx, |ui| {
-                self.draw_inner(ui, styles, colors, sctx, &mut actions)
+            .show(ui, |ui| {
+                self.draw_inner(ui, ui_state, styles, &colors, actions);
             });
 
         // Escape to close.
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.open = false;
-            actions.push(UiAction::CloseSettings);
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            ctx.ui_state.settings_state.open = false;
+            ctx.dirties.actions.push(UiAction::CloseSettings);
         }
-
-        actions
     }
+}
 
+impl SettingsModal<'_> {
     /// Shared inner content for Settings: title bar + sidebar + content area.
     ///
     /// Called by both [`SettingsState::draw`] (main window Area) and
@@ -40,9 +50,9 @@ impl SettingsState {
     pub(super) fn draw_inner(
         &mut self,
         ui: &mut egui::Ui,
+        ui_state: &mut UiState,
         styles: &Styles,
         colors: &Colors,
-        ctx: SettingsDrawCtx<'_>,
         actions: &mut Vec<UiAction>,
     ) {
         // ── Title bar ────────────────────────────────────────
@@ -78,7 +88,7 @@ impl SettingsState {
                                 },
                             );
                             if close.clicked() {
-                                self.open = false;
+                                ui_state.settings_state.open = false;
                                 actions.push(UiAction::CloseSettings);
                             }
                         });
@@ -89,14 +99,14 @@ impl SettingsState {
         ui.separator();
 
         // ── Body: sidebar + content ──────────────────────────
-        self.draw_body(styles, colors, ctx, actions, ui);
+        self.draw_body(ui_state, styles, colors, actions, ui);
     }
 
     fn draw_body(
         &mut self,
+        ui_state: &mut UiState,
         styles: &Styles,
         colors: &Colors,
-        ctx: SettingsDrawCtx<'_>,
         actions: &mut Vec<UiAction>,
         ui: &mut egui::Ui,
     ) {
@@ -112,7 +122,7 @@ impl SettingsState {
                 ui.horizontal(|ui| {
                     ui.set_height(available_height);
                     // Sidebar.
-                    self.draw_sidebar(styles, colors, body_rect, ui);
+                    self.draw_sidebar(ui_state, styles, colors, body_rect, ui);
 
                     // Vertical separator.
                     ui.separator();
@@ -123,7 +133,7 @@ impl SettingsState {
                         egui::Layout::top_down(egui::Align::LEFT),
                         |ui| {
                             ui.add_space(styles.spacing.medium);
-                            self.draw_content(styles, colors, ctx, actions, ui);
+                            self.draw_content(ui_state, styles, colors, actions, ui);
                         },
                     );
                 });
@@ -132,65 +142,59 @@ impl SettingsState {
 
     fn draw_content(
         &mut self,
+        ui_state: &mut UiState,
         styles: &Styles,
         colors: &Colors,
-        mut ctx: SettingsDrawCtx<'_>,
         actions: &mut Vec<UiAction>,
         ui: &mut egui::Ui,
     ) {
-        match self.active_section {
+        match ui_state.settings_state.active_section {
             SettingsSection::General => {
-                if let Some(gen_st) = ctx.general_ui_state.as_mut() {
-                    let gen_actions = gen_st.draw(ui, styles, colors);
-                    actions.extend(gen_actions);
-                } else {
-                    Self::draw_section_placeholder(ui, self.active_section, styles, colors);
-                }
+                let gen_actions = ui_state.general_ui_state.draw(ui, styles, colors);
+                actions.extend(gen_actions);
             }
             SettingsSection::Profiles => {
-                if let (Some(mgr), Some(ui_st)) =
-                    (ctx.profile_manager.as_mut(), ctx.profiles_ui_state.as_mut())
-                {
-                    actions.extend(ui_st.draw(ui, mgr, styles, colors));
+                if let Some(mgr) = self.profile_manager.as_mut() {
+                    actions.extend(ui_state.profiles_ui_state.draw(ui, mgr, styles, colors));
                 } else {
-                    Self::draw_section_placeholder(ui, self.active_section, styles, colors);
+                    Self::draw_section_placeholder(ui, ui_state.settings_state.active_section, styles, colors);
                 }
             }
             SettingsSection::Channels => {
-                if let Some(ch_st) = ctx.channels_ui_state.as_mut() {
-                    let ch_actions =
-                        ch_st.draw(ui, styles, colors, None, ctx.onboarding_wizard_state);
-                    actions.extend(ch_actions);
-                } else {
-                    Self::draw_section_placeholder(ui, self.active_section, styles, colors);
-                }
+                let onboarding = ui_state.onboarding_wizard_state.as_mut();
+                let ch_actions = ui_state.channels_ui_state.draw(
+                    ui,
+                    styles,
+                    colors,
+                    None,
+                    onboarding,
+                );
+                actions.extend(ch_actions);
             }
             SettingsSection::LLMProviders => {
-                if let Some(prov_st) = ctx.providers_ui_state.as_mut() {
-                    let prov_actions = prov_st.draw(ui, styles, colors);
-                    actions.extend(prov_actions);
-                } else {
-                    Self::draw_section_placeholder(ui, self.active_section, styles, colors);
-                }
+                let prov_actions = ui_state.providers_ui_state.draw(ui, styles, colors);
+                actions.extend(prov_actions);
             }
             SettingsSection::AgentsAndSkills => {
-                if let (Some(reg), Some(ui_st)) =
-                    (ctx.agent_registry.as_mut(), ctx.agents_ui_state.as_mut())
-                {
-                    let agent_actions = ui_st.draw(ui, reg, styles, colors, ctx.skills_panel_state);
+                if let Some(reg) = self.agent_registry.as_mut() {
+                    let agent_actions = ui_state.agents_ui_state.draw(
+                        ui,
+                        reg,
+                        styles,
+                        colors,
+                        Some(&mut ui_state.skills_panel_state),
+                    );
                     actions.extend(agent_actions);
                 } else {
-                    Self::draw_section_placeholder(ui, self.active_section, styles, colors);
+                    Self::draw_section_placeholder(ui, ui_state.settings_state.active_section, styles, colors);
                 }
             }
             SettingsSection::ScheduledTasks => {
-                if let (Some(ts), Some(ui_st)) =
-                    (ctx.task_store.as_mut(), ctx.scheduler_ui_state.as_mut())
-                {
-                    let sched_actions = ui_st.draw(ui, ts, ctx.scheduler_history, styles, colors);
-                    actions.extend(sched_actions);
+                if let Some(ts) = self.task_store.as_mut() {
+                    let schedule_actions = ui_state.scheduler_ui_state.draw(ui, ts, self.scheduler_history, styles, colors);
+                    actions.extend(schedule_actions);
                 } else {
-                    Self::draw_section_placeholder(ui, self.active_section, styles, colors);
+                    Self::draw_section_placeholder(ui, ui_state.settings_state.active_section, styles, colors);
                 }
             }
         }
@@ -198,6 +202,7 @@ impl SettingsState {
 
     fn draw_sidebar(
         &mut self,
+        ui_state: &mut UiState,
         styles: &Styles,
         colors: &Colors,
         body_rect: egui::Rect,
@@ -209,7 +214,7 @@ impl SettingsState {
             |ui| {
                 ui.add_space(styles.spacing.medium);
                 for section in SettingsSection::all() {
-                    let is_active = *section == self.active_section;
+                    let is_active = *section == ui_state.settings_state.active_section;
                     let text_color = if is_active {
                         colors.primary
                     } else {
@@ -237,7 +242,7 @@ impl SettingsState {
                         .inner;
 
                     if resp.clicked() {
-                        self.active_section = *section;
+                        ui_state.settings_state.active_section = *section;
                         ui.ctx().request_repaint();
                     }
                 }

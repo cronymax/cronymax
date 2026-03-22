@@ -1,31 +1,32 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub(crate) mod browser;
 mod chat;
-mod cmd;
-mod commands;
+pub(crate) mod commands;
 pub mod daemon;
 mod draw;
 mod events;
-mod keybinds;
+mod keybindings;
 mod lifecycle;
-mod mouse;
 mod render;
 pub mod session_persist;
 mod state;
-mod tabs;
 mod util;
-mod webview;
 mod window;
 
+use browser::*;
 use chat::*;
-use commands::*;
-use keybinds::*;
-use mouse::*;
+use keybindings::*;
 use state::*;
-use tabs::*;
 use util::*;
-use webview::*;
+
+// Re-export AppState for ui-layer modules that need mutable access.
+pub(crate) use state::AppState;
+
+// Re-export functions called from ui/dispatch.
+pub(crate) use browser::{close_active_browser, open_browser, switch_browser_tab};
+pub(crate) use keybindings::{handle_action, new_terminal_with_shell, open_history_tab, open_history_session};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -39,22 +40,15 @@ use crate::channels::Channel;
 use crate::config::AppConfig;
 use crate::renderer::GpuContext;
 use crate::renderer::atlas::TerminalRenderer;
-use crate::renderer::cursor::{CursorRect, CursorShape};
-use crate::renderer::egui_pass::{EguiIntegration, ScreenDescriptor};
-use crate::renderer::panels::FloatPanelState;
+
 use crate::renderer::scheduler::RenderSchedule;
 use crate::renderer::terminal::input;
 use crate::renderer::terminal::{SessionId, TerminalSession};
-use crate::renderer::text;
-use crate::renderer::webview::BrowserView;
+use crate::renderer::webview::Webview;
 use crate::renderer::webview::bridge::WebviewToRust;
-use crate::renderer::webview::manager::{WebviewManager, ZLayer};
-use crate::renderer::webview::split::{Bounds, VerticalSplit};
-use crate::ui::block::{Block, BlockMode};
-use crate::ui::browser::{self, AddrBarButton};
+use crate::ui::block::BlockMode;
 use crate::ui::i18n::{t, t_fmt};
 use crate::ui::prompt::{CommandBlock, PromptState};
-use crate::ui::styles::Styles;
 use crate::ui::{self, tiles};
 use crate::ui::{AddressBarState, BrowserViewMode, TabInfo, UiAction, UiState};
 

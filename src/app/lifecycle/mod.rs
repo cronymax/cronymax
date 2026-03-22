@@ -3,6 +3,8 @@
 mod init;
 mod llm;
 
+use crate::{renderer::egui::EguiRenderer, ui::overlay::float::FloatPanelState};
+
 use super::*;
 
 pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
@@ -75,7 +77,7 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
     );
 
     // Initialize egui integration.
-    let egui = EguiIntegration::new(&window, &gpu.device, gpu.surface_config.format);
+    let egui = EguiRenderer::new(&gpu.device, gpu.surface_config.format);
     egui.ctx.set_style(app.config.resolve_egui_style());
 
     // Bridge egui repaint requests to the winit event loop proxy.
@@ -156,63 +158,58 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
 
     let mut sessions = HashMap::new();
     sessions.insert(1, session);
-    let tile_tree = tiles::create_initial_terminal_tree(1, "cronymax");
+    let tile_tree = tiles::create_initial_tree(1, "cronymax");
 
-    // Per-session prompt editors.
-    let mut prompt_editors = HashMap::new();
-    let mut prompt_editor = crate::ui::prompt::PromptState::new();
-    prompt_editor.visible = false;
-    prompt_editors.insert(1_u32, prompt_editor);
 
+    let shared_secret_store = Arc::new(crate::services::secret::SecretStore::default());
     // Initial UiState synced from sessions.
-    let mut ui_state = UiState::new();
+    let mut ui_state = UiState::new(&app.config, shared_secret_store.clone());
     ui_state.claw_enabled = app.config.claw.as_ref().is_some_and(|c| c.enabled);
-    ui_state.tabs.push(TabInfo::Terminal {
+    ui_state.tabs.push(TabInfo::Chat {
         session_id: 1,
         title: "cronymax".into(),
     });
 
-    let shared_secret_store = Arc::new(crate::services::secret::SecretStore::default());
 
     app.state = Some(AppState {
-        window,
-        gpu,
+        ui_state,
+        ui: crate::ui::Ui {
+            frame: crate::renderer::frame::Frame::new(window, gpu, egui, renderer),
+            styles,
+            viewport,
+            tile_tree,
+            tile_rects: Vec::new(),
+            browser_tabs: Vec::new(),
+            active_browser: 0,
+            next_browser_id: 1,
+            browser_manager: BrowserManager::default(),
+            float_panel_state: FloatPanelState::default(),
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            float_renderer: None,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            settings_overlay: None,
+            split: None,
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            hovered_link: None,
+            modifiers: ModifiersState::empty(),
+            ime_composing: false,
+            ime_enabled: false,
+            colon_buf: None,
+            tab_pressed: false,
+            intercepted_url: None,
+            terminal_selection: None,
+            selection_dragging: false,
+        },
         config: app.config.clone(),
-        renderer,
         sessions,
-        tile_tree,
-        tile_rects: Vec::new(),
         prev_grid_sizes: {
             let mut m = HashMap::new();
             m.insert(1, (cols, rows));
             m
         },
         next_id: 2,
-        viewport,
-        modifiers: ModifiersState::empty(),
-        webview_tabs: Vec::new(),
-        active_webview: 0,
-        next_webview_id: 1,
-        webview_manager: WebviewManager::default(),
-        float_panel_state: FloatPanelState::default(),
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        float_renderer: None,
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        settings_overlay: None,
-        split: None,
-        colon_buf: None,
-        text_scratch: String::with_capacity(80 * 24 + 24),
         frame_count: 0,
-        mouse_x: 0.0,
-        mouse_y: 0.0,
-        hovered_link: None,
-        ime_composing: false,
-        ime_enabled: false,
-        egui,
-        ui_state,
-        styles,
-        prompt_editors,
-        pane_widgets: tiles::PaneWidgetStore::default(),
         runtime: app.runtime.clone(),
         proxy: app.proxy.clone().expect("EventLoopProxy not set"),
         session_chats: HashMap::new(),
@@ -220,11 +217,6 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
         llm_client: None,
         token_counter: crate::ai::context::TokenCounter::new(),
         skill_registry: crate::ai::skills::SkillRegistry::new(),
-        settings_state: crate::ui::settings::SettingsState::default(),
-        general_ui_state: {
-            let claw_enabled = app.config.claw.as_ref().is_some_and(|c| c.enabled);
-            crate::ui::settings::general::GeneralSettingsState::new(claw_enabled)
-        },
         agent_registry: {
             let mut reg = crate::ai::agent::AgentRegistry::default_dir();
             if let Err(e) = reg.load() {
@@ -232,15 +224,8 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
             }
             reg
         },
-        agents_ui_state: crate::ui::settings::agents::AgentsSettingsState::default(),
-        skills_manager: None, // initialized after config is fully loaded
+        skills_manager: None,
         loaded_external_skills: Vec::new(),
-        skills_panel_state: crate::ui::skills_panel::SkillsPanelState::new(),
-        profiles_ui_state: crate::ui::settings::profiles::ProfilesSettingsState::default(),
-        providers_ui_state:
-            crate::ui::settings::providers::ProvidersSettingsState::with_secret_store(
-                shared_secret_store.clone(),
-            ),
         task_store: {
             let mut ts = crate::ai::scheduler::ScheduledTaskStore::new();
             if let Err(e) = ts.load() {
@@ -248,17 +233,10 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
             }
             ts
         },
-        scheduler_ui_state: crate::ui::settings::scheduler::SchedulerSettingsState::default(),
         scheduler_history_cache: Vec::new(),
         db_store: None,
         budget_tracker: None,
         channel_manager: None,
-        channels_ui_state:
-            crate::ui::settings::channels::ChannelsSettingsState::from_claw_config_with_store(
-                app.config.claw.as_ref(),
-                shared_secret_store.clone(),
-            ),
-        onboarding_wizard_state: None,
         pending_channel_replies: HashMap::new(),
         _messages_received_channel_counter: 0,
         channel_messages: HashMap::new(),
@@ -393,7 +371,7 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
         // Seed prompt editors with the current model, then fetch full lists from APIs.
         if let Some(ref client) = state.llm_client {
             let seed = vec![client.current_model_item()];
-            for pe in state.prompt_editors.values_mut() {
+            for pe in state.ui_state.prompt_editors.values_mut() {
                 pe.model_items = seed.clone();
             }
             client.fetch_available_models(state.proxy.clone(), &state.runtime);
@@ -439,10 +417,10 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                     crate::app::session_persist::reconstruct_tree(&snapshot, &mut next_id);
 
                 // Replace default tile tree.
-                state.tile_tree = tree;
+                state.ui.tile_tree = tree;
                 // Clear the defaults created above.
                 state.sessions.clear();
-                state.prompt_editors.clear();
+                state.ui_state.prompt_editors.clear();
                 state.session_chats.clear();
                 state.ui_state.tabs.clear();
 
@@ -452,13 +430,13 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                     .shell
                     .clone()
                     .unwrap_or_else(crate::renderer::platform::default_shell);
-                let phys = state.window.inner_size();
-                let logical = phys.to_logical::<f32>(state.window.scale_factor());
+                let phys = state.ui.frame.window.inner_size();
+                let logical = phys.to_logical::<f32>(state.ui.frame.window.scale_factor());
                 let (_, cols, rows) = crate::ui::compute_single_pane(
                     logical.width as u32,
                     logical.height as u32,
-                    &state.renderer.cell_size,
-                    &state.styles,
+                    &state.ui.frame.terminal.cell_size,
+                    &state.ui.styles,
                 );
                 let sandbox = {
                     let mgr = state.profile_manager.lock().unwrap();
@@ -489,11 +467,11 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                     // Create prompt editor.
                     let mut pe = crate::ui::prompt::PromptState::new();
                     pe.visible = true;
-                    if let Some(existing) = state.prompt_editors.values().next() {
+                    if let Some(existing) = state.ui_state.prompt_editors.values().next() {
                         pe.model_items = existing.model_items.clone();
                         pe.selected_model_idx = existing.selected_model_idx;
                     }
-                    state.prompt_editors.insert(tab.session_id, pe);
+                    state.ui_state.prompt_editors.insert(tab.session_id, pe);
 
                     // Create session chat and restore history if available.
                     let mut chat = crate::ui::chat::SessionChat::new(
@@ -579,7 +557,7 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                 if let Ok(history) = crate::app::session_persist::load_command_history(&profile_dir)
                 {
                     let cmds: Vec<String> = history.into_iter().map(|e| e.command).collect();
-                    for pe in state.prompt_editors.values_mut() {
+                    for pe in state.ui_state.prompt_editors.values_mut() {
                         pe.history = cmds.clone();
                     }
                     log::info!("Restored {} command history entries", cmds.len());

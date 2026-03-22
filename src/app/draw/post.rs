@@ -5,7 +5,6 @@ use crate::app::*;
 pub(super) fn process_post_frame(
     state: &mut AppState,
     event_loop: &ActiveEventLoop,
-    _pane_rects: &[tiles::TileRect],
     ui_actions: Vec<UiAction>,
     submitted_cmds: Vec<(u32, String)>,
 ) {
@@ -18,13 +17,13 @@ pub(super) fn process_post_frame(
 
     // Process egui UI actions (captured from draw_all inside egui.run closure).
     for action in ui_actions {
-        handle_ui_action(state, action, event_loop);
+        state.dispatch_ui_action(action, event_loop);
     }
 
     // Process submitted input line commands (per-pane).
     for (sid, cmd) in submitted_cmds {
         if cmd.starts_with(':') {
-            handle_colon_command(state, &cmd, event_loop);
+            state.dispatch_colon_command(&cmd, event_loop);
         } else if let Some(stripped) = cmd.strip_prefix('$') {
             // Script/command mode: strip `$` prefix and send to PTY.
             let shell_cmd = stripped.trim().to_string();
@@ -32,13 +31,17 @@ pub(super) fn process_post_frame(
                 && let Some(session) = state.sessions.get_mut(&sid)
             {
                 // Freeze the previous live terminal cell (if any).
-                freeze_last_live_terminal_with_session(&mut state.prompt_editors, sid, session);
+                freeze_last_live_terminal_with_session(
+                    &mut state.ui_state.prompt_editors,
+                    sid,
+                    session,
+                );
 
                 let payload = format!("{}\n", shell_cmd);
                 session.write_to_pty(payload.as_bytes());
 
                 // Record a CommandBlock and a Block.
-                if let Some(prompt_editor) = state.prompt_editors.get_mut(&sid)
+                if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&sid)
                     && prompt_editor.visible
                 {
                     let abs_row = session.state.abs_cursor_row();
@@ -66,7 +69,7 @@ pub(super) fn process_post_frame(
                 freeze_last_live_terminal(state, sid);
 
                 // Create a BlockMode::Stream entry.
-                if let Some(prompt_editor) = state.prompt_editors.get_mut(&sid) {
+                if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&sid) {
                     let cell_id = prompt_editor.next_chat_cell_id;
                     prompt_editor.next_chat_cell_id += 1;
                     prompt_editor.blocks.push(BlockMode::Stream {
@@ -87,5 +90,46 @@ pub(super) fn process_post_frame(
                 submit_chat(state, sid, &chat_text);
             }
         }
+    }
+}
+
+/// Inner implementation that takes the session by reference to avoid borrow conflicts.
+pub(super) fn freeze_last_live_terminal_with_session(
+    prompt_editors: &mut HashMap<SessionId, PromptState>,
+    sid: SessionId,
+    session: &TerminalSession,
+) {
+    let il = match prompt_editors.get_mut(&sid) {
+        Some(il) => il,
+        None => return,
+    };
+
+    // Find the last block; if it's a live terminal, freeze its output.
+    if let Some(BlockMode::Terminal {
+        block_id,
+        frozen_output,
+    }) = il.blocks.last_mut()
+        && frozen_output.is_none()
+    {
+        // Determine the row range for this command block.
+        let abs_start = il
+            .command_blocks
+            .get(*block_id)
+            .map(|b| b.abs_row)
+            .unwrap_or(0);
+        let abs_end = session.state.abs_cursor_row();
+        // Capture non-empty output (skip the prompt row itself).
+        let text = session.state.capture_text(abs_start + 1, abs_end);
+        *frozen_output = Some(text);
+    }
+}
+
+// ─── Cell Freeze Helpers ─────────────────────────────────────────────────────
+
+/// Freeze the last live terminal cell for a session, capturing its text output.
+/// Called before creating a new cell (chat or terminal) to ensure chronological ordering.
+pub(super) fn freeze_last_live_terminal(state: &mut AppState, sid: SessionId) {
+    if let Some(session) = state.sessions.get(&sid) {
+        freeze_last_live_terminal_with_session(&mut state.ui_state.prompt_editors, sid, session);
     }
 }

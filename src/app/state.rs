@@ -14,114 +14,27 @@ pub(crate) struct PendingTerminalExec {
     pub(crate) full_cmd: String,
 }
 
-/// Actions that can be triggered by keybindings.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Action {
-    NewChat,
-    NewTerminal,
-    CloseTab,
-    NextTab,
-    PrevTab,
-    SplitVertical,
-    SplitHorizontal,
-    Copy,
-    Paste,
-    FontSizeUp,
-    FontSizeDown,
-    #[allow(dead_code)]
-    ScrollUp,
-    #[allow(dead_code)]
-    ScrollDown,
-    ScrollPageUp,
-    ScrollPageDown,
-    CommandMode,
-    ToggleFilter,
-    ToggleSettings,
-}
-
-/// A single webview tab entry.
-pub(crate) struct WebviewTab {
-    pub(crate) id: WebviewId,
-    pub(crate) title: String,
-    pub(crate) url: String,
-    pub(crate) manager: BrowserView,
-    pub(crate) address_bar: AddressBarState,
-    /// Display mode: Overlay (floating) or Docked (split).
-    pub(crate) mode: BrowserViewMode,
-    /// Terminal session this overlay is paired with (if any).
-    pub(crate) paired_session: Option<SessionId>,
-    /// Docked webview ID this overlay is paired with (if opened from a webview tab).
-    pub(crate) paired_webview: Option<WebviewId>,
-}
+pub(crate) use crate::ui::actions::KeyAction as Action;
 
 /// Application state — holds the window, GPU context, and all subsystems.
 pub(crate) struct AppState {
-    pub(crate) window: Arc<Window>,
-    pub(crate) gpu: GpuContext,
+    // ── UI model (frame + all view-layer state) ───────────────────────────
+    /// The UI model owns `FrameWindow`, theming, layout, overlays, and
+    /// all widget state.  `app/` accesses it via `state.ui.*`.
+    pub(crate) ui: crate::ui::Ui,
+    pub(crate) ui_state: crate::ui::UiState,
+
+    // ── Lifecycle / config ───────────────────────────────────────────────
     pub(crate) config: AppConfig,
-    pub(crate) renderer: TerminalRenderer,
+
     /// All terminal sessions by ID.
     pub(crate) sessions: HashMap<SessionId, TerminalSession>,
-    /// Tiling layout tree (egui_tiles).
-    pub(crate) tile_tree: egui_tiles::Tree<tiles::Pane>,
-    /// Tile rects collected each frame for wgpu viewport mapping & webview positioning.
-    pub(crate) tile_rects: Vec<tiles::TileRect>,
     /// Previous grid dimensions per session (cols, rows) for PTY resize detection.
     pub(crate) prev_grid_sizes: HashMap<SessionId, (u16, u16)>,
     /// Next session ID counter.
     pub(crate) next_id: SessionId,
-    pub(crate) viewport: ui::Viewport,
-    pub(crate) modifiers: ModifiersState,
-    /// Multiple webview tabs.
-    pub(crate) webview_tabs: Vec<WebviewTab>,
-    /// Active webview tab index.
-    pub(crate) active_webview: usize,
-    /// Next webview ID counter.
-    pub(crate) next_webview_id: WebviewId,
-    /// Centralized multi-child webview window manager (z-ordering,
-    /// independent overlays, lifecycle management).
-    pub(crate) webview_manager: WebviewManager,
-    /// Per-frame transient state for the Float Panel tooltip rendering.
-    pub(crate) float_panel_state: FloatPanelState,
-    /// Float renderer (tier 3) — tooltip window above all overlays.
-    /// Created lazily on first tooltip request.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub(crate) float_renderer: Option<crate::ui::overlay::Float>,
-    /// Overlay renderer (tier 2) for the Settings page.
-    /// Created lazily when settings are opened.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub(crate) settings_overlay: Option<crate::ui::overlay::Modal>,
-    /// Split layout when webview is open.
-    pub(crate) split: Option<VerticalSplit>,
-    /// Accumulated input buffer for command mode.
-    pub(crate) colon_buf: Option<String>,
-    /// Reusable text buffer to reduce allocations in the render loop.
-    pub(crate) text_scratch: String,
     /// Frame counter for diagnostics.
     pub(crate) frame_count: u64,
-    /// Current mouse position in physical pixels.
-    pub(crate) mouse_x: f32,
-    pub(crate) mouse_y: f32,
-    /// Currently hovered link (when Cmd/Ctrl held + mouse over link).
-    pub(crate) hovered_link: Option<crate::renderer::terminal::links::DetectedLink>,
-    /// Whether an IME composition (preedit) is currently active.
-    pub(crate) ime_composing: bool,
-    /// Whether the IME input method is enabled (between Ime::Enabled and Ime::Disabled).
-    /// Used to suppress the first KeyboardInput character event that arrives
-    /// before Ime::Preedit when starting a new CJK composition.
-    pub(crate) ime_enabled: bool,
-
-    // ── egui integration ──────────────────────────────────────────────────
-    /// egui context + winit adaptor + custom wgpu renderer.
-    pub(crate) egui: EguiIntegration,
-    /// Centralized UI widget state (tabs, overlay, filter, address bar).
-    pub(crate) ui_state: UiState,
-    /// theme (colors + spacing).
-    pub(crate) styles: Styles,
-    /// Per-session input line state (Editor mode).
-    pub(crate) prompt_editors: HashMap<SessionId, PromptState>,
-    /// Persistent pane widget instances (stateful widget tree).
-    pub(crate) pane_widgets: tiles::PaneWidgetStore,
 
     // ── AI / LLM integration ─────────────────────────────────────────────
     /// Tokio runtime for async LLM/IO tasks.
@@ -140,28 +53,14 @@ pub(crate) struct AppState {
     pub(crate) skill_registry: crate::ai::skills::SkillRegistry,
     /// Profile manager (shared with skill handlers via Arc<Mutex>).
     pub(crate) profile_manager: Arc<std::sync::Mutex<crate::profile::ProfileManager>>,
-    /// Settings overlay state.
-    pub(crate) settings_state: crate::ui::settings::SettingsState,
-    /// UI state for the General settings section.
-    pub(crate) general_ui_state: crate::ui::settings::general::GeneralSettingsState,
     /// Agent registry for installable agent packages.
     pub(crate) agent_registry: crate::ai::agent::AgentRegistry,
-    /// UI state for the Agents & Skills settings section.
-    pub(crate) agents_ui_state: crate::ui::settings::agents::AgentsSettingsState,
     /// Skills manager for OpenClaw external skills lifecycle.
     pub(crate) skills_manager: Option<crate::ai::skills::manager::SkillsManager>,
     /// Loaded external skills (cached for system prompt injection).
     pub(crate) loaded_external_skills: Vec<crate::ai::skills::loader::ExternalSkill>,
-    /// Skills panel UI state.
-    pub(crate) skills_panel_state: crate::ui::skills_panel::SkillsPanelState,
-    /// UI state for the Profiles settings section.
-    pub(crate) profiles_ui_state: crate::ui::settings::profiles::ProfilesSettingsState,
-    /// UI state for the LLM Providers settings section.
-    pub(crate) providers_ui_state: crate::ui::settings::providers::ProvidersSettingsState,
     /// Scheduled task store.
     pub(crate) task_store: crate::ai::scheduler::ScheduledTaskStore,
-    /// UI state for the Scheduler settings section.
-    pub(crate) scheduler_ui_state: crate::ui::settings::scheduler::SchedulerSettingsState,
     /// Cached execution history for the scheduler UI.
     pub(crate) scheduler_history_cache: Vec<crate::ai::scheduler::ExecutionRecord>,
     /// SQLite persistence store (memory FTS5, audit logs, budget tracking).
@@ -173,11 +72,6 @@ pub(crate) struct AppState {
     /// Channel manager orchestrating all registered channels.
     /// `None` when Claw mode is disabled.
     pub(crate) channel_manager: Option<crate::channels::ChannelManager>,
-    /// UI state for the Channels settings section.
-    pub(crate) channels_ui_state: crate::ui::settings::channels::ChannelsSettingsState,
-    /// Onboarding wizard state (visible when first enabling Claw with no channels).
-    pub(crate) onboarding_wizard_state:
-        Option<crate::ui::settings::onboarding::OnboardingWizardState>,
     /// Shared system keychain secret store (single instance to avoid
     /// repeated OS permission dialogs).
     pub(crate) secret_store: Arc<crate::services::secret::SecretStore>,
@@ -221,5 +115,77 @@ pub(crate) struct AppState {
     pub(crate) cursor_visible: bool,
 }
 
-/// Unique webview tab identifier.
-pub(super) type WebviewId = u32;
+impl AppState {
+    /// Split `&mut AppState` into `(&mut Ui, AppCtx)` so that UI dispatch
+    /// methods can hold `&mut self` on `Ui` while accessing non-UI state
+    /// through `AppCtx`.
+    pub(crate) fn split_ui(&mut self) -> (&mut crate::ui::Ui, crate::ui::model::AppCtx<'_>) {
+        let cell_size = self.ui.frame.terminal.cell_size;
+        (
+            &mut self.ui,
+            crate::ui::model::AppCtx {
+                config: &mut self.config,
+                ui_state: &mut self.ui_state,
+                cell_size,
+                sessions: &mut self.sessions,
+                next_id: &mut self.next_id,
+                scheduler: &mut self.scheduler,
+                runtime: &self.runtime,
+                proxy: &self.proxy,
+                session_chats: &mut self.session_chats,
+                llm_client: &mut self.llm_client,
+                token_counter: &mut self.token_counter,
+                skill_registry: &mut self.skill_registry,
+                profile_manager: &self.profile_manager,
+                agent_registry: &mut self.agent_registry,
+                skills_manager: &self.skills_manager,
+                loaded_external_skills: &mut self.loaded_external_skills,
+                db_store: &self.db_store,
+                secret_store: &self.secret_store,
+                applied_sandbox_policy: &self.applied_sandbox_policy,
+                pending_results: &mut self.pending_results,
+                task_store: &mut self.task_store,
+                scheduler_history_cache: &self.scheduler_history_cache,
+                channel_manager: &mut self.channel_manager,
+                channel_messages: &self.channel_messages,
+                frame_count: &mut self.frame_count,
+                prev_grid_sizes: &mut self.prev_grid_sizes,
+                cursor_visible: self.cursor_visible,
+            },
+        )
+    }
+
+    /// Top-level UI-action dispatch — entry point for call sites in `app/` that
+    /// hold `&mut AppState`.  Splits into `(Ui, AppCtx)` and delegates.
+    pub(crate) fn dispatch_ui_action(&mut self, action: UiAction, event_loop: &ActiveEventLoop) {
+        let (ui, mut ctx) = self.split_ui();
+        ui.handle_ui_action(&mut ctx, action, event_loop);
+    }
+
+    /// Top-level colon-command dispatch.  Commands that need full `AppState`
+    /// (`:ollama`, `:credentials`) are dispatched *before* the split; everything
+    /// else goes through `Ui::handle_colon_command`.
+    pub(crate) fn dispatch_colon_command(&mut self, cmd: &str, event_loop: &ActiveEventLoop) {
+        let cmd = cmd.trim();
+        let cmd = cmd.strip_prefix(':').unwrap_or(cmd);
+
+        // ── Commands that require full AppState ──────────────────────
+        if let Some(args) = cmd.strip_prefix("ollama") {
+            let args = args.strip_prefix(' ').unwrap_or(args);
+            crate::app::commands::ollama::handle_ollama_command(self, args);
+            return;
+        }
+        if let Some(args) = cmd
+            .strip_prefix("credentials")
+            .or_else(|| cmd.strip_prefix("creds"))
+        {
+            let args = args.strip_prefix(' ').unwrap_or(args);
+            crate::app::commands::credentials::handle_credentials_command(self, args);
+            return;
+        }
+
+        // ── Everything else — split and route through Ui method ──────
+        let (ui, mut ctx) = self.split_ui();
+        ui.handle_colon_command(&mut ctx, cmd, event_loop);
+    }
+}

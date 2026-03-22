@@ -398,7 +398,7 @@ fn handle_ollama_use(state: &mut AppState, model: &str) {
     // Update prompt editors to show the new active model.
     if let Some(ref client) = state.llm_client {
         let seed = client.current_model_item();
-        for pe in state.prompt_editors.values_mut() {
+        for pe in state.ui_state.prompt_editors.values_mut() {
             // Find index of matching model, or prepend.
             if let Some(idx) = pe
                 .model_items
@@ -440,7 +440,7 @@ fn handle_ollama_help(state: &mut AppState) {
 
 /// Get the active chat session's terminal SessionId for info message routing.
 fn active_chat_session_id(state: &AppState) -> Option<SessionId> {
-    crate::ui::tiles::active_terminal_session(&state.tile_tree)
+    crate::ui::tiles::active_terminal_session(&state.ui.tile_tree)
 }
 
 /// Format an Ollama error into a user-friendly message with installation instructions.

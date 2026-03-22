@@ -1,133 +1,174 @@
-//! Browser view widget (§5) and browser view overlay (§3.1).
+//! Browser model, view widget, and overlay positioning.
 //!
-//! - [`BrowserOverlay`]: overlay sizing/positioning + hit-testing + user agent
-//! - [`AddressBarWidget`]: shared address bar for docked & overlay (§5)
+//! - [`Browser`]: converged model owning the native webview + `AddressBarState`
+//! - [`BrowserView`]: unified address-bar widget (container-agnostic)
+//! - [`BrowserOverlay`]: overlay sizing/positioning on the main egui surface
+//! - [`BrowserManager`]: z-order tracker for browser windows
+//! - [`BrowserTab`]: per-browser-tab state
+//! - [`ZLayer`] / [`BrowserEntry`]: z-layer metadata
 
-use crate::ui::i18n::t;
+use std::collections::HashMap;
 
 use super::actions::UiAction;
-use super::icons::{self, Icon};
+use super::i18n::t;
+use super::icons::{Icon, IconButtonCfg, icon_button};
 use super::styles::Styles;
-use super::types::BrowserViewMode;
-use super::widget::{Fragment, Widget};
+use super::types::AddressBarState;
 
-// ─── Browser Icon Buttons (SVG icon-based) ─────────────────────────────────
+use crate::renderer::terminal::SessionId;
+use crate::renderer::viewport::Viewport;
+use crate::renderer::webview::Webview;
 
-/// Icon types for browser address bar buttons.
-pub enum BrowserIcon {
-    Back,
-    Forward,
-    Refresh,
-    SplitHorizontal,
-    SplitVertical,
-    OpenAsTab,
-    #[allow(dead_code)]
-    PopOut,
-    ExternalLink,
-    Close,
+// ─── Browser Model ──────────────────────────────────────────────────────────
+
+/// Converged browser model: owns the native webview delegate (`BrowserView`)
+/// and the egui address-bar state.  Container-agnostic — works the same
+/// whether hosted in a docked tile pane or a floating `Modal` overlay.
+pub struct Browser {
+    pub id: u32,
+    pub title: String,
+    pub url: String,
+    pub view: Webview,
+    pub address_bar: AddressBarState,
 }
 
-impl BrowserIcon {
-    /// Map to the corresponding SVG icon.
-    fn to_svg_icon(&self) -> Icon {
-        match self {
-            BrowserIcon::Back => Icon::ArrowLeft,
-            BrowserIcon::Forward => Icon::ArrowRight,
-            BrowserIcon::Refresh => Icon::Refresh,
-            BrowserIcon::SplitHorizontal => Icon::SplitHorizontal,
-            BrowserIcon::SplitVertical => Icon::SplitVertical,
-            BrowserIcon::OpenAsTab => Icon::OpenInProduct,
-            BrowserIcon::PopOut => Icon::ChromeMaximize,
-            BrowserIcon::ExternalLink => Icon::Globe,
-            BrowserIcon::Close => Icon::Close,
+impl Browser {
+    /// Create a new browser, constructing the underlying wry webview
+    /// as a child of `parent`.
+    pub fn new(
+        id: u32,
+        parent: &impl raw_window_handle::HasWindowHandle,
+        url: &str,
+        viewport: Viewport,
+    ) -> Result<Self, String> {
+        let view = Webview::new(parent, url, viewport)?;
+        Ok(Self {
+            id,
+            title: String::new(),
+            url: url.to_string(),
+            view,
+            address_bar: AddressBarState::new(url),
+        })
+    }
+
+    // ── Navigation ──────────────────────────────────────────────────────
+
+    /// Navigate to `url`, updating all internal state.
+    pub fn navigate(&mut self, url: &str) {
+        self.view.navigate(url);
+        self.url = url.to_string();
+        self.address_bar.update_url(url);
+    }
+
+    pub fn go_back(&self) {
+        let _ = self.view.webview.evaluate_script("window.history.back()");
+    }
+
+    pub fn go_forward(&self) {
+        let _ = self
+            .view
+            .webview
+            .evaluate_script("window.history.forward()");
+    }
+
+    pub fn refresh(&self) {
+        self.view.navigate(&self.url);
+    }
+
+    // ── Per-frame sync ──────────────────────────────────────────────────
+
+    /// Drain navigated-URL changes from the webview and update both
+    /// `self.url` and `self.address_bar`.
+    /// Returns the new URL if one was received (for tile-tree sync).
+    pub fn sync_nav_url(&mut self) -> Option<String> {
+        if let Some(nav_url) = self.view.drain_nav_url() {
+            self.url = nav_url.clone();
+            self.address_bar.update_url(&nav_url);
+            Some(nav_url)
+        } else {
+            None
+        }
+    }
+
+    /// Drain document-title changes.
+    /// Returns the new title if one was received.
+    pub fn sync_title(&mut self) -> Option<String> {
+        if let Some(new_title) = self.view.drain_title_change() {
+            self.title = new_title.clone();
+            Some(new_title)
+        } else {
+            None
         }
     }
 }
 
-// ─── Webview overlay ────────────────────────────────────────────────────────
+// ─── BrowserView (unified address bar widget) ─────────────────────────────
 
-/// Browser overlay panel widget — wraps `draw_webview_overlay`.
-pub struct BrowserOverlay;
+use crate::ui::widget::{Fragment, Widget};
 
-impl Widget for BrowserOverlay {
-    /// Draw the floating webview overlay frame (border + shadow only).
-    ///
-    /// The address bar browser is rendered exclusively by the overlay child window's
-    /// `render_browser()` in child_gpu.rs (three-layer architecture).
-    /// This function only renders the decorative border/shadow backdrop on the main
-    /// window egui surface, and computes positioning rects for the child panel.
-    fn render<'a>(&mut self, #[allow(unused)] mut f: Fragment<'a, egui::Context>) {
-        let ctx = f.ctx();
-        let (styles, ui_state) = (f.styles, &mut *f.ui_state);
-        let is_overlay = ui_state
-            .active_webview_id
-            .and_then(|wid| {
-                ui_state
-                    .tabs
-                    .iter()
-                    .find(|t| t.is_webview() && t.id() == wid)
-            })
-            .is_some_and(|t| {
-                matches!(
-                    t,
-                    crate::ui::types::TabInfo::BrowserView {
-                        mode: BrowserViewMode::Overlay,
-                        ..
-                    }
-                )
-            });
+/// Unified browser‐view widget: address bar (navigation + URL + action buttons).
+///
+/// Container‐agnostic — works the same whether drawn inside a docked tile
+/// pane or a floating `Modal` overlay.  Callers provide a `&mut egui::Ui`
+/// that is already in a horizontal layout with the desired bar height.
+pub struct BrowserView<'a> {
+    pub webview_id: u32,
+    pub url: &'a mut String,
+    pub editing: &'a mut bool,
+    /// When true, right-side action buttons are hidden (shown in tab bar instead).
+    pub docked: bool,
+}
 
-        if !is_overlay {
-            ui_state.overlay_content_rect = None;
-            ui_state.overlay_panel_rect = None;
-            return;
-        }
-
-        let screen = ctx.screen_rect();
-        let pop_w = (screen.width() * 0.80)
-            .min(screen.width() - 40.0)
-            .max(300.0);
-        let pop_h = (screen.height() * 0.70)
-            .min(screen.height() - 80.0)
-            .max(200.0);
-        let address_bar_h = styles.address_bar_height();
-        let bw = styles.sizes.border;
-
-        // Pure sizing/positioning calculator — NO visual rendering.
-        // Border stroke is rendered by the child window's render_browser();
-        // shadow is provided by the native platform (NSPanel.setHasShadow(true)).
-        // We use an invisible egui::Area only to compute centered rects.
-        egui::Area::new(egui::Id::new("webview_overlay_area"))
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .order(egui::Order::Foreground)
-            .interactable(false)
-            .show(ctx, |ui| {
-                // Invisible frame — no fill, no stroke, no shadow.
-                let _frame_resp = egui::Frame::new()
-                    .fill(egui::Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::NONE)
-                    .inner_margin(egui::Margin::same(0))
+impl BrowserView<'_> {
+    fn draw<'a>(&mut self, ui: &'a mut egui::Ui, mut ctx: super::widget::Context<'a>) {
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), ctx.styles.address_bar_height()),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::same(ctx.styles.spacing.medium as i8))
                     .show(ui, |ui| {
-                        ui.set_width(pop_w);
-                        ui.set_height(pop_h);
+                        ui.set_width(ui.available_width());
+                        ui.horizontal_centered(|ui| {
+                            ctx.bind::<egui::Ui>(ui).add(AddressBarWidget {
+                                close_webview_id: self.webview_id,
+                                editing: self.editing,
+                                url: self.url,
+                                docked: self.docked,
+                            })
+                        });
                     });
+            },
+        );
+    }
+}
 
-                // Derive overlay rects from the invisible frame's position.
-                let wr = _frame_resp.response.rect;
-
-                // Full overlay panel rect (child window occupies this space).
-                ui_state.overlay_panel_rect = Some([wr.min.x, wr.min.y, wr.width(), wr.height()]);
-
-                // Content rect (webview area, below address bar, inset from borders).
-                // The y-offset still accounts for address_bar_h because the child
-                // window's browser occupies that space at the top of the panel.
-                ui_state.overlay_content_rect = Some([
-                    wr.min.x + bw,
-                    wr.min.y + bw + address_bar_h,
-                    pop_w,
-                    pop_h - address_bar_h,
-                ]);
+impl Widget<egui::Context> for BrowserView<'_> {
+    fn render_with_context<'a>(
+        &mut self,
+        #[allow(unused)] ui: <egui::Context as super::widget::Painter>::Ref<'a>,
+        #[allow(unused)] mut ctx: super::widget::Context<'a>,
+    ) {
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(ctx.colors.bg_float)
+                    .corner_radius(egui::CornerRadius::same(ctx.styles.radii.md as u8))
+                    .inner_margin(egui::Margin::same(0)),
+            )
+            .show(ui, |ui| {
+                self.draw(ui, ctx);
             });
+    }
+}
+
+impl Widget<egui::Ui> for BrowserView<'_> {
+    fn render_with_context<'a>(
+        &mut self,
+        #[allow(unused)] ui: <egui::Ui as super::widget::Painter>::Ref<'a>,
+        #[allow(unused)] mut ctx: super::widget::Context<'a>,
+    ) {
+        self.draw(ui, ctx);
     }
 }
 
@@ -140,36 +181,7 @@ pub enum AddrBarButton {
     UrlField,
 }
 
-impl BrowserOverlay {
-    /// OS-specific browser User-Agent string.
-    /// Returns a Safari UA on macOS, Edge UA on Windows, Firefox UA on Linux.
-    /// Pass this to `wry::WebViewBuilder::with_user_agent()` when constructing the
-    /// native webview so sites receive a standard desktop-browser fingerprint.
-    pub fn browser_user_agent() -> &'static str {
-        #[cfg(target_os = "macos")]
-        {
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) \
-             AppleWebKit/605.1.15 (KHTML, like Gecko) \
-             Version/17.5 Safari/605.1.15"
-        }
-        #[cfg(target_os = "windows")]
-        {
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
-             AppleWebKit/537.36 (KHTML, like Gecko) \
-             Chrome/131.0.0.0 Safari/537.36 \
-             Edg/131.0.0.0"
-        }
-        #[cfg(target_os = "linux")]
-        {
-            "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) \
-             Gecko/20100101 Firefox/133.0"
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-        {
-            "Mozilla/5.0 (Unknown; rv:133.0) Gecko/20100101 Firefox/133.0"
-        }
-    }
-
+impl BrowserView<'_> {
     /// Hit-test a click inside the address bar area.
     /// `lx` / `ly` are local coords relative to (bar_x, bar_y).
     pub fn address_bar_hit(
@@ -236,29 +248,8 @@ pub struct AddressBarWidget<'a> {
     pub url: &'a mut String,
     pub editing: &'a mut bool,
     pub close_webview_id: u32,
-    pub tooltip: &'a mut Option<crate::ui::types::TooltipRequest>,
-}
-
-impl AddressBarWidget<'_> {
-    /// Draw a custom browser icon button using the Painter API.
-    fn browser_icon_button(
-        ui: &mut egui::Ui,
-        icon: BrowserIcon,
-        hover_text: &str,
-        styles: &Styles,
-    ) -> egui::Response {
-        icons::icon_button(
-            ui,
-            icons::IconButtonCfg {
-                icon: icon.to_svg_icon(),
-                tooltip: hover_text,
-                base_color: ui.visuals().weak_text_color(),
-                hover_color: ui.visuals().text_color(),
-                pixel_size: styles.typography.title5,
-                margin: styles.spacing.small,
-            },
-        )
-    }
+    /// When true, right-side action buttons are hidden (docked mode).
+    pub docked: bool,
 }
 
 impl super::widget::Widget<egui::Ui> for AddressBarWidget<'_> {
@@ -267,13 +258,28 @@ impl super::widget::Widget<egui::Ui> for AddressBarWidget<'_> {
     /// works from both UiState (overlay) and Behavior (docked tile).
     fn render<'a>(&mut self, #[allow(unused)] mut f: Fragment<'a, egui::Ui>) {
         let styles = f.styles;
-        let Self { tooltip, .. } = self;
-        let ui = f.ui();
+        let ui = &mut *f.painter;
+        let tooltip = &mut f.dirties.float_tooltip;
 
         let mut actions = Vec::new();
 
         let close_webview_id = self.close_webview_id;
+        let icon_size = styles.typography.title5;
+        let small_sp = styles.spacing.small;
 
+        let icon_btn = |ui: &mut egui::Ui, icon: Icon| -> egui::Response {
+            icon_button(
+                ui,
+                IconButtonCfg {
+                    icon,
+                    tooltip: "",
+                    base_color: ui.visuals().weak_text_color(),
+                    hover_color: ui.visuals().text_color(),
+                    pixel_size: icon_size,
+                    margin: small_sp,
+                },
+            )
+        };
         // Helper: check hover and build a TooltipRequest in main-window-logical coords.
         // Docked address bar tooltips are routed through the FloatPanel (a separate
         // NSPanel window) so they render above the native WKWebView/WebView2.
@@ -293,26 +299,27 @@ impl super::widget::Widget<egui::Ui> for AddressBarWidget<'_> {
             };
 
         // Navigation buttons — pass "" to icon_button to suppress egui built-in tooltip.
-        let back = Self::browser_icon_button(ui, BrowserIcon::Back, "", styles);
+        let back = icon_btn(ui, Icon::ArrowLeft);
         check_hover(&back, t("browser.back"), tooltip);
         if back.clicked() {
             actions.push(UiAction::WebviewBack(close_webview_id));
         }
-        let fwd = Self::browser_icon_button(ui, BrowserIcon::Forward, "", styles);
+        let fwd = icon_btn(ui, Icon::ArrowRight);
         check_hover(&fwd, t("browser.forward"), tooltip);
         if fwd.clicked() {
             actions.push(UiAction::WebviewForward(close_webview_id));
         }
-        let refresh = Self::browser_icon_button(ui, BrowserIcon::Refresh, "", styles);
+        let refresh = icon_btn(ui, Icon::Refresh);
         check_hover(&refresh, t("browser.refresh"), tooltip);
         if refresh.clicked() {
             actions.push(UiAction::WebviewRefresh(close_webview_id));
         }
 
         // URL input.
+        let right_buttons_width = if self.docked { 0.0 } else { 160.0 };
         let url_response = ui.add(
             egui::TextEdit::singleline(self.url)
-                .desired_width(ui.available_width() - 200.0)
+                .desired_width(ui.available_width() - right_buttons_width)
                 .font(egui::TextStyle::Small)
                 .min_size(egui::vec2(0.0, 22.0))
                 .vertical_align(egui::Align::Center),
@@ -331,34 +338,299 @@ impl super::widget::Widget<egui::Ui> for AddressBarWidget<'_> {
         }
 
         // Right-side action buttons (split, open-as-tab, pop-out, open-system, close).
-        ui.add_space(styles.spacing.medium);
+        // Hidden when docked — these actions are already in the tab bar.
+        if !self.docked {
+            ui.add_space(styles.spacing.medium);
 
-        let split_h = Self::browser_icon_button(ui, BrowserIcon::SplitHorizontal, "", styles);
-        check_hover(&split_h, t("browser.split_horizontal"), tooltip);
-        if split_h.clicked() {
-            actions.push(UiAction::DockWebviewRight);
-        }
-        let split_v = Self::browser_icon_button(ui, BrowserIcon::SplitVertical, "", styles);
-        check_hover(&split_v, t("browser.split_vertical"), tooltip);
-        if split_v.clicked() {
-            actions.push(UiAction::DockWebviewDown);
-        }
-        let tab = Self::browser_icon_button(ui, BrowserIcon::OpenAsTab, "", styles);
-        check_hover(&tab, t("browser.open_as_tab"), tooltip);
-        if tab.clicked() {
-            actions.push(UiAction::WebviewToTab(close_webview_id));
-        }
-        let ext = Self::browser_icon_button(ui, BrowserIcon::ExternalLink, "", styles);
-        check_hover(&ext, t("browser.open_system"), tooltip);
-        if ext.clicked() {
-            actions.push(UiAction::OpenInSystemBrowser);
-        }
-        let close = Self::browser_icon_button(ui, BrowserIcon::Close, "", styles);
-        check_hover(&close, t("browser.close"), tooltip);
-        if close.clicked() {
-            actions.push(UiAction::CloseWebview(close_webview_id));
-        }
+            let split_h = icon_btn(ui, Icon::SplitHorizontal);
+            check_hover(&split_h, t("browser.split_horizontal"), tooltip);
+            if split_h.clicked() {
+                actions.push(UiAction::DockWebviewRight);
+            }
+            let split_v = icon_btn(ui, Icon::SplitVertical);
+            check_hover(&split_v, t("browser.split_vertical"), tooltip);
+            if split_v.clicked() {
+                actions.push(UiAction::DockWebviewDown);
+            }
+            let tab = icon_btn(ui, Icon::OpenInProduct);
+            check_hover(&tab, t("browser.open_as_tab"), tooltip);
+            if tab.clicked() {
+                actions.push(UiAction::WebviewToTab(close_webview_id));
+            }
+            let ext = icon_btn(ui, Icon::Globe);
+            check_hover(&ext, t("browser.open_system"), tooltip);
+            if ext.clicked() {
+                actions.push(UiAction::OpenInSystemBrowser);
+            }
+            let close = icon_btn(ui, Icon::Close);
+            check_hover(&close, t("browser.close"), tooltip);
+            if close.clicked() {
+                actions.push(UiAction::CloseWebview(close_webview_id));
+            }
+        } // !docked
 
         f.dirties.actions.extend(actions);
+    }
+}
+
+// ─── Browser Tab & Z-Order Management ────────────────────────────────────────
+
+/// Unique browser identifier (same as `BrowserTab::browser.id`).
+pub type BrowserId = u32;
+
+/// A single browser tab entry.
+pub struct BrowserTab {
+    pub browser: Browser,
+    /// Display mode: Overlay (floating) or Docked (split).
+    pub mode: super::types::BrowserViewMode,
+    /// Terminal session this overlay is paired with (if any).
+    pub paired_session: Option<SessionId>,
+    /// Docked webview ID this overlay is paired with (if opened from a webview tab).
+    pub paired_webview: Option<BrowserId>,
+    /// Optional overlay window for z-ordering + browser chrome rendering.
+    /// On Linux, overlays fall back to the main window surface.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub overlay: Option<super::overlay::Modal>,
+    /// Overlay's logical position (x, y) relative to the main window content area.
+    /// Used to convert overlay-local tooltip coordinates to main-window coordinates.
+    pub overlay_origin: (f32, f32),
+}
+
+/// The layer a browser occupies in the z-order stack.
+///
+/// Docked browsers are native child views of the main window and sit above
+/// the wgpu surface (Metal / DX12 layer).  Overlay browsers live in
+/// platform child windows (NSPanel / owned popup) that float ABOVE docked
+/// views.  Independent overlays live in their own child window and may host
+/// their own egui pass for rendering browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZLayer {
+    /// Docked as a tile split — native child view of the main window.
+    Docked,
+    /// Floating overlay — lives in a child window above docked views.
+    Overlay,
+    /// Independent overlay — lives in its own child window, may have its
+    /// own egui integration for rendering browser (address bar, etc.).
+    Independent,
+}
+
+/// Per-browser metadata stored in the manager.
+pub struct BrowserEntry {
+    pub id: BrowserId,
+    pub layer: ZLayer,
+    /// For independent overlays: optional egui context for rendering
+    /// UI browser within the child window.
+    pub independent_egui: Option<IndependentEguiCtx>,
+}
+
+/// Egui context for an independent overlay window.
+///
+/// This allows rendering egui widgets (address bar, buttons) inside the
+/// child window, on top of the browser.
+#[allow(dead_code)]
+#[derive(Default)]
+pub struct IndependentEguiCtx {
+    pub ctx: egui::Context,
+    /// Address bar state for this independent overlay.
+    pub address_bar_url: String,
+    pub address_bar_editing: bool,
+}
+
+/// Lightweight z-order tracker for browser windows.
+///
+/// Works alongside the existing `browser_tabs: Vec<BrowserTab>` — does NOT
+/// own `BrowserView` instances.  Register browser IDs after creating them,
+/// and use the z-order API to manage overlay stacking.
+#[derive(Default)]
+pub struct BrowserManager {
+    /// Per-browser metadata.
+    entries: HashMap<BrowserId, BrowserEntry>,
+    /// IDs of overlay/independent browsers sorted by activation order
+    /// (most recently activated last = topmost).
+    overlay_z_stack: Vec<BrowserId>,
+}
+
+impl BrowserManager {
+    // ── Registration ────────────────────────────────────────────────────
+
+    /// Register a webview ID with a given layer.
+    pub fn register(&mut self, id: BrowserId, layer: ZLayer) {
+        let entry = BrowserEntry {
+            id,
+            layer,
+            independent_egui: if layer == ZLayer::Independent {
+                Some(IndependentEguiCtx::default())
+            } else {
+                None
+            },
+        };
+        self.entries.insert(id, entry);
+        if layer == ZLayer::Overlay || layer == ZLayer::Independent {
+            self.overlay_z_stack.push(id);
+        }
+    }
+
+    /// Unregister a webview ID.
+    pub fn unregister(&mut self, id: BrowserId) {
+        self.entries.remove(&id);
+        self.overlay_z_stack.retain(|&wid| wid != id);
+    }
+
+    /// Get the layer for a webview.
+    #[allow(dead_code)]
+    pub fn layer(&self, id: BrowserId) -> Option<ZLayer> {
+        self.entries.get(&id).map(|e| e.layer)
+    }
+
+    /// Get the entry for a webview.
+    #[allow(dead_code)]
+    pub fn get(&self, id: BrowserId) -> Option<&BrowserEntry> {
+        self.entries.get(&id)
+    }
+
+    /// Get mutable entry.
+    #[allow(dead_code)]
+    pub fn get_mut(&mut self, id: BrowserId) -> Option<&mut BrowserEntry> {
+        self.entries.get_mut(&id)
+    }
+
+    // ── Z-order management ──────────────────────────────────────────────
+
+    /// Bring an overlay/independent browser to the top of the z-stack.
+    pub fn bring_to_front(&mut self, id: BrowserId) -> &[BrowserId] {
+        if let Some(entry) = self.entries.get(&id)
+            && entry.layer == ZLayer::Docked
+        {
+            return &self.overlay_z_stack;
+        }
+        self.overlay_z_stack.retain(|&wid| wid != id);
+        self.overlay_z_stack.push(id);
+        &self.overlay_z_stack
+    }
+
+    /// Get the topmost overlay browser ID (if any are visible).
+    #[allow(dead_code)]
+    pub fn topmost_overlay(&self) -> Option<BrowserId> {
+        self.overlay_z_stack.last().copied()
+    }
+
+    /// Get the overlay z-stack (bottom to top order).
+    #[allow(dead_code)]
+    pub fn overlay_stack(&self) -> &[BrowserId] {
+        &self.overlay_z_stack
+    }
+
+    /// Remove a browser from the z-stack (e.g. when hiding it).
+    #[allow(dead_code)]
+    pub fn remove_from_z_stack(&mut self, id: BrowserId) {
+        self.overlay_z_stack.retain(|&wid| wid != id);
+    }
+
+    /// Add to z-stack if not already present (e.g. when showing it).
+    #[allow(dead_code)]
+    pub fn add_to_z_stack(&mut self, id: BrowserId) {
+        if let Some(entry) = self.entries.get(&id)
+            && entry.layer != ZLayer::Docked
+            && !self.overlay_z_stack.contains(&id)
+        {
+            self.overlay_z_stack.push(id);
+        }
+    }
+
+    // ── Layer transitions ───────────────────────────────────────────────
+
+    /// Promote a docked webview to an overlay (floating) layer.
+    #[allow(dead_code)]
+    pub fn promote_to_overlay(&mut self, id: BrowserId) {
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.layer = ZLayer::Overlay;
+        }
+        if !self.overlay_z_stack.contains(&id) {
+            self.overlay_z_stack.push(id);
+        }
+    }
+
+    /// Demote an overlay browser to a docked (tile split) layer.
+    #[allow(dead_code)]
+    pub fn demote_to_docked(&mut self, id: BrowserId) {
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.layer = ZLayer::Docked;
+            entry.independent_egui = None;
+        }
+        self.overlay_z_stack.retain(|&wid| wid != id);
+    }
+
+    /// Promote an overlay to an independent overlay with its own egui context.
+    #[allow(dead_code)]
+    pub fn promote_to_independent(&mut self, id: BrowserId) {
+        self.promote_to_independent_with_url(id, "");
+    }
+
+    /// Promote to independent and initialize the address bar with a URL.
+    pub fn promote_to_independent_with_url(&mut self, id: BrowserId, url: &str) {
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.layer = ZLayer::Independent;
+            if entry.independent_egui.is_none() {
+                entry.independent_egui = Some(IndependentEguiCtx {
+                    address_bar_url: url.to_string(),
+                    ..IndependentEguiCtx::default()
+                });
+            }
+        }
+        if !self.overlay_z_stack.contains(&id) {
+            self.overlay_z_stack.push(id);
+        }
+    }
+
+    // ── Queries ─────────────────────────────────────────────────────────
+
+    /// All docked browser IDs.
+    #[allow(dead_code)]
+    pub fn docked_ids(&self) -> Vec<BrowserId> {
+        self.entries
+            .values()
+            .filter(|e| e.layer == ZLayer::Docked)
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// All overlay browser IDs (Overlay + Independent).
+    #[allow(dead_code)]
+    pub fn overlay_ids(&self) -> Vec<BrowserId> {
+        self.entries
+            .values()
+            .filter(|e| e.layer == ZLayer::Overlay || e.layer == ZLayer::Independent)
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// All independent browser IDs.
+    #[allow(dead_code)]
+    pub fn independent_ids(&self) -> Vec<BrowserId> {
+        self.entries
+            .values()
+            .filter(|e| e.layer == ZLayer::Independent)
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// Whether a browser is in the independent layer.
+    #[allow(dead_code)]
+    pub fn is_independent(&self, id: BrowserId) -> bool {
+        self.entries
+            .get(&id)
+            .is_some_and(|e| e.layer == ZLayer::Independent)
+    }
+
+    /// Number of tracked browsers.
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether there are no tracked browsers.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }

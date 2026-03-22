@@ -1,18 +1,65 @@
 pub mod atlas;
 pub mod bridge;
 pub mod cursor;
-pub mod egui_pass;
-pub mod overlay;
-pub mod panels;
+pub mod egui;
 pub mod platform;
 pub mod quad;
 pub mod scheduler;
 pub mod terminal;
 pub mod text;
 pub mod webview;
+pub mod viewport;
+
+// windowing
+pub mod frame;
+pub mod overlay;
+pub mod panel;
 
 use std::sync::Arc;
 use winit::window::Window;
+
+use crate::renderer::atlas::TerminalOutput;
+
+// ── Renderer trait ──────────────────────────────────────────────────────────
+
+pub trait Renderer {
+    type Context<'a>;
+
+    /// Resize the GPU surface.
+    fn resize(&mut self, width: u32, height: u32, scale: f32);
+    /// Whether the renderer is currently visible.
+    fn is_visible(&self) -> bool;
+    /// Show or hide the renderer.
+    fn set_visible(&mut self, visible: bool);
+
+    /// Low-level GPU submit: acquire surface texture, run `f` with the
+    /// render context, then present.
+    fn submit<U, F>(&mut self, f: F) -> Result<U, wgpu::SurfaceError>
+    where
+        F: FnOnce(Self::Context<'_>) -> U;
+
+    /// Run egui's CPU pass only (no GPU work).
+    ///
+    /// Calls `egui::Context::run(raw_input, run_ui)` and returns the
+    /// full output.  The caller can then inspect / transform the output
+    /// via [`EguiLifecycle::manipulate_full_output`] before handing it to
+    /// [`present_egui`](Renderer::present_egui).
+    fn run_ui<F>(&mut self, raw_input: ::egui::RawInput, run_ui: F) -> ::egui::FullOutput
+    where
+        F: FnMut(&::egui::Context);
+
+    /// GPU submit: optional clear pass + tessellate + egui render + present.
+    ///
+    /// Consumes the `FullOutput` produced by [`run_ui`](Renderer::run_ui)
+    /// (possibly transformed by [`EguiLifecycle::manipulate_full_output`]).
+    fn present(
+        &mut self,
+        full_output: ::egui::FullOutput,
+        clear_color: Option<wgpu::Color>,
+        extra_textures: Option<::egui::TexturesDelta>,
+        terminal_output: Option<TerminalOutput>,
+    ) -> Result<::egui::PlatformOutput, wgpu::SurfaceError>;
+}
 
 /// wgpu device, surface, and pipeline setup.
 pub struct GpuContext {

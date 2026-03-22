@@ -417,8 +417,7 @@ impl ChannelsSettingsState {
 
                 // Flash status message (save).
                 if let Some((ref msg, saved_at)) = self.instances[idx].save_status {
-                    let now = ui.ctx().input(|i| i.time);
-                    if now - saved_at < 3.0 {
+                    if saved_at.elapsed().as_secs_f64() < 3.0 {
                         ui.add_space(styles.spacing.small);
                         let color = if msg.starts_with("Error") {
                             colors.danger
@@ -434,8 +433,7 @@ impl ChannelsSettingsState {
 
             // Test connection result.
             if let Some((ref msg, test_at)) = self.instances[idx].test_status {
-                let now = ui.ctx().input(|i| i.time);
-                if now - test_at < 8.0 {
+                if test_at.elapsed().as_secs_f64() < 8.0 {
                     ui.add_space(styles.spacing.medium);
                     let color = if msg.starts_with("✓") {
                         colors.success

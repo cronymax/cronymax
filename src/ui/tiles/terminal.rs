@@ -6,6 +6,7 @@ use crate::ui::widget::{Dirties, Fragment, Widget};
 /// Stateful widget for rendering terminal/chat panes.
 ///
 /// Persists across frames in `PaneWidgetStore::terminal`.
+#[derive(Debug)]
 pub struct TerminalPane {
     pub session_id: SessionId,
     pub cached_layout: Option<TerminalLayout>,

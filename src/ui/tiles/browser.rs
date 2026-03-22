@@ -6,6 +6,7 @@ use crate::ui::widget::Widget;
 /// Stateful widget for rendering a browser view pane (address bar + content rect).
 ///
 /// Persists across frames in `PaneWidgetStore::browser`.
+#[derive(Debug)]
 pub struct BrowserViewPane {
     pub webview_id: u32,
     /// Current URL — synced from/to `Pane::BrowserView.url` by the Behavior dispatcher.
@@ -27,59 +28,30 @@ impl BrowserViewPane {
     }
 }
 
-/// Temporary view adapting `BrowserViewPane` to `Widget<egui::Ui>`.
-pub struct BrowserPaneView<'a> {
-    pub widget: &'a mut BrowserViewPane,
-}
+impl Widget<egui::Ui> for BrowserViewPane {
+    fn render<'a>(&mut self, #[allow(unused)] mut f: Fragment<'a, egui::Ui>) {
+        let styles = &f.styles;
 
-impl Widget<egui::Ui> for BrowserPaneView<'_> {
-    fn render_with_context<'a>(
-        &mut self,
-        #[allow(unused)] ui: <egui::Ui as crate::ui::widget::Painter>::Ref<'a>,
-        #[allow(unused)] mut ctx: crate::ui::widget::Context<'a>,
-    ) {
-        let styles = ctx.styles;
-
-        let full_rect = ui.available_rect_before_wrap();
-        let bar_h = styles.address_bar_height();
-        let bar_rect =
-            egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), bar_h));
+        let full_rect = f.available_rect_before_wrap();
         let content_rect = egui::Rect::from_min_max(
-            egui::pos2(full_rect.min.x, full_rect.min.y + bar_h),
+            egui::pos2(
+                full_rect.min.x,
+                full_rect.min.y + styles.address_bar_height(),
+            ),
             full_rect.max,
         );
 
-        let webview_id = self.widget.webview_id;
+        let webview_id = self.webview_id;
 
-        ui.allocate_new_ui(
-            egui::UiBuilder::new()
-                .max_rect(bar_rect)
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| {
-                egui::Frame::new()
-                    .fill(egui::Color32::TRANSPARENT)
-                    .inner_margin(egui::Margin::same(styles.spacing.medium as i8))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal_centered(|ui| {
-                            ctx.bind::<egui::Ui>(ui)
-                                .add(crate::ui::browser::AddressBarWidget {
-                                    close_webview_id: webview_id,
-                                    editing: &mut self.widget.editing,
-                                    tooltip: &mut self.widget.tooltip,
-                                    url: &mut self.widget.url,
-                                });
-                        });
-                    });
-            },
-        );
-        let _response = ui.allocate_rect(content_rect, egui::Sense::click_and_drag());
-
-        ctx.dirties.tile_rects.push(TileRect::BrowserView {
+        f.add(crate::ui::browser::BrowserView {
             webview_id,
-            rect: content_rect,
+            url: &mut self.url,
+            editing: &mut self.editing,
+            docked: true,
         });
-        ctx.dirties.tile_rects.push(TileRect::BrowserView {
+        let _response = f.allocate_rect(content_rect, egui::Sense::click_and_drag());
+
+        f.dirties.tile_rects.push(TileRect::BrowserView {
             webview_id,
             rect: content_rect,
         });

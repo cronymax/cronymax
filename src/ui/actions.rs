@@ -1,3 +1,28 @@
+/// Actions that can be triggered by keybindings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyAction {
+    NewChat,
+    NewTerminal,
+    CloseTab,
+    NextTab,
+    PrevTab,
+    SplitVertical,
+    SplitHorizontal,
+    Copy,
+    Paste,
+    FontSizeUp,
+    FontSizeDown,
+    #[allow(dead_code)]
+    ScrollUp,
+    #[allow(dead_code)]
+    ScrollDown,
+    ScrollPageUp,
+    ScrollPageDown,
+    CommandMode,
+    ToggleFilter,
+    ToggleSettings,
+}
+
 /// Actions the UI wants the app to perform.
 #[derive(Debug, Clone)]
 pub enum UiAction {
@@ -10,6 +35,14 @@ pub enum UiAction {
     NewChat,
     /// Create a new terminal tab.
     NewTerminal,
+    /// Create a new terminal tab with a specific shell.
+    NewTerminalWithShell(String),
+    /// Open the history view tab.
+    OpenHistory,
+    /// Open a saved history session in a new chat tab by UUID.
+    OpenHistorySession(String),
+    /// Open a URL in the overlay browser (from markdown link clicks).
+    OpenBrowserOverlay(String),
     /// Switch to webview tab at index (for overlay/docked webviews not in tile tree).
     #[allow(dead_code)]
     SwitchWebview(usize),

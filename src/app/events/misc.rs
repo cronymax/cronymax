@@ -150,14 +150,14 @@ pub(in crate::app) fn handle_misc_event(
         }
         AppEvent::ModelsLoaded { models } => {
             log::info!("ModelsLoaded: received {} models from API", models.len());
-            for pe in state.prompt_editors.values_mut() {
+            for pe in state.ui_state.prompt_editors.values_mut() {
                 pe.model_items = models.clone();
                 pe.selected_model_idx = 0;
             }
             // Also populate available models for the profiles settings UI.
             // Use provider_name() for the grouping key so it matches
             // the display name used in the Profiles provider ComboBox.
-            state.profiles_ui_state.available_models = models
+            state.ui_state.profiles_ui_state.available_models = models
                 .iter()
                 .map(|m| (m.provider_name().to_string(), m.model.clone()))
                 .collect();
@@ -176,17 +176,17 @@ pub(in crate::app) fn handle_misc_event(
             );
             // Find the webview by ID; 0 means "active webview".
             let target_idx = if webview_id != 0 {
-                state.webview_tabs.iter().position(|wt| wt.id == webview_id)
+                state.ui.browser_tabs.iter().position(|wt| wt.browser.id == webview_id)
             } else {
-                if state.webview_tabs.is_empty() {
+                if state.ui.browser_tabs.is_empty() {
                     None
                 } else {
-                    Some(state.active_webview)
+                    Some(state.ui.active_browser)
                 }
             };
             let found = if let Some(idx) = target_idx {
-                if let Some(tab) = state.webview_tabs.get(idx) {
-                    let _ = tab.manager.webview.evaluate_script(&script);
+                if let Some(tab) = state.ui.browser_tabs.get(idx) {
+                    let _ = tab.browser.view.webview.evaluate_script(&script);
                     true
                 } else {
                     false
@@ -355,7 +355,10 @@ pub(in crate::app) fn handle_misc_event(
                 verification_uri
             );
             // Open the GitHub device-verification page in the internal webview.
-            open_webview(state, &verification_uri, _event_loop);
+            {
+                let (ui, mut ctx) = state.split_ui();
+                open_browser(ui, &mut ctx, &verification_uri, _event_loop);
+            }
 
             // Show the device code in the active chat so the user sees it.
             if let Some(sid) = state.ui_state.focused_terminal_session

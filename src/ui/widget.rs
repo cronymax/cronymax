@@ -71,6 +71,9 @@ impl Dirties {
         self.tile_rects.extend(other.tile_rects);
         self.commands.extend(other.commands);
         self.gpu_viewports.extend(other.gpu_viewports);
+        if other.float_tooltip.is_some() {
+            self.float_tooltip = other.float_tooltip;
+        }
     }
 
     #[inline]
@@ -352,7 +355,7 @@ impl<'a> Fragment<'a, egui::Ui> {
     }
 
     /// Access the inner `&mut egui::Ui`.
-    pub fn ui(&mut self) -> &mut egui::Ui {
+    pub fn ui(&mut self) -> & mut egui::Ui {
         &mut *self.painter
     }
 

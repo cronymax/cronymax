@@ -1,4 +1,11 @@
-use super::*;
+//! Custom egui → wgpu 28 renderer.
+//!
+//! Replaces egui-wgpu (which requires wgpu 24) with a direct wgpu 28 render
+//! pipeline for egui's tessellated primitives.
+
+use std::collections::HashMap;
+
+use wgpu::util::DeviceExt;
 
 // ─── Uniform Buffer ──────────────────────────────────────────────────────────
 
@@ -11,7 +18,8 @@ struct Uniforms {
 
 // ─── EguiRenderer (low-level wgpu) ──────────────────────────────────────────
 
-pub(super) struct EguiRenderer {
+pub struct EguiRenderer {
+    pub ctx: egui::Context,
     pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
@@ -21,7 +29,133 @@ pub(super) struct EguiRenderer {
 }
 
 impl EguiRenderer {
-    pub(super) fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
+    /// Create a new integration for the given window and GPU context.
+    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
+        let ctx = egui::Context::default();
+
+        // ── Load system CJK font for Chinese/Japanese/Korean support ──
+        Self::install_cjk_font(&ctx);
+
+        Self::new_standalone(device, surface_format, ctx)
+    }
+
+    /// Load a CJK font into a standalone egui context (no window required).
+    pub fn install_cjk_font_standalone(ctx: &egui::Context) {
+        Self::install_cjk_font(ctx);
+    }
+
+    /// Try to load a system CJK font and install it as a fallback for both
+    /// Proportional and Monospace families. This enables Chinese, Japanese,
+    /// and Korean text rendering in egui (TextEdit, Labels, CommonMark, etc.).
+    fn install_cjk_font(ctx: &egui::Context) {
+        let cjk_paths: &[&str] = &[
+            // macOS
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            // Linux — Noto Sans CJK
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            // Linux — WenQuanYi
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            // Linux — Droid Sans Fallback
+            "/usr/share/fonts/truetype/droid/DroidSansFallback.ttf",
+            // Windows
+            "C:\\Windows\\Fonts\\msyh.ttc",   // Microsoft YaHei
+            "C:\\Windows\\Fonts\\simsun.ttc", // SimSun
+        ];
+
+        for path in cjk_paths {
+            if let Ok(data) = std::fs::read(path) {
+                log::info!("Loaded CJK font: {}", path);
+                let mut fonts = egui::FontDefinitions::default();
+                fonts.font_data.insert(
+                    "cjk_fallback".to_owned(),
+                    std::sync::Arc::new(egui::FontData::from_owned(data)),
+                );
+                // Append CJK font as the LAST fallback for both families.
+                if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                    family.push("cjk_fallback".to_owned());
+                }
+                if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                    family.push("cjk_fallback".to_owned());
+                }
+                ctx.set_fonts(fonts);
+                return;
+            }
+        }
+        log::warn!("No system CJK font found — Chinese/Japanese/Korean text may not render");
+    }
+
+    /// Upload texture changes, then render egui primitives into the given render pass.
+    pub fn render_mut(&mut self, args: EguiRenderArgs<'_>) {
+        // Upload / update textures first
+        for (id, delta) in &args.textures_delta.set {
+            self.update_texture(args.device, args.queue, *id, delta);
+        }
+
+        self.render(
+            args.device,
+            args.queue,
+            args.encoder,
+            args.color_target,
+            args.primitives,
+            &args.screen_descriptor,
+        );
+
+        // Free released textures
+        for id in &args.textures_delta.free {
+            self.free_texture(*id);
+        }
+    }
+
+    /// Whether egui wants keyboard focus (i.e. an input field is active).
+    pub fn wants_keyboard_input(&self) -> bool {
+        self.ctx.wants_keyboard_input()
+    }
+
+    /// Whether egui wants pointer events.
+    pub fn wants_pointer_input(&self) -> bool {
+        self.ctx.wants_pointer_input()
+    }
+}
+
+// ─── Egui Render Args ────────────────────────────────────────────────────────
+
+/// Bundles the arguments for [`EguiIntegration::render`].
+pub struct EguiRenderArgs<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub color_target: &'a wgpu::TextureView,
+    pub primitives: &'a [egui::ClippedPrimitive],
+    pub textures_delta: &'a egui::TexturesDelta,
+    pub screen_descriptor: ScreenDescriptor,
+}
+
+// ─── Screen Descriptor ───────────────────────────────────────────────────────
+
+/// Physical screen dimensions for computing clip rects and NDC transform.
+#[derive(Clone, Copy)]
+pub struct ScreenDescriptor {
+    pub width_px: u32,
+    pub height_px: u32,
+    pub pixels_per_point: f32,
+}
+
+impl EguiRenderer {
+    /// Create a standalone integration without a winit window.
+    ///
+    /// Used for child windows (NSPanel / owned popup) that don't have a
+    /// winit `Window` but still need egui rendering.  Events must be
+    /// fed manually via `egui::RawInput`.
+    pub fn new_standalone(
+        device: &wgpu::Device,
+        surface_format: wgpu::TextureFormat,
+        ctx: egui::Context,
+    ) -> Self {
         // Shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("egui_shader"),
@@ -153,6 +287,7 @@ impl EguiRenderer {
         });
 
         Self {
+            ctx,
             pipeline,
             uniform_buffer,
             uniform_bind_group,
@@ -460,6 +595,3 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return color;
 }
 "#;
-
-// Re-export wgpu::util for buffer_init
-use wgpu::util::DeviceExt;

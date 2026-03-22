@@ -1,6 +1,9 @@
 //! Window and user event handlers extracted from app/mod.rs
 
+use alacritty_terminal::grid::Dimensions;
+
 use crate::app::*;
+use crate::ui::mouse::handle_mouse_click;
 
 pub(in crate::app) fn handle_window_event(
     app: &mut App,
@@ -18,24 +21,19 @@ pub(in crate::app) fn handle_window_event(
     // are captured via the NSEvent local monitor installed in ModalPanel.
     // On Windows, child panels ARE winit windows, so events arrive here.
     #[cfg(target_os = "windows")]
-    if window_id != state.window.id() {
+    if window_id != state.ui.frame.window.id() {
         // Check if this event belongs to any overlay child panel.
         for wt in &state.webview_tabs {
             if wt.mode == BrowserViewMode::Overlay
-                && wt.manager.visible
-                && wt
-                    .manager
-                    .overlay
-                    .as_ref()
-                    .and_then(|o| o.panel.window_id())
-                    == Some(window_id)
+                && wt.browser.view.visible
+                && wt.overlay.as_ref().and_then(|o| o.panel.window_id()) == Some(window_id)
             {
                 // Convert the winit WindowEvent to egui events and push
                 // into the overlay's event buffer for render().
-                let scale = state.window.scale_factor() as f32;
-                let egui_events = winit_event_to_egui(&event, scale);
+                let scale = state.ui.frame.window.scale_factor() as f32;
+                let egui_events = super::winit_event_to_egui(&event, scale);
                 if !egui_events.is_empty()
-                    && let Some(overlay) = &wt.manager.overlay
+                    && let Some(overlay) = &wt.overlay
                 {
                     // Update the persistent last-cursor-pos on PointerMoved
                     // events so PointerButton can use it even after the
@@ -92,9 +90,13 @@ pub(in crate::app) fn handle_window_event(
                         }
                 );
                 if should_activate {
-                    let wid = wt.id;
+                    let wid = wt.browser.id;
                     state.webview_manager.bring_to_front(wid);
-                    if let Some(idx) = state.webview_tabs.iter().position(|wt| wt.id == wid) {
+                    if let Some(idx) = state
+                        .webview_tabs
+                        .iter()
+                        .position(|wt| wt.browser.id == wid)
+                    {
                         state.active_webview = idx;
                         state.ui_state.active_webview = Some(idx);
                     }
@@ -108,7 +110,7 @@ pub(in crate::app) fn handle_window_event(
     // On non-Windows, skip events from popover child/owned windows
     // (macOS NSPanel).  Only process events for the main window.
     #[cfg(not(target_os = "windows"))]
-    if window_id != state.window.id() {
+    if window_id != state.ui.frame.window.id() {
         return;
     }
 
@@ -143,7 +145,7 @@ pub(in crate::app) fn handle_window_event(
 
                 // Save layout snapshot.
                 let snapshot = crate::app::session_persist::serialize_layout(
-                    &state.tile_tree,
+                    &state.ui.tile_tree,
                     &state.session_chats,
                 );
                 if let Err(e) = crate::app::session_persist::save_layout(&snapshot, &profile_dir) {
@@ -156,6 +158,7 @@ pub(in crate::app) fn handle_window_event(
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
                 let entries: Vec<crate::app::session_persist::CommandHistoryEntry> = state
+                    .ui_state
                     .prompt_editors
                     .values()
                     .flat_map(|pe| pe.history.iter())
@@ -174,10 +177,10 @@ pub(in crate::app) fn handle_window_event(
 
             // Explicitly drop all child panels and GPU surfaces to prevent
             // orphaned child windows lingering after the main window closes.
-            for tab in &mut state.webview_tabs {
+            for tab in &mut state.ui.browser_tabs {
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 {
-                    tab.manager.overlay = None;
+                    tab.overlay = None;
                 }
             }
             event_loop.exit();
@@ -193,50 +196,111 @@ pub(in crate::app) fn handle_window_event(
         | ref event @ WindowEvent::Touch(_) => {
             // Always track modifiers regardless of egui consumption.
             if let WindowEvent::ModifiersChanged(new_modifiers) = event {
-                state.modifiers = new_modifiers.state();
+                state.ui.modifiers = new_modifiers.state();
             }
 
             // Always track mouse position.
             if let WindowEvent::CursorMoved { position, .. } = event {
-                state.mouse_x = position.x as f32;
-                state.mouse_y = position.y as f32;
+                state.ui.mouse_x = position.x as f32;
+                state.ui.mouse_y = position.y as f32;
+
+                // ── Update selection during drag ─────────────────────
+                if state.ui.selection_dragging {
+                    let scale = state.ui.frame.window.scale_factor() as f32;
+                    let cell_w = state.ui.frame.terminal.cell_size.width;
+                    let cell_h = state.ui.frame.terminal.cell_size.height;
+                    if cell_w > 0.0 && cell_h > 0.0 {
+                        // Try tile rects first.
+                        let mut updated = false;
+                        for tr in &state.ui.tile_rects {
+                            if let tiles::TileRect::Terminal { rect, .. } = tr {
+                                let px = rect.left() * scale;
+                                let py = rect.top() * scale;
+                                let pw = rect.width() * scale;
+                                let ph = rect.height() * scale;
+                                let mx = state.ui.mouse_x;
+                                let my = state.ui.mouse_y;
+                                if mx >= px && mx < px + pw && my >= py && my < py + ph {
+                                    let col = ((mx - px) / cell_w) as usize;
+                                    let row = ((my - py) / cell_h) as usize;
+                                    if let Some(sel) = &mut state.ui.terminal_selection {
+                                        sel.end_col = col;
+                                        sel.end_row = row;
+                                    }
+                                    updated = true;
+                                    break;
+                                }
+                            }
+                        }
+                        // Fallback: global viewport.
+                        if !updated {
+                            let vp = &state.ui.viewport;
+                            let mx = state.ui.mouse_x;
+                            let my = state.ui.mouse_y;
+                            let col = ((mx - vp.x).max(0.0) / cell_w) as usize;
+                            let row = ((my - vp.y).max(0.0) / cell_h) as usize;
+                            if let Some(sel) = &mut state.ui.terminal_selection {
+                                sel.end_col = col;
+                                sel.end_row = row;
+                            }
+                        }
+                        state.scheduler.mark_dirty();
+                    }
+                }
 
                 // ── Cmd/Ctrl+hover link detection ────────────────────
                 let super_held = if cfg!(target_os = "macos") {
-                    state.modifiers.super_key()
+                    state.ui.modifiers.super_key()
                 } else {
-                    state.modifiers.control_key()
+                    state.ui.modifiers.control_key()
                 };
                 if super_held {
-                    if let Some(sid) = tiles::active_terminal_session(&state.tile_tree)
+                    if let Some(sid) = tiles::active_terminal_session(&state.ui.tile_tree)
                         && let Some(session) = state.sessions.get(&sid)
                     {
-                        let vp = &state.viewport;
-                        let cell = &state.renderer.cell_size;
-                        let px = state.mouse_x - vp.x;
-                        let py = state.mouse_y - vp.y;
+                        let vp = &state.ui.viewport;
+                        let cell = &state.ui.frame.terminal.cell_size;
+                        let px = state.ui.mouse_x - vp.x;
+                        let py = state.ui.mouse_y - vp.y;
                         if px >= 0.0 && py >= 0.0 {
                             let col = (px / cell.width) as usize;
                             let row = (py / cell.height) as usize;
+                            let term = session.state.term();
                             let (grid_cols, _) = vp.grid_dimensions(cell);
-                            let link = crate::renderer::terminal::links::link_at(
-                                session.state.term(),
-                                col,
-                                row,
-                                grid_cols as usize,
-                            );
-                            if link.is_some() {
-                                state.window.set_cursor(winit::window::CursorIcon::Pointer);
+                            let link = if row < term.screen_lines() {
+                                crate::renderer::terminal::links::link_at(
+                                    term,
+                                    col,
+                                    row,
+                                    grid_cols as usize,
+                                )
                             } else {
-                                state.window.set_cursor(winit::window::CursorIcon::Default);
+                                None
+                            };
+                            if link.is_some() {
+                                state
+                                    .ui
+                                    .frame
+                                    .window
+                                    .set_cursor(winit::window::CursorIcon::Pointer);
+                            } else {
+                                state
+                                    .ui
+                                    .frame
+                                    .window
+                                    .set_cursor(winit::window::CursorIcon::Default);
                             }
-                            state.hovered_link = link;
+                            state.ui.hovered_link = link;
                             state.scheduler.mark_dirty();
                         }
                     }
-                } else if state.hovered_link.is_some() {
-                    state.hovered_link = None;
-                    state.window.set_cursor(winit::window::CursorIcon::Default);
+                } else if state.ui.hovered_link.is_some() {
+                    state.ui.hovered_link = None;
+                    state
+                        .ui
+                        .frame
+                        .window
+                        .set_cursor(winit::window::CursorIcon::Default);
                     state.scheduler.mark_dirty();
                 }
             }
@@ -251,7 +315,7 @@ pub(in crate::app) fn handle_window_event(
                 .ui_state
                 .focused_terminal_session
                 .filter(|sid| state.sessions.contains_key(sid))
-                .or_else(|| tiles::active_terminal_session(&state.tile_tree));
+                .or_else(|| tiles::active_terminal_session(&state.ui.tile_tree));
 
             // ── Check app-level keybindings BEFORE egui gets the event ──
             // This ensures Ctrl+Shift+P, etc.
@@ -264,14 +328,15 @@ pub(in crate::app) fn handle_window_event(
                 ..
             } = event
                 && key_ev.state == winit::event::ElementState::Pressed
-                && let Some(action) = match_keybinding(key_ev, &state.modifiers)
+                && let Some(action) = match_keybinding(key_ev, &state.ui.modifiers)
             {
                 // If egui wants keyboard input (e.g. TextEdit focused),
                 // let Copy/Paste pass through to egui instead.
-                let egui_wants = state.egui.wants_keyboard_input();
+                let egui_wants = state.ui.frame.egui.wants_keyboard_input();
                 let is_clipboard_action = matches!(action, Action::Copy | Action::Paste);
                 if !(egui_wants && is_clipboard_action) {
-                    handle_action(state, action);
+                    let (ui, mut ctx) = state.split_ui();
+                    handle_action(ui, &mut ctx, action);
                     return;
                 }
             }
@@ -279,17 +344,17 @@ pub(in crate::app) fn handle_window_event(
             // ── Track IME composition state ─────────────────────────
             match event {
                 WindowEvent::Ime(winit::event::Ime::Enabled) => {
-                    state.ime_enabled = true;
+                    state.ui.ime_enabled = true;
                 }
                 WindowEvent::Ime(winit::event::Ime::Disabled) => {
-                    state.ime_enabled = false;
-                    state.ime_composing = false;
+                    state.ui.ime_enabled = false;
+                    state.ui.ime_composing = false;
                 }
                 WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
-                    state.ime_composing = !text.is_empty();
+                    state.ui.ime_composing = !text.is_empty();
                 }
                 WindowEvent::Ime(winit::event::Ime::Commit(_)) => {
-                    state.ime_composing = false;
+                    state.ui.ime_composing = false;
                 }
                 _ => {}
             }
@@ -297,7 +362,7 @@ pub(in crate::app) fn handle_window_event(
             // ── In Terminal mode: forward keyboard to PTY, skip egui ────
             // egui still gets mouse/cursor events for the tab bar etc.
             let is_terminal = focused_sid
-                .and_then(|sid| state.prompt_editors.get(&sid))
+                .and_then(|sid| state.ui_state.prompt_editors.get(&sid))
                 .is_some_and(|pe| !pe.visible);
             if is_terminal {
                 // Forward IME committed text to PTY.
@@ -312,7 +377,7 @@ pub(in crate::app) fn handle_window_event(
                 }
                 // Let IME preedit/enabled/disabled events pass through to egui.
                 if matches!(event, WindowEvent::Ime(..)) {
-                    state.egui.on_window_event(&state.window, event);
+                    state.ui.frame.on_window_event(event);
                     state.scheduler.mark_dirty();
                     return;
                 }
@@ -321,7 +386,7 @@ pub(in crate::app) fn handle_window_event(
                     let lines = match delta {
                         winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
                         winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                            let cell_h = state.renderer.cell_size.height;
+                            let cell_h = state.ui.frame.terminal.cell_size.height;
                             if cell_h > 0.0 {
                                 pos.y as f32 / cell_h
                             } else {
@@ -349,31 +414,31 @@ pub(in crate::app) fn handle_window_event(
                 {
                     if key_ev.state == winit::event::ElementState::Pressed {
                         // Command mode input in Terminal mode
-                        if state.colon_buf.is_some() {
+                        if state.ui.colon_buf.is_some() {
                             match &key_ev.logical_key {
                                 winit::keyboard::Key::Character(c) => {
-                                    state.colon_buf.as_mut().unwrap().push_str(c.as_str());
+                                    state.ui.colon_buf.as_mut().unwrap().push_str(c.as_str());
                                 }
                                 winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) => {
-                                    state.colon_buf.as_mut().unwrap().push(' ');
+                                    state.ui.colon_buf.as_mut().unwrap().push(' ');
                                 }
                                 winit::keyboard::Key::Named(
                                     winit::keyboard::NamedKey::Backspace,
                                 ) => {
-                                    let buf = state.colon_buf.as_mut().unwrap();
+                                    let buf = state.ui.colon_buf.as_mut().unwrap();
                                     if buf.is_empty() {
-                                        state.colon_buf = None;
+                                        state.ui.colon_buf = None;
                                         log::info!("Command mode cancelled");
                                     } else {
                                         buf.pop();
                                     }
                                 }
                                 winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter) => {
-                                    let cmd = state.colon_buf.take().unwrap();
-                                    handle_colon_command(state, &cmd, event_loop);
+                                    let cmd = state.ui.colon_buf.take().unwrap();
+                                    state.dispatch_colon_command(&cmd, event_loop);
                                 }
                                 winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => {
-                                    state.colon_buf = None;
+                                    state.ui.colon_buf = None;
                                     log::info!("Command mode cancelled");
                                 }
                                 _ => {}
@@ -383,10 +448,12 @@ pub(in crate::app) fn handle_window_event(
                         }
 
                         // Forward to PTY
-                        if let Some(bytes) = input::encode_key(key_ev, &state.modifiers)
+                        if let Some(bytes) = input::encode_key(key_ev, &state.ui.modifiers)
                             && let Some(sid) = focused_sid
                             && let Some(session) = state.sessions.get_mut(&sid)
                         {
+                            // Clear selection when typing into PTY.
+                            state.ui.terminal_selection = None;
                             session.write_to_pty(&bytes);
                         }
                     }
@@ -405,9 +472,9 @@ pub(in crate::app) fn handle_window_event(
             // IME composition.  Also suppress character-key presses when
             // the IME input method is enabled to catch the very first
             // keystroke that arrives *before* the Preedit event.
-            let suppress_for_ime = if state.ime_composing {
+            let suppress_for_ime = if state.ui.ime_composing {
                 matches!(event, WindowEvent::KeyboardInput { .. })
-            } else if state.ime_enabled {
+            } else if state.ui.ime_enabled {
                 matches!(
                     event,
                     WindowEvent::KeyboardInput {
@@ -426,14 +493,14 @@ pub(in crate::app) fn handle_window_event(
                 // Don't give this event to egui at all.
                 false
             } else {
-                state.egui.on_window_event(&state.window, event)
+                state.ui.frame.on_window_event(event)
             };
 
             // In Editor mode: let egui handle keyboard when it has focus
             // (TextEdit captures typing, Enter, etc.)
             // Only mark dirty when egui actually needs a visual update;
             // wants_keyboard_input() alone just gates event routing.
-            if needs_redraw || state.egui.wants_keyboard_input() {
+            if needs_redraw || state.ui.frame.egui.wants_keyboard_input() {
                 if needs_redraw {
                     state.scheduler.mark_dirty();
                 }
@@ -452,29 +519,29 @@ pub(in crate::app) fn handle_window_event(
                 }
 
                 // ── Command mode input ───────────────────────────────
-                if state.colon_buf.is_some() {
+                if state.ui.colon_buf.is_some() {
                     match &key_ev.logical_key {
                         winit::keyboard::Key::Character(c) => {
-                            state.colon_buf.as_mut().unwrap().push_str(c.as_str());
+                            state.ui.colon_buf.as_mut().unwrap().push_str(c.as_str());
                         }
                         winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) => {
-                            state.colon_buf.as_mut().unwrap().push(' ');
+                            state.ui.colon_buf.as_mut().unwrap().push(' ');
                         }
                         winit::keyboard::Key::Named(winit::keyboard::NamedKey::Backspace) => {
-                            let buf = state.colon_buf.as_mut().unwrap();
+                            let buf = state.ui.colon_buf.as_mut().unwrap();
                             if buf.is_empty() {
-                                state.colon_buf = None;
+                                state.ui.colon_buf = None;
                                 log::info!("Command mode cancelled");
                             } else {
                                 buf.pop();
                             }
                         }
                         winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter) => {
-                            let cmd = state.colon_buf.take().unwrap();
-                            handle_colon_command(state, &cmd, event_loop);
+                            let cmd = state.ui.colon_buf.take().unwrap();
+                            state.dispatch_colon_command(&cmd, event_loop);
                         }
                         winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => {
-                            state.colon_buf = None;
+                            state.ui.colon_buf = None;
                             log::info!("Command mode cancelled");
                         }
                         _ => {}
@@ -489,8 +556,8 @@ pub(in crate::app) fn handle_window_event(
                 // TextEdit has focus (returned earlier above).  If we
                 // reach here, no egui widget consumed the event, so the
                 // PTY should receive it.
-                if !state.ime_composing
-                    && let Some(bytes) = input::encode_key(key_ev, &state.modifiers)
+                if !state.ui.ime_composing
+                    && let Some(bytes) = input::encode_key(key_ev, &state.ui.modifiers)
                     && let Some(sid) = focused_sid
                     && let Some(session) = state.sessions.get_mut(&sid)
                 {
@@ -507,28 +574,34 @@ pub(in crate::app) fn handle_window_event(
             {
                 // ── Cmd/Ctrl+click: open hovered link ────────────────
                 let super_held = if cfg!(target_os = "macos") {
-                    state.modifiers.super_key()
+                    state.ui.modifiers.super_key()
                 } else {
-                    state.modifiers.control_key()
+                    state.ui.modifiers.control_key()
                 };
                 if super_held
-                    && let Some(sid) = tiles::active_terminal_session(&state.tile_tree)
+                    && let Some(sid) = tiles::active_terminal_session(&state.ui.tile_tree)
                     && let Some(session) = state.sessions.get(&sid)
                 {
-                    let vp = &state.viewport;
-                    let cell = &state.renderer.cell_size;
-                    let px = state.mouse_x - vp.x;
-                    let py = state.mouse_y - vp.y;
+                    let vp = &state.ui.viewport;
+                    let cell = &state.ui.frame.terminal.cell_size;
+                    let px = state.ui.mouse_x - vp.x;
+                    let py = state.ui.mouse_y - vp.y;
                     if px >= 0.0 && py >= 0.0 {
                         let col = (px / cell.width) as usize;
                         let row = (py / cell.height) as usize;
+                        let term = session.state.term();
                         let (grid_cols, _) = vp.grid_dimensions(cell);
-                        if let Some(link) = crate::renderer::terminal::links::link_at(
-                            session.state.term(),
-                            col,
-                            row,
-                            grid_cols as usize,
-                        ) {
+                        let link = if row < term.screen_lines() {
+                            crate::renderer::terminal::links::link_at(
+                                term,
+                                col,
+                                row,
+                                grid_cols as usize,
+                            )
+                        } else {
+                            None
+                        };
+                        if let Some(link) = link {
                             let url = if link.is_path {
                                 let resolved =
                                     crate::renderer::terminal::links::resolve_path(&link.url);
@@ -537,13 +610,30 @@ pub(in crate::app) fn handle_window_event(
                                 link.url.clone()
                             };
                             log::info!("Opening link: {}", url);
-                            open_webview(state, &url, event_loop);
+                            let (ui, mut ctx) = state.split_ui();
+                            open_browser(ui, &mut ctx, &url, event_loop);
                             return; // consume the click
                         }
                     }
                 }
                 handle_mouse_click(state);
             }
+
+            // ── Handle mouse button release (end selection drag) ─────
+            if let WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            } = event
+                && state.ui.selection_dragging {
+                    state.ui.selection_dragging = false;
+                    // If start == end, treat as a click (no actual selection).
+                    if let Some(sel) = &state.ui.terminal_selection
+                        && sel.start_col == sel.end_col && sel.start_row == sel.end_row {
+                            state.ui.terminal_selection = None;
+                        }
+                    state.scheduler.mark_dirty();
+                }
         }
 
         WindowEvent::Resized(new_size) => {

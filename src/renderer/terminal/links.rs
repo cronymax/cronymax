@@ -3,6 +3,7 @@
 //! Detects URLs (via `linkify`) and file paths (via `regex`) in terminal rows.
 //! Used for Cmd/Ctrl+hover highlighting and Cmd/Ctrl+click navigation.
 
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Term;
 use linkify::{LinkFinder, LinkKind};
 use regex::Regex;
@@ -37,6 +38,12 @@ static FILE_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Extract the text of a single visible row from the terminal grid.
 fn row_text(term: &Term<EventProxy>, row: usize, cols: usize) -> String {
+    // Clamp to actual grid dimensions to prevent out-of-bounds access
+    // when the viewport is larger than the terminal grid (e.g. after resize).
+    if row >= term.screen_lines() {
+        return String::new();
+    }
+    let cols = cols.min(term.columns());
     let grid = term.grid();
     let line = alacritty_terminal::index::Line(row as i32);
     let mut text = String::with_capacity(cols);

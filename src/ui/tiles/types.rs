@@ -85,7 +85,7 @@ use super::terminal::TerminalPane;
 ///
 /// Lives in `TilesPanel`. Passed into `Behavior` as `&mut` each frame.
 /// Widgets are created lazily on first access and destroyed on pane close.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct PaneWidgetStore {
     pub terminal: std::collections::HashMap<SessionId, TerminalPane>,
     pub browser: std::collections::HashMap<u32, BrowserViewPane>,
@@ -131,7 +131,7 @@ impl PaneWidgetStore {
 }
 
 /// Intermediate layout for a terminal pane (content area + input area).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct TerminalLayout {
     pub content_rect: egui::Rect,
     pub input_rect: egui::Rect,

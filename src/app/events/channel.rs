@@ -211,35 +211,35 @@ pub(in crate::app) fn handle_channel_event(
                 status.state
             );
             // Update the matching instance in the channels UI state.
-            if let Some(inst) = state.channels_ui_state.instance_mut(&channel_id) {
+            if let Some(inst) = state.ui_state.channels_ui_state.instance_mut(&channel_id) {
                 inst.connection_state = status.state;
                 inst.last_error = status.last_error.clone();
                 inst.messages_received = status.messages_received;
                 inst.messages_sent = status.messages_sent;
             }
             // Also update legacy flat fields for backward compat.
-            state.channels_ui_state.connection_state = status.state;
-            state.channels_ui_state.last_error = status.last_error.clone();
-            state.channels_ui_state.messages_received = status.messages_received;
-            state.channels_ui_state.messages_sent = status.messages_sent;
+            state.ui_state.channels_ui_state.connection_state = status.state;
+            state.ui_state.channels_ui_state.last_error = status.last_error.clone();
+            state.ui_state.channels_ui_state.messages_received = status.messages_received;
+            state.ui_state.channels_ui_state.messages_sent = status.messages_sent;
             // Mirror connection state to titlebar UI state.
             state.ui_state.channel_connection_state = status.state;
             state.scheduler.mark_dirty();
         }
         AppEvent::ChannelTestResult { success, message } => {
             log::info!("Channel test result: success={}, msg={}", success, message);
-            state.channels_ui_state.testing = false;
+            state.ui_state.channels_ui_state.testing = false;
             let display = if success {
                 format!("✓ {}", message)
             } else {
                 format!("✗ {}", message)
             };
-            state.channels_ui_state.test_status = Some((display, state.egui.ctx.input(|i| i.time)));
+            state.ui_state.channels_ui_state.test_status = Some((display, std::time::Instant::now()));
             state.scheduler.mark_dirty();
         }
         AppEvent::ChannelBotCheckResult { results } => {
             log::info!("Bot check completed: {} results", results.len());
-            state.channels_ui_state.bot_check_results = Some(results);
+            state.ui_state.channels_ui_state.bot_check_results = Some(results);
             state.scheduler.mark_dirty();
         }
         AppEvent::ChannelTestResultById {
@@ -253,14 +253,14 @@ pub(in crate::app) fn handle_channel_event(
                 success,
                 message
             );
-            if let Some(inst) = state.channels_ui_state.instance_mut(&instance_id) {
+            if let Some(inst) = state.ui_state.channels_ui_state.instance_mut(&instance_id) {
                 inst.testing = false;
                 let display = if success {
                     format!("✓ {}", message)
                 } else {
                     format!("✗ {}", message)
                 };
-                inst.test_status = Some((display, state.egui.ctx.input(|i| i.time)));
+                inst.test_status = Some((display, std::time::Instant::now()));
             }
             state.scheduler.mark_dirty();
         }
@@ -273,7 +273,7 @@ pub(in crate::app) fn handle_channel_event(
                 instance_id,
                 results.len()
             );
-            if let Some(inst) = state.channels_ui_state.instance_mut(&instance_id) {
+            if let Some(inst) = state.ui_state.channels_ui_state.instance_mut(&instance_id) {
                 inst.bot_check_results = Some(results);
             }
             state.scheduler.mark_dirty();
@@ -298,20 +298,20 @@ pub(in crate::app) fn handle_channel_event(
                 }
                 // Refresh the installed-list shown in the Skills panel.
                 if let Ok(reg) = sm.load_registry() {
-                    state.skills_panel_state.installed_list = reg.skills.into_iter().collect();
+                    state.ui_state.skills_panel_state.installed_list = reg.skills.into_iter().collect();
                 }
             }
             state.scheduler.mark_dirty();
         }
         AppEvent::SkillSearchResults(results) => {
-            state.skills_panel_state.search_results = results;
-            state.skills_panel_state.search_in_progress = false;
+            state.ui_state.skills_panel_state.search_results = results;
+            state.ui_state.skills_panel_state.search_in_progress = false;
             state.scheduler.mark_dirty();
         }
         AppEvent::SkillSearchError(msg) => {
-            state.skills_panel_state.search_in_progress = false;
+            state.ui_state.skills_panel_state.search_in_progress = false;
             if !msg.is_empty() {
-                state.skills_panel_state.last_error = Some(msg);
+                state.ui_state.skills_panel_state.last_error = Some(msg);
             }
             state.scheduler.mark_dirty();
         }
@@ -345,8 +345,7 @@ pub(in crate::app) fn handle_channel_event(
             session_id,
             message_id,
         } => {
-            handle_ui_action(
-                state,
+            state.dispatch_ui_action(
                 UiAction::ToggleStarred {
                     session_id,
                     message_id,
@@ -360,8 +359,7 @@ pub(in crate::app) fn handle_channel_event(
             session_id,
             message_id,
         } => {
-            handle_ui_action(
-                state,
+            state.dispatch_ui_action(
                 UiAction::ToggleStarred {
                     session_id,
                     message_id,

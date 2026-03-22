@@ -28,21 +28,19 @@ pub(super) fn handle_about_to_wait(app: &mut App, event_loop: &ActiveEventLoop) 
         let mut new_window_urls: Vec<String> = Vec::new();
         let mut title_updates: Vec<(u32, String)> = Vec::new();
         let mut url_updates: Vec<(u32, String)> = Vec::new();
-        for tab in &mut state.webview_tabs {
-            for msg in tab.manager.process_ipc() {
+        for tab in &mut state.ui.browser_tabs {
+            for msg in tab.browser.view.process_ipc() {
                 match msg {
                     WebviewToRust::TerminalInput { payload } => {
-                        if let Some(sid) = tiles::active_terminal_session(&state.tile_tree)
+                        if let Some(sid) = tiles::active_terminal_session(&state.ui.tile_tree)
                             && let Some(session) = state.sessions.get_mut(&sid)
                         {
                             session.write_to_pty(payload.data.as_bytes());
                         }
                     }
                     WebviewToRust::NavigateRequest { payload } => {
-                        tab.manager.navigate(&payload.url);
-                        tab.url = payload.url.clone();
-                        tab.address_bar.update_url(&payload.url);
-                        url_updates.push((tab.id, payload.url.clone()));
+                        tab.browser.navigate(&payload.url);
+                        url_updates.push((tab.browser.id, payload.url.clone()));
                     }
                     WebviewToRust::Close => {}
                     WebviewToRust::ScriptResult { payload } => {
@@ -70,36 +68,34 @@ pub(super) fn handle_about_to_wait(app: &mut App, event_loop: &ActiveEventLoop) 
                 }
             }
             // Drain window.open() / target="_blank" requests.
-            new_window_urls.extend(tab.manager.drain_new_window_urls());
+            new_window_urls.extend(tab.browser.view.drain_new_window_urls());
             // Drain document title changes from the webview.
-            if let Some(new_title) = tab.manager.drain_title_change() {
-                tab.title = new_title.clone();
-                title_updates.push((tab.id, new_title));
+            if let Some(new_title) = tab.browser.sync_title() {
+                title_updates.push((tab.browser.id, new_title));
             }
             // Drain navigated URL changes (link clicks, redirects, etc.)
             // so the address bar stays in sync with the webview.
-            if let Some(nav_url) = tab.manager.drain_nav_url() {
-                tab.url = nav_url.clone();
-                tab.address_bar.update_url(&nav_url);
-                url_updates.push((tab.id, nav_url));
+            if let Some(nav_url) = tab.browser.sync_nav_url() {
+                url_updates.push((tab.browser.id, nav_url));
             }
         }
 
         // Sync webview title changes to the tile tree panes.
         for (wid, new_title) in title_updates {
-            tiles::update_browser_view_title(&mut state.tile_tree, wid, &new_title);
+            tiles::update_browser_view_title(&mut state.ui.tile_tree, wid, &new_title);
         }
         // Sync webview URL changes to the tile tree panes so
         // the docked address bar (which reads from the Pane's own url
         // field) stays in sync with the actual webview URL.
         for (wid, new_url) in url_updates {
-            tiles::update_browser_view_url(&mut state.tile_tree, wid, &new_url);
+            tiles::update_browser_view_url(&mut state.ui.tile_tree, wid, &new_url);
         }
 
         // Open new webview tabs for intercepted window.open() URLs.
         for url in new_window_urls {
             log::info!("Opening new webview tab from window.open(): {}", url);
-            open_webview(state, &url, event_loop);
+            let (ui, mut ctx) = state.split_ui();
+            open_browser(ui, &mut ctx, &url, event_loop);
         }
 
         // Poll pending terminal executions for marker detection.
@@ -228,6 +224,6 @@ pub(super) fn handle_about_to_wait(app: &mut App, event_loop: &ActiveEventLoop) 
         // 6. Let the scheduler decide and apply: redraw + control flow.
         state
             .scheduler
-            .apply(Instant::now(), &state.window, event_loop);
+            .apply(Instant::now(), &state.ui.frame.window, event_loop);
     }
 }

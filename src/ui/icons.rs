@@ -37,6 +37,7 @@ pub enum Icon {
     ChatSparkle,
     SettingsGear,
     Feishu,
+    History,
 }
 
 impl Icon {
@@ -67,6 +68,7 @@ impl Icon {
             Icon::ChatSparkle => egui::include_image!("icons/chat-sparkle.svg"),
             Icon::SettingsGear => egui::include_image!("icons/settings-gear.svg"),
             Icon::Feishu => egui::include_image!("icons/feishu.svg"),
+            Icon::History => egui::include_image!("icons/history.svg"),
         }
     }
 }

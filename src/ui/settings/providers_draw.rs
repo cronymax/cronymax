@@ -360,7 +360,7 @@ impl ProvidersSettingsState {
 
         // ── Save status indicator ─────────────────────────────────────────────
         if let Some((ref msg, timestamp)) = self.save_status {
-            let elapsed = ui.ctx().input(|i| i.time) - timestamp;
+            let elapsed = timestamp.elapsed().as_secs_f64();
             if elapsed < 3.0 {
                 ui.add_space(styles.spacing.medium);
                 ui.colored_label(colors.primary, msg);

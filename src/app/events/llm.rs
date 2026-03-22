@@ -16,7 +16,7 @@ pub(in crate::app) fn handle_llm_event(
                     chat.append_token(&token);
                 }
                 // Also update the streaming BlockMode::Stream response.
-                if let Some(prompt_editor) = state.prompt_editors.get_mut(&terminal_sid) {
+                if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                     for block in prompt_editor.blocks.iter_mut().rev() {
                         if let BlockMode::Stream {
                             is_streaming: true,
@@ -137,7 +137,7 @@ pub(in crate::app) fn handle_llm_event(
                         })
                         .collect();
                     let status_text = status_parts.join(", ");
-                    if let Some(prompt_editor) = state.prompt_editors.get_mut(&terminal_sid) {
+                    if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                         for block in prompt_editor.blocks.iter_mut().rev() {
                             if let BlockMode::Stream {
                                 is_streaming,
@@ -186,7 +186,7 @@ pub(in crate::app) fn handle_llm_event(
                     }
                 } else {
                     // No tool calls — this is a final response. Finalize the block.
-                    if let Some(prompt_editor) = state.prompt_editors.get_mut(&terminal_sid) {
+                    if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                         for block in prompt_editor.blocks.iter_mut().rev() {
                             if let BlockMode::Stream {
                                 is_streaming,
@@ -280,7 +280,7 @@ pub(in crate::app) fn handle_llm_event(
                     chat.add_message(msg);
                 }
                 // Mark the streaming BlockMode::Stream as error.
-                if let Some(prompt_editor) = state.prompt_editors.get_mut(&terminal_sid) {
+                if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                     for block in prompt_editor.blocks.iter_mut().rev() {
                         if let BlockMode::Stream {
                             is_streaming,
@@ -382,7 +382,7 @@ pub(in crate::app) fn handle_llm_event(
                 // Clear tool_status and response in the block so
                 // follow-up tokens stream into a fresh response.
                 // Also mark completed tool_calls_log entries.
-                if let Some(prompt_editor) = state.prompt_editors.get_mut(&terminal_sid) {
+                if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                     for block in prompt_editor.blocks.iter_mut().rev() {
                         if let BlockMode::Stream {
                             is_streaming,
@@ -431,7 +431,7 @@ pub(in crate::app) fn handle_llm_event(
                 action
             );
             // Execute the UI action on the main thread.
-            handle_ui_action(state, action, _event_loop);
+            state.dispatch_ui_action(action, _event_loop);
             // Feed the result back to the agentic loop as a ToolResult.
             let _ = state.proxy.send_event(AppEvent::ToolResult {
                 session_id,

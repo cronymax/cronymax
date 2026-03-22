@@ -142,22 +142,39 @@ impl Widget for TitlebarWidget {
                             actions.push(UiAction::NewChat);
                         }
 
-                        // New Terminal button.
-                        if icons::icon_button(
+                        // New Terminal button (left-click = default shell,
+                        // right-click = context menu with shell choices).
+                        let term_btn = icons::icon_button(
                             ui,
                             icons::IconButtonCfg {
                                 icon: Icon::Terminal,
-                                tooltip: "New Terminal",
+                                tooltip: "New Terminal (right-click for shell menu)",
                                 base_color: colors.text_title,
                                 hover_color: colors.text_title,
                                 pixel_size: styles.typography.title3,
                                 margin: styles.spacing.medium,
                             },
-                        )
-                        .clicked()
-                        {
+                        );
+                        if term_btn.clicked() {
                             actions.push(UiAction::NewTerminal);
                         }
+                        term_btn.context_menu(|ui| {
+                            ui.set_min_width(160.0);
+                            ui.label(
+                                egui::RichText::new("Open Shell")
+                                    .strong()
+                                    .size(styles.typography.body0),
+                            );
+                            ui.separator();
+                            for (label, path) in Self::available_shells() {
+                                if ui.button(label).clicked() {
+                                    actions.push(UiAction::NewTerminalWithShell(
+                                        path.to_string(),
+                                    ));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
 
                         // Popup Overlay (Globe icon).
                         if icons::icon_button(
@@ -174,6 +191,23 @@ impl Widget for TitlebarWidget {
                         .clicked()
                         {
                             actions.push(UiAction::OpenOverlay);
+                        }
+
+                        // History button — opens a tab with past sessions & cron tasks.
+                        if icons::icon_button(
+                            ui,
+                            icons::IconButtonCfg {
+                                icon: Icon::History,
+                                tooltip: "History",
+                                base_color: colors.text_title,
+                                hover_color: colors.text_title,
+                                pixel_size: styles.typography.title3,
+                                margin: styles.spacing.medium,
+                            },
+                        )
+                        .clicked()
+                        {
+                            actions.push(UiAction::OpenHistory);
                         }
 
                         // Feishu/Lark channel icon (visible only when Claw mode is enabled).
@@ -328,7 +362,7 @@ impl TitlebarWidget {
             // Truncate to first 6 chars for a compact chip.
             let label: String = title.chars().take(6).collect();
             let is_active = if is_webview {
-                ui_state.active_webview_id == Some(sid)
+                ui_state.active_browser_id == Some(sid)
             } else {
                 active_tab_id == Some(sid)
             };
@@ -461,5 +495,38 @@ impl TitlebarWidget {
         if selected_id != ui_state.active_profile_id {
             actions.push(UiAction::SetActiveProfile(selected_id));
         }
+    }
+
+    /// Detect available shells on the current platform.
+    ///
+    /// Returns `(display_label, shell_path)` pairs for shells that exist.
+    fn available_shells() -> Vec<(&'static str, &'static str)> {
+        let candidates: &[(&str, &str)] = if cfg!(windows) {
+            &[
+                ("PowerShell", "pwsh.exe"),
+                ("Windows PowerShell", "powershell.exe"),
+                ("Command Prompt", "cmd.exe"),
+                ("Git Bash", "C:\\Program Files\\Git\\bin\\bash.exe"),
+                ("Nushell", "nu.exe"),
+            ]
+        } else {
+            &[
+                ("Zsh", "/bin/zsh"),
+                ("Bash", "/bin/bash"),
+                ("Fish", "/usr/local/bin/fish"),
+                ("Fish", "/opt/homebrew/bin/fish"),
+                ("Nushell", "/usr/local/bin/nu"),
+                ("Nushell", "/opt/homebrew/bin/nu"),
+                ("sh", "/bin/sh"),
+                ("PowerShell", "/usr/local/bin/pwsh"),
+            ]
+        };
+        let mut seen_labels = std::collections::HashSet::new();
+        candidates
+            .iter()
+            .filter(|(_label, path)| std::path::Path::new(path).exists())
+            .filter(|(label, _path)| seen_labels.insert(*label))
+            .copied()
+            .collect()
     }
 }
