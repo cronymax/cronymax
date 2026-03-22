@@ -39,6 +39,8 @@ pub enum UiAction {
     NewTerminalWithShell(String),
     /// Open the history view tab.
     OpenHistory,
+    /// Open the scheduled tasks view tab.
+    OpenScheduler,
     /// Open a saved history session in a new chat tab by UUID.
     OpenHistorySession(String),
     /// Open a URL in the overlay browser (from markdown link clicks).
@@ -237,4 +239,20 @@ pub enum UiAction {
     ReloadSkills,
     /// Open / close the skills management panel.
     ToggleSkillsPanel,
+
+    // ── Threads (branching from blocks) ───────────────────────────
+    /// Spawn a thread by forking conversation from a block.
+    SpawnThread {
+        session_id: crate::renderer::terminal::SessionId,
+        cell_id: u32,
+    },
+    /// Navigate the pane view into an existing thread.
+    NavigateToThread {
+        root_session_id: crate::renderer::terminal::SessionId,
+        thread_session_id: crate::renderer::terminal::SessionId,
+    },
+    /// Navigate back from a thread to the parent session.
+    NavigateBackFromThread {
+        root_session_id: crate::renderer::terminal::SessionId,
+    },
 }

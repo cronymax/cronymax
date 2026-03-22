@@ -3,7 +3,6 @@
 use alacritty_terminal::grid::Dimensions;
 
 use crate::app::*;
-use crate::ui::mouse::handle_mouse_click;
 
 pub(in crate::app) fn handle_window_event(
     app: &mut App,
@@ -132,7 +131,11 @@ pub(in crate::app) fn handle_window_event(
                 // Save each chat session.
                 for chat in state.session_chats.values() {
                     if let Some(ref pid) = chat.persistent_id {
-                        let record = crate::app::session_persist::chat_to_record(pid, chat);
+                        let record = crate::app::session_persist::chat_to_record(
+                            pid,
+                            chat,
+                            &state.session_chats,
+                        );
                         if let Err(e) = crate::app::session_persist::save_session_file(
                             pid,
                             &record,
@@ -336,7 +339,7 @@ pub(in crate::app) fn handle_window_event(
                 let is_clipboard_action = matches!(action, Action::Copy | Action::Paste);
                 if !(egui_wants && is_clipboard_action) {
                     let (ui, mut ctx) = state.split_ui();
-                    handle_action(ui, &mut ctx, action);
+                    ui.handle_action(&mut ctx, action);
                     return;
                 }
             }
@@ -361,10 +364,13 @@ pub(in crate::app) fn handle_window_event(
 
             // ── In Terminal mode: forward keyboard to PTY, skip egui ────
             // egui still gets mouse/cursor events for the tab bar etc.
+            // When the filter bar or command palette is open, fall through
+            // to egui so their TextEdits receive keyboard input.
             let is_terminal = focused_sid
                 .and_then(|sid| state.ui_state.prompt_editors.get(&sid))
                 .is_some_and(|pe| !pe.visible);
-            if is_terminal {
+            let ui_has_overlay = state.ui_state.filter.open || state.ui_state.command_palette.open;
+            if is_terminal && !ui_has_overlay {
                 // Forward IME committed text to PTY.
                 if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = event {
                     if let Some(sid) = focused_sid
@@ -611,12 +617,13 @@ pub(in crate::app) fn handle_window_event(
                             };
                             log::info!("Opening link: {}", url);
                             let (ui, mut ctx) = state.split_ui();
-                            open_browser(ui, &mut ctx, &url, event_loop);
+                            ui.open_browser(&mut ctx, &url, event_loop);
                             return; // consume the click
                         }
                     }
                 }
-                handle_mouse_click(state);
+                let (ui, mut ctx) = state.split_ui();
+                ui.handle_mouse_click(&mut ctx);
             }
 
             // ── Handle mouse button release (end selection drag) ─────
@@ -625,15 +632,18 @@ pub(in crate::app) fn handle_window_event(
                 button: winit::event::MouseButton::Left,
                 ..
             } = event
-                && state.ui.selection_dragging {
-                    state.ui.selection_dragging = false;
-                    // If start == end, treat as a click (no actual selection).
-                    if let Some(sel) = &state.ui.terminal_selection
-                        && sel.start_col == sel.end_col && sel.start_row == sel.end_row {
-                            state.ui.terminal_selection = None;
-                        }
-                    state.scheduler.mark_dirty();
+                && state.ui.selection_dragging
+            {
+                state.ui.selection_dragging = false;
+                // If start == end, treat as a click (no actual selection).
+                if let Some(sel) = &state.ui.terminal_selection
+                    && sel.start_col == sel.end_col
+                    && sel.start_row == sel.end_row
+                {
+                    state.ui.terminal_selection = None;
                 }
+                state.scheduler.mark_dirty();
+            }
         }
 
         WindowEvent::Resized(new_size) => {

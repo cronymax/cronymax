@@ -131,6 +131,9 @@ impl Ui {
                         }
                         let col_start = if row == sr { sc } else { 0 };
                         let col_end = if row == er { ec } else { cols.saturating_sub(1) };
+                        if col_end < col_start {
+                            continue;
+                        }
                         let x = vp.x + col_start as f32 * phys_cell_w;
                         let y = vp.y + row as f32 * phys_cell_h;
                         let w = (col_end - col_start + 1) as f32 * phys_cell_w;

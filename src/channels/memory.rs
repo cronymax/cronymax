@@ -116,6 +116,7 @@ impl ChannelMemoryStore {
                         timestamp_ms: row.get::<_, i64>(5)? as u64,
                         tool_call_id: row.get(6)?,
                         tool_calls: Vec::new(),
+                        cell_id: None,
                     })
                 })?;
                 let mut msgs: Vec<ChatMessage> = rows.filter_map(|r| r.ok()).collect();

@@ -75,6 +75,6 @@ pub(super) fn handle_redraw(state: &mut AppState, event_loop: &ActiveEventLoop) 
 
     // ── Post-frame processing ────────────────────────────────
     if let Some(result) = draw_result {
-        post::process_post_frame(state, event_loop, result.actions, result.commands);
+        post::process_post_frame(state, event_loop, result.actions, result.commands, result.colon_commands);
     }
 }

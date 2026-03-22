@@ -79,6 +79,17 @@ pub struct ChatSessionRecord {
     pub token_count: u32,
     pub created_at: u64,
     pub updated_at: u64,
+
+    // ── Thread (branching) fields ──
+    /// If this is a thread, the persistent UUID of the parent session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// If this is a thread, the cell_id of the block it branched from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_cell_id: Option<u32>,
+    /// Map from block cell_id → child thread persistent UUID.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty", alias = "topic_channels")]
+    pub threads: std::collections::HashMap<u32, String>,
 }
 
 /// A previously entered command.
@@ -306,9 +317,16 @@ fn pane_to_descriptor(
 }
 
 /// Convert chat session data → `ChatSessionRecord` for persistence.
+///
+/// `all_chats` is used to resolve runtime `SessionId`s in `threads`
+/// and `parent_session_id` to persistent UUIDs.
 pub fn chat_to_record(
     persistent_id: &str,
     chat: &crate::ui::chat::SessionChat,
+    all_chats: &std::collections::HashMap<
+        crate::renderer::terminal::SessionId,
+        crate::ui::chat::SessionChat,
+    >,
 ) -> ChatSessionRecord {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -329,6 +347,22 @@ pub fn chat_to_record(
         .map(|sel| (format!("{:?}", sel.provider), sel.model.clone()))
         .unwrap_or_else(|| ("default".into(), "default".into()));
 
+    // Resolve parent_session_id: runtime SessionId → persistent UUID.
+    let parent_session_id = chat.parent_session_id.and_then(|parent_sid| {
+        all_chats
+            .get(&parent_sid)
+            .and_then(|parent_chat| parent_chat.persistent_id.clone())
+    });
+
+    // Build threads map: cell_id → child thread persistent UUID.
+    let mut threads_map = std::collections::HashMap::new();
+    for (&cell_id, &child_sid) in &chat.threads {
+        if let Some(child_chat) = all_chats.get(&child_sid)
+            && let Some(ref child_pid) = child_chat.persistent_id {
+                threads_map.insert(cell_id, child_pid.clone());
+            }
+    }
+
     ChatSessionRecord {
         session_id: persistent_id.to_string(),
         provider,
@@ -338,7 +372,76 @@ pub fn chat_to_record(
         token_count: chat.tokens_used,
         created_at: now,
         updated_at: now,
+        parent_session_id,
+        branch_cell_id: chat.branch_cell_id,
+        threads: threads_map,
     }
+}
+
+// ─── Block Reconstruction ───────────────────────────────────────────────────
+
+/// Rebuild `PromptState.blocks` from a saved `ChatSessionRecord`.
+///
+/// Pairs consecutive User + Assistant messages into `Block::Stream` entries
+/// so that restored chat history is visible in the UI. Returns the rebuilt
+/// blocks and the next free `cell_id` counter.
+pub fn rebuild_blocks_from_record(
+    record: &ChatSessionRecord,
+) -> (Vec<crate::ui::blocks::Block>, u32) {
+    use crate::ai::context::MessageRole;
+    use crate::ui::blocks::Block;
+
+    let mut blocks = Vec::new();
+    let mut next_cell_id: u32 = 0;
+
+    let mut i = 0;
+    let msgs = &record.messages;
+    while i < msgs.len() {
+        let msg = &msgs[i];
+        match msg.role {
+            MessageRole::User => {
+                let cell_id = msg.cell_id.unwrap_or(next_cell_id);
+                if cell_id >= next_cell_id {
+                    next_cell_id = cell_id + 1;
+                }
+                // Collect the response from the following Assistant message(s).
+                let mut response = String::new();
+                if i + 1 < msgs.len() && msgs[i + 1].role == MessageRole::Assistant {
+                    response = msgs[i + 1].content.clone();
+                    i += 1;
+                }
+                blocks.push(Block::Stream {
+                    id: cell_id,
+                    prompt: msg.content.clone(),
+                    response,
+                    is_streaming: false,
+                    tool_status: None,
+                    tool_calls_log: Vec::new(),
+                });
+            }
+            MessageRole::Assistant => {
+                // Orphaned assistant message (no preceding user msg) — wrap in a block.
+                let cell_id = msg.cell_id.unwrap_or(next_cell_id);
+                if cell_id >= next_cell_id {
+                    next_cell_id = cell_id + 1;
+                }
+                blocks.push(Block::Stream {
+                    id: cell_id,
+                    prompt: String::new(),
+                    response: msg.content.clone(),
+                    is_streaming: false,
+                    tool_status: None,
+                    tool_calls_log: Vec::new(),
+                });
+            }
+            _ => {
+                // Skip System / Tool / Info messages — not rendered as blocks.
+            }
+        }
+        i += 1;
+    }
+
+    (blocks, next_cell_id)
 }
 
 // ─── Layout Tree Reconstruction ─────────────────────────────────────────────

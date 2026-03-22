@@ -170,7 +170,7 @@ impl Ui {
                     .clone()
                     .unwrap_or_else(|| "https://google.com".to_string());
                 log::info!("OpenOverlay action: opening {}", url);
-                crate::app::open_browser(self, ctx, &url, event_loop);
+                self.open_browser(ctx, &url, event_loop);
             }
             UiAction::RelaunchApp => {
                 log::info!("Relaunching application for sandbox policy update…");
@@ -251,7 +251,7 @@ impl Ui {
             }
             UiAction::OpenWebviewTab(url) => {
                 log::info!("OpenWebviewTab (from skill): {}", url);
-                crate::app::open_browser(self, ctx, &url, event_loop);
+                self.open_browser( ctx, &url, event_loop);
             }
             UiAction::CloseWebviewTab(wid) => {
                 // Close the webview tab by ID.

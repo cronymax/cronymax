@@ -38,6 +38,8 @@ pub enum Icon {
     SettingsGear,
     Feishu,
     History,
+    Clockface,
+    GitPullRequestCreate,
 }
 
 impl Icon {
@@ -69,6 +71,8 @@ impl Icon {
             Icon::SettingsGear => egui::include_image!("icons/settings-gear.svg"),
             Icon::Feishu => egui::include_image!("icons/feishu.svg"),
             Icon::History => egui::include_image!("icons/history.svg"),
+            Icon::Clockface => egui::include_image!("icons/clockface.svg"),
+            Icon::GitPullRequestCreate => egui::include_image!("icons/git-pull-request-create.svg"),
         }
     }
 }

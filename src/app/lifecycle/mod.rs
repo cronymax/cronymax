@@ -445,6 +445,9 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                     )
                 };
 
+                // Pending threads: (parent_session_id, cell_id → child_uuid).
+                let mut thread_pending: Vec<(u32, std::collections::HashMap<u32, String>)> = Vec::new();
+
                 for tab in &restored_tabs {
                     // Create PTY session for Chat and Terminal tabs.
                     if matches!(
@@ -511,6 +514,18 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                                     chat.history.push(msg.clone());
                                 }
                                 chat.tokens_used = record.token_count;
+                                if !record.threads.is_empty() {
+                                    thread_pending.push((tab.session_id, record.threads.clone()));
+                                }
+
+                                // Rebuild visible blocks from saved messages.
+                                let (blocks, next_cell) =
+                                    crate::app::session_persist::rebuild_blocks_from_record(&record);
+                                if let Some(pe) = state.ui_state.prompt_editors.get_mut(&tab.session_id) {
+                                    pe.blocks = blocks;
+                                    pe.next_chat_cell_id = next_cell;
+                                }
+
                                 log::info!(
                                     "Restored session {} ({} messages)",
                                     tab.persistent_id,
@@ -546,6 +561,84 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                         },
                     };
                     state.ui_state.tabs.push(tab_info);
+                }
+
+                // ── Restore threads (branched children) ──────────
+                for (parent_sid, tc_map) in thread_pending {
+                    for (cell_id, child_uuid) in tc_map {
+                        match crate::app::session_persist::load_session_file(
+                            &child_uuid,
+                            &profile_dir,
+                        ) {
+                            Ok(child_record) => {
+                                let child_sid = next_id;
+                                next_id += 1;
+
+                                let mut child_chat = crate::ui::chat::SessionChat::new(
+                                    llm_config.max_context_tokens,
+                                    llm_config.reserve_tokens,
+                                );
+                                child_chat.persistent_id = Some(child_uuid.clone());
+                                child_chat.parent_session_id = Some(parent_sid);
+                                child_chat.branch_cell_id = child_record.branch_cell_id;
+                                child_chat.messages = child_record.messages.clone();
+                                for msg in &child_record.messages {
+                                    child_chat.history.push(msg.clone());
+                                }
+                                child_chat.tokens_used = child_record.token_count;
+                                if let Some(ref sp) = llm_config.system_prompt {
+                                    child_chat.set_system_prompt(
+                                        sp,
+                                        &state.token_counter,
+                                        &llm_config.model,
+                                    );
+                                }
+
+                                // Create prompt editor for the thread (no PTY needed).
+                                let mut pe = crate::ui::prompt::PromptState::new();
+                                pe.visible = true;
+                                if let Some(existing) =
+                                    state.ui_state.prompt_editors.values().next()
+                                {
+                                    pe.model_items = existing.model_items.clone();
+                                    pe.selected_model_idx = existing.selected_model_idx;
+                                }
+
+                                // Rebuild visible blocks from saved messages.
+                                let (blocks, next_cell) =
+                                    crate::app::session_persist::rebuild_blocks_from_record(
+                                        &child_record,
+                                    );
+                                pe.blocks = blocks;
+                                pe.next_chat_cell_id = next_cell;
+
+                                state.ui_state.prompt_editors.insert(child_sid, pe);
+
+                                state.session_chats.insert(child_sid, child_chat);
+
+                                // Wire parent → child mapping.
+                                if let Some(parent_chat) =
+                                    state.session_chats.get_mut(&parent_sid)
+                                {
+                                    parent_chat.threads.insert(cell_id, child_sid);
+                                }
+
+                                log::info!(
+                                    "Restored thread {} (parent={}, cell={})",
+                                    child_uuid,
+                                    parent_sid,
+                                    cell_id
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to load thread {}: {}",
+                                    child_uuid,
+                                    e
+                                );
+                            }
+                        }
+                    }
                 }
 
                 state.next_id = next_id;

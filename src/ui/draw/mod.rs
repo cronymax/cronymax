@@ -19,7 +19,7 @@ use crate::renderer::viewport::Viewport;
 use crate::ui::Ui;
 use crate::ui::UiAction;
 use crate::ui::ViewMut;
-use crate::ui::block::Block;
+use crate::ui::blocks::BlockGrid;
 use crate::ui::model::AppCtx;
 use crate::ui::tiles;
 use crate::ui::types::BrowserViewMode;
@@ -30,6 +30,7 @@ use crate::ui::widget::{Dirties, Fragment};
 pub(crate) struct DrawResult {
     pub actions: Vec<UiAction>,
     pub commands: Vec<(SessionId, String)>,
+    pub colon_commands: Vec<String>,
 }
 
 impl Ui {
@@ -53,13 +54,13 @@ impl Ui {
 
         // Build per-session cell metrics for editor-mode cell overlays.
         let block_height = ctx.cell_size.height;
-        let blocks: HashMap<SessionId, Block> = ctx
+        let blocks: HashMap<SessionId, BlockGrid> = ctx
             .sessions
             .iter()
             .map(|(&sid, session)| {
                 (
                     sid,
-                    Block {
+                    BlockGrid {
                         block_height,
                         history_size: session.state.history_size(),
                         screen_lines: session.state.viewport_rows(),
@@ -76,17 +77,24 @@ impl Ui {
             .prompt_editors
             .iter()
             .filter_map(|(&sid, prompt_editor)| {
-                if let Some(crate::ui::block::BlockMode::Terminal {
+                if let Some(crate::ui::blocks::Block::Terminal {
                     block_id,
                     frozen_output: None,
                 }) = prompt_editor.blocks.last()
                     && let Some(block) = prompt_editor.command_blocks.get(*block_id)
-                    && let Some(session) = ctx.sessions.get(&sid)
                 {
-                    let abs_start = block.abs_row;
-                    let abs_end = session.state.abs_cursor_row();
-                    let text = session.state.capture_text(abs_start + 1, abs_end);
-                    return Some((sid, text));
+                    // For threads, route to the parent session's PTY.
+                    let pty_sid = ctx
+                        .session_chats
+                        .get(&sid)
+                        .and_then(|c| c.parent_session_id)
+                        .unwrap_or(sid);
+                    if let Some(session) = ctx.sessions.get(&pty_sid) {
+                        let abs_start = block.abs_row;
+                        let abs_end = session.state.abs_cursor_row();
+                        let text = session.state.capture_text(abs_start + 1, abs_end);
+                        return Some((sid, text));
+                    }
                 }
                 None
             })
@@ -126,6 +134,24 @@ impl Ui {
                 task_store: ctx.task_store,
                 scheduler_history: ctx.scheduler_history_cache,
             });
+
+            // Draw toast notifications on top of everything.
+            let colors = ctx.config.resolve_colors();
+            ctx.ui_state
+                .notifications
+                .draw(c, &ctx.config.styles, &colors);
+
+            // Draw command palette overlay.
+            if let Some(action) = ctx.ui_state.command_palette.draw(c, &ctx.config.styles, &colors) {
+                match action {
+                    crate::ui::command_palette::PaletteAction::Ui(ui_action) => {
+                        dirties.actions.push(ui_action);
+                    }
+                    crate::ui::command_palette::PaletteAction::ColonCommand(cmd) => {
+                        dirties.colon_commands.push(cmd);
+                    }
+                }
+            }
         });
 
         // ── Update tile layout to current frame ─────────────────────────
@@ -280,6 +306,7 @@ impl Ui {
         Some(DrawResult {
             actions: deferred_actions,
             commands: dirties.commands,
+            colon_commands: dirties.colon_commands,
         })
     }
 }

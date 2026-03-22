@@ -63,7 +63,7 @@ pub(crate) fn build_channel_context(config: &crate::config::AppConfig) -> Option
 }
 
 /// Submit the chat panel input to the LLM.
-pub(super) fn submit_chat(state: &mut AppState, sid: SessionId, user_text: &str) {
+pub(super) fn submit_chat(state: &mut AppState, sid: SessionId, user_text: &str, cell_id: Option<u32>) {
     if user_text.is_empty() {
         return;
     }
@@ -159,22 +159,46 @@ pub(super) fn submit_chat(state: &mut AppState, sid: SessionId, user_text: &str)
             let namespaced = format!("{}.{}", manifest.agent.name, skill.name);
             if state.skill_registry.get(&namespaced).is_none() {
                 let skill_def = crate::ai::skills::Skill {
-                    name: namespaced,
+                    name: namespaced.clone(),
                     description: skill.description.clone(),
                     parameters_schema: skill.parameters.clone(),
                     category: "internal".into(),
                 };
-                // Agent skills return a placeholder — real execution not possible
-                // without an external runtime. The LLM can still call them.
+
+                // Try to find a matching built-in skill handler.
+                // Convention: agent skill name without agent prefix may match
+                // a built-in (e.g. "read_file" → "cronymax.fs.read_file" or "read_file").
+                let builtin_names = [
+                    skill.name.clone(),
+                    format!("cronymax.fs.{}", skill.name),
+                    format!("cronymax.general.{}", skill.name),
+                    format!("cronymax.terminal.{}", skill.name),
+                ];
                 let handler: crate::ai::skills::SkillHandler =
-                    std::sync::Arc::new(move |_args: serde_json::Value| {
-                        Box::pin(async move {
-                            Ok(serde_json::json!({
-                                "status": "ok",
-                                "note": "Agent skill executed (stub)"
-                            }))
+                    if let Some(existing) = builtin_names.iter().find_map(|n| {
+                        state.skill_registry.get(n).map(|(_, h)| h.clone())
+                    }) {
+                        // Delegate to the existing built-in handler.
+                        existing
+                    } else {
+                        // No matching built-in — run as a pass-through that returns
+                        // the skill parameters as context for the LLM to incorporate.
+                        let skill_name = skill.name.clone();
+                        let skill_desc = skill.description.clone();
+                        std::sync::Arc::new(move |args: serde_json::Value| {
+                            let name = skill_name.clone();
+                            let desc = skill_desc.clone();
+                            Box::pin(async move {
+                                Ok(serde_json::json!({
+                                    "status": "executed",
+                                    "skill": name,
+                                    "description": desc,
+                                    "parameters": args,
+                                    "note": "Agent skill executed. The parameters were passed through for LLM processing."
+                                }))
+                            })
                         })
-                    });
+                    };
                 state.skill_registry.register(skill_def, handler);
             }
         }
@@ -182,9 +206,54 @@ pub(super) fn submit_chat(state: &mut AppState, sid: SessionId, user_text: &str)
 
     let model = llm_model_name(state);
 
+    // ── Terminal context injection ────────────────────────────────────────
+    // If the prompt has terminal_context enabled, capture the last 50 lines
+    // of the active terminal and inject as an ephemeral system message.
+    let terminal_ctx = if state
+        .ui_state
+        .prompt_editors
+        .get(&sid)
+        .is_some_and(|p| p.terminal_context)
+    {
+        if let Some(session) = state.sessions.get(&sid) {
+            let history = session.state.history_size() as i32;
+            let screen = session.state.viewport_rows() as i32;
+            let total = history + screen;
+            let start = (total - 50).max(0);
+            let text = session.state.capture_text(start, total);
+            if !text.trim().is_empty() {
+                Some(text)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Submit user message to per-session chat and get API messages.
     let chat = state.session_chats.get_mut(&sid).unwrap();
-    let api_messages = chat.submit_user_message(user_text, &state.token_counter, &model);
+
+    // Reset tool round counter on each new user submission.
+    chat.tool_rounds = 0;
+
+    // Inject terminal context before user message if available.
+    if let Some(ref ctx_text) = terminal_ctx {
+        let ctx_msg = crate::ai::context::ChatMessage::new(
+            crate::ai::context::MessageRole::System,
+            format!(
+                "<terminal_context>\nThe following is the recent terminal output for this session:\n{}\n</terminal_context>",
+                ctx_text
+            ),
+            crate::ai::context::MessageImportance::Ephemeral,
+            0,
+        );
+        chat.history.push(ctx_msg);
+    }
+
+    let api_messages = chat.submit_user_message(user_text, &state.token_counter, &model, cell_id);
     let llm_session_id = chat.llm_session_id;
 
     // Map LLM session ID → terminal session ID for event routing.

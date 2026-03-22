@@ -125,6 +125,46 @@ impl Widget for TitlebarWidget {
                                 .shrink(styles.spacing.small * 2.0),
                         );
 
+                        // History button — opens a tab with past sessions & cron tasks.
+                        if icons::icon_button(
+                            ui,
+                            icons::IconButtonCfg {
+                                icon: Icon::History,
+                                tooltip: "History",
+                                base_color: colors.text_title,
+                                hover_color: colors.text_title,
+                                pixel_size: styles.typography.title3,
+                                margin: styles.spacing.medium,
+                            },
+                        )
+                        .clicked()
+                        {
+                            actions.push(UiAction::OpenHistory);
+                        }
+
+                        // Schedule Tasks button — opens a tab with scheduled tasks & execution logs.
+                        if icons::icon_button(
+                            ui,
+                            icons::IconButtonCfg {
+                                icon: Icon::Clockface,
+                                tooltip: "Schedule Tasks",
+                                base_color: colors.text_title,
+                                hover_color: colors.text_title,
+                                pixel_size: styles.typography.title3,
+                                margin: styles.spacing.medium,
+                            },
+                        )
+                        .clicked()
+                        {
+                            actions.push(UiAction::OpenScheduler);
+                        }
+
+                        ui.add(
+                            egui::Separator::default()
+                                .vertical()
+                                .shrink(styles.spacing.medium * 2.0),
+                        );
+
                         // New Chat button — the default "+" action.
                         if icons::icon_button(
                             ui,
@@ -168,9 +208,7 @@ impl Widget for TitlebarWidget {
                             ui.separator();
                             for (label, path) in Self::available_shells() {
                                 if ui.button(label).clicked() {
-                                    actions.push(UiAction::NewTerminalWithShell(
-                                        path.to_string(),
-                                    ));
+                                    actions.push(UiAction::NewTerminalWithShell(path.to_string()));
                                     ui.close_menu();
                                 }
                             }
@@ -191,23 +229,6 @@ impl Widget for TitlebarWidget {
                         .clicked()
                         {
                             actions.push(UiAction::OpenOverlay);
-                        }
-
-                        // History button — opens a tab with past sessions & cron tasks.
-                        if icons::icon_button(
-                            ui,
-                            icons::IconButtonCfg {
-                                icon: Icon::History,
-                                tooltip: "History",
-                                base_color: colors.text_title,
-                                hover_color: colors.text_title,
-                                pixel_size: styles.typography.title3,
-                                margin: styles.spacing.medium,
-                            },
-                        )
-                        .clicked()
-                        {
-                            actions.push(UiAction::OpenHistory);
                         }
 
                         // Feishu/Lark channel icon (visible only when Claw mode is enabled).

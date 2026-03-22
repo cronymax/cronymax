@@ -95,7 +95,7 @@ pub(super) fn handle_about_to_wait(app: &mut App, event_loop: &ActiveEventLoop) 
         for url in new_window_urls {
             log::info!("Opening new webview tab from window.open(): {}", url);
             let (ui, mut ctx) = state.split_ui();
-            open_browser(ui, &mut ctx, &url, event_loop);
+            ui.open_browser(&mut ctx, &url, event_loop);
         }
 
         // Poll pending terminal executions for marker detection.

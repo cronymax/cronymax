@@ -48,6 +48,10 @@ pub struct ChatMessage {
     /// For assistant messages that invoked tool calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<crate::ai::stream::ToolCallInfo>,
+    /// Links this message to its corresponding Block::Stream cell_id.
+    /// Used for thread branching (forking conversation from a block).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_id: Option<u32>,
 }
 
 impl ChatMessage {
@@ -70,6 +74,7 @@ impl ChatMessage {
                 .as_millis() as u64,
             tool_call_id: None,
             tool_calls: Vec::new(),
+            cell_id: None,
         }
     }
 }
@@ -237,6 +242,30 @@ impl MessageHistory {
         } else {
             false
         }
+    }
+
+    /// Fork the history up to and including messages tagged with the given cell_id.
+    ///
+    /// Copies all messages where `cell_id` is `None` (system prompts) or
+    /// `cell_id <= branch_cell_id`. Returns a new `MessageHistory` with
+    /// the same token budget and reset internal ID counter.
+    pub fn fork_up_to_cell(
+        &self,
+        branch_cell_id: u32,
+        max_context_tokens: usize,
+        reserve_tokens: usize,
+    ) -> MessageHistory {
+        let mut forked = MessageHistory::new(max_context_tokens, reserve_tokens);
+        for msg in &self.messages {
+            let include = match msg.cell_id {
+                None => true, // System prompts, pinned summaries
+                Some(cid) => cid <= branch_cell_id,
+            };
+            if include {
+                forked.push(msg.clone());
+            }
+        }
+        forked
     }
 }
 

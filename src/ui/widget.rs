@@ -36,6 +36,8 @@ pub struct Dirties {
     pub tile_rects: Vec<TileRect>,
     /// Commands submitted via prompt editors.
     pub commands: Vec<(SessionId, String)>,
+    /// Colon commands from the command palette (e.g. "filter", "closetab").
+    pub colon_commands: Vec<String>,
     /// Screen rects that need custom wgpu rendering (terminal grids).
     pub gpu_viewports: Vec<GpuViewport>,
     /// Float tooltip request from this frame.
@@ -70,6 +72,7 @@ impl Dirties {
         self.actions.extend(other.actions);
         self.tile_rects.extend(other.tile_rects);
         self.commands.extend(other.commands);
+        self.colon_commands.extend(other.colon_commands);
         self.gpu_viewports.extend(other.gpu_viewports);
         if other.float_tooltip.is_some() {
             self.float_tooltip = other.float_tooltip;

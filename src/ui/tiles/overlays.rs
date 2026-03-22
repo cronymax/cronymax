@@ -100,7 +100,7 @@ pub(super) fn draw_block_overlays(
     ui: &mut egui::Ui,
     sid: SessionId,
     term_rect: egui::Rect,
-    info: &Block,
+    info: &BlockGrid,
     command_blocks: &mut [crate::ui::prompt::CommandBlock],
     styles: &Styles,
 ) {

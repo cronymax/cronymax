@@ -9,6 +9,7 @@
 mod behavior;
 mod browser;
 mod channel;
+mod chat;
 mod overlays;
 mod terminal;
 mod tree;
@@ -19,7 +20,7 @@ use std::collections::HashMap;
 use crate::channels::{ChannelDisplayMessage, ConnectionState};
 use crate::renderer::terminal::SessionId;
 use crate::ui::UiAction;
-use crate::ui::block::Block;
+use crate::ui::blocks::BlockGrid;
 use crate::ui::chat::SessionChat;
 use crate::ui::i18n::t;
 use crate::ui::icons::{self, Icon};
@@ -50,7 +51,7 @@ pub struct FrameState<'a> {
     /// Per-session LLM chat state (token counts, model info).
     pub session_chats: &'a mut HashMap<SessionId, SessionChat>,
     /// Terminal/stream content blocks (owned per frame).
-    pub blocks: HashMap<SessionId, Block>,
+    pub blocks: HashMap<SessionId, BlockGrid>,
     /// Live streaming output per session (owned per frame).
     pub live_outputs: HashMap<SessionId, String>,
     /// Channel message lists (read-only reference).
@@ -64,7 +65,7 @@ pub struct FrameState<'a> {
 /// Tiles panel widget — wraps the egui_tiles tree + Behavior pattern.
 pub struct TilesPanel<'a> {
     pub tile_tree: &'a mut egui_tiles::Tree<Pane>,
-    pub blocks: std::collections::HashMap<SessionId, Block>,
+    pub blocks: std::collections::HashMap<SessionId, BlockGrid>,
     pub session_chats: &'a mut std::collections::HashMap<SessionId, crate::ui::chat::SessionChat>,
     pub live_outputs: std::collections::HashMap<SessionId, String>,
     pub channel_messages:

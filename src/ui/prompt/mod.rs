@@ -13,7 +13,7 @@ mod file_picker;
 use std::rc::Rc;
 
 use crate::ai::client::ModelListItem;
-use crate::ui::block::BlockMode;
+use crate::ui::blocks::Block;
 use crate::ui::widget::Widget;
 
 use crate::renderer::terminal::SessionId;
@@ -121,7 +121,7 @@ pub struct PromptState {
     pub command_blocks: Vec<CommandBlock>,
     /// Ordered cell list (editor mode). Each entry corresponds to one
     /// user submission — either a terminal command or a chat exchange.
-    pub blocks: Vec<BlockMode>,
+    pub blocks: Vec<Block>,
     /// Next unique ID for chat cells (monotonically increasing).
     pub next_chat_cell_id: u32,
     /// Selected index in the inline command suggestion list (when `:` prefix active).
@@ -136,6 +136,8 @@ pub struct PromptState {
     pub model_items: Vec<ModelListItem>,
     /// Last model selection (consumed by caller after draw).
     pub last_model_selection: Option<ModelListItem>,
+    /// Whether to auto-inject terminal scrollback as context for chat prompts.
+    pub terminal_context: bool,
 }
 
 impl PromptState {
@@ -157,6 +159,7 @@ impl PromptState {
             selected_model_idx: 0,
             model_items: Vec::new(),
             last_model_selection: None,
+            terminal_context: false,
         }
     }
 

@@ -77,19 +77,22 @@ impl Ui {
             }
                 log::info!("Closed tab: session {}", sid);
             }
-            UiAction::NewChat => crate::app::handle_action(self, ctx, Action::NewChat),
-            UiAction::NewTerminal => crate::app::handle_action(self, ctx, Action::NewTerminal),
+            UiAction::NewChat => self.handle_action(ctx, Action::NewChat),
+            UiAction::NewTerminal => self.handle_action(ctx, Action::NewTerminal),
             UiAction::NewTerminalWithShell(shell) => {
-                crate::app::new_terminal_with_shell(self, ctx, &shell);
+                self.new_terminal_with_shell(ctx, &shell);
             }
             UiAction::OpenHistory => {
-                crate::app::open_history_tab(self, ctx);
+                self.open_history_tab(ctx);
+            }
+            UiAction::OpenScheduler => {
+                self.open_scheduler_tab(ctx);
             }
             UiAction::OpenHistorySession(uuid) => {
-                crate::app::open_history_session(self, ctx, &uuid);
+                self.open_history_session(ctx, &uuid);
             }
             UiAction::OpenBrowserOverlay(url) => {
-                crate::app::open_browser(self, ctx, &url, event_loop);
+                self.open_browser(ctx, &url, event_loop);
             }
             UiAction::ExecuteCommand(cmd) => self.handle_colon_command(ctx, &cmd, event_loop),
             UiAction::NavigateWebview(url, wid) => {
@@ -109,7 +112,7 @@ impl Ui {
                     tiles::update_browser_view_url(&mut self.tile_tree, actual_wid, &url);
                 }
             }
-            UiAction::SwitchWebview(idx) => crate::app::switch_browser_tab(self, ctx, idx),
+            UiAction::SwitchWebview(idx) => self.switch_browser_tab(ctx, idx),
             UiAction::ActivateWebviewPane(wid) => {
                 tiles::activate_browser_view_tab(&mut self.tile_tree, wid);
                 // Also set ui_state.active_webview to the matching index.
@@ -129,7 +132,7 @@ impl Ui {
                     tiles::remove_browser_view_pane(&mut self.tile_tree, wid);
                     if self.browser_tabs.is_empty() {
                         ctx.ui_state.active_browser = None;
-                        crate::app::close_active_browser(self, ctx);
+                        self.close_active_browser(ctx);
                     } else if self.active_browser >= self.browser_tabs.len() {
                         self.active_browser = self.browser_tabs.len() - 1;
                         ctx.ui_state.active_browser = Some(self.active_browser);

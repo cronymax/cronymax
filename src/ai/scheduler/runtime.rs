@@ -67,9 +67,13 @@ impl SchedulerRuntime {
 
         let result = match task.action() {
             TaskAction::Prompt { text } => {
-                // Stub: In a full implementation, this would create an ephemeral
-                // SessionChat + LlmClient and stream the response.
-                Ok(format!("[Scheduled] Prompt executed: {}", text))
+                // The primary execution path routes through
+                // `AppEvent::ScheduledTaskFire` → `submit_chat()` on the main
+                // thread (see `src/app/events/misc.rs`).  This standalone path
+                // is used when no UI event loop is available (headless mode).
+                // For now record the prompt text; a future iteration can wire
+                // in `complete_chat()` from `channels/agent_loop.rs`.
+                Ok(format!("[Scheduled] Prompt dispatched: {}", text))
             }
             TaskAction::Command { command } => execute_command(&command).await,
         };

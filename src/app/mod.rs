@@ -24,10 +24,6 @@ use util::*;
 // Re-export AppState for ui-layer modules that need mutable access.
 pub(crate) use state::AppState;
 
-// Re-export functions called from ui/dispatch.
-pub(crate) use browser::{close_active_browser, open_browser, switch_browser_tab};
-pub(crate) use keybindings::{handle_action, new_terminal_with_shell, open_history_tab, open_history_session};
-
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
@@ -46,7 +42,7 @@ use crate::renderer::terminal::input;
 use crate::renderer::terminal::{SessionId, TerminalSession};
 use crate::renderer::webview::Webview;
 use crate::renderer::webview::bridge::WebviewToRust;
-use crate::ui::block::BlockMode;
+use crate::ui::blocks::Block;
 use crate::ui::i18n::{t, t_fmt};
 use crate::ui::prompt::{CommandBlock, PromptState};
 use crate::ui::{self, tiles};

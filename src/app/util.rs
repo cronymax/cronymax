@@ -106,7 +106,7 @@ pub(super) async fn test_lark_connection(
 
 // ─── Info Block Helpers ──────────────────────────────────────────────────────
 
-/// Add an info message to the chat **and** push a visible `BlockMode::Info` block
+/// Add an info message to the chat **and** push a visible `Block::Info` block
 /// into the prompt editor so it actually renders in the cell list.
 pub(super) fn push_info_block(state: &mut AppState, sid: SessionId, text: &str) {
     if let Some(chat) = state.session_chats.get_mut(&sid) {
@@ -115,7 +115,7 @@ pub(super) fn push_info_block(state: &mut AppState, sid: SessionId, text: &str) 
     if let Some(pe) = state.ui_state.prompt_editors.get_mut(&sid) {
         let id = pe.next_chat_cell_id;
         pe.next_chat_cell_id += 1;
-        pe.blocks.push(BlockMode::Info {
+        pe.blocks.push(Block::Info {
             id,
             text: text.to_string(),
         });
@@ -123,18 +123,18 @@ pub(super) fn push_info_block(state: &mut AppState, sid: SessionId, text: &str) 
 }
 
 /// Update the last info block in-place (for progress reporting).
-/// If the last block is not `BlockMode::Info`, appends a new one.
+/// If the last block is not `Block::Info`, appends a new one.
 pub(super) fn update_info_block(state: &mut AppState, sid: SessionId, text: &str) {
     if let Some(chat) = state.session_chats.get_mut(&sid) {
         chat.update_last_info_message(text);
     }
     if let Some(pe) = state.ui_state.prompt_editors.get_mut(&sid) {
-        if let Some(BlockMode::Info { text: t, .. }) = pe.blocks.last_mut() {
+        if let Some(Block::Info { text: t, .. }) = pe.blocks.last_mut() {
             *t = text.to_string();
         } else {
             let id = pe.next_chat_cell_id;
             pe.next_chat_cell_id += 1;
-            pe.blocks.push(BlockMode::Info {
+            pe.blocks.push(Block::Info {
                 id,
                 text: text.to_string(),
             });

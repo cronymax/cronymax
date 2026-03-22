@@ -1,6 +1,6 @@
 // Chat panel UI — per-session inline chat cells with streaming markdown.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use egui_commonmark::CommonMarkCache;
 
@@ -42,6 +42,23 @@ pub struct SessionChat {
     pub cell_caches: HashMap<u32, CommonMarkCache>,
     /// Persistent UUID for cross-session identity (survives app restarts).
     pub persistent_id: Option<String>,
+
+    // ── Thread (branching) fields ─────────────────────────────────
+    /// If this is a thread, the session ID of the parent it was branched from.
+    pub parent_session_id: Option<crate::renderer::terminal::SessionId>,
+    /// If this is a thread, the cell_id of the block it was branched from.
+    pub branch_cell_id: Option<u32>,
+    /// Map from block cell_id → child thread session ID.
+    pub threads: HashMap<u32, crate::renderer::terminal::SessionId>,
+    /// Number of tool-call rounds in the current agentic loop.
+    pub tool_rounds: u32,
+    /// Maximum tool-call rounds before auto-stopping (0 = unlimited).
+    pub max_tool_rounds: u32,
+    /// In-memory cache of starred block cell IDs (synced on toggle).
+    pub starred_ids: HashSet<u32>,
+    /// Pinned markdown content displayed as a single block at the top of the pane
+    /// (used by the History view and similar info-only tabs).
+    pub pinned_content: Option<String>,
 }
 
 impl SessionChat {
@@ -62,6 +79,13 @@ impl SessionChat {
             tokens_limit: max_context_tokens as u32,
             cell_caches: HashMap::new(),
             persistent_id: Some(uuid::Uuid::new_v4().to_string()),
+            parent_session_id: None,
+            branch_cell_id: None,
+            threads: HashMap::new(),
+            tool_rounds: 0,
+            max_tool_rounds: 10,
+            starred_ids: HashSet::new(),
+            pinned_content: None,
         }
     }
 
@@ -92,19 +116,22 @@ impl SessionChat {
 
     /// Submit a user chat prompt. Adds to history and messages.
     /// Returns the messages to send to the LLM API.
+    /// `cell_id` links the message to its Block::Stream block for thread branching.
     pub fn submit_user_message(
         &mut self,
         text: &str,
         token_counter: &TokenCounter,
         model: &str,
+        cell_id: Option<u32>,
     ) -> Vec<ChatMessage> {
         let tc = token_counter.count(text, model) as u32;
-        let user_msg = ChatMessage::new(
+        let mut user_msg = ChatMessage::new(
             MessageRole::User,
             text.to_string(),
             MessageImportance::Normal,
             tc,
         );
+        user_msg.cell_id = cell_id;
         self.history.push(user_msg.clone());
         self.add_message(user_msg);
         self.is_streaming = true;

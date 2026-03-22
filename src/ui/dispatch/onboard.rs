@@ -125,7 +125,7 @@ impl Ui {
         event_loop: &winit::event_loop::ActiveEventLoop,
         app_id: &str,
     ) {
-        crate::app::open_browser(self, ctx, LARK_DEV_CONSOLE_URL, event_loop);
+        self.open_browser(ctx, LARK_DEV_CONSOLE_URL, event_loop);
 
         let request_id = uuid::Uuid::new_v4().to_string();
         let script = build_lark_console_setup_script(&request_id, app_id);
@@ -334,15 +334,23 @@ impl Ui {
                 session_id,
                 message_id,
             } => {
-                // Toggle starred state in DB.
-                if let Some(db) = &ctx.db_store {
-                    // Check current state and toggle.
-                    let starred_ids = db.get_starred_blocks(session_id).unwrap_or_default();
-                    let is_starred = starred_ids.contains(&message_id);
-                    if let Err(e) = db.set_starred_block(session_id, message_id, !is_starred) {
+                // Toggle in-memory starred set (for immediate visual feedback).
+                let is_starred = if let Some(chat) = ctx.session_chats.get_mut(&session_id) {
+                    if chat.starred_ids.contains(&message_id) {
+                        chat.starred_ids.remove(&message_id);
+                        true // was starred → now unstarred
+                    } else {
+                        chat.starred_ids.insert(message_id);
+                        false // was not starred → now starred
+                    }
+                } else {
+                    false
+                };
+                // Persist to DB.
+                if let Some(db) = &ctx.db_store
+                    && let Err(e) = db.set_starred_block(session_id, message_id, !is_starred) {
                         log::error!("Failed to toggle starred block: {}", e);
                     }
-                }
             }
             UiAction::CloseChannel(channel_id) => {
                 tiles::remove_channel_pane(&mut self.tile_tree, &channel_id);
@@ -449,6 +457,119 @@ impl Ui {
             }
             UiAction::ToggleSkillsPanel => {
                 ctx.ui_state.skills_panel_state.open = !ctx.ui_state.skills_panel_state.open;
+            }
+
+            // ── Thread (branching) ────────────────────────────
+            UiAction::SpawnThread {
+                session_id,
+                cell_id,
+            } => {
+                // Guard: cannot branch from a thread (single-level only).
+                let is_already_branch = ctx
+                    .session_chats
+                    .get(&session_id)
+                    .is_some_and(|c| c.parent_session_id.is_some());
+                if is_already_branch {
+                    log::warn!("Cannot branch from a thread (single-level nesting only)");
+                    return;
+                }
+
+                // Check if a thread already exists for this cell.
+                if let Some(existing_thread_sid) = ctx
+                    .session_chats
+                    .get(&session_id)
+                    .and_then(|c| c.threads.get(&cell_id).copied())
+                {
+                    // Navigate to existing thread instead.
+                    ctx.ui_state
+                        .thread_view_map
+                        .insert(session_id, existing_thread_sid);
+                    log::info!(
+                        "Navigated to existing thread {} for cell {}",
+                        existing_thread_sid,
+                        cell_id
+                    );
+                    return;
+                }
+
+                // Allocate a new session ID.
+                let new_sid = *ctx.next_id;
+                *ctx.next_id += 1;
+
+                // Fork the message history up to the branch cell_id.
+                let (max_ctx, reserve) = ctx
+                    .session_chats
+                    .get(&session_id)
+                    .map(|c| (c.history.max_context_tokens, c.history.reserve_tokens))
+                    .unwrap_or((128_000, 4_000));
+
+                let forked_history = ctx
+                    .session_chats
+                    .get(&session_id)
+                    .map(|c| c.history.fork_up_to_cell(cell_id, max_ctx, reserve));
+
+                if let Some(forked_history) = forked_history {
+                    // Create the thread SessionChat.
+                    let mut thread_chat =
+                        crate::ui::chat::SessionChat::new(max_ctx, reserve);
+                    thread_chat.persistent_id =
+                        Some(uuid::Uuid::new_v4().to_string());
+                    thread_chat.history = forked_history;
+                    thread_chat.parent_session_id = Some(session_id);
+                    thread_chat.branch_cell_id = Some(cell_id);
+
+                    // Copy model override from parent.
+                    if let Some(parent) = ctx.session_chats.get(&session_id) {
+                        thread_chat.model_override = parent.model_override.clone();
+                    }
+
+                    ctx.session_chats.insert(new_sid, thread_chat);
+
+                    // Register parent → child mapping.
+                    if let Some(parent) = ctx.session_chats.get_mut(&session_id) {
+                        parent.threads.insert(cell_id, new_sid);
+                    }
+
+                    // Create a PromptState for the thread.
+                    let mut prompt_editor = crate::ui::prompt::PromptState::new();
+                    prompt_editor.visible = true;
+                    // Clone model list from parent so the model selector is visible.
+                    if let Some(parent_pe) = ctx.ui_state.prompt_editors.get(&session_id) {
+                        prompt_editor.model_items = parent_pe.model_items.clone();
+                        prompt_editor.selected_model_idx = parent_pe.selected_model_idx;
+                    }
+                    ctx.ui_state.prompt_editors.insert(new_sid, prompt_editor);
+
+                    // Navigate to the thread in-pane.
+                    ctx.ui_state.thread_view_map.insert(session_id, new_sid);
+
+                    log::info!(
+                        "Spawned thread {} from session {} cell {}",
+                        new_sid,
+                        session_id,
+                        cell_id
+                    );
+                }
+            }
+            UiAction::NavigateToThread {
+                root_session_id,
+                thread_session_id,
+            } => {
+                ctx.ui_state
+                    .thread_view_map
+                    .insert(root_session_id, thread_session_id);
+                log::info!(
+                    "Navigated to thread {} in session {}",
+                    thread_session_id,
+                    root_session_id
+                );
+            }
+            UiAction::NavigateBackFromThread { root_session_id } => {
+                ctx.ui_state.thread_view_map.remove(&root_session_id);
+                log::info!(
+                    "Navigated back from thread in session {}",
+                    root_session_id
+                );
             }
             _ => {}
         }

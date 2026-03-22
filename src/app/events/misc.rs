@@ -65,7 +65,7 @@ pub(in crate::app) fn handle_misc_event(
                                     task_name, action_value
                                 ),
                             );
-                            submit_chat(state, sid, &action_value);
+                            submit_chat(state, sid, &action_value, None);
                             push_info_block(
                                 state,
                                 sid,
@@ -176,7 +176,11 @@ pub(in crate::app) fn handle_misc_event(
             );
             // Find the webview by ID; 0 means "active webview".
             let target_idx = if webview_id != 0 {
-                state.ui.browser_tabs.iter().position(|wt| wt.browser.id == webview_id)
+                state
+                    .ui
+                    .browser_tabs
+                    .iter()
+                    .position(|wt| wt.browser.id == webview_id)
             } else {
                 if state.ui.browser_tabs.is_empty() {
                     None
@@ -357,7 +361,7 @@ pub(in crate::app) fn handle_misc_event(
             // Open the GitHub device-verification page in the internal webview.
             {
                 let (ui, mut ctx) = state.split_ui();
-                open_browser(ui, &mut ctx, &verification_uri, _event_loop);
+                ui.open_browser(&mut ctx, &verification_uri, _event_loop);
             }
 
             // Show the device code in the active chat so the user sees it.

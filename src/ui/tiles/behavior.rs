@@ -3,6 +3,7 @@
 use crate::ui::tiles::browser::BrowserViewPane;
 
 use super::channel::ChannelPaneView;
+use super::chat::ChatPaneView;
 use super::terminal::TerminalPaneView;
 use super::*;
 
@@ -52,13 +53,24 @@ impl<'a> egui_tiles::Behavior<Pane> for Behavior<'a> {
         );
 
         match pane {
-            Pane::Chat { session_id, .. } | Pane::Terminal { session_id, .. } => {
-                let widget = self.widgets.terminal_widget(*session_id);
+            Pane::Chat { session_id, .. } => {
+                let widget = self.widgets.chat_widget(*session_id);
                 let state = &mut self.state;
                 self.fragment
                     .duplicate()
                     .with(ui)
-                    .add(TerminalPaneView { widget, state });
+                    .add(ChatPaneView { widget, state });
+                if let Some(sid) = self.fragment.ui_state.focused_terminal_session {
+                    self.clicked_terminal_session = Some(sid);
+                }
+                egui_tiles::UiResponse::None
+            }
+            Pane::Terminal { session_id, .. } => {
+                let widget = self.widgets.terminal_widget(*session_id);
+                self.fragment
+                    .duplicate()
+                    .with(ui)
+                    .add(TerminalPaneView { widget });
                 if let Some(sid) = self.fragment.ui_state.focused_terminal_session {
                     self.clicked_terminal_session = Some(sid);
                 }

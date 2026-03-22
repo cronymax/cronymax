@@ -12,8 +12,8 @@
 //!        2.2.3 BrowserView pane     ← docked webview with address bar
 //!        2.2.4 Channel pane         ← messaging channel conversation
 //!    2.3 Block                      ← content units inside a pane
-//!        2.3.1 Terminal block       ← PTY command + output (BlockMode::Terminal)
-//!        2.3.2 Stream block         ← SSE/LLM exchange (BlockMode::Stream)
+//!        2.3.1 Terminal block       ← PTY command + output (Block::Terminal)
+//!        2.3.2 Stream block         ← SSE/LLM exchange (Block::Stream)
 //!    2.4 Prompt                     ← input area at pane bottom
 //!        - Suggestion panel         ← commands / file picker
 //!        - Prompt editor            ← context bar, text edit, hint bar
@@ -178,6 +178,16 @@ pub struct UiState {
     pub profiles_ui_state: crate::ui::settings::profiles::ProfilesSettingsState,
     pub scheduler_ui_state: crate::ui::settings::scheduler::SchedulerSettingsState,
     pub skills_panel_state: crate::ui::skills_panel::SkillsPanelState,
+
+    /// Toast notification state.
+    pub notifications: crate::ui::notifications::NotificationState,
+
+    /// Command palette state.
+    pub command_palette: crate::ui::command_palette::CommandPaletteState,
+
+    /// Thread navigation: maps root session ID → currently-viewed thread session ID.
+    /// When absent for a session, the pane shows the root conversation.
+    pub thread_view_map: HashMap<SessionId, SessionId>,
 }
 
 /// Unified tab entry — one per tab in the titlebar / tab bar.
@@ -426,6 +436,9 @@ impl UiState {
             skills_panel_state: crate::ui::skills_panel::SkillsPanelState::new(),
             profiles_ui_state: crate::ui::settings::profiles::ProfilesSettingsState::default(),
             onboarding_wizard_state: None,
+            notifications: crate::ui::notifications::NotificationState::default(),
+            command_palette: crate::ui::command_palette::CommandPaletteState::default(),
+            thread_view_map: HashMap::new(),
         }
     }
 }
@@ -434,7 +447,7 @@ pub(crate) fn default_commands() -> Vec<CommandEntry> {
     vec![
         CommandEntry {
             label: "New Chat Tab".into(),
-            action: "newtab".into(),
+            action: "new_tab".into(),
             shortcut: Some("Ctrl+T".into()),
             needs_arg: false,
         },
@@ -446,7 +459,7 @@ pub(crate) fn default_commands() -> Vec<CommandEntry> {
         },
         CommandEntry {
             label: "Close Tab".into(),
-            action: "closetab".into(),
+            action: "close_tab".into(),
             shortcut: Some("Ctrl+W".into()),
             needs_arg: false,
         },

@@ -28,6 +28,7 @@ impl Ui {
             | UiAction::NewTerminal
             | UiAction::NewTerminalWithShell(..)
             | UiAction::OpenHistory
+            | UiAction::OpenScheduler
             | UiAction::OpenHistorySession(..)
             | UiAction::OpenBrowserOverlay(..)
             | UiAction::ExecuteCommand(..)
@@ -111,6 +112,12 @@ impl Ui {
             | UiAction::SearchSkills(..)
             | UiAction::ReloadSkills
             | UiAction::ToggleSkillsPanel => self.handle_ui_action_onboard(ctx, action, event_loop),
+
+            UiAction::SpawnThread { .. }
+            | UiAction::NavigateToThread { .. }
+            | UiAction::NavigateBackFromThread { .. } => {
+                self.handle_ui_action_onboard(ctx, action, event_loop)
+            }
         }
     }
 
@@ -130,25 +137,25 @@ impl Ui {
                 log::warn!(":webview command requires a URL");
                 return;
             }
-            crate::app::open_browser(self, ctx, url, event_loop);
+            self.open_browser(ctx, url, event_loop);
         } else if cmd == "close" || cmd == "q" {
             if !self.browser_tabs.is_empty() {
-                crate::app::close_active_browser(self, ctx);
+                self.close_active_browser(ctx);
             } else if let Some(sid) = tiles::active_terminal_session(&self.tile_tree) {
                 ctx.sessions.remove(&sid);
                 tiles::remove_terminal_pane(&mut self.tile_tree, sid);
                 ctx.scheduler.mark_dirty();
             }
-        } else if cmd == "newtab" {
-            crate::app::handle_action(self, ctx, KeyAction::NewChat);
-        } else if cmd == "closetab" {
-            crate::app::handle_action(self, ctx, KeyAction::CloseTab);
+        } else if cmd == "new_tab" {
+            self.handle_action(ctx, KeyAction::NewChat);
+        } else if cmd == "close_tab" {
+            self.handle_action(ctx, KeyAction::CloseTab);
         } else if cmd == "new_terminal_tab" {
-            crate::app::handle_action(self, ctx, KeyAction::NewTerminal);
+            self.handle_action(ctx, KeyAction::NewTerminal);
         } else if cmd == "split_horizontal" {
-            crate::app::handle_action(self, ctx, KeyAction::SplitHorizontal);
+            self.handle_action(ctx, KeyAction::SplitHorizontal);
         } else if cmd == "split_vertical" {
-            crate::app::handle_action(self, ctx, KeyAction::SplitVertical);
+            self.handle_action(ctx, KeyAction::SplitVertical);
         } else if cmd == "filter" {
             ctx.ui_state.filter.toggle();
             ctx.scheduler.mark_dirty();

@@ -4,6 +4,7 @@ pub mod browser;
 mod browser_nav;
 pub mod chat;
 pub mod credentials;
+pub mod filesystem;
 pub mod general;
 pub mod loader;
 pub mod manager;
@@ -147,6 +148,7 @@ impl SkillRegistry {
         self.register_read_file();
         self.register_write_file();
         self.register_show_diff();
+        filesystem::register_filesystem_skills(self);
     }
 
     fn register_run_command(&mut self) {

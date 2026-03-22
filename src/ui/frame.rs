@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::config::AppConfig;
 use crate::renderer::terminal::SessionId;
 use crate::ui;
-use crate::ui::block::Block;
+use crate::ui::blocks::BlockGrid;
 use crate::ui::filter::FilterBarWidget;
 use crate::ui::styles::Styles;
 use crate::ui::tiles;
@@ -17,7 +17,7 @@ use crate::ui::widget::{Fragment, Widget};
 pub struct FrameWidget<'a> {
     // ── Main UI (tiles panel) ───────────────────────────────────────────
     pub tile_tree: &'a mut egui_tiles::Tree<tiles::Pane>,
-    pub blocks: HashMap<SessionId, Block>,
+    pub blocks: HashMap<SessionId, BlockGrid>,
     pub session_chats: &'a mut HashMap<SessionId, crate::ui::chat::SessionChat>,
     pub live_outputs: HashMap<SessionId, String>,
     pub channel_messages: &'a HashMap<String, Vec<crate::channels::ChannelDisplayMessage>>,

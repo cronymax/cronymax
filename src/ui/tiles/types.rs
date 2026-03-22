@@ -2,6 +2,13 @@
 
 use super::*;
 
+// ─── Pane Widget Store ───────────────────────────────────────────────────────
+
+use super::browser::BrowserViewPane;
+use super::channel::ChannelPane;
+use super::chat::ChatPane;
+use super::terminal::TerminalPane;
+
 #[derive(Debug, Clone)]
 pub struct TabDragPayload {
     pub session_id: SessionId,
@@ -75,24 +82,26 @@ pub enum TileRect {
     BrowserView { webview_id: u32, rect: egui::Rect },
 }
 
-// ─── Pane Widget Store ───────────────────────────────────────────────────────
-
-use super::browser::BrowserViewPane;
-use super::channel::ChannelPane;
-use super::terminal::TerminalPane;
-
 /// Persistent store for all pane widget instances.
 ///
 /// Lives in `TilesPanel`. Passed into `Behavior` as `&mut` each frame.
 /// Widgets are created lazily on first access and destroyed on pane close.
 #[derive(Default, Debug)]
 pub struct PaneWidgetStore {
+    pub chat: std::collections::HashMap<SessionId, ChatPane>,
     pub terminal: std::collections::HashMap<SessionId, TerminalPane>,
     pub browser: std::collections::HashMap<u32, BrowserViewPane>,
     pub channel: std::collections::HashMap<String, ChannelPane>,
 }
 
 impl PaneWidgetStore {
+    /// Get or create a chat widget for a session.
+    pub fn chat_widget(&mut self, sid: SessionId) -> &mut ChatPane {
+        self.chat
+            .entry(sid)
+            .or_insert_with(|| ChatPane::new(sid))
+    }
+
     /// Get or create a terminal widget for a session.
     pub fn terminal_widget(&mut self, sid: SessionId) -> &mut TerminalPane {
         self.terminal
@@ -114,8 +123,9 @@ impl PaneWidgetStore {
             .or_insert_with(|| ChannelPane::new(id, name))
     }
 
-    /// Clean up widget for a closed terminal/chat pane.
+    /// Clean up widgets for a closed terminal/chat pane.
     pub fn remove_terminal(&mut self, sid: SessionId) {
+        self.chat.remove(&sid);
         self.terminal.remove(&sid);
     }
 

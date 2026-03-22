@@ -20,6 +20,16 @@ pub fn match_keybinding(
     let shift = modifiers.shift_key();
     let super_key = modifiers.super_key();
 
+    // ─── Cmd+Shift combinations (macOS) ─────────────────────────────
+    if super_key && shift {
+        match &event.logical_key {
+            Key::Character(c) if c.as_str().eq_ignore_ascii_case("p") => {
+                return Some(KeyAction::CommandMode);
+            }
+            _ => {}
+        }
+    }
+
     if super_key {
         match &event.logical_key {
             Key::Character(c) if c.as_str().eq_ignore_ascii_case("c") => {
@@ -27,6 +37,9 @@ pub fn match_keybinding(
             }
             Key::Character(c) if c.as_str().eq_ignore_ascii_case("v") => {
                 return Some(KeyAction::Paste);
+            }
+            Key::Character(c) if c.as_str().eq_ignore_ascii_case("f") => {
+                return Some(KeyAction::ToggleFilter);
             }
             Key::Character(c) if c.as_str() == "," => return Some(KeyAction::ToggleSettings),
             _ => {}

@@ -24,9 +24,10 @@
 //! | Legacy       | [`overlay`]  | quad-based rendering (hit testing fallback)  |
 
 pub mod actions;
-pub mod block;
+pub mod blocks;
 pub mod browser;
 pub mod chat;
+pub mod command_palette;
 pub mod completion;
 pub mod dispatch;
 pub(crate) mod draw;
@@ -38,6 +39,7 @@ pub mod icons;
 pub mod keybindings;
 pub mod model;
 pub mod mouse;
+pub mod notifications;
 pub mod overlay;
 pub mod prompt;
 mod relaunch_dialog;

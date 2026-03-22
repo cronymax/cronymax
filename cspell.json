@@ -10,6 +10,7 @@
         "bytemuck",
         "chrono",
         "clawhub",
+        "clockface",
         "colours",
         "commonmark",
         "COMSPEC",

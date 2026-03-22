@@ -15,10 +15,10 @@ pub(in crate::app) fn handle_llm_event(
                 if let Some(chat) = state.session_chats.get_mut(&terminal_sid) {
                     chat.append_token(&token);
                 }
-                // Also update the streaming BlockMode::Stream response.
+                // Also update the streaming Block::Stream response.
                 if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                     for block in prompt_editor.blocks.iter_mut().rev() {
-                        if let BlockMode::Stream {
+                        if let Block::Stream {
                             is_streaming: true,
                             response,
                             ..
@@ -67,6 +67,30 @@ pub(in crate::app) fn handle_llm_event(
             // Route to the correct per-session chat.
             if let Some(&terminal_sid) = state.llm_session_map.get(&session_id) {
                 let model = llm_model_name(state);
+
+                // Determine the cell_id of the currently-streaming block
+                // so the assistant message can be linked for thread branching.
+                let streaming_cell_id = state
+                    .ui_state
+                    .prompt_editors
+                    .get(&terminal_sid)
+                    .and_then(|pe| {
+                        pe.blocks.iter().rev().find_map(|b| {
+                            if let Block::Stream {
+                                id, is_streaming, ..
+                            } = b
+                            {
+                                if *is_streaming {
+                                    Some(*id)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
                 if let Some(chat) = state.session_chats.get_mut(&terminal_sid) {
                     // Update token usage display.
                     if let Some(ref u) = usage {
@@ -83,6 +107,7 @@ pub(in crate::app) fn handle_llm_event(
                         tc,
                     );
                     msg.tool_calls = tool_calls.clone();
+                    msg.cell_id = streaming_cell_id;
                     chat.history.push(msg.clone());
                     chat.finalize_streaming(msg);
 
@@ -139,7 +164,7 @@ pub(in crate::app) fn handle_llm_event(
                     let status_text = status_parts.join(", ");
                     if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                         for block in prompt_editor.blocks.iter_mut().rev() {
-                            if let BlockMode::Stream {
+                            if let Block::Stream {
                                 is_streaming,
                                 tool_status,
                                 tool_calls_log,
@@ -172,7 +197,7 @@ pub(in crate::app) fn handle_llm_event(
                                         }
                                         _ => tc.arguments.chars().take(80).collect(),
                                     };
-                                    tool_calls_log.push(crate::ui::block::ToolCallEntry {
+                                    tool_calls_log.push(crate::ui::blocks::ToolCallEntry {
                                         name: tc.function_name.clone(),
                                         summary,
                                         result: None,
@@ -188,7 +213,7 @@ pub(in crate::app) fn handle_llm_event(
                     // No tool calls — this is a final response. Finalize the block.
                     if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                         for block in prompt_editor.blocks.iter_mut().rev() {
-                            if let BlockMode::Stream {
+                            if let Block::Stream {
                                 is_streaming,
                                 response,
                                 tool_status,
@@ -246,7 +271,7 @@ pub(in crate::app) fn handle_llm_event(
                 && let Some(chat) = state.session_chats.get(&terminal_sid)
                 && let Some(ref pid) = chat.persistent_id
             {
-                let record = crate::app::session_persist::chat_to_record(pid, chat);
+                let record = crate::app::session_persist::chat_to_record(pid, chat, &state.session_chats);
                 let mgr = state.profile_manager.lock().unwrap();
                 let profile_dir = mgr
                     .active()
@@ -267,6 +292,10 @@ pub(in crate::app) fn handle_llm_event(
         }
         AppEvent::LlmError { session_id, error } => {
             log::error!("LlmError[{}]: {}", session_id, error);
+            state
+                .ui_state
+                .notifications
+                .error("LLM Error", &error);
             // Route error to the correct per-session chat + Block.
             if let Some(&terminal_sid) = state.llm_session_map.get(&session_id) {
                 if let Some(chat) = state.session_chats.get_mut(&terminal_sid) {
@@ -279,10 +308,10 @@ pub(in crate::app) fn handle_llm_event(
                     );
                     chat.add_message(msg);
                 }
-                // Mark the streaming BlockMode::Stream as error.
+                // Mark the streaming Block::Stream as error.
                 if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                     for block in prompt_editor.blocks.iter_mut().rev() {
-                        if let BlockMode::Stream {
+                        if let Block::Stream {
                             is_streaming,
                             response,
                             tool_status,
@@ -361,6 +390,32 @@ pub(in crate::app) fn handle_llm_event(
                 chat.history.push(msg.clone());
                 chat.add_message(msg);
 
+                // Increment tool round counter and check limit.
+                chat.tool_rounds += 1;
+                let max_rounds = chat.max_tool_rounds;
+                if max_rounds > 0 && chat.tool_rounds >= max_rounds {
+                    log::warn!(
+                        "Agent loop for session {} reached max tool rounds ({}/{}), stopping.",
+                        terminal_sid,
+                        chat.tool_rounds,
+                        max_rounds
+                    );
+                    chat.is_streaming = false;
+                    let stop_msg = crate::ai::context::ChatMessage::new(
+                        crate::ai::context::MessageRole::Assistant,
+                        format!(
+                            "⚠️ Agent loop stopped after {} tool rounds (limit: {}).",
+                            chat.tool_rounds, max_rounds
+                        ),
+                        crate::ai::context::MessageImportance::Ephemeral,
+                        0,
+                    );
+                    chat.add_message(stop_msg);
+                    chat.tool_rounds = 0;
+                    state.scheduler.mark_dirty();
+                    return;
+                }
+
                 // Re-call stream_chat with updated history including tool results.
                 if let Some(ref client) = state.llm_client {
                     let messages = chat.history.for_api();
@@ -384,7 +439,7 @@ pub(in crate::app) fn handle_llm_event(
                 // Also mark completed tool_calls_log entries.
                 if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                     for block in prompt_editor.blocks.iter_mut().rev() {
-                        if let BlockMode::Stream {
+                        if let Block::Stream {
                             is_streaming,
                             response,
                             tool_status,
