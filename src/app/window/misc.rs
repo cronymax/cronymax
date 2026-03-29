@@ -41,9 +41,11 @@ pub(super) fn handle_resize(state: &mut AppState, new_size: winit::dpi::Physical
     // actual egui rect (see RedrawRequested handler), so we only
     // need to request a redraw here.
 
-    state
-        .ui.frame.terminal
-        .update_viewport(&state.ui.frame.gpu.queue, new_size.width, new_size.height);
+    state.ui.frame.terminal.update_viewport(
+        &state.ui.frame.gpu.queue,
+        new_size.width,
+        new_size.height,
+    );
 
     state.scheduler.mark_dirty();
 }
@@ -52,13 +54,15 @@ pub(super) fn handle_focus(state: &mut AppState, focused: bool) {
     // Forward focus change to egui so it can track viewport focus
     // (needed for TextEdit cursor painting, among other things).
     state
-        .ui.frame
+        .ui
+        .frame
         .on_window_event(&winit::event::WindowEvent::Focused(focused));
 
     if focused {
         // Re-resolve theme on focus — OS dark/light may have changed.
         state
-            .ui.frame
+            .ui
+            .frame
             .egui
             .ctx
             .set_style(state.config.resolve_egui_style());
@@ -134,7 +138,8 @@ pub(super) fn handle_focus(state: &mut AppState, focused: bool) {
 
 pub(super) fn handle_theme_changed(state: &mut AppState) {
     state
-        .ui.frame
+        .ui
+        .frame
         .egui
         .ctx
         .set_style(state.config.resolve_egui_style());
@@ -215,12 +220,10 @@ pub fn winit_event_to_egui(event: &winit::event::WindowEvent, scale: f32) -> Vec
                     modifiers: egui::Modifiers::NONE,
                 });
             }
-            if pressed {
-                if let Some(text) = &key_ev.text {
-                    let s = text.as_str();
-                    if !s.is_empty() && !s.chars().next().is_some_and(|c| c.is_control()) {
-                        out.push(egui::Event::Text(s.to_string()));
-                    }
+            if pressed && let Some(text) = &key_ev.text {
+                let s = text.as_str();
+                if !s.is_empty() && !s.chars().next().is_some_and(|c| c.is_control()) {
+                    out.push(egui::Event::Text(s.to_string()));
                 }
             }
         }

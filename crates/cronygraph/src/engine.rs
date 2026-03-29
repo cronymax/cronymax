@@ -14,7 +14,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::middleware::{MiddlewareChain, MiddlewareChainConfig, MiddlewareContext};
-use crate::types::{ChatMessage, MessageImportance, MessageRole, SkillHandler, TokenUsage, ToolCallInfo};
+use crate::types::{
+    ChatMessage, MessageImportance, MessageRole, SkillHandler, TokenUsage, ToolCallInfo,
+};
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -415,7 +417,9 @@ mod tests {
             _messages: &[ChatMessage],
             _tools: Option<&[serde_json::Value]>,
         ) -> anyhow::Result<LlmResult> {
-            let remaining = self.calls_remaining.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            let remaining = self
+                .calls_remaining
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             if remaining > 0 {
                 Ok(LlmResult {
                     response: String::new(),
@@ -450,16 +454,18 @@ mod tests {
             MessageImportance::Normal,
             1,
         )];
-        let result = runner.run(&EchoBackend, &SequentialToolExecutor, messages).await.unwrap();
+        let result = runner
+            .run(&EchoBackend, &SequentialToolExecutor, messages)
+            .await
+            .unwrap();
         assert!(result.response.contains("Echo:"));
         assert!(result.total_usage.is_some());
     }
 
     #[tokio::test]
     async fn runner_executes_tool_calls() {
-        let handler: SkillHandler = Arc::new(|_args| {
-            Box::pin(async { Ok(serde_json::json!({"ok": true})) })
-        });
+        let handler: SkillHandler =
+            Arc::new(|_args| Box::pin(async { Ok(serde_json::json!({"ok": true})) }));
         let mut handlers = HashMap::new();
         handlers.insert("test_tool".to_string(), handler);
 
@@ -480,7 +486,10 @@ mod tests {
             MessageImportance::Normal,
             1,
         )];
-        let result = runner.run(&backend, &SequentialToolExecutor, messages).await.unwrap();
+        let result = runner
+            .run(&backend, &SequentialToolExecutor, messages)
+            .await
+            .unwrap();
         assert_eq!(result.response, "Done with tools");
     }
 
@@ -489,9 +498,8 @@ mod tests {
         let mut config = AgentLoopConfig::default();
         config.max_tool_rounds = 2;
 
-        let handler: SkillHandler = Arc::new(|_args| {
-            Box::pin(async { Ok(serde_json::json!({"ok": true})) })
-        });
+        let handler: SkillHandler =
+            Arc::new(|_args| Box::pin(async { Ok(serde_json::json!({"ok": true})) }));
         let mut handlers = HashMap::new();
         handlers.insert("test_tool".to_string(), handler);
 
@@ -513,7 +521,10 @@ mod tests {
             MessageImportance::Normal,
             1,
         )];
-        let result = runner.run(&backend, &SequentialToolExecutor, messages).await.unwrap();
+        let result = runner
+            .run(&backend, &SequentialToolExecutor, messages)
+            .await
+            .unwrap();
         assert!(result.response.contains("maximum tool rounds"));
     }
 }

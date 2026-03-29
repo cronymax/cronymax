@@ -348,9 +348,10 @@ impl Ui {
                 };
                 // Persist to DB.
                 if let Some(db) = &ctx.db_store
-                    && let Err(e) = db.set_starred_block(session_id, message_id, !is_starred) {
-                        log::error!("Failed to toggle starred block: {}", e);
-                    }
+                    && let Err(e) = db.set_starred_block(session_id, message_id, !is_starred)
+                {
+                    log::error!("Failed to toggle starred block: {}", e);
+                }
             }
             UiAction::CloseChannel(channel_id) => {
                 tiles::remove_channel_pane(&mut self.tile_tree, &channel_id);
@@ -510,10 +511,8 @@ impl Ui {
 
                 if let Some(forked_history) = forked_history {
                     // Create the thread SessionChat.
-                    let mut thread_chat =
-                        crate::ui::chat::SessionChat::new(max_ctx, reserve);
-                    thread_chat.persistent_id =
-                        Some(uuid::Uuid::new_v4().to_string());
+                    let mut thread_chat = crate::ui::chat::SessionChat::new(max_ctx, reserve);
+                    thread_chat.persistent_id = Some(uuid::Uuid::new_v4().to_string());
                     thread_chat.history = forked_history;
                     thread_chat.parent_session_id = Some(session_id);
                     thread_chat.branch_cell_id = Some(cell_id);
@@ -566,10 +565,7 @@ impl Ui {
             }
             UiAction::NavigateBackFromThread { root_session_id } => {
                 ctx.ui_state.thread_view_map.remove(&root_session_id);
-                log::info!(
-                    "Navigated back from thread in session {}",
-                    root_session_id
-                );
+                log::info!("Navigated back from thread in session {}", root_session_id);
             }
             _ => {}
         }

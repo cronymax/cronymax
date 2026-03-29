@@ -70,26 +70,23 @@ pub(in crate::app) fn handle_llm_event(
 
                 // Determine the cell_id of the currently-streaming block
                 // so the assistant message can be linked for thread branching.
-                let streaming_cell_id = state
-                    .ui_state
-                    .prompt_editors
-                    .get(&terminal_sid)
-                    .and_then(|pe| {
-                        pe.blocks.iter().rev().find_map(|b| {
-                            if let Block::Stream {
-                                id, is_streaming, ..
-                            } = b
-                            {
-                                if *is_streaming {
-                                    Some(*id)
+                let streaming_cell_id =
+                    state
+                        .ui_state
+                        .prompt_editors
+                        .get(&terminal_sid)
+                        .and_then(|pe| {
+                            pe.blocks.iter().rev().find_map(|b| {
+                                if let Block::Stream {
+                                    id, is_streaming, ..
+                                } = b
+                                {
+                                    if *is_streaming { Some(*id) } else { None }
                                 } else {
                                     None
                                 }
-                            } else {
-                                None
-                            }
-                        })
-                    });
+                            })
+                        });
 
                 if let Some(chat) = state.session_chats.get_mut(&terminal_sid) {
                     // Update token usage display.
@@ -162,7 +159,9 @@ pub(in crate::app) fn handle_llm_event(
                         })
                         .collect();
                     let status_text = status_parts.join(", ");
-                    if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
+                    if let Some(prompt_editor) =
+                        state.ui_state.prompt_editors.get_mut(&terminal_sid)
+                    {
                         for block in prompt_editor.blocks.iter_mut().rev() {
                             if let Block::Stream {
                                 is_streaming,
@@ -211,7 +210,9 @@ pub(in crate::app) fn handle_llm_event(
                     }
                 } else {
                     // No tool calls — this is a final response. Finalize the block.
-                    if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
+                    if let Some(prompt_editor) =
+                        state.ui_state.prompt_editors.get_mut(&terminal_sid)
+                    {
                         for block in prompt_editor.blocks.iter_mut().rev() {
                             if let Block::Stream {
                                 is_streaming,
@@ -236,7 +237,8 @@ pub(in crate::app) fn handle_llm_event(
             if !tool_calls.is_empty() {
                 // Run after_llm middleware (e.g., SubagentLimitMiddleware
                 // truncates excess concurrent tool calls).
-                let effective_tool_calls = if let Some(&terminal_sid) = state.llm_session_map.get(&session_id)
+                let effective_tool_calls = if let Some(&terminal_sid) =
+                    state.llm_session_map.get(&session_id)
                     && let Some(chat) = state.session_chats.get(&terminal_sid)
                 {
                     let mut mw_ctx = crate::ai::middleware::MiddlewareContext::new(
@@ -250,7 +252,9 @@ pub(in crate::app) fn handle_llm_event(
                         &tool_calls,
                         &mut mw_ctx,
                     );
-                    outcome.override_tool_calls.unwrap_or_else(|| tool_calls.clone())
+                    outcome
+                        .override_tool_calls
+                        .unwrap_or_else(|| tool_calls.clone())
                 } else {
                     tool_calls.clone()
                 };
@@ -298,7 +302,10 @@ pub(in crate::app) fn handle_llm_event(
                         let _ = state.proxy.send_event(AppEvent::ToolResult {
                             session_id,
                             tool_call_id: tool_call.id.clone(),
-                            result: format!("{{\"error\": \"Unknown tool: {}\"}}", tool_call.function_name),
+                            result: format!(
+                                "{{\"error\": \"Unknown tool: {}\"}}",
+                                tool_call.function_name
+                            ),
                         });
                     }
                 }
@@ -312,7 +319,8 @@ pub(in crate::app) fn handle_llm_event(
                 && let Some(chat) = state.session_chats.get(&terminal_sid)
                 && let Some(ref pid) = chat.persistent_id
             {
-                let record = crate::app::session_persist::chat_to_record(pid, chat, &state.session_chats);
+                let record =
+                    crate::app::session_persist::chat_to_record(pid, chat, &state.session_chats);
                 let mgr = state.profile_manager.lock().unwrap();
                 let profile_dir = mgr
                     .active()
@@ -338,12 +346,8 @@ pub(in crate::app) fn handle_llm_event(
             {
                 let memory_store = state.memory_store.clone();
                 let memory_agent_config = state.memory_agent.config().clone();
-                let conversation: Vec<crate::ai::context::ChatMessage> =
-                    chat.history.for_api();
-                let openai_client = state
-                    .llm_client
-                    .as_ref()
-                    .and_then(|c| c.openai_client());
+                let conversation: Vec<crate::ai::context::ChatMessage> = chat.history.for_api();
+                let openai_client = state.llm_client.as_ref().and_then(|c| c.openai_client());
 
                 // Debounce: 2 new messages per turn (user + assistant).
                 let should_extract = {
@@ -352,71 +356,66 @@ pub(in crate::app) fn handle_llm_event(
                     rt.block_on(agent.notify_new_messages(2))
                 };
 
-                if should_extract && memory_agent_config.enabled
-                    && let Some(oai_client) = openai_client {
-                        let agent = crate::ai::memory_agent::MemoryAgent::new(
-                            memory_agent_config.clone(),
-                        );
-                        state.runtime.spawn(async move {
-                            let existing_entries = {
-                                let store = memory_store.lock().unwrap();
-                                store.entries.clone()
-                            };
-                            let extraction_messages =
-                                agent.build_extraction_messages(&conversation, &existing_entries);
+                if should_extract
+                    && memory_agent_config.enabled
+                    && let Some(oai_client) = openai_client
+                {
+                    let agent =
+                        crate::ai::memory_agent::MemoryAgent::new(memory_agent_config.clone());
+                    state.runtime.spawn(async move {
+                        let existing_entries = {
+                            let store = memory_store.lock().unwrap();
+                            store.entries.clone()
+                        };
+                        let extraction_messages =
+                            agent.build_extraction_messages(&conversation, &existing_entries);
 
-                            // Use the non-streaming LLM backend to call the cheap model.
-                            let backend = crate::ai::agent_loop::NonStreamingLlmBackend {
-                                client: oai_client,
-                                model: agent.config().model.clone(),
-                            };
-                            match crate::ai::agent_loop::LlmBackend::complete(
-                                &backend,
-                                &extraction_messages,
-                                None,
-                            )
-                            .await
-                            {
-                                Ok(result) => {
-                                    let facts =
-                                        crate::ai::memory_agent::MemoryAgent::parse_extraction_response(
-                                            &result.response,
+                        // Use the non-streaming LLM backend to call the cheap model.
+                        let backend = crate::ai::agent_loop::NonStreamingLlmBackend {
+                            client: oai_client,
+                            model: agent.config().model.clone(),
+                        };
+                        match crate::ai::agent_loop::LlmBackend::complete(
+                            &backend,
+                            &extraction_messages,
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(result) => {
+                                let facts =
+                                    crate::ai::memory_agent::MemoryAgent::parse_extraction_response(
+                                        &result.response,
+                                    );
+                                if !facts.is_empty() {
+                                    let entries =
+                                        crate::ai::memory_agent::MemoryAgent::facts_to_entries(
+                                            &facts,
                                         );
-                                    if !facts.is_empty() {
-                                        let entries =
-                                            crate::ai::memory_agent::MemoryAgent::facts_to_entries(
-                                                &facts,
-                                            );
-                                        let mut store = memory_store.lock().unwrap();
-                                        for entry in entries {
-                                            store.insert(entry);
-                                        }
-                                        log::info!(
-                                            "[MemoryAgent] Extracted {} facts from conversation",
-                                            facts.len()
-                                        );
+                                    let mut store = memory_store.lock().unwrap();
+                                    for entry in entries {
+                                        store.insert(entry);
                                     }
-                                }
-                                Err(e) => {
-                                    log::warn!(
-                                        "[MemoryAgent] Background extraction failed: {}",
-                                        e
+                                    log::info!(
+                                        "[MemoryAgent] Extracted {} facts from conversation",
+                                        facts.len()
                                     );
                                 }
                             }
-                            agent.reset_counter().await;
-                        });
-                    }
+                            Err(e) => {
+                                log::warn!("[MemoryAgent] Background extraction failed: {}", e);
+                            }
+                        }
+                        agent.reset_counter().await;
+                    });
+                }
             }
 
             state.scheduler.mark_dirty();
         }
         AppEvent::LlmError { session_id, error } => {
             log::error!("LlmError[{}]: {}", session_id, error);
-            state
-                .ui_state
-                .notifications
-                .error("LLM Error", &error);
+            state.ui_state.notifications.error("LLM Error", &error);
             // Route error to the correct per-session chat + Block.
             if let Some(&terminal_sid) = state.llm_session_map.get(&session_id) {
                 if let Some(chat) = state.session_chats.get_mut(&terminal_sid) {
@@ -569,7 +568,9 @@ pub(in crate::app) fn handle_llm_event(
                     chat.history.max_context_tokens,
                 );
                 let mut api_messages = chat.history.for_api();
-                let should_proceed = chat.middleware_chain.run_before_llm(&mut api_messages, &mut mw_ctx);
+                let should_proceed = chat
+                    .middleware_chain
+                    .run_before_llm(&mut api_messages, &mut mw_ctx);
 
                 if !should_proceed {
                     log::info!(
@@ -582,9 +583,10 @@ pub(in crate::app) fn handle_llm_event(
                         crate::ai::context::MessageRole::Assistant,
                         format!(
                             "⚠️ {}",
-                            mw_ctx.abort_reason.as_deref().unwrap_or(
-                                "Agent loop stopped by middleware."
-                            )
+                            mw_ctx
+                                .abort_reason
+                                .as_deref()
+                                .unwrap_or("Agent loop stopped by middleware.")
                         ),
                         crate::ai::context::MessageImportance::Ephemeral,
                         0,

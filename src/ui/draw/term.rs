@@ -116,36 +116,36 @@ impl Ui {
 
             // ── Selection highlight quads ────────────────────────────
             if let Some(sel) = &self.terminal_selection
-                && sel.session_id == sid {
-                    let (sc, sr, ec, er) = sel.normalized();
-                    // selection_bg = "#264f78" → (38, 79, 120) with alpha
-                    let sel_color: [f32; 4] = [
-                        38.0 / 255.0,
-                        79.0 / 255.0,
-                        120.0 / 255.0,
-                        0.6,
-                    ];
-                    for row in sr..=er {
-                        if row >= rows {
-                            continue;
-                        }
-                        let col_start = if row == sr { sc } else { 0 };
-                        let col_end = if row == er { ec } else { cols.saturating_sub(1) };
-                        if col_end < col_start {
-                            continue;
-                        }
-                        let x = vp.x + col_start as f32 * phys_cell_w;
-                        let y = vp.y + row as f32 * phys_cell_h;
-                        let w = (col_end - col_start + 1) as f32 * phys_cell_w;
-                        all_quads.push(crate::renderer::quad::Quad {
-                            x,
-                            y,
-                            width: w,
-                            height: phys_cell_h,
-                            color: sel_color,
-                        });
+                && sel.session_id == sid
+            {
+                let (sc, sr, ec, er) = sel.normalized();
+                // selection_bg = "#264f78" → (38, 79, 120) with alpha
+                let sel_color: [f32; 4] = [38.0 / 255.0, 79.0 / 255.0, 120.0 / 255.0, 0.6];
+                for row in sr..=er {
+                    if row >= rows {
+                        continue;
                     }
+                    let col_start = if row == sr { sc } else { 0 };
+                    let col_end = if row == er {
+                        ec
+                    } else {
+                        cols.saturating_sub(1)
+                    };
+                    if col_end < col_start {
+                        continue;
+                    }
+                    let x = vp.x + col_start as f32 * phys_cell_w;
+                    let y = vp.y + row as f32 * phys_cell_h;
+                    let w = (col_end - col_start + 1) as f32 * phys_cell_w;
+                    all_quads.push(crate::renderer::quad::Quad {
+                        x,
+                        y,
+                        width: w,
+                        height: phys_cell_h,
+                        color: sel_color,
+                    });
                 }
+            }
 
             let history = session.state.history_size();
             if history > 0 {

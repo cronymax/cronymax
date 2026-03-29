@@ -97,9 +97,7 @@ pub struct PaneWidgetStore {
 impl PaneWidgetStore {
     /// Get or create a chat widget for a session.
     pub fn chat_widget(&mut self, sid: SessionId) -> &mut ChatPane {
-        self.chat
-            .entry(sid)
-            .or_insert_with(|| ChatPane::new(sid))
+        self.chat.entry(sid).or_insert_with(|| ChatPane::new(sid))
     }
 
     /// Get or create a terminal widget for a session.

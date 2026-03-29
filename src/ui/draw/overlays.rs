@@ -1,9 +1,9 @@
 //! Overlay browser, settings overlay, and float tooltip rendering.
 
+use crate::ui::Ui;
 use crate::ui::model::AppCtx;
 use crate::ui::types::BrowserViewMode;
 use crate::ui::{UiAction, ViewMut};
-use crate::ui::Ui;
 
 impl Ui {
     /// Render overlay browser address bars on separate wgpu surfaces.
@@ -26,26 +26,20 @@ impl Ui {
                         #[cfg(any(target_os = "macos", target_os = "windows"))]
                         if let Some(overlay) = &wt.overlay
                             && let Ok(buf) = overlay.panel.event_buffer.lock()
-                                && has_pointer_click(&buf) {
-                                    activate_id = Some(wt.browser.id);
-                                }
+                            && has_pointer_click(&buf)
+                        {
+                            activate_id = Some(wt.browser.id);
+                        }
                     }
                 }
                 if let Some(wid) = activate_id {
                     self.browser_manager.bring_to_front(wid);
-                    if let Some(idx) = self
-                        .browser_tabs
-                        .iter()
-                        .position(|wt| wt.browser.id == wid)
+                    if let Some(idx) = self.browser_tabs.iter().position(|wt| wt.browser.id == wid)
                     {
                         self.active_browser = idx;
                         ctx.ui_state.active_browser = Some(idx);
                     }
-                    self.handle_ui_action(
-                        ctx,
-                        UiAction::BringOverlayToFront(wid),
-                        event_loop,
-                    );
+                    self.handle_ui_action(ctx, UiAction::BringOverlayToFront(wid), event_loop);
                 }
             }
 
@@ -72,15 +66,14 @@ impl Ui {
                             wt.browser.address_bar.url = wt.browser.url.clone();
                         }
                         let was_editing = wt.browser.address_bar.editing;
-                        let r =
-                            overlay.render(ctx.config, ctx.ui_state, |mut f| {
-                                f.add(crate::ui::browser::BrowserView {
-                                    webview_id: wt.browser.id,
-                                    url: &mut wt.browser.address_bar.url,
-                                    editing: &mut wt.browser.address_bar.editing,
-                                    docked: false,
-                                });
+                        let r = overlay.render(ctx.config, ctx.ui_state, |mut f| {
+                            f.add(crate::ui::browser::BrowserView {
+                                webview_id: wt.browser.id,
+                                url: &mut wt.browser.address_bar.url,
+                                editing: &mut wt.browser.address_bar.editing,
+                                docked: false,
                             });
+                        });
                         // When the address bar just gained focus, explicitly
                         // take keyboard focus to prevent WebView2 from
                         // intercepting keyboard events.
@@ -109,11 +102,7 @@ impl Ui {
             }
             // Process actions from overlay browser buttons.
             for (wid, action) in browser_actions {
-                if let Some(idx) = self
-                    .browser_tabs
-                    .iter()
-                    .position(|wt| wt.browser.id == wid)
-                {
+                if let Some(idx) = self.browser_tabs.iter().position(|wt| wt.browser.id == wid) {
                     self.active_browser = idx;
                     ctx.ui_state.active_browser = Some(idx);
                 }
@@ -206,9 +195,7 @@ impl Ui {
 
                 // Lazy-load providers from config on first open.
                 if !ctx.ui_state.providers_ui_state.loaded {
-                    ctx.ui_state
-                        .providers_ui_state
-                        .load_from_config(ctx.config);
+                    ctx.ui_state.providers_ui_state.load_from_config(ctx.config);
                 }
 
                 // Render Settings UI on the overlay surface.
@@ -221,20 +208,18 @@ impl Ui {
                     .is_some_and(|buf| !buf.is_empty());
                 let needs_render = just_created || has_events;
                 // Use .take() to split borrows.
-                if needs_render {
-                if let Some(mut overlay) = self.settings_overlay.take() {
+                if needs_render && let Some(mut overlay) = self.settings_overlay.take() {
                     let mut pm_guard = ctx.profile_manager.lock().unwrap();
                     let history_cache = ctx.scheduler_history_cache.to_vec();
 
-                    let render_result =
-                        overlay.render(ctx.config, ctx.ui_state, |mut f| {
-                            f.add(crate::ui::settings::SettingsModal {
-                                agent_registry: Some(ctx.agent_registry),
-                                profile_manager: Some(&mut *pm_guard),
-                                task_store: Some(ctx.task_store),
-                                scheduler_history: &history_cache,
-                            })
-                        });
+                    let render_result = overlay.render(ctx.config, ctx.ui_state, |mut f| {
+                        f.add(crate::ui::settings::SettingsModal {
+                            agent_registry: Some(ctx.agent_registry),
+                            profile_manager: Some(&mut *pm_guard),
+                            task_store: Some(ctx.task_store),
+                            scheduler_history: &history_cache,
+                        })
+                    });
 
                     drop(pm_guard);
                     self.settings_overlay = Some(overlay);
@@ -249,7 +234,6 @@ impl Ui {
                             log::warn!("Settings overlay render failed: {e}");
                         }
                     }
-                }
                 }
 
                 // Ensure Settings overlay is visible and above browser overlay.
@@ -305,8 +289,7 @@ impl Ui {
                     {
                         let wf = ns_win.frame();
                         let sx = wf.origin.x + tip.screen_x as f64 - tip_w as f64 / 2.0;
-                        let sy =
-                            wf.origin.y + wf.size.height - tip.screen_y as f64 - tip_h as f64;
+                        let sy = wf.origin.y + wf.size.height - tip.screen_y as f64 - tip_h as f64;
                         fr.set_frame(
                             &self.frame.window,
                             sx as f32,

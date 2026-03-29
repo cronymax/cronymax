@@ -234,7 +234,8 @@ pub(in crate::app) fn handle_channel_event(
             } else {
                 format!("✗ {}", message)
             };
-            state.ui_state.channels_ui_state.test_status = Some((display, std::time::Instant::now()));
+            state.ui_state.channels_ui_state.test_status =
+                Some((display, std::time::Instant::now()));
             state.scheduler.mark_dirty();
         }
         AppEvent::ChannelBotCheckResult { results } => {
@@ -298,7 +299,8 @@ pub(in crate::app) fn handle_channel_event(
                 }
                 // Refresh the installed-list shown in the Skills panel.
                 if let Ok(reg) = sm.load_registry() {
-                    state.ui_state.skills_panel_state.installed_list = reg.skills.into_iter().collect();
+                    state.ui_state.skills_panel_state.installed_list =
+                        reg.skills.into_iter().collect();
                 }
             }
             state.scheduler.mark_dirty();

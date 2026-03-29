@@ -9,8 +9,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-
-
 // Re-export core types from cronygraph.
 pub use cronygraph::types::{TokenUsage, ToolCallInfo};
 

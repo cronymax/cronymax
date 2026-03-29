@@ -157,18 +157,19 @@ impl SettingsModal<'_> {
                 if let Some(mgr) = self.profile_manager.as_mut() {
                     actions.extend(ui_state.profiles_ui_state.draw(ui, mgr, styles, colors));
                 } else {
-                    Self::draw_section_placeholder(ui, ui_state.settings_state.active_section, styles, colors);
+                    Self::draw_section_placeholder(
+                        ui,
+                        ui_state.settings_state.active_section,
+                        styles,
+                        colors,
+                    );
                 }
             }
             SettingsSection::Channels => {
                 let onboarding = ui_state.onboarding_wizard_state.as_mut();
-                let ch_actions = ui_state.channels_ui_state.draw(
-                    ui,
-                    styles,
-                    colors,
-                    None,
-                    onboarding,
-                );
+                let ch_actions = ui_state
+                    .channels_ui_state
+                    .draw(ui, styles, colors, None, onboarding);
                 actions.extend(ch_actions);
             }
             SettingsSection::LLMProviders => {
@@ -186,15 +187,31 @@ impl SettingsModal<'_> {
                     );
                     actions.extend(agent_actions);
                 } else {
-                    Self::draw_section_placeholder(ui, ui_state.settings_state.active_section, styles, colors);
+                    Self::draw_section_placeholder(
+                        ui,
+                        ui_state.settings_state.active_section,
+                        styles,
+                        colors,
+                    );
                 }
             }
             SettingsSection::ScheduledTasks => {
                 if let Some(ts) = self.task_store.as_mut() {
-                    let schedule_actions = ui_state.scheduler_ui_state.draw(ui, ts, self.scheduler_history, styles, colors);
+                    let schedule_actions = ui_state.scheduler_ui_state.draw(
+                        ui,
+                        ts,
+                        self.scheduler_history,
+                        styles,
+                        colors,
+                    );
                     actions.extend(schedule_actions);
                 } else {
-                    Self::draw_section_placeholder(ui, ui_state.settings_state.active_section, styles, colors);
+                    Self::draw_section_placeholder(
+                        ui,
+                        ui_state.settings_state.active_section,
+                        styles,
+                        colors,
+                    );
                 }
             }
         }

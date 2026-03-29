@@ -7,8 +7,8 @@ pub mod quad;
 pub mod scheduler;
 pub mod terminal;
 pub mod text;
-pub mod webview;
 pub mod viewport;
+pub mod webview;
 
 // windowing
 pub mod frame;

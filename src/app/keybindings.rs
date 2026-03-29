@@ -307,7 +307,8 @@ impl Ui {
 
                 // Find the active tile to split.
                 if let Some(active_sid) = tiles::active_terminal_session(&self.tile_tree)
-                    && let Some(active_tile) = tiles::find_terminal_tile(&self.tile_tree, active_sid)
+                    && let Some(active_tile) =
+                        tiles::find_terminal_tile(&self.tile_tree, active_sid)
                 {
                     // Create a new terminal session for the new pane.
                     let id = *ctx.next_id;

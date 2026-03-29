@@ -191,7 +191,8 @@ impl Ui {
                 tab.browser.view.set_visible(true);
                 let win_size = self.frame.window.inner_size();
                 if let Some(ref split) = self.split {
-                    let bounds = split.webview_bounds(win_size.width, win_size.height, &self.styles);
+                    let bounds =
+                        split.webview_bounds(win_size.width, win_size.height, &self.styles);
                     tab.browser.view.set_viewport(bounds);
                 }
             }

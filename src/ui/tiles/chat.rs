@@ -398,8 +398,7 @@ impl ChatPane {
                                 .get(&sid)
                                 .and_then(|c| c.pinned_content.clone())
                         {
-                            let cell =
-                                crate::ui::blocks::Block::PinnedContent { text: content };
+                            let cell = crate::ui::blocks::Block::PinnedContent { text: content };
                             let mut ps = None;
                             let mut pb = None;
                             let mut el = Vec::new();

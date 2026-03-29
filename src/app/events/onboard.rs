@@ -110,7 +110,8 @@ pub(in crate::app) fn handle_onboard_event(
                     // credentials.  This covers the skill-only flow where the user
                     // never opened the graphical wizard.
                     let wiz = state
-                        .ui_state.onboarding_wizard_state
+                        .ui_state
+                        .onboarding_wizard_state
                         .get_or_insert_with(Default::default);
                     wiz.app_id = app_id.clone();
                     wiz.store_secret_in_keychain = true;
@@ -144,7 +145,8 @@ pub(in crate::app) fn handle_onboard_event(
             let secret_store = state.secret_store.clone();
             let rid = request_id.clone();
             let (app_id, app_secret_env, secret_storage) = state
-                .ui_state.onboarding_wizard_state
+                .ui_state
+                .onboarding_wizard_state
                 .as_ref()
                 .map(|wiz| {
                     (

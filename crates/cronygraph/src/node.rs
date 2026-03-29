@@ -5,11 +5,9 @@
 
 use std::collections::HashMap;
 
-use crate::engine::{
-    AgentLoopConfig, AgentLoopResult, AgentLoopRunner, LlmBackend, ToolExecutor,
-};
-use crate::types::SkillHandler;
+use crate::engine::{AgentLoopConfig, AgentLoopResult, AgentLoopRunner, LlmBackend, ToolExecutor};
 use crate::types::ChatMessage;
+use crate::types::SkillHandler;
 
 // ─── AgentNode ───────────────────────────────────────────────────────────────
 

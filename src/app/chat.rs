@@ -63,7 +63,12 @@ pub(crate) fn build_channel_context(config: &crate::config::AppConfig) -> Option
 }
 
 /// Submit the chat panel input to the LLM.
-pub(super) fn submit_chat(state: &mut AppState, sid: SessionId, user_text: &str, cell_id: Option<u32>) {
+pub(super) fn submit_chat(
+    state: &mut AppState,
+    sid: SessionId,
+    user_text: &str,
+    cell_id: Option<u32>,
+) {
     if user_text.is_empty() {
         return;
     }
@@ -174,31 +179,31 @@ pub(super) fn submit_chat(state: &mut AppState, sid: SessionId, user_text: &str,
                     format!("cronymax.general.{}", skill.name),
                     format!("cronymax.terminal.{}", skill.name),
                 ];
-                let handler: crate::ai::skills::SkillHandler =
-                    if let Some(existing) = builtin_names.iter().find_map(|n| {
-                        state.skill_registry.get(n).map(|(_, h)| h.clone())
-                    }) {
-                        // Delegate to the existing built-in handler.
-                        existing
-                    } else {
-                        // No matching built-in — run as a pass-through that returns
-                        // the skill parameters as context for the LLM to incorporate.
-                        let skill_name = skill.name.clone();
-                        let skill_desc = skill.description.clone();
-                        std::sync::Arc::new(move |args: serde_json::Value| {
-                            let name = skill_name.clone();
-                            let desc = skill_desc.clone();
-                            Box::pin(async move {
-                                Ok(serde_json::json!({
-                                    "status": "executed",
-                                    "skill": name,
-                                    "description": desc,
-                                    "parameters": args,
-                                    "note": "Agent skill executed. The parameters were passed through for LLM processing."
-                                }))
-                            })
+                let handler: crate::ai::skills::SkillHandler = if let Some(existing) = builtin_names
+                    .iter()
+                    .find_map(|n| state.skill_registry.get(n).map(|(_, h)| h.clone()))
+                {
+                    // Delegate to the existing built-in handler.
+                    existing
+                } else {
+                    // No matching built-in — run as a pass-through that returns
+                    // the skill parameters as context for the LLM to incorporate.
+                    let skill_name = skill.name.clone();
+                    let skill_desc = skill.description.clone();
+                    std::sync::Arc::new(move |args: serde_json::Value| {
+                        let name = skill_name.clone();
+                        let desc = skill_desc.clone();
+                        Box::pin(async move {
+                            Ok(serde_json::json!({
+                                "status": "executed",
+                                "skill": name,
+                                "description": desc,
+                                "parameters": args,
+                                "note": "Agent skill executed. The parameters were passed through for LLM processing."
+                            }))
                         })
-                    };
+                    })
+                };
                 state.skill_registry.register(skill_def, handler);
             }
         }

@@ -436,14 +436,14 @@ impl AgentMiddleware for TodoListMiddleware {
             plan.render()
         );
 
-        if let Some(system_msg) = messages.iter_mut().find(|m| m.role == MessageRole::System) {
-            if !system_msg.content.contains("<task_plan>") {
-                system_msg.content.push_str(&block);
-                log::debug!(
-                    "[TodoList] Injected task plan ({} tasks) into system prompt",
-                    plan.tasks.len()
-                );
-            }
+        if let Some(system_msg) = messages.iter_mut().find(|m| m.role == MessageRole::System)
+            && !system_msg.content.contains("<task_plan>")
+        {
+            system_msg.content.push_str(&block);
+            log::debug!(
+                "[TodoList] Injected task plan ({} tasks) into system prompt",
+                plan.tasks.len()
+            );
         }
     }
 }
@@ -583,8 +583,16 @@ mod tests {
         let mut ctx = MiddlewareContext::new(0, 10, 1000, 128_000);
 
         let tool_calls = vec![
-            ToolCallInfo { id: "1".into(), function_name: "a".into(), arguments: "{}".into() },
-            ToolCallInfo { id: "2".into(), function_name: "b".into(), arguments: "{}".into() },
+            ToolCallInfo {
+                id: "1".into(),
+                function_name: "a".into(),
+                arguments: "{}".into(),
+            },
+            ToolCallInfo {
+                id: "2".into(),
+                function_name: "b".into(),
+                arguments: "{}".into(),
+            },
         ];
 
         let outcome = mw.after_llm("", &tool_calls, &mut ctx);
@@ -597,10 +605,26 @@ mod tests {
         let mut ctx = MiddlewareContext::new(0, 10, 1000, 128_000);
 
         let tool_calls = vec![
-            ToolCallInfo { id: "1".into(), function_name: "a".into(), arguments: "{}".into() },
-            ToolCallInfo { id: "2".into(), function_name: "b".into(), arguments: "{}".into() },
-            ToolCallInfo { id: "3".into(), function_name: "c".into(), arguments: "{}".into() },
-            ToolCallInfo { id: "4".into(), function_name: "d".into(), arguments: "{}".into() },
+            ToolCallInfo {
+                id: "1".into(),
+                function_name: "a".into(),
+                arguments: "{}".into(),
+            },
+            ToolCallInfo {
+                id: "2".into(),
+                function_name: "b".into(),
+                arguments: "{}".into(),
+            },
+            ToolCallInfo {
+                id: "3".into(),
+                function_name: "c".into(),
+                arguments: "{}".into(),
+            },
+            ToolCallInfo {
+                id: "4".into(),
+                function_name: "d".into(),
+                arguments: "{}".into(),
+            },
         ];
 
         let outcome = mw.after_llm("", &tool_calls, &mut ctx);
@@ -732,12 +756,11 @@ mod tests {
             result_summary: None,
         }]));
 
-        let mut messages = vec![make_system_msg("You are helpful.\n\n<task_plan>existing</task_plan>")];
+        let mut messages = vec![make_system_msg(
+            "You are helpful.\n\n<task_plan>existing</task_plan>",
+        )];
         mw.before_llm(&mut messages, &mut ctx);
         // Should not inject again.
-        assert_eq!(
-            messages[0].content.matches("<task_plan>").count(),
-            1
-        );
+        assert_eq!(messages[0].content.matches("<task_plan>").count(), 1);
     }
 }

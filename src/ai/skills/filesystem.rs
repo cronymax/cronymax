@@ -94,9 +94,9 @@ fn register_fs_read_file(registry: &mut SkillRegistry) {
             let resolved = resolve_path(raw_path)?;
             let max_lines = args["max_lines"].as_u64().unwrap_or(200) as usize;
 
-            let content = tokio::fs::read_to_string(&resolved).await.map_err(|e| {
-                anyhow::anyhow!("Cannot read '{}': {}", resolved.display(), e)
-            })?;
+            let content = tokio::fs::read_to_string(&resolved)
+                .await
+                .map_err(|e| anyhow::anyhow!("Cannot read '{}': {}", resolved.display(), e))?;
 
             let lines: Vec<&str> = content.lines().collect();
             let total_lines = lines.len();
@@ -175,17 +175,20 @@ fn register_fs_write_file(registry: &mut SkillRegistry) {
 
             let resolved = resolve_path(raw_path)?;
 
-            if create_dirs
-                && let Some(parent) = resolved.parent() {
-                    tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                        anyhow::anyhow!("Cannot create directories for '{}': {}", resolved.display(), e)
-                    })?;
-                }
+            if create_dirs && let Some(parent) = resolved.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                    anyhow::anyhow!(
+                        "Cannot create directories for '{}': {}",
+                        resolved.display(),
+                        e
+                    )
+                })?;
+            }
 
             let bytes_written = content.len();
-            tokio::fs::write(&resolved, content).await.map_err(|e| {
-                anyhow::anyhow!("Cannot write '{}': {}", resolved.display(), e)
-            })?;
+            tokio::fs::write(&resolved, content)
+                .await
+                .map_err(|e| anyhow::anyhow!("Cannot write '{}': {}", resolved.display(), e))?;
 
             Ok(json!({
                 "path": resolved.display().to_string(),
@@ -241,9 +244,9 @@ fn register_fs_patch_file(registry: &mut SkillRegistry) {
                 .ok_or_else(|| anyhow::anyhow!("Missing 'replace' argument"))?;
 
             let resolved = resolve_path(raw_path)?;
-            let content = tokio::fs::read_to_string(&resolved).await.map_err(|e| {
-                anyhow::anyhow!("Cannot read '{}': {}", resolved.display(), e)
-            })?;
+            let content = tokio::fs::read_to_string(&resolved)
+                .await
+                .map_err(|e| anyhow::anyhow!("Cannot read '{}': {}", resolved.display(), e))?;
 
             if !content.contains(search) {
                 return Ok(json!({
@@ -254,9 +257,9 @@ fn register_fs_patch_file(registry: &mut SkillRegistry) {
             }
 
             let new_content = content.replacen(search, replace, 1);
-            tokio::fs::write(&resolved, &new_content).await.map_err(|e| {
-                anyhow::anyhow!("Cannot write '{}': {}", resolved.display(), e)
-            })?;
+            tokio::fs::write(&resolved, &new_content)
+                .await
+                .map_err(|e| anyhow::anyhow!("Cannot write '{}': {}", resolved.display(), e))?;
 
             Ok(json!({
                 "path": resolved.display().to_string(),
@@ -314,11 +317,23 @@ fn register_fs_list_dir(registry: &mut SkillRegistry) {
             let resolved = resolve_path(raw_path)?;
 
             if !resolved.is_dir() {
-                return Err(anyhow::anyhow!("'{}' is not a directory", resolved.display()));
+                return Err(anyhow::anyhow!(
+                    "'{}' is not a directory",
+                    resolved.display()
+                ));
             }
 
             let mut entries = Vec::new();
-            list_dir_recursive(&resolved, &resolved, recursive, max_depth, 0, max_entries, &mut entries).await?;
+            list_dir_recursive(
+                &resolved,
+                &resolved,
+                recursive,
+                max_depth,
+                0,
+                max_entries,
+                &mut entries,
+            )
+            .await?;
 
             Ok(json!({
                 "path": resolved.display().to_string(),

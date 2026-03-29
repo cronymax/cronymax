@@ -36,7 +36,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    config::AppConfig, renderer::terminal::SessionId, services::secret::SecretStore, ui::{prompt::PromptState, tiles}
+    config::AppConfig,
+    renderer::terminal::SessionId,
+    services::secret::SecretStore,
+    ui::{prompt::PromptState, tiles},
 };
 
 /// Tooltip request emitted by overlay browser rendering.

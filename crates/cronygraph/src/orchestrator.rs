@@ -120,19 +120,20 @@ impl PlannerOrchestrator {
             let llm = llm_factory.create(node.model.as_deref().unwrap_or("gpt-4o"));
             let permit = semaphore.clone();
 
-            let mut messages = Vec::new();
-            messages.push(ChatMessage::new(
-                MessageRole::System,
-                node.system_prompt.clone(),
-                MessageImportance::System,
-                0,
-            ));
-            messages.push(ChatMessage::new(
-                MessageRole::User,
-                task_desc.clone(),
-                MessageImportance::Normal,
-                (task_desc.chars().count().div_ceil(4)) as u32,
-            ));
+            let messages = vec![
+                ChatMessage::new(
+                    MessageRole::System,
+                    node.system_prompt.clone(),
+                    MessageImportance::System,
+                    0,
+                ),
+                ChatMessage::new(
+                    MessageRole::User,
+                    task_desc.clone(),
+                    MessageImportance::Normal,
+                    (task_desc.chars().count().div_ceil(4)) as u32,
+                ),
+            ];
 
             handles.push(tokio::spawn(async move {
                 let _permit = permit.acquire().await;

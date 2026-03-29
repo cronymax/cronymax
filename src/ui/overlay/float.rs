@@ -4,9 +4,9 @@ use winit::window::Window;
 use crate::{
     config::AppConfig,
     renderer::{
+        Renderer,
         overlay::Overlay,
         panel::{LogicalRect, Panel, PanelAttrs},
-        Renderer,
     },
     ui::{TooltipRequest, View, ViewMut},
 };
@@ -250,12 +250,9 @@ impl ViewMut for Float {
         // Use our opaque clear color instead of TRANSPARENT to prevent
         // alpha-compositing ghosting on the Float tooltip surface.
         let clear = self.clear_color;
-        let platform_output = self.as_mut_renderer().present(
-            full_output,
-            Some(clear),
-            None,
-            terminal_output,
-        )?;
+        let platform_output =
+            self.as_mut_renderer()
+                .present(full_output, Some(clear), None, terminal_output)?;
         self.handle_platform_output(platform_output);
         Ok(())
     }

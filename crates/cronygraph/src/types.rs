@@ -110,8 +110,13 @@ pub struct ToolCallInfo {
 // ─── Skill Types ─────────────────────────────────────────────────────────────
 
 /// Async handler for a skill invocation.
-pub type SkillHandler =
-    Arc<dyn Fn(serde_json::Value) -> Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>> + Send + Sync>;
+pub type SkillHandler = Arc<
+    dyn Fn(
+            serde_json::Value,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A tool skill definition (name, description, parameter JSON schema, category).
 #[derive(Debug, Clone)]

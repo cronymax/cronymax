@@ -23,20 +23,19 @@
 //! +-----------------------------------------------------+
 //! ```
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-mod linux;
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub use linux::ChildPanel;
 #[cfg(target_os = "macos")]
 pub use macos::Panel;
 #[cfg(target_os = "windows")]
 pub use windows::Panel;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub use linux::ChildPanel;
-
 
 /// A rectangle in logical coordinates with a DPI scale factor.
 ///
@@ -55,7 +54,6 @@ pub struct LogicalRect {
     /// DPI scale factor.
     pub scale: f32,
 }
-
 
 /// Platform-agnostic configuration for creating a child window.
 ///

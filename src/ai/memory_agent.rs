@@ -139,12 +139,21 @@ impl MemoryAgent {
         if !existing_memories.is_empty() {
             let existing_text: String = existing_memories
                 .iter()
-                .map(|e| format!("- [{}] {}", format!("{:?}", e.tag).to_lowercase(), e.content))
+                .map(|e| {
+                    format!(
+                        "- [{}] {}",
+                        format!("{:?}", e.tag).to_lowercase(),
+                        e.content
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
             messages.push(ChatMessage::new(
                 MessageRole::User,
-                format!("Existing memories (do NOT re-extract these):\n{}", existing_text),
+                format!(
+                    "Existing memories (do NOT re-extract these):\n{}",
+                    existing_text
+                ),
                 crate::ai::context::MessageImportance::Normal,
                 0,
             ));
@@ -320,7 +329,8 @@ mod tests {
 
     #[test]
     fn parse_filters_empty_content() {
-        let response = r#"[{"content": "", "tag": "fact"}, {"content": "Real fact", "tag": "fact"}]"#;
+        let response =
+            r#"[{"content": "", "tag": "fact"}, {"content": "Real fact", "tag": "fact"}]"#;
         let facts = MemoryAgent::parse_extraction_response(response);
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].0, "Real fact");
@@ -330,7 +340,10 @@ mod tests {
     fn facts_to_entries_creates_valid_entries() {
         let facts = vec![
             ("User uses macOS".to_string(), MemoryTag::Fact),
-            ("Always format with rustfmt".to_string(), MemoryTag::Instruction),
+            (
+                "Always format with rustfmt".to_string(),
+                MemoryTag::Instruction,
+            ),
         ];
         let entries = MemoryAgent::facts_to_entries(&facts);
         assert_eq!(entries.len(), 2);
@@ -349,7 +362,7 @@ mod tests {
 
         assert!(!agent.notify_new_messages(1).await); // 1 < 3
         assert!(!agent.notify_new_messages(1).await); // 2 < 3
-        assert!(agent.notify_new_messages(1).await);  // 3 >= 3
+        assert!(agent.notify_new_messages(1).await); // 3 >= 3
 
         agent.reset_counter().await;
         assert!(!agent.notify_new_messages(1).await); // reset to 1

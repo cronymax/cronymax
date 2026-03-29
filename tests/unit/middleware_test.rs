@@ -41,7 +41,12 @@ fn dangling_tool_call_injects_for_orphaned_calls() {
     let mut result = msg(MessageRole::Tool, "search done");
     result.tool_call_id = Some("c1".into());
 
-    let mut messages = vec![sys("system"), msg(MessageRole::User, "hi"), assistant, result];
+    let mut messages = vec![
+        sys("system"),
+        msg(MessageRole::User, "hi"),
+        assistant,
+        result,
+    ];
 
     mw.before_llm(&mut messages, &mut ctx);
 
@@ -155,9 +160,21 @@ fn subagent_limit_truncates_excess() {
     let mw = SubagentLimitMiddleware { max_concurrent: 2 };
     let mut ctx = MiddlewareContext::new(0, 10, 1000, 128_000);
     let tcs = vec![
-        ToolCallInfo { id: "1".into(), function_name: "a".into(), arguments: "{}".into() },
-        ToolCallInfo { id: "2".into(), function_name: "b".into(), arguments: "{}".into() },
-        ToolCallInfo { id: "3".into(), function_name: "c".into(), arguments: "{}".into() },
+        ToolCallInfo {
+            id: "1".into(),
+            function_name: "a".into(),
+            arguments: "{}".into(),
+        },
+        ToolCallInfo {
+            id: "2".into(),
+            function_name: "b".into(),
+            arguments: "{}".into(),
+        },
+        ToolCallInfo {
+            id: "3".into(),
+            function_name: "c".into(),
+            arguments: "{}".into(),
+        },
     ];
 
     let outcome = mw.after_llm("", &tcs, &mut ctx);
@@ -221,9 +238,11 @@ fn chain_fixes_dangling_then_summarizes() {
     chain.run_before_llm(&mut messages, &mut ctx);
 
     // Dangling call should be fixed.
-    assert!(messages
-        .iter()
-        .any(|m| m.tool_call_id.as_deref() == Some("orphan") && m.role == MessageRole::Tool));
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.tool_call_id.as_deref() == Some("orphan") && m.role == MessageRole::Tool)
+    );
     // Old messages should be downgraded.
     assert_eq!(messages[1].importance, MessageImportance::Ephemeral);
 }

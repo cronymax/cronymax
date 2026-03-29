@@ -397,7 +397,12 @@ mod tests {
         mw.before_llm(&mut messages, &mut ctx);
 
         assert!(ctx.abort);
-        assert!(ctx.abort_reason.as_ref().unwrap().contains("delegation depth"));
+        assert!(
+            ctx.abort_reason
+                .as_ref()
+                .unwrap()
+                .contains("delegation depth")
+        );
     }
 
     #[test]
@@ -448,7 +453,6 @@ mod tests {
 
     #[test]
     fn todolist_injects_plan_into_system_prompt() {
-
         let mw = TodoListMiddleware;
         let mut ctx = MiddlewareContext::new(0, 10, 1000, 128_000);
         ctx.task_plan = Some(TaskPlan::new(vec![
@@ -490,7 +494,6 @@ mod tests {
 
     #[test]
     fn todolist_no_double_inject() {
-
         let mw = TodoListMiddleware;
         let mut ctx = MiddlewareContext::new(0, 10, 1000, 128_000);
         ctx.task_plan = Some(TaskPlan::new(vec![PlannedTask {

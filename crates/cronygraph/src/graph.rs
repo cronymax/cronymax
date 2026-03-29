@@ -123,16 +123,15 @@ enum Edge {
 pub trait ConditionalRouter: Send + Sync {
     /// Given the current state and the node that just executed, return the
     /// name of the next node to run, or [`END`] to terminate.
-    async fn route(
-        &self,
-        state: &OrchestrationState,
-        current_node: &str,
-    ) -> anyhow::Result<String>;
+    async fn route(&self, state: &OrchestrationState, current_node: &str)
+    -> anyhow::Result<String>;
 }
+
+type RoutableFunc = Arc<dyn Fn(&OrchestrationState, &str) -> String + Send + Sync>;
 
 /// Simple function-based conditional router.
 pub struct FnRouter {
-    func: Arc<dyn Fn(&OrchestrationState, &str) -> String + Send + Sync>,
+    func: RoutableFunc,
 }
 
 impl FnRouter {
@@ -228,13 +227,14 @@ impl StateGraph {
                     from
                 ));
             }
-            if let Edge::Direct(to) = edge {
-                if to != END && !self.nodes.contains_key(to) {
-                    return Err(anyhow::anyhow!(
-                        "Edge target '{}' not found in graph nodes",
-                        to
-                    ));
-                }
+            if let Edge::Direct(to) = edge
+                && to != END
+                && !self.nodes.contains_key(to)
+            {
+                return Err(anyhow::anyhow!(
+                    "Edge target '{}' not found in graph nodes",
+                    to
+                ));
             }
         }
 
@@ -312,9 +312,7 @@ impl CompiledGraph {
             // ── Determine next step ──────────────────────────────────
             current = match self.edges.get(&current) {
                 Some(Edge::Direct(to)) => to.clone(),
-                Some(Edge::Conditional(router)) => {
-                    router.route(state, &current).await?
-                }
+                Some(Edge::Conditional(router)) => router.route(state, &current).await?,
                 None => {
                     // No outgoing edge — use the node's own return value.
                     node_result
@@ -532,10 +530,13 @@ mod tests {
     #[test]
     fn compile_rejects_bad_edge_target() {
         let mut graph = StateGraph::new();
-        graph.add_node("a", FixedResponseNode {
-            response: "hello".into(),
-            next: END.into(),
-        });
+        graph.add_node(
+            "a",
+            FixedResponseNode {
+                response: "hello".into(),
+                next: END.into(),
+            },
+        );
         graph.add_edge("a", "nonexistent");
         graph.set_entry("a");
         assert!(graph.compile().is_err());
@@ -544,10 +545,13 @@ mod tests {
     #[test]
     fn compile_accepts_end_edge() {
         let mut graph = StateGraph::new();
-        graph.add_node("a", FixedResponseNode {
-            response: "hello".into(),
-            next: END.into(),
-        });
+        graph.add_node(
+            "a",
+            FixedResponseNode {
+                response: "hello".into(),
+                next: END.into(),
+            },
+        );
         graph.add_edge("a", END);
         graph.set_entry("a");
         assert!(graph.compile().is_ok());
@@ -556,10 +560,13 @@ mod tests {
     #[tokio::test]
     async fn single_node_graph_runs_to_completion() {
         let mut graph = StateGraph::new();
-        graph.add_node("a", FixedResponseNode {
-            response: "done".into(),
-            next: END.into(),
-        });
+        graph.add_node(
+            "a",
+            FixedResponseNode {
+                response: "done".into(),
+                next: END.into(),
+            },
+        );
         graph.set_entry("a");
 
         let compiled = graph.compile().unwrap();
@@ -574,14 +581,20 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
 
         let mut graph = StateGraph::new();
-        graph.add_node("step1", CountingNode {
-            name: "step1".into(),
-            counter: counter.clone(),
-        });
-        graph.add_node("step2", CountingNode {
-            name: "step2".into(),
-            counter: counter.clone(),
-        });
+        graph.add_node(
+            "step1",
+            CountingNode {
+                name: "step1".into(),
+                counter: counter.clone(),
+            },
+        );
+        graph.add_node(
+            "step2",
+            CountingNode {
+                name: "step2".into(),
+                counter: counter.clone(),
+            },
+        );
         graph.add_edge("step1", "step2");
         graph.add_edge("step2", END);
         graph.set_entry("step1");
@@ -601,23 +614,33 @@ mod tests {
         let counter_b = Arc::new(AtomicUsize::new(0));
 
         let mut graph = StateGraph::new();
-        graph.add_node("router_node", FixedResponseNode {
-            response: "routing".into(),
-            next: END.into(),
-        });
-        graph.add_node("target_a", CountingNode {
-            name: "target_a".into(),
-            counter: counter_a.clone(),
-        });
-        graph.add_node("target_b", CountingNode {
-            name: "target_b".into(),
-            counter: counter_b.clone(),
-        });
+        graph.add_node(
+            "router_node",
+            FixedResponseNode {
+                response: "routing".into(),
+                next: END.into(),
+            },
+        );
+        graph.add_node(
+            "target_a",
+            CountingNode {
+                name: "target_a".into(),
+                counter: counter_a.clone(),
+            },
+        );
+        graph.add_node(
+            "target_b",
+            CountingNode {
+                name: "target_b".into(),
+                counter: counter_b.clone(),
+            },
+        );
 
         // Always route to target_b.
-        graph.add_conditional_edge("router_node", FnRouter::new(|_state, _node| {
-            "target_b".to_string()
-        }));
+        graph.add_conditional_edge(
+            "router_node",
+            FnRouter::new(|_state, _node| "target_b".to_string()),
+        );
         graph.add_edge("target_a", END);
         graph.add_edge("target_b", END);
         graph.set_entry("router_node");
@@ -636,25 +659,35 @@ mod tests {
         let ic = iteration_count.clone();
 
         let mut graph = StateGraph::new();
-        graph.add_node("worker", CountingNode {
-            name: "worker".into(),
-            counter: iteration_count.clone(),
-        });
-        graph.add_node("critic", CountingNode {
-            name: "critic".into(),
-            counter: iteration_count.clone(),
-        });
+        graph.add_node(
+            "worker",
+            CountingNode {
+                name: "worker".into(),
+                counter: iteration_count.clone(),
+            },
+        );
+        graph.add_node(
+            "critic",
+            CountingNode {
+                name: "critic".into(),
+                counter: iteration_count.clone(),
+            },
+        );
         graph.add_edge("worker", "critic");
 
         // Retry twice, then approve.
-        graph.add_conditional_edge("critic", FnRouter::new(move |_state, _node| {
-            let count = ic.load(Ordering::SeqCst);
-            if count < 4 { // 2 iterations × 2 nodes = 4
-                "worker".to_string()
-            } else {
-                END.to_string()
-            }
-        }));
+        graph.add_conditional_edge(
+            "critic",
+            FnRouter::new(move |_state, _node| {
+                let count = ic.load(Ordering::SeqCst);
+                if count < 4 {
+                    // 2 iterations × 2 nodes = 4
+                    "worker".to_string()
+                } else {
+                    END.to_string()
+                }
+            }),
+        );
         graph.set_entry("worker");
 
         let compiled = graph.compile().unwrap();

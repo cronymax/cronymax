@@ -141,12 +141,12 @@ impl LlmRouter {
 impl AgentRouter for LlmRouter {
     async fn route(&self, state: &OrchestrationState) -> anyhow::Result<Vec<NextStep>> {
         // Read from metadata to avoid requiring an LlmBackend in the router.
-        if let Some(agent_val) = state.metadata.get("routed_agent") {
-            if let Some(name) = agent_val.as_str() {
-                return Ok(vec![NextStep::RunAgent {
-                    name: name.to_string(),
-                }]);
-            }
+        if let Some(agent_val) = state.metadata.get("routed_agent")
+            && let Some(name) = agent_val.as_str()
+        {
+            return Ok(vec![NextStep::RunAgent {
+                name: name.to_string(),
+            }]);
         }
         Ok(vec![NextStep::RunAgent {
             name: self.default_agent.clone(),

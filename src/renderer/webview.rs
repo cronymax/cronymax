@@ -35,7 +35,11 @@ impl Webview {
     ///
     /// Works with any `HasWindowHandle` implementor — the main `Window`
     /// for docked webviews, or a `ChildPanel` for overlay webviews.
-    pub fn new(parent: &impl HasWindowHandle, url: &str, viewport: Viewport) -> Result<Self, String> {
+    pub fn new(
+        parent: &impl HasWindowHandle,
+        url: &str,
+        viewport: Viewport,
+    ) -> Result<Self, String> {
         let (tx, rx) = mpsc::channel::<WebviewToRust>();
         let (nw_tx, nw_rx) = mpsc::channel::<String>();
         let (title_tx, title_rx) = mpsc::channel::<String>();

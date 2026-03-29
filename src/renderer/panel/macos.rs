@@ -155,7 +155,10 @@ impl Panel {
     /// and opacity flags land on the *actual* rendering layer.
     pub fn configure_layer(&self, corner_radius: f64, opaque: bool) {
         unsafe {
-            let cv = self.ns_panel.contentView().expect("NSPanel must have a contentView");
+            let cv = self
+                .ns_panel
+                .contentView()
+                .expect("NSPanel must have a contentView");
             cv.setWantsLayer(true);
             let layer: *mut AnyObject = objc2::msg_send![&*cv, layer];
             if !layer.is_null() {

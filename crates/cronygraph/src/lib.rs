@@ -58,11 +58,10 @@ pub mod prelude {
         LlmResult, MemoryBackend, ParallelToolExecutor, SequentialToolExecutor, ToolExecutor,
     };
     pub use crate::graph::{
-        AgentGraphNode, CompiledGraph, ConditionalRouter, FnRouter, GraphNode, StateGraph, END,
+        AgentGraphNode, CompiledGraph, ConditionalRouter, END, FnRouter, GraphNode, StateGraph,
     };
     pub use crate::middleware::{
-        AfterLlmOutcome, AgentMiddleware, MiddlewareChain, MiddlewareChainConfig,
-        MiddlewareContext,
+        AfterLlmOutcome, AgentMiddleware, MiddlewareChain, MiddlewareChainConfig, MiddlewareContext,
     };
     pub use crate::node::AgentNode;
     pub use crate::orchestrator::PlannerOrchestrator;
@@ -86,4 +85,6 @@ pub use engine::{
 pub use middleware::{AgentMiddleware, MiddlewareChain, MiddlewareChainConfig, MiddlewareContext};
 pub use node::AgentNode;
 pub use state::{DelegationRequest, OrchestrationState, TaskPlan, TaskStatus};
-pub use types::{ChatMessage, MessageImportance, MessageRole, SkillHandler, TokenUsage, ToolCallInfo};
+pub use types::{
+    ChatMessage, MessageImportance, MessageRole, SkillHandler, TokenUsage, ToolCallInfo,
+};

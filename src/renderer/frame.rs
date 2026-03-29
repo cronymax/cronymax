@@ -89,7 +89,6 @@ impl Frame {
         self.state
             .handle_platform_output(&self.window, platform_output);
     }
-
 }
 
 /// Bundles mutable references the closure receives from [`Frame::submit`].

@@ -74,19 +74,19 @@ impl Panel {
         // for click-through panels.
         if panel_attrs.click_through
             && let Ok(handle) = window.window_handle()
-                && let RawWindowHandle::Win32(h) = handle.as_raw()
-            {
-                unsafe {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::*;
-                    let hwnd_val = h.hwnd.get() as *mut core::ffi::c_void;
-                    let ex_style = GetWindowLongW(hwnd_val, GWL_EXSTYLE);
-                    let new_style = ex_style
-                        | WS_EX_NOACTIVATE as i32
-                        | WS_EX_TRANSPARENT as i32
-                        | WS_EX_TOOLWINDOW as i32;
-                    SetWindowLongW(hwnd_val, GWL_EXSTYLE, new_style);
-                }
+            && let RawWindowHandle::Win32(h) = handle.as_raw()
+        {
+            unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::*;
+                let hwnd_val = h.hwnd.get() as *mut core::ffi::c_void;
+                let ex_style = GetWindowLongW(hwnd_val, GWL_EXSTYLE);
+                let new_style = ex_style
+                    | WS_EX_NOACTIVATE as i32
+                    | WS_EX_TRANSPARENT as i32
+                    | WS_EX_TOOLWINDOW as i32;
+                SetWindowLongW(hwnd_val, GWL_EXSTYLE, new_style);
             }
+        }
 
         Ok(Self {
             window,
@@ -189,7 +189,7 @@ impl Panel {
         {
             unsafe {
                 windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(
-                    h.hwnd.get() as *mut core::ffi::c_void,
+                    h.hwnd.get() as *mut core::ffi::c_void
                 );
             }
         }

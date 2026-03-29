@@ -358,7 +358,7 @@ impl<'a> Fragment<'a, egui::Ui> {
     }
 
     /// Access the inner `&mut egui::Ui`.
-    pub fn ui(&mut self) -> & mut egui::Ui {
+    pub fn ui(&mut self) -> &mut egui::Ui {
         &mut *self.painter
     }
 

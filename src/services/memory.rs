@@ -104,11 +104,15 @@ impl MemoryStore {
     /// whitespace runs are collapsed before comparing.
     pub fn insert(&mut self, entry: MemoryEntry) {
         let normalized = normalize_whitespace(&entry.content);
-        let is_dup = self.entries.iter().any(|existing| {
-            normalize_whitespace(&existing.content) == normalized
-        });
+        let is_dup = self
+            .entries
+            .iter()
+            .any(|existing| normalize_whitespace(&existing.content) == normalized);
         if is_dup {
-            log::debug!("[Memory] Skipping duplicate entry: {}", &entry.content[..entry.content.len().min(80)]);
+            log::debug!(
+                "[Memory] Skipping duplicate entry: {}",
+                &entry.content[..entry.content.len().min(80)]
+            );
             return;
         }
         self.entries.push(entry);
@@ -233,9 +237,21 @@ mod tests {
     #[test]
     fn insert_deduplicates_by_normalized_content() {
         let mut store = MemoryStore::new("test");
-        store.insert(make_entry("1", "user prefers dark mode", MemoryTag::Preference));
-        store.insert(make_entry("2", "  user  prefers  dark  mode  ", MemoryTag::Preference));
-        store.insert(make_entry("3", "user prefers light mode", MemoryTag::Preference));
+        store.insert(make_entry(
+            "1",
+            "user prefers dark mode",
+            MemoryTag::Preference,
+        ));
+        store.insert(make_entry(
+            "2",
+            "  user  prefers  dark  mode  ",
+            MemoryTag::Preference,
+        ));
+        store.insert(make_entry(
+            "3",
+            "user prefers light mode",
+            MemoryTag::Preference,
+        ));
 
         // Only 2 entries — the whitespace-variant duplicate was skipped.
         assert_eq!(store.entries.len(), 2);
@@ -247,7 +263,11 @@ mod tests {
     fn render_for_prompt_respects_budget() {
         let mut store = MemoryStore::new("test");
         for i in 0..10 {
-            let mut entry = make_entry(&i.to_string(), &format!("fact number {}", i), MemoryTag::Fact);
+            let mut entry = make_entry(
+                &i.to_string(),
+                &format!("fact number {}", i),
+                MemoryTag::Fact,
+            );
             entry.token_count = 5;
             store.insert(entry);
         }
@@ -281,7 +301,11 @@ mod tests {
     #[test]
     fn search_filters_by_tag() {
         let mut store = MemoryStore::new("test");
-        store.insert(make_entry("1", "dark mode preference", MemoryTag::Preference));
+        store.insert(make_entry(
+            "1",
+            "dark mode preference",
+            MemoryTag::Preference,
+        ));
         store.insert(make_entry("2", "dark matter fact", MemoryTag::Fact));
 
         let results = store.search("dark", Some(&MemoryTag::Preference));

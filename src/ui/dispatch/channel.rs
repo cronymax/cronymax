@@ -347,13 +347,17 @@ impl Ui {
                         if let Some(claw) = ctx.config.claw.as_mut() {
                             claw.channels = configs;
                         }
-                        if let Some(inst) = ctx.ui_state.channels_ui_state.instance_mut(&instance_id) {
+                        if let Some(inst) =
+                            ctx.ui_state.channels_ui_state.instance_mut(&instance_id)
+                        {
                             inst.save_status = Some(("Saved!".into(), now));
                         }
                     }
                     Err(e) => {
                         log::error!("Failed to save channel configs: {}", e);
-                        if let Some(inst) = ctx.ui_state.channels_ui_state.instance_mut(&instance_id) {
+                        if let Some(inst) =
+                            ctx.ui_state.channels_ui_state.instance_mut(&instance_id)
+                        {
                             inst.save_status = Some((format!("Error: {}", e), now));
                         }
                     }
@@ -393,7 +397,9 @@ impl Ui {
                 match lark_cfg_opt {
                     Some(lark_cfg) => {
                         if let Err(e) = lark_cfg.validate() {
-                            if let Some(inst) = ctx.ui_state.channels_ui_state.instance_mut(&instance_id) {
+                            if let Some(inst) =
+                                ctx.ui_state.channels_ui_state.instance_mut(&instance_id)
+                            {
                                 inst.testing = false;
                                 inst.test_status = Some((
                                     format!("✗ Config invalid: {}", e),
@@ -460,7 +466,9 @@ impl Ui {
                             "TestChannelConnectionById: no config found for '{}'",
                             instance_id
                         );
-                        if let Some(inst) = ctx.ui_state.channels_ui_state.instance_mut(&instance_id) {
+                        if let Some(inst) =
+                            ctx.ui_state.channels_ui_state.instance_mut(&instance_id)
+                        {
                             inst.testing = false;
                             inst.test_status = Some((
                                 "✗ No config found — save first".into(),

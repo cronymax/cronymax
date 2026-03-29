@@ -153,7 +153,13 @@ impl Widget for TilesPanel<'_> {
         behavior.fragment.ui_state.docked_tooltip = behavior.tooltip;
 
         // Swap taken fields back into ui_state via the still-live borrows.
-        std::mem::swap(behavior.state.prompt_editors, &mut behavior.fragment.ui_state.prompt_editors);
-        std::mem::swap(behavior.widgets, &mut behavior.fragment.ui_state.pane_widgets);
+        std::mem::swap(
+            behavior.state.prompt_editors,
+            &mut behavior.fragment.ui_state.prompt_editors,
+        );
+        std::mem::swap(
+            behavior.widgets,
+            &mut behavior.fragment.ui_state.pane_widgets,
+        );
     }
 }

@@ -43,7 +43,8 @@ impl Ui {
             ctx.sessions.insert(id, session);
             // Inherit the mode from the active tab so Terminal→Terminal
             // and Chat→Chat.
-            let is_active_terminal = ctx.ui_state
+            let is_active_terminal = ctx
+                .ui_state
                 .prompt_editors
                 .get(&active_sid)
                 .is_some_and(|pe| !pe.visible);

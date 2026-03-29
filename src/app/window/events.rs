@@ -39,9 +39,10 @@ pub(in crate::app) fn handle_window_event(
                     // event buffer has been drained by a render frame.
                     for ev in &egui_events {
                         if let egui::Event::PointerMoved(pos) = ev
-                            && let Ok(mut lcp) = overlay.panel.last_cursor_pos.lock() {
-                                *lcp = *pos;
-                            }
+                            && let Ok(mut lcp) = overlay.panel.last_cursor_pos.lock()
+                        {
+                            *lcp = *pos;
+                        }
                     }
                     if let Ok(mut buf) = overlay.panel.event_buffer.lock() {
                         let last_pos = overlay
@@ -93,7 +94,8 @@ pub(in crate::app) fn handle_window_event(
                     let wid = wt.browser.id;
                     state.ui.browser_manager.bring_to_front(wid);
                     if let Some(idx) = state
-                        .ui.browser_tabs
+                        .ui
+                        .browser_tabs
                         .iter()
                         .position(|wt| wt.browser.id == wid)
                     {
@@ -106,56 +108,56 @@ pub(in crate::app) fn handle_window_event(
         }
 
         // Check if this event belongs to the settings overlay child panel.
-        if let Some(ref overlay) = state.ui.settings_overlay {
-            if overlay.panel.window_id() == Some(window_id) {
-                let scale = state.ui.frame.window.scale_factor() as f32;
-                let egui_events = super::misc::winit_event_to_egui(&event, scale);
-                if !egui_events.is_empty() {
-                    for ev in &egui_events {
-                        if let egui::Event::PointerMoved(pos) = ev {
-                            if let Ok(mut lcp) = overlay.panel.last_cursor_pos.lock() {
-                                *lcp = *pos;
-                            }
-                        }
+        if let Some(ref overlay) = state.ui.settings_overlay
+            && overlay.panel.window_id() == Some(window_id)
+        {
+            let scale = state.ui.frame.window.scale_factor() as f32;
+            let egui_events = super::misc::winit_event_to_egui(&event, scale);
+            if !egui_events.is_empty() {
+                for ev in &egui_events {
+                    if let egui::Event::PointerMoved(pos) = ev
+                        && let Ok(mut lcp) = overlay.panel.last_cursor_pos.lock()
+                    {
+                        *lcp = *pos;
                     }
-                    if let Ok(mut buf) = overlay.panel.event_buffer.lock() {
-                        let last_pos = overlay
-                            .panel
-                            .last_cursor_pos
-                            .lock()
-                            .map(|p| *p)
-                            .unwrap_or(egui::Pos2::ZERO);
-                        let fixed: Vec<egui::Event> = egui_events
-                            .into_iter()
-                            .map(|ev| {
-                                if let egui::Event::PointerButton {
-                                    pos,
-                                    button,
-                                    pressed,
-                                    modifiers,
-                                } = ev
-                                {
-                                    if pos == egui::Pos2::ZERO {
-                                        egui::Event::PointerButton {
-                                            pos: last_pos,
-                                            button,
-                                            pressed,
-                                            modifiers,
-                                        }
-                                    } else {
-                                        ev
+                }
+                if let Ok(mut buf) = overlay.panel.event_buffer.lock() {
+                    let last_pos = overlay
+                        .panel
+                        .last_cursor_pos
+                        .lock()
+                        .map(|p| *p)
+                        .unwrap_or(egui::Pos2::ZERO);
+                    let fixed: Vec<egui::Event> = egui_events
+                        .into_iter()
+                        .map(|ev| {
+                            if let egui::Event::PointerButton {
+                                pos,
+                                button,
+                                pressed,
+                                modifiers,
+                            } = ev
+                            {
+                                if pos == egui::Pos2::ZERO {
+                                    egui::Event::PointerButton {
+                                        pos: last_pos,
+                                        button,
+                                        pressed,
+                                        modifiers,
                                     }
                                 } else {
                                     ev
                                 }
-                            })
-                            .collect();
-                        buf.extend(fixed);
-                    }
+                            } else {
+                                ev
+                            }
+                        })
+                        .collect();
+                    buf.extend(fixed);
                 }
-                state.scheduler.mark_dirty();
-                return;
             }
+            state.scheduler.mark_dirty();
+            return;
         }
 
         return;

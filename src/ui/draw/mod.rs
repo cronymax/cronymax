@@ -142,7 +142,11 @@ impl Ui {
                 .draw(c, &ctx.config.styles, &colors);
 
             // Draw command palette overlay.
-            if let Some(action) = ctx.ui_state.command_palette.draw(c, &ctx.config.styles, &colors) {
+            if let Some(action) = ctx
+                .ui_state
+                .command_palette
+                .draw(c, &ctx.config.styles, &colors)
+            {
                 match action {
                     crate::ui::command_palette::PaletteAction::Ui(ui_action) => {
                         dirties.actions.push(ui_action);

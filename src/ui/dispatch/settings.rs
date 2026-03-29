@@ -251,7 +251,7 @@ impl Ui {
             }
             UiAction::OpenWebviewTab(url) => {
                 log::info!("OpenWebviewTab (from skill): {}", url);
-                self.open_browser( ctx, &url, event_loop);
+                self.open_browser(ctx, &url, event_loop);
             }
             UiAction::CloseWebviewTab(wid) => {
                 // Close the webview tab by ID.

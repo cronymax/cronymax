@@ -51,9 +51,7 @@ impl TerminalBlock {
         // Header row: prompt + command ............... ⑂ filter
         ui.horizontal(|ui| {
             ui.colored_label(colors.primary, prompt_str);
-            ui.add(
-                egui::Label::new(egui::RichText::new(cmd_str).monospace()).selectable(true),
-            );
+            ui.add(egui::Label::new(egui::RichText::new(cmd_str).monospace()).selectable(true));
 
             // Right-aligned action buttons (visible on hover).
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

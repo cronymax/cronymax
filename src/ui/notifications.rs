@@ -136,12 +136,7 @@ impl NotificationState {
         let right_edge = screen.max.x - toast_margin;
         let mut y = screen.max.y - toast_margin;
 
-        let visible: Vec<_> = self
-            .toasts
-            .iter()
-            .rev()
-            .take(self.max_visible)
-            .collect();
+        let visible: Vec<_> = self.toasts.iter().rev().take(self.max_visible).collect();
 
         let mut dismiss_id = None;
 
@@ -183,10 +178,8 @@ impl NotificationState {
                     ui.set_width(toast_width - styles.spacing.medium * 2.0);
                     ui.horizontal(|ui| {
                         // Severity indicator dot.
-                        let (rect, _) = ui.allocate_exact_size(
-                            Vec2::splat(8.0),
-                            egui::Sense::hover(),
-                        );
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
                         ui.painter().circle_filled(
                             rect.center(),
                             4.0,
@@ -204,25 +197,16 @@ impl NotificationState {
                                 ui.label(
                                     egui::RichText::new(&toast.body)
                                         .size(styles.typography.caption0)
-                                        .color(
-                                            colors.text_caption.linear_multiply(alpha),
-                                        ),
+                                        .color(colors.text_caption.linear_multiply(alpha)),
                                 );
                             }
                         });
 
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if toast.dismissible
-                                    && ui
-                                        .small_button("✕")
-                                        .clicked()
-                                {
-                                    dismiss_id = Some(toast.id);
-                                }
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if toast.dismissible && ui.small_button("✕").clicked() {
+                                dismiss_id = Some(toast.id);
+                            }
+                        });
                     });
                 });
             });

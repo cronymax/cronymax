@@ -160,7 +160,6 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
     sessions.insert(1, session);
     let tile_tree = tiles::create_initial_tree(1, "cronymax");
 
-
     let shared_secret_store = Arc::new(crate::services::secret::SecretStore::default());
     // Initial UiState synced from sessions.
     let mut ui_state = UiState::new(&app.config, shared_secret_store.clone());
@@ -169,7 +168,6 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
         session_id: 1,
         title: "cronymax".into(),
     });
-
 
     app.state = Some(AppState {
         ui_state,
@@ -452,7 +450,8 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                 };
 
                 // Pending threads: (parent_session_id, cell_id → child_uuid).
-                let mut thread_pending: Vec<(u32, std::collections::HashMap<u32, String>)> = Vec::new();
+                let mut thread_pending: Vec<(u32, std::collections::HashMap<u32, String>)> =
+                    Vec::new();
 
                 for tab in &restored_tabs {
                     // Create PTY session for Chat and Terminal tabs.
@@ -526,8 +525,12 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
 
                                 // Rebuild visible blocks from saved messages.
                                 let (blocks, next_cell) =
-                                    crate::app::session_persist::rebuild_blocks_from_record(&record);
-                                if let Some(pe) = state.ui_state.prompt_editors.get_mut(&tab.session_id) {
+                                    crate::app::session_persist::rebuild_blocks_from_record(
+                                        &record,
+                                    );
+                                if let Some(pe) =
+                                    state.ui_state.prompt_editors.get_mut(&tab.session_id)
+                                {
                                     pe.blocks = blocks;
                                     pe.next_chat_cell_id = next_cell;
                                 }
@@ -623,8 +626,7 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                                 state.session_chats.insert(child_sid, child_chat);
 
                                 // Wire parent → child mapping.
-                                if let Some(parent_chat) =
-                                    state.session_chats.get_mut(&parent_sid)
+                                if let Some(parent_chat) = state.session_chats.get_mut(&parent_sid)
                                 {
                                     parent_chat.threads.insert(cell_id, child_sid);
                                 }
@@ -637,11 +639,7 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
                                 );
                             }
                             Err(e) => {
-                                log::warn!(
-                                    "Failed to load thread {}: {}",
-                                    child_uuid,
-                                    e
-                                );
+                                log::warn!("Failed to load thread {}: {}", child_uuid, e);
                             }
                         }
                     }

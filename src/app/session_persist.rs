@@ -88,7 +88,11 @@ pub struct ChatSessionRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_cell_id: Option<u32>,
     /// Map from block cell_id → child thread persistent UUID.
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty", alias = "topic_channels")]
+    #[serde(
+        default,
+        skip_serializing_if = "std::collections::HashMap::is_empty",
+        alias = "topic_channels"
+    )]
     pub threads: std::collections::HashMap<u32, String>,
 }
 
@@ -358,9 +362,10 @@ pub fn chat_to_record(
     let mut threads_map = std::collections::HashMap::new();
     for (&cell_id, &child_sid) in &chat.threads {
         if let Some(child_chat) = all_chats.get(&child_sid)
-            && let Some(ref child_pid) = child_chat.persistent_id {
-                threads_map.insert(cell_id, child_pid.clone());
-            }
+            && let Some(ref child_pid) = child_chat.persistent_id
+        {
+            threads_map.insert(cell_id, child_pid.clone());
+        }
     }
 
     ChatSessionRecord {

@@ -82,26 +82,27 @@ pub(super) fn process_post_frame(
                 freeze_last_live_terminal(state, sid);
 
                 // Create a Block::Stream entry.
-                let current_cell_id = if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&sid) {
-                    let cell_id = prompt_editor.next_chat_cell_id;
-                    prompt_editor.next_chat_cell_id += 1;
-                    prompt_editor.blocks.push(Block::Stream {
-                        id: cell_id,
-                        prompt: chat_text.clone(),
-                        response: String::new(),
-                        is_streaming: true,
-                        tool_status: None,
-                        tool_calls_log: Vec::new(),
-                    });
-                    // Pre-create a CommonMark cache for this cell.
-                    if let Some(chat) = state.session_chats.get_mut(&sid) {
-                        chat.cell_caches
-                            .insert(cell_id, egui_commonmark::CommonMarkCache::default());
-                    }
-                    Some(cell_id)
-                } else {
-                    None
-                };
+                let current_cell_id =
+                    if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&sid) {
+                        let cell_id = prompt_editor.next_chat_cell_id;
+                        prompt_editor.next_chat_cell_id += 1;
+                        prompt_editor.blocks.push(Block::Stream {
+                            id: cell_id,
+                            prompt: chat_text.clone(),
+                            response: String::new(),
+                            is_streaming: true,
+                            tool_status: None,
+                            tool_calls_log: Vec::new(),
+                        });
+                        // Pre-create a CommonMark cache for this cell.
+                        if let Some(chat) = state.session_chats.get_mut(&sid) {
+                            chat.cell_caches
+                                .insert(cell_id, egui_commonmark::CommonMarkCache::default());
+                        }
+                        Some(cell_id)
+                    } else {
+                        None
+                    };
 
                 submit_chat(state, sid, &chat_text, current_cell_id);
             }

@@ -89,9 +89,7 @@ impl Widget for FilterBarWidget {
                     }
 
                     // Enter to search.
-                    if response.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    {
+                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         f.dirties
                             .actions
                             .push(UiAction::FilterSearch(ui_state.filter.text.clone()));
