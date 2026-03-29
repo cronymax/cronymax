@@ -97,8 +97,20 @@ impl MemoryStore {
         }
     }
 
-    /// Insert a new memory entry.
+    /// Insert a new memory entry, skipping if duplicate content already exists.
+    ///
+    /// Deduplication uses whitespace-normalized comparison (inspired by DeerFlow's
+    /// memory updater) — leading/trailing whitespace is trimmed and internal
+    /// whitespace runs are collapsed before comparing.
     pub fn insert(&mut self, entry: MemoryEntry) {
+        let normalized = normalize_whitespace(&entry.content);
+        let is_dup = self.entries.iter().any(|existing| {
+            normalize_whitespace(&existing.content) == normalized
+        });
+        if is_dup {
+            log::debug!("[Memory] Skipping duplicate entry: {}", &entry.content[..entry.content.len().min(80)]);
+            return;
+        }
         self.entries.push(entry);
     }
 
@@ -189,5 +201,91 @@ impl MemoryStore {
                 .then(b.last_used_at.cmp(&a.last_used_at))
         });
         self.entries.truncate(max_entries);
+    }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Normalize whitespace for dedup comparison: trim + collapse internal runs.
+fn normalize_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(id: &str, content: &str, tag: MemoryTag) -> MemoryEntry {
+        MemoryEntry {
+            id: id.to_string(),
+            content: content.to_string(),
+            tag,
+            pinned: false,
+            token_count: content.len() / 4,
+            created_at: 0,
+            last_used_at: 0,
+            access_count: 0,
+        }
+    }
+
+    #[test]
+    fn insert_deduplicates_by_normalized_content() {
+        let mut store = MemoryStore::new("test");
+        store.insert(make_entry("1", "user prefers dark mode", MemoryTag::Preference));
+        store.insert(make_entry("2", "  user  prefers  dark  mode  ", MemoryTag::Preference));
+        store.insert(make_entry("3", "user prefers light mode", MemoryTag::Preference));
+
+        // Only 2 entries — the whitespace-variant duplicate was skipped.
+        assert_eq!(store.entries.len(), 2);
+        assert_eq!(store.entries[0].id, "1");
+        assert_eq!(store.entries[1].id, "3");
+    }
+
+    #[test]
+    fn render_for_prompt_respects_budget() {
+        let mut store = MemoryStore::new("test");
+        for i in 0..10 {
+            let mut entry = make_entry(&i.to_string(), &format!("fact number {}", i), MemoryTag::Fact);
+            entry.token_count = 5;
+            store.insert(entry);
+        }
+
+        let rendered = store.render_for_prompt(20);
+        // Should only fit ~4 entries (5 tokens each) within budget of 20.
+        assert!(rendered.contains("fact number"));
+        assert!(rendered.starts_with("<memory>"));
+        assert!(rendered.ends_with("</memory>"));
+    }
+
+    #[test]
+    fn evict_lru_keeps_pinned() {
+        let mut store = MemoryStore::new("test");
+        let mut pinned = make_entry("pinned", "important", MemoryTag::Instruction);
+        pinned.pinned = true;
+        store.insert(pinned);
+
+        for i in 0..5 {
+            let mut entry = make_entry(&i.to_string(), &format!("entry {}", i), MemoryTag::General);
+            entry.last_used_at = i as u64;
+            store.insert(entry);
+        }
+
+        store.evict_lru(3);
+        assert_eq!(store.entries.len(), 3);
+        // Pinned entry should survive.
+        assert!(store.entries.iter().any(|e| e.id == "pinned"));
+    }
+
+    #[test]
+    fn search_filters_by_tag() {
+        let mut store = MemoryStore::new("test");
+        store.insert(make_entry("1", "dark mode preference", MemoryTag::Preference));
+        store.insert(make_entry("2", "dark matter fact", MemoryTag::Fact));
+
+        let results = store.search("dark", Some(&MemoryTag::Preference));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "1");
     }
 }

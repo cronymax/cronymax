@@ -231,9 +231,42 @@ pub(in crate::app) fn handle_llm_event(
                 }
             }
 
-            // Handle tool calls if any.
+            // Handle tool calls if any — apply SubagentLimit middleware
+            // then register pending calls for parallel collection.
             if !tool_calls.is_empty() {
-                for tool_call in &tool_calls {
+                // Run after_llm middleware (e.g., SubagentLimitMiddleware
+                // truncates excess concurrent tool calls).
+                let effective_tool_calls = if let Some(&terminal_sid) = state.llm_session_map.get(&session_id)
+                    && let Some(chat) = state.session_chats.get(&terminal_sid)
+                {
+                    let mut mw_ctx = crate::ai::middleware::MiddlewareContext::new(
+                        chat.tool_rounds,
+                        chat.max_tool_rounds,
+                        chat.history.total_tokens(),
+                        chat.history.max_context_tokens,
+                    );
+                    let outcome = chat.middleware_chain.run_after_llm(
+                        &full_response,
+                        &tool_calls,
+                        &mut mw_ctx,
+                    );
+                    outcome.override_tool_calls.unwrap_or_else(|| tool_calls.clone())
+                } else {
+                    tool_calls.clone()
+                };
+
+                // Register all tool calls as pending — the LLM will only
+                // be re-invoked once ALL results have been collected.
+                if let Some(&terminal_sid) = state.llm_session_map.get(&session_id)
+                    && let Some(chat) = state.session_chats.get_mut(&terminal_sid)
+                {
+                    chat.pending_tool_calls.clear();
+                    for tc in &effective_tool_calls {
+                        chat.pending_tool_calls.insert(tc.id.clone());
+                    }
+                }
+
+                for tool_call in &effective_tool_calls {
                     if let Some((_, handler)) = state.skill_registry.get(&tool_call.function_name) {
                         let args: serde_json::Value = serde_json::from_str(&tool_call.arguments)
                             .unwrap_or(serde_json::Value::Null);
@@ -258,6 +291,14 @@ pub(in crate::app) fn handle_llm_event(
                                     });
                                 }
                             }
+                        });
+                    } else {
+                        // Unknown tool — immediately send error result so
+                        // the pending set is drained properly.
+                        let _ = state.proxy.send_event(AppEvent::ToolResult {
+                            session_id,
+                            tool_call_id: tool_call.id.clone(),
+                            result: format!("{{\"error\": \"Unknown tool: {}\"}}", tool_call.function_name),
                         });
                     }
                 }
@@ -286,6 +327,87 @@ pub(in crate::app) fn handle_llm_event(
                         log::warn!("Auto-save session {}: {}", uuid, e);
                     }
                 });
+            }
+
+            // ── Always-On Memory Agent (background extraction) ──────────
+            // After the final response (no tool calls), check if enough
+            // new messages have accumulated to trigger memory extraction.
+            if tool_calls.is_empty()
+                && let Some(&terminal_sid) = state.llm_session_map.get(&session_id)
+                && let Some(chat) = state.session_chats.get(&terminal_sid)
+            {
+                let memory_store = state.memory_store.clone();
+                let memory_agent_config = state.memory_agent.config().clone();
+                let conversation: Vec<crate::ai::context::ChatMessage> =
+                    chat.history.for_api();
+                let openai_client = state
+                    .llm_client
+                    .as_ref()
+                    .and_then(|c| c.openai_client());
+
+                // Debounce: 2 new messages per turn (user + assistant).
+                let should_extract = {
+                    let agent = &state.memory_agent;
+                    let rt = state.runtime.clone();
+                    rt.block_on(agent.notify_new_messages(2))
+                };
+
+                if should_extract && memory_agent_config.enabled {
+                    if let Some(oai_client) = openai_client {
+                        let agent = crate::ai::memory_agent::MemoryAgent::new(
+                            memory_agent_config.clone(),
+                        );
+                        state.runtime.spawn(async move {
+                            let existing_entries = {
+                                let store = memory_store.lock().unwrap();
+                                store.entries.clone()
+                            };
+                            let extraction_messages =
+                                agent.build_extraction_messages(&conversation, &existing_entries);
+
+                            // Use the non-streaming LLM backend to call the cheap model.
+                            let backend = crate::ai::agent_loop::NonStreamingLlmBackend {
+                                client: oai_client,
+                                model: agent.config().model.clone(),
+                            };
+                            match crate::ai::agent_loop::LlmBackend::complete(
+                                &backend,
+                                &extraction_messages,
+                                None,
+                            )
+                            .await
+                            {
+                                Ok(result) => {
+                                    let facts =
+                                        crate::ai::memory_agent::MemoryAgent::parse_extraction_response(
+                                            &result.response,
+                                        );
+                                    if !facts.is_empty() {
+                                        let entries =
+                                            crate::ai::memory_agent::MemoryAgent::facts_to_entries(
+                                                &facts,
+                                            );
+                                        let mut store = memory_store.lock().unwrap();
+                                        for entry in entries {
+                                            store.insert(entry);
+                                        }
+                                        log::info!(
+                                            "[MemoryAgent] Extracted {} facts from conversation",
+                                            facts.len()
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "[MemoryAgent] Background extraction failed: {}",
+                                        e
+                                    );
+                                }
+                            }
+                            agent.reset_counter().await;
+                        });
+                    }
+                }
             }
 
             state.scheduler.mark_dirty();
@@ -386,26 +508,84 @@ pub(in crate::app) fn handle_llm_event(
                     crate::ai::context::MessageImportance::Normal,
                     tc,
                 );
-                msg.tool_call_id = Some(tool_call_id);
+                msg.tool_call_id = Some(tool_call_id.clone());
                 chat.history.push(msg.clone());
                 chat.add_message(msg);
 
-                // Increment tool round counter and check limit.
+                // Remove this tool call from the pending set.
+                chat.pending_tool_calls.remove(&tool_call_id);
+                let all_collected = chat.pending_tool_calls.is_empty();
+
+                // Mark completed tool_calls_log entry in the streaming block.
+                if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
+                    for block in prompt_editor.blocks.iter_mut().rev() {
+                        if let Block::Stream {
+                            is_streaming,
+                            tool_calls_log,
+                            ..
+                        } = block
+                            && *is_streaming
+                        {
+                            // Mark the matching tool call as completed.
+                            for entry in tool_calls_log.iter_mut() {
+                                if entry.in_progress && entry.name.contains(&tool_call_id) || entry.in_progress {
+                                    entry.in_progress = false;
+                                    let result_str = &result_for_log;
+                                    entry.result = Some(if result_str.len() > 4000 {
+                                        format!("{}…", &result_str[..4000])
+                                    } else {
+                                        result_str.clone()
+                                    });
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                // Only re-invoke the LLM once ALL parallel tool results
+                // have been collected (DeerFlow-inspired batch pattern).
+                if !all_collected {
+                    log::info!(
+                        "ToolResult[{}]: {} tool call(s) still pending, waiting...",
+                        session_id,
+                        chat.pending_tool_calls.len()
+                    );
+                    state.scheduler.mark_dirty();
+                    return;
+                }
+
+                // All tool results collected — increment tool round and
+                // run before_llm middleware chain before re-invocation.
                 chat.tool_rounds += 1;
-                let max_rounds = chat.max_tool_rounds;
-                if max_rounds > 0 && chat.tool_rounds >= max_rounds {
-                    log::warn!(
-                        "Agent loop for session {} reached max tool rounds ({}/{}), stopping.",
+
+                // Build middleware context and run before_llm chain
+                // (handles: dangling tool calls, context summarization,
+                // tool round guard).
+                let mut mw_ctx = crate::ai::middleware::MiddlewareContext::new(
+                    chat.tool_rounds,
+                    chat.max_tool_rounds,
+                    chat.history.total_tokens(),
+                    chat.history.max_context_tokens,
+                );
+                let mut api_messages = chat.history.for_api();
+                let should_proceed = chat.middleware_chain.run_before_llm(&mut api_messages, &mut mw_ctx);
+
+                if !should_proceed {
+                    log::info!(
+                        "Agent loop for session {} stopped by middleware: {}",
                         terminal_sid,
-                        chat.tool_rounds,
-                        max_rounds
+                        mw_ctx.abort_reason.as_deref().unwrap_or("unknown")
                     );
                     chat.is_streaming = false;
                     let stop_msg = crate::ai::context::ChatMessage::new(
                         crate::ai::context::MessageRole::Assistant,
                         format!(
-                            "⚠️ Agent loop stopped after {} tool rounds (limit: {}).",
-                            chat.tool_rounds, max_rounds
+                            "⚠️ {}",
+                            mw_ctx.abort_reason.as_deref().unwrap_or(
+                                "Agent loop stopped by middleware."
+                            )
                         ),
                         crate::ai::context::MessageImportance::Ephemeral,
                         0,
@@ -416,16 +596,15 @@ pub(in crate::app) fn handle_llm_event(
                     return;
                 }
 
-                // Re-call stream_chat with updated history including tool results.
+                // Re-call stream_chat with updated history including all tool results.
                 if let Some(ref client) = state.llm_client {
-                    let messages = chat.history.for_api();
                     let tools = Some(state.skill_registry.to_openai_tools());
                     chat.is_streaming = true;
                     chat.llm_session_id += 1;
                     let llm_sid = chat.llm_session_id;
                     state.llm_session_map.insert(llm_sid, terminal_sid);
                     let handle = client.stream_chat(
-                        messages,
+                        api_messages,
                         tools,
                         state.proxy.clone(),
                         llm_sid,
@@ -434,37 +613,19 @@ pub(in crate::app) fn handle_llm_event(
                     chat.active_stream = Some(handle);
                 }
 
-                // Clear tool_status and response in the block so
-                // follow-up tokens stream into a fresh response.
-                // Also mark completed tool_calls_log entries.
+                // Clear tool_status and response in the block for the next LLM turn.
                 if let Some(prompt_editor) = state.ui_state.prompt_editors.get_mut(&terminal_sid) {
                     for block in prompt_editor.blocks.iter_mut().rev() {
                         if let Block::Stream {
                             is_streaming,
                             response,
                             tool_status,
-                            tool_calls_log,
                             ..
                         } = block
                             && *is_streaming
                         {
                             *tool_status = None;
                             response.clear();
-                            // Mark the last in-progress tool call as completed
-                            // and store its result.
-                            for entry in tool_calls_log.iter_mut().rev() {
-                                if entry.in_progress {
-                                    entry.in_progress = false;
-                                    // Store truncated result for display.
-                                    let result_str = &result_for_log;
-                                    entry.result = Some(if result_str.len() > 4000 {
-                                        format!("{}…", &result_str[..4000])
-                                    } else {
-                                        result_str.clone()
-                                    });
-                                    break;
-                                }
-                            }
                             break;
                         }
                     }

@@ -67,6 +67,10 @@ pub(crate) struct AppState {
     pub(crate) db_store: Option<crate::ai::db::DbStore>,
     /// Budget tracker for token/turn limits.
     pub(crate) budget_tracker: Option<Arc<std::sync::Mutex<crate::ai::budget::BudgetTracker>>>,
+    /// Profile-scoped persistent memory store (shared via Arc<Mutex>).
+    pub(crate) memory_store: Arc<std::sync::Mutex<crate::services::memory::MemoryStore>>,
+    /// Always-on memory agent for background fact extraction.
+    pub(crate) memory_agent: crate::ai::memory_agent::MemoryAgent,
 
     // ── Channel subsystem (Claw mode) ─────────────────────────────────
     /// Channel manager orchestrating all registered channels.

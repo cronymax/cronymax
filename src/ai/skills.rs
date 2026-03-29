@@ -1,9 +1,13 @@
 // Skills system — built-in tool definitions and handlers.
+//
+// Core types (Skill, SkillHandler) are defined in the `cronygraph` crate
+// and re-exported here for backward compatibility.
 
 pub mod browser;
 mod browser_nav;
 pub mod chat;
 pub mod credentials;
+pub mod delegation;
 pub mod filesystem;
 pub mod general;
 pub mod loader;
@@ -18,11 +22,12 @@ pub mod terminal;
 pub mod webview;
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+
+// Re-export core types from cronygraph.
+pub use cronygraph::types::{Skill, SkillHandler};
 
 /// Consolidated dependencies for skill registration.
 ///
@@ -42,21 +47,6 @@ pub struct SkillDependencies {
     /// Secret store for credential management skills.
     pub secret_store: Option<std::sync::Arc<crate::services::secret::SecretStore>>,
 }
-
-/// A tool skill definition (name, description, parameter JSON schema, category).
-#[derive(Debug, Clone)]
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-    pub parameters_schema: Value,
-    /// Skill category for per-profile filtering.
-    /// Valid values: `sandbox`, `chat`, `browser`, `terminal`, `tab`, `webview`, `external`, `general`, `channels`, `scheduler`.
-    pub category: String,
-}
-
-/// Async handler for a skill invocation.
-pub type SkillHandler =
-    Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = anyhow::Result<Value>> + Send>> + Send + Sync>;
 
 /// Registry of available skills.
 pub struct SkillRegistry {

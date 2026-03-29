@@ -99,17 +99,17 @@ pub(in crate::app) fn handle_channel_event(
                 }
             }
 
-            let deps = crate::channels::agent_loop::AgentLoopDeps {
+            let deps = crate::ai::agent_loop::AgentLoopDeps {
                 openai_client,
                 model,
                 system_prompt,
                 tools,
                 skill_handlers,
             };
-            let loop_config = crate::channels::agent_loop::AgentLoopConfig::default();
+            let loop_config = crate::ai::agent_loop::AgentLoopConfig::default();
 
             // Create ChannelMemoryStore (without embedder for now).
-            let memory = crate::channels::memory::ChannelMemoryStore::new(
+            let memory = crate::ai::db::memory_store::RagMemoryStore::new(
                 std::sync::Arc::new(state.db_store.clone().unwrap_or_else(|| {
                     // Fallback: open a transient in-memory db.
                     crate::ai::db::DbStore::open(&std::path::PathBuf::from(":memory:"))
@@ -122,7 +122,7 @@ pub(in crate::app) fn handle_channel_event(
             let proxy = state.proxy.clone();
 
             state.runtime.spawn(async move {
-                match crate::channels::agent_loop::process_message(
+                match crate::ai::agent_loop::process_channel_message(
                     &message,
                     &loop_config,
                     &memory,

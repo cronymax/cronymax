@@ -2,25 +2,23 @@
 //
 // These events flow from tokio LLM streaming tasks back to the winit event loop
 // via `EventLoopProxy<AppEvent>`.
+//
+// Core types (TokenUsage, ToolCallInfo) are defined in the `cronygraph` crate
+// and re-exported here for backward compatibility.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+
+
+// Re-export core types from cronygraph.
+pub use cronygraph::types::{TokenUsage, ToolCallInfo};
 
 /// Shared map for pending async skill results (script injection, terminal exec, etc.).
 /// Skill handlers insert a `oneshot::Sender` under a UUID key; the main thread
 /// sends the result through the channel when it becomes available.
 pub type PendingResultMap =
     Arc<std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>>>;
-
-/// Token usage reported by the LLM provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
-}
 
 /// Application events sent from background tasks to the winit event loop.
 ///
@@ -305,12 +303,4 @@ pub enum AppEvent {
 
     /// Deferred repaint requested (e.g. cursor blink timer).
     RequestRepaintAfter { delay: std::time::Duration },
-}
-
-/// Information about a tool call from the LLM.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallInfo {
-    pub id: String,
-    pub function_name: String,
-    pub arguments: String,
 }

@@ -5,6 +5,10 @@
 //! - `save()` — persist message with generated embedding BLOB
 //! - `compact()` — LLM-summarize oldest unstarred messages into memory notes
 //! - `get_starred()` / `set_starred()` — user-highlighted block management
+//!
+//! This store is used by the unified agent loop pipeline for any path that
+//! needs persistent memory (e.g., channel messages). Interactive chat sessions
+//! typically use the in-memory `MemoryStore` from `services::memory` instead.
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
@@ -54,17 +58,20 @@ pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-// ─── ChannelMemoryStore ──────────────────────────────────────────────────────
+// ─── RagMemoryStore ──────────────────────────────────────────────────────────
 
 /// Hybrid memory store wrapping DbStore + optional fastembed for RAG.
-pub struct ChannelMemoryStore {
+///
+/// Used by the unified agent loop pipeline for paths requiring persistent
+/// memory with semantic retrieval (e.g., channel messages).
+pub struct RagMemoryStore {
     db: Arc<DbStore>,
     /// Optional fastembed model for generating embeddings.
     /// Wrapped in Arc<Mutex<>> because TextEmbedding::embed() requires &mut self.
     embedder: Option<Arc<Mutex<fastembed::TextEmbedding>>>,
 }
 
-impl ChannelMemoryStore {
+impl RagMemoryStore {
     /// Create a new store with a database handle and optional embedding model.
     pub fn new(db: Arc<DbStore>, embedder: Option<Arc<Mutex<fastembed::TextEmbedding>>>) -> Self {
         Self { db, embedder }

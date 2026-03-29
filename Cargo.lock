@@ -1125,6 +1125,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cronygraph"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "log",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "cronymax"
 version = "0.1.0"
 dependencies = [
@@ -1137,6 +1150,7 @@ dependencies = [
  "bytemuck",
  "chrono",
  "croner",
+ "cronygraph",
  "dirs",
  "egui",
  "egui-winit",

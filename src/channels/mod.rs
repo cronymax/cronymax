@@ -1,84 +1,41 @@
-//! Channel subsystem — trait-based messaging platform integrations.
+//! Channel subsystem — messaging platform bridges for Feishu/Lark, Slack, Telegram, etc.
 //!
 //! This module defines the [`Channel`] trait, [`ChannelMessage`], [`ChannelManager`],
-//! and related types. The channel subsystem enables bidirectional messaging with
-//! external platforms (e.g., Feishu/Lark, Slack, Telegram) routed through the
-//! AI agent pipeline.
+//! and related types. Channels are **transport bridges only** — they handle
+//! platform-specific I/O (authentication, WebSocket connections, message parsing,
+//! reply formatting) and convert between platform formats and the normalized
+//! [`ChannelMessage`] type.
+//!
+//! All AI logic (agent loop, memory, middleware, tool execution) lives in
+//! `crate::ai::agent_loop`. The channel subsystem is intentionally free of any
+//! LLM, memory, or skill concerns.
 //!
 //! # Architecture
 //!
-//! - **Transport concern**: Channels live alongside `src/ai/`, not inside it.
-//! - **Feature-gated**: All functionality is behind `ClawConfig.enabled`.
-//! - **Async**: All I/O runs on the tokio runtime via `AppState.runtime`.
-//! - **Platform-agnostic core**: [`ChannelManager`], [`agent_loop`], and
-//!   [`memory`] contain **zero** platform-specific references. Only
-//!   [`register_channels()`] and the individual channel modules know about
-//!   specific platforms.
+//! ```text
+//! Platform SDK/API → channels::lark (bridge) → ChannelMessage
+//!                                                     ↓
+//!                                            ai::agent_loop::process_channel_message()
+//!                                                     ↓
+//!                                            ChannelSendReply → channels::lark (bridge) → Platform
+//! ```
 //!
 //! # Adding a New Channel (e.g., Telegram)
 //!
-//! Adding support for a new messaging platform requires exactly **3 touches**:
+//! 1. **Create the channel module** — `src/channels/telegram.rs`
+//!    - Implement the [`Channel`] trait (connect, disconnect, send_message)
 //!
-//! 1. **Create the channel module** — `src/channel/telegram.rs`
-//!    - Implement the [`Channel`] trait (connect, disconnect, send_message, etc.)
-//!    - Handle platform-specific auth, WebSocket/polling, and message parsing
+//! 2. **Add a config variant** — in `src/channels/config.rs`
+//!    - `ChannelConfig::Telegram(TelegramChannelConfig)`
 //!
-//! 2. **Add a config variant** — in `src/channel/config.rs`
-//!    ```rust,ignore
-//!    #[derive(Debug, Clone, Serialize, Deserialize)]
-//!    pub struct TelegramChannelConfig {
-//!        pub bot_token: String,
-//!        pub allowed_users: Vec<String>,
-//!        #[serde(default)]
-//!        pub profile_id: String,
-//!    }
+//! 3. **Register in `register_channels()`** — add a match arm
 //!
-//!    // In ChannelConfig enum:
-//!    pub enum ChannelConfig {
-//!        Lark(LarkChannelConfig),
-//!        Telegram(TelegramChannelConfig),  // ← add this
-//!    }
-//!    ```
-//!
-//! 3. **Register in `register_channels()`** — add a match arm in this file
-//!    ```rust,ignore
-//!    ChannelConfig::Telegram(tg_cfg) => {
-//!        let channel = telegram::TelegramChannel::new(tg_cfg.clone());
-//!        if let Err(e) = manager.register(Box::new(channel)).await {
-//!            log::error!("Failed to register Telegram channel: {}", e);
-//!        }
-//!    }
-//!    ```
-//!
-//! **No changes needed in**: [`ChannelManager`], [`agent_loop::process_message()`],
-//! [`memory::ChannelMemoryStore`], UI rendering, or any dispatch logic.
-//!
-//! # Error Classification
-//!
-//! | Error Category  | Examples                         | Channel Responsibility          |
-//! |-----------------|----------------------------------|---------------------------------|
-//! | **Transient**   | Network timeout, rate limit      | Retry with exponential backoff  |
-//! | **Auth**        | Expired token, revoked API key   | Refresh token / re-authenticate |
-//! | **Fatal**       | Invalid credentials, deleted bot | Return error, set state=`Error` |
-//! | **Message**     | Malformed payload, unknown type  | Log + skip, don't disconnect    |
-//! | **Validation**  | Missing required config fields   | Caught in `validate()`, skipped |
-//!
-//! # Extensibility Audit (SC-007)
-//!
-//! The following modules are verified platform-agnostic (zero Lark/platform references):
-//! - `channel::agent_loop` — 6-stage pipeline operates on [`ChannelMessage`] only
-//! - `channel::memory` — stores/recalls by channel_id string, no platform logic
-//! - `ChannelManager` — registers/routes via the [`Channel`] trait, no platform code
-//! - `channel::config::ClawConfig` — Vec<ChannelConfig> with serde tagged enum
-//!
-//! Only `register_channels()` and `pub mod lark` (module declaration) reference
-//! specific platform implementations, by design.
+//! **No changes needed to AI logic** — the agent loop, middleware, and memory
+//! systems work with any channel via the normalized `ChannelMessage` type.
 #![allow(dead_code)]
 
-pub mod agent_loop;
 pub mod config;
 pub mod lark;
-pub mod memory;
 
 use std::collections::HashMap;
 

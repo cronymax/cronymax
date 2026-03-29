@@ -1,83 +1,13 @@
 // Context window management — token counting, message history, pruning.
+//
+// Core message types (ChatMessage, MessageRole, MessageImportance) are defined
+// in the `cronygraph` crate and re-exported here for backward compatibility.
 #![allow(dead_code)]
 
-use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-/// Role of a chat message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MessageRole {
-    System,
-    User,
-    Assistant,
-    Tool,
-    /// Display-only informational message — not sent to LLM, not persisted.
-    /// Used for pull progress, status notifications, etc.
-    Info,
-}
-
-/// Importance level determines pruning priority (higher = harder to remove).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MessageImportance {
-    /// Throwaway context — pruned first.
-    Ephemeral = 0,
-    /// Normal conversation — pruned after ephemeral.
-    Normal = 1,
-    /// User-pinned or compaction summary — never pruned by sliding window.
-    Pinned = 2,
-    /// System prompt — never pruned.
-    System = 3,
-    /// User-starred pane block — survives compaction, never pruned.
-    Starred = 4,
-}
-
-/// A single message in the chat history.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub id: u32,
-    pub role: MessageRole,
-    pub content: String,
-    pub importance: MessageImportance,
-    pub token_count: u32,
-    pub timestamp_ms: u64,
-    /// For tool messages, the ID of the tool call this responds to.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    /// For assistant messages that invoked tool calls.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_calls: Vec<crate::ai::stream::ToolCallInfo>,
-    /// Links this message to its corresponding Block::Stream cell_id.
-    /// Used for thread branching (forking conversation from a block).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cell_id: Option<u32>,
-}
-
-impl ChatMessage {
-    /// Create a new message with auto-generated timestamp.
-    pub fn new(
-        role: MessageRole,
-        content: String,
-        importance: MessageImportance,
-        token_count: u32,
-    ) -> Self {
-        Self {
-            id: 0, // Set by MessageHistory::push
-            role,
-            content,
-            importance,
-            token_count,
-            timestamp_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-            tool_call_id: None,
-            tool_calls: Vec::new(),
-            cell_id: None,
-        }
-    }
-}
+// Re-export core types from cronygraph so existing `use crate::ai::context::*` paths work.
+pub use cronygraph::types::{ChatMessage, MessageImportance, MessageRole};
 
 /// Token counter using tiktoken for accurate token estimation.
 pub struct TokenCounter {

@@ -8,6 +8,7 @@ use crate::ai::client::ModelSelection;
 use crate::ai::context::{
     ChatMessage, MessageHistory, MessageImportance, MessageRole, TokenCounter,
 };
+use crate::ai::middleware::{MiddlewareChain, MiddlewareChainConfig};
 
 // ─── Per-Session Chat State ──────────────────────────────────────────────────
 
@@ -59,6 +60,14 @@ pub struct SessionChat {
     /// Pinned markdown content displayed as a single block at the top of the pane
     /// (used by the History view and similar info-only tabs).
     pub pinned_content: Option<String>,
+
+    // ── Parallel tool execution (DeerFlow-inspired) ───────────
+    /// Tool call IDs awaiting results in the current turn.
+    /// When multiple tools are called in parallel, we wait for ALL
+    /// results before re-invoking the LLM (batch collection pattern).
+    pub pending_tool_calls: HashSet<String>,
+    /// Middleware chain for pre/post LLM processing.
+    pub middleware_chain: MiddlewareChain,
 }
 
 impl SessionChat {
@@ -86,6 +95,8 @@ impl SessionChat {
             max_tool_rounds: 10,
             starred_ids: HashSet::new(),
             pinned_content: None,
+            pending_tool_calls: HashSet::new(),
+            middleware_chain: MiddlewareChain::build_default(MiddlewareChainConfig::default()),
         }
     }
 

@@ -1061,6 +1061,92 @@ impl LlmClient {
 
         Ok(())
     }
+
+    /// Non-streaming chat completion — used by the memory agent and other
+    /// background tasks that don't need token-by-token streaming.
+    ///
+    /// Returns the full response text, or an error.
+    pub async fn complete_chat(
+        &self,
+        messages: &[ChatMessage],
+        model: &str,
+    ) -> anyhow::Result<String> {
+        let client = self
+            .openai_client
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("LLM client not initialized"))?;
+
+        let oai_messages: Vec<ChatCompletionRequestMessage> = messages
+            .iter()
+            .map(|m| match m.role {
+                crate::ai::context::MessageRole::System => {
+                    ChatCompletionRequestMessage::System(
+                        async_openai::types::ChatCompletionRequestSystemMessage {
+                            content:
+                                async_openai::types::ChatCompletionRequestSystemMessageContent::Text(
+                                    m.content.clone(),
+                                ),
+                            name: None,
+                        },
+                    )
+                }
+                crate::ai::context::MessageRole::User
+                | crate::ai::context::MessageRole::Info => {
+                    ChatCompletionRequestMessage::User(
+                        async_openai::types::ChatCompletionRequestUserMessage {
+                            content:
+                                async_openai::types::ChatCompletionRequestUserMessageContent::Text(
+                                    m.content.clone(),
+                                ),
+                            name: None,
+                        },
+                    )
+                }
+                crate::ai::context::MessageRole::Assistant => {
+                    ChatCompletionRequestMessage::Assistant(
+                        async_openai::types::ChatCompletionRequestAssistantMessage {
+                            content: Some(
+                                async_openai::types::ChatCompletionRequestAssistantMessageContent::Text(
+                                    m.content.clone(),
+                                ),
+                            ),
+                            name: None,
+                            tool_calls: None,
+                            refusal: None,
+                            audio: None,
+                            #[allow(deprecated)]
+                            function_call: None,
+                        },
+                    )
+                }
+                crate::ai::context::MessageRole::Tool => {
+                    ChatCompletionRequestMessage::Tool(
+                        async_openai::types::ChatCompletionRequestToolMessage {
+                            content:
+                                async_openai::types::ChatCompletionRequestToolMessageContent::Text(
+                                    m.content.clone(),
+                                ),
+                            tool_call_id: m.tool_call_id.clone().unwrap_or_default(),
+                        },
+                    )
+                }
+            })
+            .collect();
+
+        let request = async_openai::types::CreateChatCompletionRequestArgs::default()
+            .model(model)
+            .messages(oai_messages)
+            .build()?;
+
+        let response = client.chat().create(request).await?;
+        let content = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content.clone())
+            .unwrap_or_default();
+
+        Ok(content)
+    }
 }
 
 mod accessors;

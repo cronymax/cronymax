@@ -229,6 +229,7 @@ impl DbStore {
 }
 
 mod memory;
+pub mod memory_store;
 mod operations;
 pub use operations::WizardStepUpdate;
 use operations::now_millis;

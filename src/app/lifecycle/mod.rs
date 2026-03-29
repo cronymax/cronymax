@@ -236,6 +236,12 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
         scheduler_history_cache: Vec::new(),
         db_store: None,
         budget_tracker: None,
+        memory_store: Arc::new(std::sync::Mutex::new(
+            crate::services::memory::MemoryStore::new("default"),
+        )),
+        memory_agent: crate::ai::memory_agent::MemoryAgent::new(
+            crate::ai::memory_agent::MemoryAgentConfig::default(),
+        ),
         channel_manager: None,
         pending_channel_replies: HashMap::new(),
         _messages_received_channel_counter: 0,

@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/cronygraph"]
+
 [package]
 name = "cronymax"
 version = "0.1.0"
@@ -6,6 +9,7 @@ description = "AI native terminal emulator with integrated webview"
 license = "MIT"
 
 [dependencies]
+cronygraph = { path = "crates/cronygraph" }
 wgpu = "28"
 winit = "0.30"
 raw-window-handle = "0.6"

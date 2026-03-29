@@ -4,6 +4,7 @@ mod unit {
     mod input_test;
     mod layout_test;
     mod links_test;
+    mod middleware_test;
     mod ollama_skills_test;
 }
 
