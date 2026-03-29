@@ -62,7 +62,7 @@ chrono = { version = "0.4", features = ["serde"] }
 smart-default = "0.7.1"
 flate2 = "1"
 croner = "2"
-fastembed = "5"
+fastembed = { version = "5", optional = true }
 serde_yaml = "0.9"
 which = "7"
 thiserror = "2"
@@ -109,5 +109,9 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Threading",
 ] }
 winreg = "0.56"
+
+[features]
+default = []
+fastembed = ["dep:fastembed"]
 
 [dev-dependencies]

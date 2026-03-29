@@ -11,7 +11,9 @@
 //! typically use the in-memory `MemoryStore` from `services::memory` instead.
 #![allow(dead_code)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(feature = "fastembed")]
+use std::sync::Mutex;
 
 use crate::ai::context::ChatMessage;
 use crate::ai::db::DbStore;
@@ -68,13 +70,21 @@ pub struct RagMemoryStore {
     db: Arc<DbStore>,
     /// Optional fastembed model for generating embeddings.
     /// Wrapped in Arc<Mutex<>> because TextEmbedding::embed() requires &mut self.
+    #[cfg(feature = "fastembed")]
     embedder: Option<Arc<Mutex<fastembed::TextEmbedding>>>,
 }
 
 impl RagMemoryStore {
     /// Create a new store with a database handle and optional embedding model.
+    #[cfg(feature = "fastembed")]
     pub fn new(db: Arc<DbStore>, embedder: Option<Arc<Mutex<fastembed::TextEmbedding>>>) -> Self {
         Self { db, embedder }
+    }
+
+    /// Create a new store with a database handle (no embedding support).
+    #[cfg(not(feature = "fastembed"))]
+    pub fn new(db: Arc<DbStore>, _embedder: Option<()>) -> Self {
+        Self { db }
     }
 
     /// Build context window for the LLM: sliding window + RAG top-K.
@@ -330,6 +340,7 @@ impl RagMemoryStore {
 
     /// Generate an embedding vector for the given text.
     /// Returns `None` if no embedding model is available.
+    #[cfg(feature = "fastembed")]
     pub fn embed_text(&self, text: &str) -> Option<Vec<f32>> {
         let embedder = self.embedder.as_ref()?;
         let mut embedder = embedder.lock().ok()?;
@@ -340,5 +351,11 @@ impl RagMemoryStore {
                 None
             }
         }
+    }
+
+    /// Embedding not available without the `fastembed` feature.
+    #[cfg(not(feature = "fastembed"))]
+    pub fn embed_text(&self, _text: &str) -> Option<Vec<f32>> {
+        None
     }
 }
