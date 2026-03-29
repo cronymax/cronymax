@@ -61,7 +61,7 @@ pub use types::*;
 
 pub use view::{View, ViewMut};
 
-use crate::renderer::viewport::Viewport;
+pub use crate::renderer::viewport::Viewport;
 use crate::ui::styles::Styles;
 
 /// Convert [f32; 4] RGBA to egui Color32. Used by UI sub-modules.

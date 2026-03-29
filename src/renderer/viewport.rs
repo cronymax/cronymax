@@ -19,6 +19,17 @@ impl Viewport {
         }
     }
 
+    /// Create a viewport from window dimensions, applying default 4px padding.
+    pub fn from_window_size(width: u32, height: u32) -> Self {
+        const PADDING: f32 = 4.0;
+        Self {
+            x: PADDING,
+            y: PADDING,
+            width: (width as f32 - 2.0 * PADDING).max(0.0),
+            height: (height as f32 - 2.0 * PADDING).max(0.0),
+        }
+    }
+
     /// Convert to a wry Rect for set_bounds().
     pub fn to_wry_rect(self) -> wry::Rect {
         wry::Rect {

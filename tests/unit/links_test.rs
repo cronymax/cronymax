@@ -1,7 +1,9 @@
 //! Unit tests for link detection in the terminal grid.
 
-use cronymax::terminal::links::{DetectedLink, detect_links_on_row, link_at, resolve_path};
-use cronymax::terminal::state::TermState;
+use cronymax::renderer::terminal::links::{
+    DetectedLink, detect_links_on_row, link_at, resolve_path,
+};
+use cronymax::renderer::terminal::state::TermState;
 
 /// Create a TermState with the given dimensions and write text into it.
 fn make_term(cols: usize, rows: usize, text: &str) -> TermState {

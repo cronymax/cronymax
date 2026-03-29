@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::time::Duration;
 
-use cronymax::terminal::pty::Pty;
+use cronymax::renderer::terminal::pty::Pty;
 
 /// Helper: default shell for this platform.
 fn default_shell() -> &'static str {
@@ -55,7 +55,7 @@ fn test_pty_resize_no_panic() {
 
 #[test]
 fn test_session_lifecycle() {
-    use cronymax::terminal::TerminalSession;
+    use cronymax::renderer::terminal::TerminalSession;
 
     let mut session = TerminalSession::new(1, default_shell(), 80, 24, 1000, None, None);
     assert_eq!(session.id, 1);
@@ -79,7 +79,7 @@ fn test_session_lifecycle() {
 
 #[test]
 fn test_session_exit_detection() {
-    use cronymax::terminal::TerminalSession;
+    use cronymax::renderer::terminal::TerminalSession;
 
     let mut session = TerminalSession::new(2, default_shell(), 80, 24, 1000, None, None);
 

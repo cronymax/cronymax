@@ -1,8 +1,8 @@
 //! Unit tests for the channel subsystem — config parsing, allowlist, UI state,
 //! memory store, agent loop pipeline, and skill filtering.
 
-use cronymax::channel::ConnectionState;
-use cronymax::channel::config::{ChannelConfig, ClawConfig, LarkChannelConfig};
+use cronymax::channels::ConnectionState;
+use cronymax::channels::config::{ChannelConfig, ClawConfig, LarkChannelConfig};
 
 // ─── ClawConfig defaults ─────────────────────────────────────────────────────
 
@@ -106,7 +106,7 @@ fn resolve_secret_from_env() {
         profile_id: "default".to_string(),
         secret_storage: Default::default(),
     };
-    let store = cronymax::secret::SecretStore::default();
+    let store = cronymax::services::secret::SecretStore::default();
     assert_eq!(cfg.resolve_app_secret(&store).unwrap(), "s3cret");
     unsafe {
         std::env::remove_var(key);
@@ -124,7 +124,7 @@ fn resolve_secret_missing_env() {
         profile_id: "default".to_string(),
         secret_storage: Default::default(),
     };
-    let store = cronymax::secret::SecretStore::default();
+    let store = cronymax::services::secret::SecretStore::default();
     assert!(cfg.resolve_app_secret(&store).is_err());
 }
 
@@ -132,8 +132,8 @@ fn resolve_secret_missing_env() {
 
 #[test]
 fn lark_channel_allowlist_deny_empty() {
-    use cronymax::channel::Channel;
-    use cronymax::channel::lark::LarkChannel;
+    use cronymax::channels::Channel;
+    use cronymax::channels::lark::LarkChannel;
 
     let cfg = LarkChannelConfig {
         instance_id: "lark".into(),
@@ -146,15 +146,15 @@ fn lark_channel_allowlist_deny_empty() {
     };
     let channel = LarkChannel::new(
         cfg,
-        std::sync::Arc::new(cronymax::secret::SecretStore::default()),
+        std::sync::Arc::new(cronymax::services::secret::SecretStore::default()),
     );
     assert!(!channel.is_sender_authorized("ou_anyone"));
 }
 
 #[test]
 fn lark_channel_allowlist_wildcard() {
-    use cronymax::channel::Channel;
-    use cronymax::channel::lark::LarkChannel;
+    use cronymax::channels::Channel;
+    use cronymax::channels::lark::LarkChannel;
 
     let cfg = LarkChannelConfig {
         instance_id: "lark".into(),
@@ -167,15 +167,15 @@ fn lark_channel_allowlist_wildcard() {
     };
     let channel = LarkChannel::new(
         cfg,
-        std::sync::Arc::new(cronymax::secret::SecretStore::default()),
+        std::sync::Arc::new(cronymax::services::secret::SecretStore::default()),
     );
     assert!(channel.is_sender_authorized("ou_anyone"));
 }
 
 #[test]
 fn lark_channel_allowlist_specific() {
-    use cronymax::channel::Channel;
-    use cronymax::channel::lark::LarkChannel;
+    use cronymax::channels::Channel;
+    use cronymax::channels::lark::LarkChannel;
 
     let cfg = LarkChannelConfig {
         instance_id: "lark".into(),
@@ -188,7 +188,7 @@ fn lark_channel_allowlist_specific() {
     };
     let channel = LarkChannel::new(
         cfg,
-        std::sync::Arc::new(cronymax::secret::SecretStore::default()),
+        std::sync::Arc::new(cronymax::services::secret::SecretStore::default()),
     );
     assert!(channel.is_sender_authorized("ou_alice"));
     assert!(channel.is_sender_authorized("ou_bob"));
@@ -448,7 +448,9 @@ profile_id = "team-a"
 
 #[test]
 fn cosine_similarity_identical() {
-    use cronymax::channel::memory::{bytes_to_embedding, cosine_similarity, embedding_to_bytes};
+    use cronymax::ai::db::memory_store::{
+        bytes_to_embedding, cosine_similarity, embedding_to_bytes,
+    };
     let a = vec![1.0, 0.0, 0.0];
     let b = vec![1.0, 0.0, 0.0];
     let sim = cosine_similarity(&a, &b);
@@ -460,7 +462,7 @@ fn cosine_similarity_identical() {
 
 #[test]
 fn cosine_similarity_orthogonal() {
-    use cronymax::channel::memory::cosine_similarity;
+    use cronymax::ai::db::memory_store::cosine_similarity;
     let a = vec![1.0, 0.0];
     let b = vec![0.0, 1.0];
     let sim = cosine_similarity(&a, &b);
@@ -472,7 +474,7 @@ fn cosine_similarity_orthogonal() {
 
 #[test]
 fn cosine_similarity_opposite() {
-    use cronymax::channel::memory::cosine_similarity;
+    use cronymax::ai::db::memory_store::cosine_similarity;
     let a = vec![1.0, 0.0];
     let b = vec![-1.0, 0.0];
     let sim = cosine_similarity(&a, &b);
@@ -484,7 +486,7 @@ fn cosine_similarity_opposite() {
 
 #[test]
 fn top_k_similar_basic() {
-    use cronymax::channel::memory::top_k_similar;
+    use cronymax::ai::db::memory_store::top_k_similar;
     let query = vec![1.0, 0.0, 0.0];
     let candidates: Vec<(usize, Vec<f32>)> = vec![
         (1, vec![1.0, 0.0, 0.0]), // perfect match
@@ -499,7 +501,7 @@ fn top_k_similar_basic() {
 
 #[test]
 fn top_k_similar_truncates() {
-    use cronymax::channel::memory::top_k_similar;
+    use cronymax::ai::db::memory_store::top_k_similar;
     let query = vec![1.0, 0.0];
     let candidates: Vec<(usize, Vec<f32>)> = vec![
         (1, vec![0.9, 0.1]),
@@ -512,7 +514,7 @@ fn top_k_similar_truncates() {
 
 #[test]
 fn embedding_roundtrip() {
-    use cronymax::channel::memory::{bytes_to_embedding, embedding_to_bytes};
+    use cronymax::ai::db::memory_store::{bytes_to_embedding, embedding_to_bytes};
     let original = vec![1.0_f32, -0.5, std::f32::consts::PI, 0.0];
     let bytes = embedding_to_bytes(&original);
     let recovered = bytes_to_embedding(&bytes);
@@ -526,9 +528,9 @@ fn embedding_roundtrip() {
 
 #[test]
 fn normalize_message_format() {
-    use cronymax::channel::ChannelMessage;
-    use cronymax::channel::ReplyTarget;
-    use cronymax::channel::agent_loop::normalize_message;
+    use cronymax::ai::agent_loop::normalize_channel_message;
+    use cronymax::channels::ChannelMessage;
+    use cronymax::channels::ReplyTarget;
 
     let msg = ChannelMessage {
         id: "msg_1".into(),
@@ -544,7 +546,7 @@ fn normalize_message_format() {
             message_id: None,
         },
     };
-    let normalized = normalize_message(&msg);
+    let normalized = normalize_channel_message(&msg);
     assert!(
         normalized.content.contains("Hello world"),
         "should contain original content"
@@ -561,9 +563,9 @@ fn normalize_message_format() {
 
 #[test]
 fn normalize_message_no_sender_name() {
-    use cronymax::channel::ChannelMessage;
-    use cronymax::channel::ReplyTarget;
-    use cronymax::channel::agent_loop::normalize_message;
+    use cronymax::ai::agent_loop::normalize_channel_message;
+    use cronymax::channels::ChannelMessage;
+    use cronymax::channels::ReplyTarget;
 
     let msg = ChannelMessage {
         id: "msg_2".into(),
@@ -579,7 +581,7 @@ fn normalize_message_no_sender_name() {
             message_id: None,
         },
     };
-    let normalized = normalize_message(&msg);
+    let normalized = normalize_channel_message(&msg);
     assert!(normalized.content.contains("Test message"));
     assert!(
         normalized.content.contains("U12345"),
@@ -589,7 +591,7 @@ fn normalize_message_no_sender_name() {
 
 #[test]
 fn session_id_stable() {
-    use cronymax::channel::agent_loop::session_id_for_channel;
+    use cronymax::ai::agent_loop::session_id_for_channel;
     let id1 = session_id_for_channel("lark", "chat_001");
     let id2 = session_id_for_channel("lark", "chat_001");
     assert_eq!(
@@ -604,7 +606,7 @@ fn session_id_stable() {
 
 #[test]
 fn session_id_different_channels() {
-    use cronymax::channel::agent_loop::session_id_for_channel;
+    use cronymax::ai::agent_loop::session_id_for_channel;
     let id1 = session_id_for_channel("lark", "chat_001");
     let id2 = session_id_for_channel("slack", "chat_001");
     assert_ne!(

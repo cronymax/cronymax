@@ -1,4 +1,4 @@
-use cronymax::terminal::input;
+use cronymax::renderer::terminal::input;
 
 use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
