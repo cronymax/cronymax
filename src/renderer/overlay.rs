@@ -198,7 +198,12 @@ impl super::Renderer for Overlay {
     type Context<'a> = OverlayCtx<'a>;
 
     fn resize(&mut self, width: u32, height: u32, scale: f32) {
-        if width > 0 && height > 0 {
+        if width > 0
+            && height > 0
+            && (self.surface_config.width != width
+                || self.surface_config.height != height
+                || self.scale != scale)
+        {
             self.surface_config.width = width;
             self.surface_config.height = height;
             self.width = width as f32 / scale;

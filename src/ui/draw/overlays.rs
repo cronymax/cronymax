@@ -1,6 +1,5 @@
 //! Overlay browser, settings overlay, and float tooltip rendering.
 
-use crate::renderer::scheduler::RenderSchedule;
 use crate::ui::model::AppCtx;
 use crate::ui::types::BrowserViewMode;
 use crate::ui::{UiAction, ViewMut};
@@ -27,10 +26,9 @@ impl Ui {
                         #[cfg(any(target_os = "macos", target_os = "windows"))]
                         if let Some(overlay) = &wt.overlay
                             && let Ok(buf) = overlay.panel.event_buffer.lock()
-                            && has_pointer_click(&buf)
-                        {
-                            activate_id = Some(wt.browser.id);
-                        }
+                                && has_pointer_click(&buf) {
+                                    activate_id = Some(wt.browser.id);
+                                }
                     }
                 }
                 if let Some(wid) = activate_id {
@@ -57,9 +55,23 @@ impl Ui {
                 if wt.mode == BrowserViewMode::Overlay && wt.browser.view.visible {
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
                     if let Some(overlay) = &mut wt.overlay {
+                        // Skip render when the overlay has no pending input events
+                        // and the URL hasn't changed — avoids a full GPU frame.
+                        let has_events = overlay
+                            .panel
+                            .event_buffer
+                            .lock()
+                            .map(|buf| !buf.is_empty())
+                            .unwrap_or(false);
+                        let url_changed = !wt.browser.address_bar.editing
+                            && wt.browser.address_bar.url != wt.browser.url;
+                        if !has_events && !url_changed && !wt.browser.address_bar.editing {
+                            continue;
+                        }
                         if !wt.browser.address_bar.editing {
                             wt.browser.address_bar.url = wt.browser.url.clone();
                         }
+                        let was_editing = wt.browser.address_bar.editing;
                         let r =
                             overlay.render(ctx.config, ctx.ui_state, |mut f| {
                                 f.add(crate::ui::browser::BrowserView {
@@ -69,6 +81,12 @@ impl Ui {
                                     docked: false,
                                 });
                             });
+                        // When the address bar just gained focus, explicitly
+                        // take keyboard focus to prevent WebView2 from
+                        // intercepting keyboard events.
+                        if wt.browser.address_bar.editing && !was_editing {
+                            overlay.panel.focus();
+                        }
                         match r {
                             Ok(result) => {
                                 let wid = wt.browser.id;
@@ -110,6 +128,17 @@ impl Ui {
                 };
                 self.handle_ui_action(ctx, action, event_loop);
             }
+
+            // Prevent prompt editor from stealing focus while an overlay
+            // address bar is being edited.
+            let any_overlay_editing = self.browser_tabs.iter().any(|wt| {
+                wt.mode == BrowserViewMode::Overlay
+                    && wt.browser.view.visible
+                    && wt.browser.address_bar.editing
+            });
+            if any_overlay_editing {
+                ctx.ui_state.address_bar.editing = true;
+            }
         }
     }
 
@@ -135,6 +164,7 @@ impl Ui {
                 let lh = (logical_h - 2.0 * margin).max(100.0);
 
                 // Lazy-create the Modal for Settings.
+                let mut just_created = false;
                 if self.settings_overlay.is_none() {
                     let rect = crate::renderer::panel::LogicalRect {
                         x: lx,
@@ -151,6 +181,7 @@ impl Ui {
                     ) {
                         Ok(overlay) => {
                             self.settings_overlay = Some(overlay);
+                            just_created = true;
                         }
                         Err(e) => {
                             log::warn!("Failed to create Settings Modal: {e}");
@@ -181,7 +212,16 @@ impl Ui {
                 }
 
                 // Render Settings UI on the overlay surface.
+                // Skip render when the overlay has no pending input events
+                // to avoid a full GPU frame on every main-window repaint.
+                let has_events = self
+                    .settings_overlay
+                    .as_ref()
+                    .and_then(|o| o.panel.event_buffer.lock().ok())
+                    .is_some_and(|buf| !buf.is_empty());
+                let needs_render = just_created || has_events;
                 // Use .take() to split borrows.
+                if needs_render {
                 if let Some(mut overlay) = self.settings_overlay.take() {
                     let mut pm_guard = ctx.profile_manager.lock().unwrap();
                     let history_cache = ctx.scheduler_history_cache.to_vec();
@@ -209,8 +249,7 @@ impl Ui {
                             log::warn!("Settings overlay render failed: {e}");
                         }
                     }
-                    ctx.scheduler
-                        .schedule_repaint_after(std::time::Duration::from_millis(100));
+                }
                 }
 
                 // Ensure Settings overlay is visible and above browser overlay.
@@ -294,8 +333,6 @@ impl Ui {
                     fr.set_visible(true);
                     fr.ensure_above_overlays();
                 }
-
-                ctx.scheduler.mark_dirty();
             } else {
                 // No tooltip this frame — hide the float renderer.
                 if let Some(ref mut fr) = self.float_renderer {

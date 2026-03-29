@@ -103,7 +103,7 @@ pub(super) fn handle_focus(state: &mut AppState, focused: bool) {
                     windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() as isize
                 };
 
-                state.webview_tabs.iter().any(|wt| {
+                state.ui.browser_tabs.iter().any(|wt| {
                     wt.overlay
                         .as_ref()
                         .and_then(|o| o.panel.window_handle().ok())
@@ -205,16 +205,60 @@ pub fn winit_event_to_egui(event: &winit::event::WindowEvent, scale: f32) -> Vec
             });
         }
         WE::KeyboardInput { event: key_ev, .. } => {
-            if key_ev.state == ElementState::Pressed
-                && let Some(text) = &key_ev.text
-            {
-                let s = text.as_str();
-                if !s.is_empty() && !s.chars().next().is_some_and(|c| c.is_control()) {
-                    out.push(egui::Event::Text(s.to_string()));
+            let pressed = key_ev.state == ElementState::Pressed;
+            if let Some(key) = winit_key_to_egui(&key_ev.logical_key) {
+                out.push(egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: key_ev.repeat,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            if pressed {
+                if let Some(text) = &key_ev.text {
+                    let s = text.as_str();
+                    if !s.is_empty() && !s.chars().next().is_some_and(|c| c.is_control()) {
+                        out.push(egui::Event::Text(s.to_string()));
+                    }
                 }
             }
         }
         _ => {}
     }
     out
+}
+
+/// Map a winit logical key to an egui key (subset used by overlay text fields).
+#[cfg(target_os = "windows")]
+fn winit_key_to_egui(key: &winit::keyboard::Key) -> Option<egui::Key> {
+    use winit::keyboard::{Key, NamedKey};
+    match key {
+        Key::Named(named) => match named {
+            NamedKey::Backspace => Some(egui::Key::Backspace),
+            NamedKey::Tab => Some(egui::Key::Tab),
+            NamedKey::Enter => Some(egui::Key::Enter),
+            NamedKey::Escape => Some(egui::Key::Escape),
+            NamedKey::Space => Some(egui::Key::Space),
+            NamedKey::Delete => Some(egui::Key::Delete),
+            NamedKey::ArrowDown => Some(egui::Key::ArrowDown),
+            NamedKey::ArrowLeft => Some(egui::Key::ArrowLeft),
+            NamedKey::ArrowRight => Some(egui::Key::ArrowRight),
+            NamedKey::ArrowUp => Some(egui::Key::ArrowUp),
+            NamedKey::Home => Some(egui::Key::Home),
+            NamedKey::End => Some(egui::Key::End),
+            NamedKey::PageDown => Some(egui::Key::PageDown),
+            NamedKey::PageUp => Some(egui::Key::PageUp),
+            _ => None,
+        },
+        Key::Character(c) => match c.as_str() {
+            "a" | "A" => Some(egui::Key::A),
+            "c" | "C" => Some(egui::Key::C),
+            "v" | "V" => Some(egui::Key::V),
+            "x" | "X" => Some(egui::Key::X),
+            "z" | "Z" => Some(egui::Key::Z),
+            _ => None,
+        },
+        _ => None,
+    }
 }

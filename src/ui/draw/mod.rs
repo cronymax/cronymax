@@ -249,7 +249,7 @@ impl Ui {
                 let has_overlay = false;
                 if has_overlay {
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
-                    if let Some(overlay) = &wt.overlay {
+                    if let Some(overlay) = &mut wt.overlay {
                         overlay.panel.set_frame_logical(
                             &self.frame.window,
                             crate::renderer::panel::LogicalRect {

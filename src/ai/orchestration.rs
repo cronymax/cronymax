@@ -21,7 +21,6 @@ use crate::ai::agent_loop::{
 use crate::ai::context::{ChatMessage, MessageImportance, MessageRole};
 use crate::ai::skills::SkillHandler;
 
-
 // Re-export all orchestration types from cronygraph.
 pub use cronygraph::checkpoint::{CheckpointAction, CheckpointHandler};
 pub use cronygraph::engine::LlmBackendFactory;
@@ -211,61 +210,63 @@ impl PlannerOrchestrator {
             tokio::task::JoinHandle<(u32, String, anyhow::Result<AgentLoopResult>)>,
         > = Vec::new();
 
-        let registry = self.agent_registry.lock().unwrap();
+        {
+            let registry = self.agent_registry.lock().unwrap();
 
-        for task in &mut plan.tasks {
-            if task.status != TaskStatus::Pending {
-                continue;
-            }
-            let agent_name = match &task.assigned_agent {
-                Some(name) => name.clone(),
-                None => continue,
-            };
-
-            // Build the AgentNode from the registry.
-            let manifest = match registry.lookup(&agent_name) {
-                Some(m) => m.clone(),
-                None => {
-                    task.status = TaskStatus::Failed(format!("Agent '{}' not found", agent_name));
+            for task in &mut plan.tasks {
+                if task.status != TaskStatus::Pending {
                     continue;
                 }
-            };
+                let agent_name = match &task.assigned_agent {
+                    Some(name) => name.clone(),
+                    None => continue,
+                };
 
-            task.status = TaskStatus::InProgress;
-            let task_id = task.id;
-            let task_desc = task.description.clone();
+                // Build the AgentNode from the registry.
+                let manifest = match registry.lookup(&agent_name) {
+                    Some(m) => m.clone(),
+                    None => {
+                        task.status =
+                            TaskStatus::Failed(format!("Agent '{}' not found", agent_name));
+                        continue;
+                    }
+                };
 
-            let node = AgentNode::from_manifest(
-                &manifest,
-                &self.base_handlers,
-                self.default_config.clone(),
-            );
-            let llm = llm_factory.create(node.model.as_deref().unwrap_or("gpt-4o"));
-            let permit = semaphore.clone();
+                task.status = TaskStatus::InProgress;
+                let task_id = task.id;
+                let task_desc = task.description.clone();
 
-            // Build messages for the sub-agent.
-            let mut messages = Vec::new();
-            messages.push(ChatMessage::new(
-                MessageRole::System,
-                node.system_prompt.clone(),
-                MessageImportance::System,
-                0,
-            ));
-            messages.push(ChatMessage::new(
-                MessageRole::User,
-                task_desc.clone(),
-                MessageImportance::Normal,
-                (task_desc.chars().count().div_ceil(4)) as u32,
-            ));
+                let node = AgentNode::from_manifest(
+                    &manifest,
+                    &self.base_handlers,
+                    self.default_config.clone(),
+                );
+                let llm = llm_factory.create(node.model.as_deref().unwrap_or("gpt-4o"));
+                let permit = semaphore.clone();
 
-            handles.push(tokio::spawn(async move {
-                let _permit = permit.acquire().await;
-                let result = node.run(&*llm, &SequentialToolExecutor, messages).await;
-                (task_id, agent_name, result)
-            }));
-        }
+                // Build messages for the sub-agent.
+                let messages = vec![
+                    ChatMessage::new(
+                        MessageRole::System,
+                        node.system_prompt.clone(),
+                        MessageImportance::System,
+                        0,
+                    ),
+                    ChatMessage::new(
+                        MessageRole::User,
+                        task_desc.clone(),
+                        MessageImportance::Normal,
+                        (task_desc.chars().count().div_ceil(4)) as u32,
+                    ),
+                ];
 
-        drop(registry);
+                handles.push(tokio::spawn(async move {
+                    let _permit = permit.acquire().await;
+                    let result = node.run(&*llm, &SequentialToolExecutor, messages).await;
+                    (task_id, agent_name, result)
+                }));
+            }
+        };
 
         // Collect results.
         for handle in handles {

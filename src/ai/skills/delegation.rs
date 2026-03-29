@@ -11,9 +11,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::ai::agent::AgentRegistry;
-use crate::ai::agent_loop::{
-    AgentLoopConfig, NonStreamingLlmBackend, SequentialToolExecutor,
-};
+use crate::ai::agent_loop::{AgentLoopConfig, NonStreamingLlmBackend, SequentialToolExecutor};
 use crate::ai::context::{ChatMessage, MessageImportance, MessageRole};
 use crate::ai::orchestration::{AgentNode, AgentNodeExt, DelegationRequest};
 use crate::ai::skills::{Skill, SkillHandler};
@@ -111,7 +109,9 @@ pub fn delegation_handler(deps: Arc<DelegationDeps>) -> SkillHandler {
 
             // Look up the agent manifest.
             let manifest = {
-                let registry = deps.agent_registry.lock()
+                let registry = deps
+                    .agent_registry
+                    .lock()
                     .map_err(|e| anyhow::anyhow!("Failed to lock agent registry: {}", e))?;
                 match registry.lookup(&agent_name) {
                     Some(m) => m.clone(),
@@ -138,21 +138,19 @@ pub fn delegation_handler(deps: Arc<DelegationDeps>) -> SkillHandler {
             };
 
             // Construct the AgentNode.
-            let node = AgentNode::from_manifest(
-                &manifest,
-                &deps.base_handlers,
-                deps.config.clone(),
-            );
+            let node =
+                AgentNode::from_manifest(&manifest, &deps.base_handlers, deps.config.clone());
 
             // Build messages for the sub-agent.
-            let mut messages = Vec::new();
-            messages.push(ChatMessage::new(
-                MessageRole::System,
-                node.system_prompt.clone(),
-                MessageImportance::System,
-                0,
-            ));
-            messages.push(request.to_user_message());
+            let messages = vec![
+                ChatMessage::new(
+                    MessageRole::System,
+                    node.system_prompt.clone(),
+                    MessageImportance::System,
+                    0,
+                ),
+                request.to_user_message(),
+            ];
 
             // Create the LLM backend.
             let model = node.model.as_deref().unwrap_or(&deps.model);

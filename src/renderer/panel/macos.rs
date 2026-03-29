@@ -39,6 +39,8 @@ pub struct Panel {
     pub last_cursor_pos: Arc<Mutex<egui::Pos2>>,
     /// Handle to the installed NSEvent local monitor.
     pub monitor_id: Option<Retained<AnyObject>>,
+    /// Cached last logical rect to skip redundant position/size calls.
+    last_logical_rect: Option<LogicalRect>,
 }
 
 impl Panel {
@@ -139,6 +141,7 @@ impl Panel {
             event_buffer: Arc::new(Mutex::new(Vec::new())),
             last_cursor_pos: Arc::new(Mutex::new(egui::Pos2::ZERO)),
             monitor_id: None,
+            last_logical_rect: None,
         })
     }
 
@@ -202,7 +205,11 @@ impl Panel {
 
     /// Reposition and resize using **logical** coordinates relative to the
     /// parent window's content area.
-    pub fn set_frame_logical(&self, parent: &Window, rect: super::LogicalRect) {
+    pub fn set_frame_logical(&mut self, parent: &Window, rect: super::LogicalRect) {
+        if self.last_logical_rect == Some(rect) {
+            return;
+        }
+        self.last_logical_rect = Some(rect);
         if let Some(ns_window) = crate::renderer::platform::macos::ns_window_from_winit(parent) {
             let frame = crate::renderer::platform::macos::window_to_screen_rect(
                 &ns_window,
@@ -300,6 +307,9 @@ impl Panel {
     pub fn window_id(&self) -> Option<winit::window::WindowId> {
         None
     }
+
+    /// No-op on macOS — keyboard focus is handled by the NSPanel key window system.
+    pub fn focus(&self) {}
 
     pub fn ns_panel(&self) -> &NSPanel {
         &self.ns_panel

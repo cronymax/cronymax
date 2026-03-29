@@ -33,7 +33,7 @@ mod linux;
 #[cfg(target_os = "macos")]
 pub use macos::Panel;
 #[cfg(target_os = "windows")]
-pub use windows::ChildPanel;
+pub use windows::Panel;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use linux::ChildPanel;
 
@@ -42,7 +42,7 @@ pub use linux::ChildPanel;
 ///
 /// Groups the `(x, y, w, h, scale)` quintuple that appears throughout the
 /// overlay/panel APIs, reducing function argument count.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LogicalRect {
     /// Logical x position relative to parent content area.
     pub x: f32,

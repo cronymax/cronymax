@@ -226,7 +226,6 @@ impl Webview {
         }
         #[cfg(target_os = "windows")]
         {
-            use raw_window_handle::HasWindowHandle;
             use wry::WebViewExtWindows;
             let handle = parent
                 .window_handle()

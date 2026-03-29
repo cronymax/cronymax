@@ -352,8 +352,8 @@ pub(in crate::app) fn handle_llm_event(
                     rt.block_on(agent.notify_new_messages(2))
                 };
 
-                if should_extract && memory_agent_config.enabled {
-                    if let Some(oai_client) = openai_client {
+                if should_extract && memory_agent_config.enabled
+                    && let Some(oai_client) = openai_client {
                         let agent = crate::ai::memory_agent::MemoryAgent::new(
                             memory_agent_config.clone(),
                         );
@@ -407,7 +407,6 @@ pub(in crate::app) fn handle_llm_event(
                             agent.reset_counter().await;
                         });
                     }
-                }
             }
 
             state.scheduler.mark_dirty();
@@ -528,7 +527,7 @@ pub(in crate::app) fn handle_llm_event(
                         {
                             // Mark the matching tool call as completed.
                             for entry in tool_calls_log.iter_mut() {
-                                if entry.in_progress && entry.name.contains(&tool_call_id) || entry.in_progress {
+                                if entry.in_progress {
                                     entry.in_progress = false;
                                     let result_str = &result_for_log;
                                     entry.result = Some(if result_str.len() > 4000 {

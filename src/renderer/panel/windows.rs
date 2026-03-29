@@ -21,6 +21,8 @@ pub struct Panel {
     pub event_buffer: Arc<Mutex<Vec<egui::Event>>>,
     /// Last known cursor position in logical coordinates.
     pub last_cursor_pos: Arc<Mutex<egui::Pos2>>,
+    /// Cached last logical rect to skip redundant Win32 position/size calls.
+    last_logical_rect: Option<LogicalRect>,
 }
 
 #[allow(dead_code)]
@@ -30,7 +32,7 @@ impl Panel {
         parent: &Window,
         event_loop: Option<&ActiveEventLoop>,
         rect: LogicalRect,
-        attrs: PanelAttrs,
+        panel_attrs: PanelAttrs,
     ) -> Result<Self, String> {
         use winit::platform::windows::WindowAttributesExtWindows;
 
@@ -70,8 +72,8 @@ impl Panel {
 
         // Apply WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW
         // for click-through panels.
-        if attrs.click_through {
-            if let Ok(handle) = window.window_handle()
+        if panel_attrs.click_through
+            && let Ok(handle) = window.window_handle()
                 && let RawWindowHandle::Win32(h) = handle.as_raw()
             {
                 unsafe {
@@ -85,13 +87,13 @@ impl Panel {
                     SetWindowLongW(hwnd_val, GWL_EXSTYLE, new_style);
                 }
             }
-        }
 
         Ok(Self {
             window,
             visible: false,
             event_buffer: Arc::new(Mutex::new(Vec::new())),
             last_cursor_pos: Arc::new(Mutex::new(egui::Pos2::ZERO)),
+            last_logical_rect: None,
         })
     }
 
@@ -110,7 +112,11 @@ impl Panel {
 
     /// Reposition and resize using **logical** coordinates relative to the
     /// parent window's content area.
-    pub fn set_frame_logical(&self, parent: &Window, rect: super::LogicalRect) {
+    pub fn set_frame_logical(&mut self, parent: &Window, rect: super::LogicalRect) {
+        if self.last_logical_rect == Some(rect) {
+            return;
+        }
+        self.last_logical_rect = Some(rect);
         if let Ok(inner_pos) = parent.inner_position() {
             let sx = inner_pos.x + (rect.x * rect.scale) as i32;
             let sy = inner_pos.y + (rect.y * rect.scale) as i32;
@@ -170,6 +176,24 @@ impl Panel {
 
     /// No-op on Windows — event monitoring is macOS-specific.
     pub fn install_event_monitor(&mut self, _panel_logical_height: f32) {}
+
+    /// Explicitly give this panel Windows keyboard focus.
+    ///
+    /// Call this when an egui widget on the overlay surface needs keyboard
+    /// input (e.g. user clicked an address bar TextEdit).  Without this,
+    /// keyboard events may continue flowing to a previously-focused native
+    /// control (such as WebView2) rather than to this overlay's HWND.
+    pub fn focus(&self) {
+        if let Ok(handle) = self.window.window_handle()
+            && let RawWindowHandle::Win32(h) = handle.as_raw()
+        {
+            unsafe {
+                windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(
+                    h.hwnd.get() as *mut core::ffi::c_void,
+                );
+            }
+        }
+    }
 
     // ── Platform queries ────────────────────────────────────────────────
 

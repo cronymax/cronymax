@@ -40,7 +40,7 @@ impl Panel {
         self.visible
     }
 
-    pub fn set_frame_logical(&self, _parent: &Window, _rect: super::LogicalRect) {}
+    pub fn set_frame_logical(&mut self, _parent: &Window, _rect: super::LogicalRect) {}
 
     pub fn set_frame(&self, _parent: &Window, _sx: f32, _sy: f32, _w: f32, _h: f32, _scale: f32) {}
 

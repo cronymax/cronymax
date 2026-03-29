@@ -22,7 +22,7 @@ pub(in crate::app) fn handle_window_event(
     #[cfg(target_os = "windows")]
     if window_id != state.ui.frame.window.id() {
         // Check if this event belongs to any overlay child panel.
-        for wt in &state.webview_tabs {
+        for wt in &state.ui.browser_tabs {
             if wt.mode == BrowserViewMode::Overlay
                 && wt.browser.view.visible
                 && wt.overlay.as_ref().and_then(|o| o.panel.window_id()) == Some(window_id)
@@ -30,7 +30,7 @@ pub(in crate::app) fn handle_window_event(
                 // Convert the winit WindowEvent to egui events and push
                 // into the overlay's event buffer for render().
                 let scale = state.ui.frame.window.scale_factor() as f32;
-                let egui_events = super::winit_event_to_egui(&event, scale);
+                let egui_events = super::misc::winit_event_to_egui(&event, scale);
                 if !egui_events.is_empty()
                     && let Some(overlay) = &wt.overlay
                 {
@@ -39,9 +39,83 @@ pub(in crate::app) fn handle_window_event(
                     // event buffer has been drained by a render frame.
                     for ev in &egui_events {
                         if let egui::Event::PointerMoved(pos) = ev
-                            && let Ok(mut lcp) = overlay.panel.last_cursor_pos.lock()
-                        {
-                            *lcp = *pos;
+                            && let Ok(mut lcp) = overlay.panel.last_cursor_pos.lock() {
+                                *lcp = *pos;
+                            }
+                    }
+                    if let Ok(mut buf) = overlay.panel.event_buffer.lock() {
+                        let last_pos = overlay
+                            .panel
+                            .last_cursor_pos
+                            .lock()
+                            .map(|p| *p)
+                            .unwrap_or(egui::Pos2::ZERO);
+                        let fixed: Vec<egui::Event> = egui_events
+                            .into_iter()
+                            .map(|ev| {
+                                if let egui::Event::PointerButton {
+                                    pos,
+                                    button,
+                                    pressed,
+                                    modifiers,
+                                } = ev
+                                {
+                                    if pos == egui::Pos2::ZERO {
+                                        egui::Event::PointerButton {
+                                            pos: last_pos,
+                                            button,
+                                            pressed,
+                                            modifiers,
+                                        }
+                                    } else {
+                                        ev
+                                    }
+                                } else {
+                                    ev
+                                }
+                            })
+                            .collect();
+                        buf.extend(fixed);
+                    }
+                }
+                // Ensure the main window repaints to process buffered events.
+                state.scheduler.mark_dirty();
+                // Bring this overlay to front on focus or mouse-down (T023).
+                let should_activate = matches!(
+                    event,
+                    WindowEvent::Focused(true)
+                        | WindowEvent::MouseInput {
+                            state: winit::event::ElementState::Pressed,
+                            ..
+                        }
+                );
+                if should_activate {
+                    let wid = wt.browser.id;
+                    state.ui.browser_manager.bring_to_front(wid);
+                    if let Some(idx) = state
+                        .ui.browser_tabs
+                        .iter()
+                        .position(|wt| wt.browser.id == wid)
+                    {
+                        state.ui.active_browser = idx;
+                        state.ui_state.active_browser = Some(idx);
+                    }
+                }
+                return;
+            }
+        }
+
+        // Check if this event belongs to the settings overlay child panel.
+        if let Some(ref overlay) = state.ui.settings_overlay {
+            if overlay.panel.window_id() == Some(window_id) {
+                let scale = state.ui.frame.window.scale_factor() as f32;
+                let egui_events = super::misc::winit_event_to_egui(&event, scale);
+                if !egui_events.is_empty() {
+                    for ev in &egui_events {
+                        if let egui::Event::PointerMoved(pos) = ev {
+                            if let Ok(mut lcp) = overlay.panel.last_cursor_pos.lock() {
+                                *lcp = *pos;
+                            }
                         }
                     }
                     if let Ok(mut buf) = overlay.panel.event_buffer.lock() {
@@ -79,30 +153,11 @@ pub(in crate::app) fn handle_window_event(
                         buf.extend(fixed);
                     }
                 }
-                // Bring this overlay to front on focus or mouse-down (T023).
-                let should_activate = matches!(
-                    event,
-                    WindowEvent::Focused(true)
-                        | WindowEvent::MouseInput {
-                            state: winit::event::ElementState::Pressed,
-                            ..
-                        }
-                );
-                if should_activate {
-                    let wid = wt.browser.id;
-                    state.webview_manager.bring_to_front(wid);
-                    if let Some(idx) = state
-                        .webview_tabs
-                        .iter()
-                        .position(|wt| wt.browser.id == wid)
-                    {
-                        state.active_webview = idx;
-                        state.ui_state.active_webview = Some(idx);
-                    }
-                }
+                state.scheduler.mark_dirty();
                 return;
             }
         }
+
         return;
     }
 

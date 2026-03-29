@@ -53,7 +53,7 @@ impl Modal {
         Ok(Self { ow })
     }
 
-    pub fn set_frame(&self, parent: &Window, rect: LogicalRect) {
+    pub fn set_frame(&mut self, parent: &Window, rect: LogicalRect) {
         self.panel.set_frame_logical(parent, rect);
     }
 

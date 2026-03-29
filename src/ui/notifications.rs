@@ -125,7 +125,9 @@ impl NotificationState {
         }
 
         // Request repaint while toasts are visible (for TTL countdown).
-        ctx.request_repaint();
+        // Use a 1-second interval instead of immediate repaint to avoid
+        // spinning the GPU at max frame rate for the entire toast duration.
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
 
         let screen = ctx.screen_rect();
         let toast_width = 320.0_f32;

@@ -87,9 +87,9 @@ pub(super) fn handle_resumed(app: &mut App, event_loop: &ActiveEventLoop) {
             // Route ALL repaint requests through the timer path so that
             // egui's zero-delay requests (cursor blink, hover animations)
             // don't spin the CPU at max frame rate.  Clamp the minimum
-            // delay to 16 ms (~60 fps) — fast enough for smooth UI
+            // delay to 32 ms (~30 fps) — fast enough for smooth UI
             // interaction while keeping idle CPU near zero.
-            let delay = info.delay.max(std::time::Duration::from_millis(16));
+            let delay = info.delay.max(std::time::Duration::from_millis(32));
             let _ = proxy.send_event(AppEvent::RequestRepaintAfter { delay });
         });
     }
