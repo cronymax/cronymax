@@ -89,6 +89,15 @@ impl TerminalSession {
                     }
                     Err(e) => {
                         log::error!("PTY read error: {}", e);
+                        // On Windows ConPTY, a read error typically means the
+                        // child process has terminated.  Signal exit the same
+                        // way as EOF so `process_pty_output` sets `exited`.
+                        let _ = tx.send(Vec::new());
+                        if let Some(ref proxy) = event_proxy {
+                            let _ = proxy.send_event(crate::ai::stream::AppEvent::PtyDataReady {
+                                session_id: id,
+                            });
+                        }
                         break;
                     }
                 }
@@ -125,6 +134,16 @@ impl TerminalSession {
             }
             self.state.advance(&bytes);
             processed = true;
+        }
+        // On Windows ConPTY the reader thread may block indefinitely even
+        // after the child exits.  Fall back to checking the child process
+        // status directly so callers always see `exited == true` once the
+        // shell terminates.
+        if !self.exited {
+            if let Ok(Some(_status)) = self._pty_child.try_wait() {
+                self.exited = true;
+                log::info!("Session {} child process exited", self.id);
+            }
         }
         if processed {
             self.is_dirty = true;
