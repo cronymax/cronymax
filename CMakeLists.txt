@@ -32,7 +32,7 @@ if(NOT TARGET SQLite3::SQLite3)
 endif()
 
 # ---------------------------------------------------------------------------
-# yaml-cpp (static) via FetchContent — used by src/flow and src/document for
+# yaml-cpp (static) via FetchContent — used by app/flow and app/document for
 # parsing flow.yaml, agent.yaml, and doc-type schemas. Round-trip writing is
 # not required in this change.
 # ---------------------------------------------------------------------------
@@ -55,24 +55,24 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(yaml-cpp)
 
 # ---------------------------------------------------------------------------
-# Module libraries (flat layout — one static lib per src/<module>).
+# Module libraries (flat layout — one static lib per app/<module>).
 # ---------------------------------------------------------------------------
 
 # common: shared types and path utilities used by every other module.
 add_library(cronymax_common STATIC
-  src/common/json_value.cc
-  src/common/path_utils.cc
-  src/common/uuid_v7.cc
+  app/common/json_value.cc
+  app/common/path_utils.cc
+  app/common/uuid_v7.cc
 )
-target_include_directories(cronymax_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(cronymax_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
 # macOS notification + dock-badge shim. On Apple, build the Objective-C++
 # implementation and link UserNotifications + AppKit. On other platforms,
 # build the no-op stub so cronymax_common always exposes the same symbols.
 if(APPLE)
-  target_sources(cronymax_common PRIVATE src/platform/macos/notifications.mm)
+  target_sources(cronymax_common PRIVATE app/platform/macos/notifications.mm)
   set_source_files_properties(
-    src/platform/macos/notifications.mm
+    app/platform/macos/notifications.mm
     PROPERTIES
       COMPILE_FLAGS "-fobjc-arc"
       LANGUAGE OBJCXX
@@ -86,22 +86,22 @@ if(APPLE)
     ${FOUNDATION_FRAMEWORK}
   )
 else()
-  target_sources(cronymax_common PRIVATE src/platform/macos/notifications_stub.cc)
+  target_sources(cronymax_common PRIVATE app/platform/macos/notifications_stub.cc)
 endif()
 
 # sandbox: command classifier + permission/policy + sandbox launcher.
 add_library(cronymax_sandbox STATIC
-  src/sandbox/command_classifier.cc
-  src/sandbox/permission_broker.cc
-  src/sandbox/sandbox_launcher.cc
-  src/sandbox/sandbox_policy.cc
+  app/sandbox/command_classifier.cc
+  app/sandbox/permission_broker.cc
+  app/sandbox/sandbox_launcher.cc
+  app/sandbox/sandbox_policy.cc
 )
 target_link_libraries(cronymax_sandbox PUBLIC cronymax_common)
 
 # workspace: file broker + space store (depends on sandbox).
 add_library(cronymax_workspace STATIC
-  src/workspace/file_broker.cc
-  src/workspace/space_store.cc
+  app/workspace/file_broker.cc
+  app/workspace/space_store.cc
 )
 target_link_libraries(cronymax_workspace
   PUBLIC cronymax_sandbox SQLite3::SQLite3
@@ -110,29 +110,29 @@ target_link_libraries(cronymax_workspace
 # event_bus: typed event store (SQLite + JSONL) + inbox triage. Sits on top
 # of cronymax_workspace because it borrows the SpaceStore's sqlite3 handle.
 add_library(cronymax_event_bus STATIC
-  src/event_bus/app_event.cc
-  src/event_bus/event_bus.cc
+  app/event_bus/app_event.cc
+  app/event_bus/event_bus.cc
 )
 target_link_libraries(cronymax_event_bus
   PUBLIC cronymax_common cronymax_workspace SQLite3::SQLite3
 )
-target_include_directories(cronymax_event_bus PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(cronymax_event_bus PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
 # terminal: PTY session implementation (macOS only for now).
 add_library(cronymax_terminal STATIC)
 target_link_libraries(cronymax_terminal PUBLIC cronymax_common Threads::Threads)
 if(APPLE)
-  target_sources(cronymax_terminal PRIVATE src/terminal/pty_session_mac.cc)
+  target_sources(cronymax_terminal PRIVATE app/terminal/pty_session_mac.cc)
 else()
   message(WARNING "PTY implementation is currently macOS-only for the prototype.")
 endif()
 
 # agent: planner + tool registry + LLM router (depends on sandbox + workspace).
 add_library(cronymax_agent STATIC
-  src/agent/agent_runtime.cc
-  src/agent/graph_engine.cc
-  src/agent/model_router.cc
-  src/agent/tool_registry.cc
+  app/agent/agent_runtime.cc
+  app/agent/graph_engine.cc
+  app/agent/model_router.cc
+  app/agent/tool_registry.cc
 )
 target_link_libraries(cronymax_agent
   PUBLIC cronymax_sandbox cronymax_workspace cronymax_common cronymax_document
@@ -142,41 +142,41 @@ target_link_libraries(cronymax_agent
 # reviewer pipeline. Hand-edited YAML in the workspace's .cronymax/ tree is
 # the source of truth.
 add_library(cronymax_document STATIC
-  src/document/agent_definition.cc
-  src/document/agent_registry.cc
-  src/document/doc_type_registry.cc
-  src/document/doc_type_schema.cc
-  src/document/document_store.cc
-  src/document/review_store.cc
-  src/document/reviewer_pipeline.cc
-  src/document/reviews_state.cc
-  src/document/schema_reviewer.cc
+  app/document/agent_definition.cc
+  app/document/agent_registry.cc
+  app/document/doc_type_registry.cc
+  app/document/doc_type_schema.cc
+  app/document/document_store.cc
+  app/document/review_store.cc
+  app/document/reviewer_pipeline.cc
+  app/document/reviews_state.cc
+  app/document/schema_reviewer.cc
 )
 target_link_libraries(cronymax_document
   PUBLIC cronymax_common cronymax_workspace yaml-cpp
 )
-target_include_directories(cronymax_document PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(cronymax_document PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
 # flow: workspace layout helpers, flow/agent registries, FlowRuntime, router,
 # mention parser, trace writer. Layers on top of cronymax_agent and
 # cronymax_document.
 add_library(cronymax_flow STATIC
-  src/flow/flow_definition.cc
-  src/flow/flow_registry.cc
-  src/flow/flow_runtime.cc
-  src/flow/fs_watcher.cc
-  src/flow/gitignore_helper.cc
-  src/flow/mention_parser.cc
-  src/flow/router.cc
-  src/flow/trace_event.cc
-  src/flow/trace_writer.cc
-  src/flow/workspace_layout.cc
+  app/flow/flow_definition.cc
+  app/flow/flow_registry.cc
+  app/flow/flow_runtime.cc
+  app/flow/fs_watcher.cc
+  app/flow/gitignore_helper.cc
+  app/flow/mention_parser.cc
+  app/flow/router.cc
+  app/flow/trace_event.cc
+  app/flow/trace_writer.cc
+  app/flow/workspace_layout.cc
 )
 target_link_libraries(cronymax_flow
   PUBLIC cronymax_common cronymax_workspace cronymax_agent cronymax_document cronymax_event_bus yaml-cpp
   PRIVATE "-framework CoreServices"
 )
-target_include_directories(cronymax_flow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(cronymax_flow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
 # Convenience aggregate library that pulls in every native module.
 add_library(cronymax_native INTERFACE)
@@ -193,14 +193,14 @@ target_link_libraries(cronymax_native INTERFACE
 
 # space_manager: CEF-free Space lifecycle library so native_probe can
 # exercise the same SpaceManager/SpaceStore code paths the CEF app uses,
-# without dragging in CEF or the rest of src/app/.
+# without dragging in CEF or the rest of app/browser/.
 add_library(cronymax_space STATIC
-  src/app/space_manager.cc
+  app/browser/space_manager.cc
 )
 target_link_libraries(cronymax_space
   PUBLIC cronymax_workspace cronymax_agent cronymax_terminal cronymax_document cronymax_flow cronymax_event_bus
 )
-target_include_directories(cronymax_space PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(cronymax_space PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
 # ---------------------------------------------------------------------------
 # Tools and CEF desktop shell.

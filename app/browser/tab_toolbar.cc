@@ -1,6 +1,6 @@
 // Copyright (c) 2026.
 
-#include "app/tab_toolbar.h"
+#include "browser/tab_toolbar.h"
 
 #include <cstdio>
 #include <cstdlib>

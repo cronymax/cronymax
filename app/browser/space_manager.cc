@@ -1,4 +1,4 @@
-#include "app/space_manager.h"
+#include "browser/space_manager.h"
 
 #include <algorithm>
 #include <chrono>

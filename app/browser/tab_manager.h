@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "app/tab.h"
+#include "browser/tab.h"
 
 namespace cronymax {
 

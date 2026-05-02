@@ -3,7 +3,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 
-#include "app/mac_view_style.h"
+#include "browser/mac_view_style.h"
 
 namespace cronymax {
 

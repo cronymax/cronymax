@@ -1,4 +1,4 @@
-#include "app/main_window.h"
+#include "browser/main_window.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -17,11 +17,11 @@
 #include "include/wrapper/cef_helpers.h"
 
 #if defined(__APPLE__)
-#include "app/mac_view_style.h"
-#include "app/tab.h"
-#include "app/tab_behavior.h"
-#include "app/tab_behaviors/web_tab_behavior.h"
-#include "app/tab_behaviors/simple_tab_behavior.h"
+#include "browser/mac_view_style.h"
+#include "browser/tab.h"
+#include "browser/tab_behavior.h"
+#include "browser/tab_behaviors/web_tab_behavior.h"
+#include "browser/tab_behaviors/simple_tab_behavior.h"
 #endif
 
 namespace cronymax {

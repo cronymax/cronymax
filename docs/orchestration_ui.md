@@ -85,7 +85,7 @@ definitions.
 
 ## macOS native
 
-`src/platform/macos/notifications.{h,mm}` exposes a thin C++ API around
+`app/platform/macos/notifications.{h,mm}` exposes a thin C++ API around
 `UNUserNotificationCenter` and `NSDockTile.badgeLabel`. `SpaceManager`
 subscribes to its `EventBus` and:
 

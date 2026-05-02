@@ -1,12 +1,12 @@
 // Copyright (c) 2026.
 
-#include "app/tab.h"
+#include "browser/tab.h"
 
 #include <cassert>
 #include <utility>
 
-#include "app/tab_behavior.h"
-#include "app/tab_toolbar.h"
+#include "browser/tab_behavior.h"
+#include "browser/tab_toolbar.h"
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_fill_layout.h"
 

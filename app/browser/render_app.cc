@@ -1,4 +1,4 @@
-#include "app/render_app.h"
+#include "browser/render_app.h"
 
 namespace cronymax {
 

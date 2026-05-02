@@ -4,7 +4,7 @@
  * Model
  * -----
  * The flow editor mirrors the runtime `FlowDefinition` defined in
- * `src/flow/flow_definition.h`: a flow is an ordered set of `agents`
+ * `app/flow/flow_definition.h`: a flow is an ordered set of `agents`
  * connected by typed edges that carry a document of a specific `port`
  * (doc-type) from one agent to the next. There are no primitive
  * `LLM` / `Tool` / `Branch` / `Human` nodes in the runtime — every node

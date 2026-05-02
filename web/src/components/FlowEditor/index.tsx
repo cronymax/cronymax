@@ -6,7 +6,7 @@
  * the doc-type the agent produces and the reviewer agents attached to it.
  * Edges carry a typed document (a `port`) downstream and may optionally
  * gate on human approval — matching `FlowEdge` in
- * `src/flow/flow_definition.h`.
+ * `app/flow/flow_definition.h`.
  *
  * Drag state is held in a ref to avoid re-rendering on every mousemove;
  * node positions are committed to the store on mouseup.

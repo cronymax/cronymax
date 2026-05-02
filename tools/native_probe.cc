@@ -4,7 +4,7 @@
 #include <string>
 
 #include "agent/agent_runtime.h"
-#include "app/space_manager.h"
+#include "browser/space_manager.h"
 #include "workspace/file_broker.h"
 #include "workspace/space_store.h"
 #include "sandbox/sandbox_launcher.h"

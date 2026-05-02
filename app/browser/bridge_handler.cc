@@ -1,4 +1,4 @@
-#include "app/bridge_handler.h"
+#include "browser/bridge_handler.h"
 
 #include <chrono>
 #include <cstdio>

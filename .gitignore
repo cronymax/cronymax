@@ -2,6 +2,7 @@ build/
 build-cef*/
 out/
 third_party/
+/.cef-cache/
 .DS_Store
 *.log
 compile_commands.json

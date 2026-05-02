@@ -40,30 +40,43 @@ demo:
 ### Clone
 
 ```sh
-git clone <repo-url> cronymax
+git clone --recurse-submodules <repo-url> cronymax
 cd cronymax
+# if you forgot --recurse-submodules:
+git submodule update --init
 ```
 
-### Download CEF
+### CEF distribution
 
-The verified local build uses the official macOS ARM64 standard distribution:
+The CEF runtime is assembled at configure time from two pieces:
+
+1. The upstream `chromiumembedded/cef` repo is pinned as a git submodule at
+   `cef/`. It supplies the public headers, `libcef_dll/` wrapper sources,
+   the `cmake/` modules used by `find_package(CEF)`, and `tools/translator.py`
+   (which CMake re-runs to regenerate the `cpptoc/` and `ctocpp/` glue).
+2. A matching prebuilt binary distribution is downloaded once and cached
+   under `.cef-cache/` (gitignored). Only the macOS framework, the
+   translator-resolved `libcef_dll/CMakeLists.txt`, and the GN-generated
+   include headers are extracted into `build/cef-staging/`.
+
+The verified local build uses:
 
 ```txt
 CEF:      147.0.10+gd58e84d+chromium-147.0.7727.118
-SHA1:     abf2e71551adc7eed9ae937053b9dc5e6aef2551
 Platform: macosarm64
 ```
 
-Either download a CEF binary distribution manually and note its absolute path,
-or use the helper script:
+Pass the matching binary archive URL via `CRONYMAX_CEF_DIST_URL`:
 
 ```sh
-export CEF_URL="https://cef-builds.spotifycdn.com/cef_binary_147.0.10+gd58e84d+chromium-147.0.7727.118_macosarm64.tar.bz2"
-scripts/bootstrap_cef_macos.sh
+export CRONYMAX_CEF_DIST_URL="https://cef-builds.spotifycdn.com/cef_binary_147.0.10+gd58e84d+chromium-147.0.7727.118_macosarm64.tar.bz2"
+# Optional integrity check:
+# export CRONYMAX_CEF_DIST_SHA256=<sha256-of-archive>
 ```
 
-The script downloads into `third_party/cef/` and prints the `CEF_ROOT` value to
-use in the next step.
+To use an already-extracted binary distribution instead, pass
+`-DCEF_ROOT=/path/to/cef_binary_*` and the submodule/staging steps are
+skipped.
 
 ### Install Frontend Dependencies
 
@@ -79,7 +92,7 @@ cd web && pnpm install --frozen-lockfile && cd ..
 ```sh
 cmake -S . -B build \
   -DCRONYMAX_BUILD_APP=ON \
-  -DCEF_ROOT=/absolute/path/to/cef_binary \
+  -DCRONYMAX_CEF_DIST_URL="$CRONYMAX_CEF_DIST_URL" \
   -DPROJECT_ARCH=arm64 \
   -DCMAKE_BUILD_TYPE=Debug
 cmake --build build --target cronymax_app -j8
@@ -160,8 +173,7 @@ React bundle, pass `-DCRONYMAX_BUILD_WEB=OFF`:
 ```sh
 cmake -S . -B build \
   -DCRONYMAX_BUILD_APP=ON \
-  -DCRONYMAX_BUILD_WEB=OFF \
-  -DCEF_ROOT=/absolute/path/to/cef_binary
+  -DCRONYMAX_BUILD_WEB=OFF
 cmake --build build --target cronymax_app -j8
 ```
 
@@ -189,7 +201,6 @@ generate `build/compile_commands.json`:
 ```sh
 cmake -S . -B build \
   -DCRONYMAX_BUILD_APP=ON \
-  -DCEF_ROOT=third_party/cef \
   -DCMAKE_BUILD_TYPE=Debug
 ```
 
@@ -202,18 +213,18 @@ The clangd status bar item should show indexing progress and then go idle.
 
 **What the config does**
 
-| File                    | Purpose                                                                                                                      |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `.clangd`               | Points clangd at `build/compile_commands.json`; enables background indexing, inlay hints, and clang-tidy                     |
-| `.clang-tidy`           | Root tidy profile for native modules (`src/common/`, `src/sandbox/`, `src/workspace/`, `src/terminal/`, `src/agent/`)        |
-| `src/app/.clang-tidy`   | Conservative CEF-safe tidy profile (`src/app/`) — excludes checks that conflict with `CefRefPtr` and `IMPLEMENT_REFCOUNTING` |
-| `.vscode/settings.json` | Pins `/usr/bin/clangd` (Apple 21.0), disables cpptools IntelliSense engine, sets clangd as the C++ formatter                 |
+| File                      | Purpose                                                                                                                          |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `.clangd`                 | Points clangd at `build/compile_commands.json`; enables background indexing, inlay hints, and clang-tidy                         |
+| `.clang-tidy`             | Root tidy profile for native modules (`app/common/`, `app/sandbox/`, `app/workspace/`, `app/terminal/`, `app/agent/`)            |
+| `app/browser/.clang-tidy` | Conservative CEF-safe tidy profile (`app/browser/`) — excludes checks that conflict with `CefRefPtr` and `IMPLEMENT_REFCOUNTING` |
+| `.vscode/settings.json`   | Pins `/usr/bin/clangd` (Apple 21.0), disables cpptools IntelliSense engine, sets clangd as the C++ formatter                     |
 
 ## Project Layout
 
 ```
-src/                 C++ sources (flat `cronymax::` namespace)
-  app/                 CEF shell, BrowserViews, bridge handler
+app/                 C++ sources (flat `cronymax::` namespace)
+  browser/             CEF shell, BrowserViews, bridge handler
   sandbox/, workspace/, terminal/, common/, agent/
 web/                 Frontend monorepo (pnpm + Vite)
   src/panels/<name>/   React tree for each CEF panel
@@ -222,7 +233,8 @@ web/                 Frontend monorepo (pnpm + Vite)
   shell/, terminal/, …   Legacy vanilla panels (being migrated)
 cmake/               CronymaxApp.cmake (CEF + app + web targets)
 openspec/            Active spec-driven changes (see openspec/changes/)
-third_party/cef/     CEF binary distribution (downloaded; gitignored)
+cef/         Upstream CEF source (git submodule, chromiumembedded/cef)
+.cef-cache/  Cached CEF binary archive download (gitignored)
 tools/               native_probe and other CLI utilities
 ```
 

@@ -1,4 +1,4 @@
-#include "app/client_handler.h"
+#include "browser/client_handler.h"
 
 #include <algorithm>
 #include <sstream>

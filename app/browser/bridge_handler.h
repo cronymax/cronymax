@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include "app/space_manager.h"
+#include "browser/space_manager.h"
 #include "include/wrapper/cef_message_router.h"
 
 namespace cronymax {

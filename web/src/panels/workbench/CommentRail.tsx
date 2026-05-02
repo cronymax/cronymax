@@ -26,7 +26,7 @@ import type { WorkbenchParams } from "./url";
 
 // ── types ────────────────────────────────────────────────────────────────
 //
-// Mirrors `cronymax::DocComment` from src/document/reviews_state.h. We
+// Mirrors `cronymax::DocComment` from app/document/reviews_state.h. We
 // don't import the C++ schema so this file stays standalone-buildable.
 
 export interface DocCommentDto {

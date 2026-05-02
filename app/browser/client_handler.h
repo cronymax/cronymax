@@ -5,8 +5,8 @@
 #include <memory>
 #include <vector>
 
-#include "app/bridge_handler.h"
-#include "app/space_manager.h"
+#include "browser/bridge_handler.h"
+#include "browser/space_manager.h"
 #include "include/cef_client.h"
 #include "include/cef_drag_handler.h"
 #include "include/wrapper/cef_message_router.h"

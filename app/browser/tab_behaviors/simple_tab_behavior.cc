@@ -1,11 +1,11 @@
 // Copyright (c) 2026.
 
-#include "app/tab_behaviors/simple_tab_behavior.h"
+#include "browser/tab_behaviors/simple_tab_behavior.h"
 
 #include <utility>
 
-#include "app/client_handler.h"
-#include "app/tab_toolbar.h"
+#include "browser/client_handler.h"
+#include "browser/tab_toolbar.h"
 #include "include/cef_browser.h"
 #include "include/views/cef_browser_view_delegate.h"
 #include "include/views/cef_button_delegate.h"

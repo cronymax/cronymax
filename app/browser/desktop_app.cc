@@ -1,6 +1,6 @@
-#include "app/desktop_app.h"
+#include "browser/desktop_app.h"
 
-#include "app/main_window.h"
+#include "browser/main_window.h"
 #include "include/wrapper/cef_helpers.h"
 
 namespace cronymax {

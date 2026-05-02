@@ -1,15 +1,15 @@
 // Copyright (c) 2026.
 
-#include "app/tab_manager.h"
+#include "browser/tab_manager.h"
 
 #include <cassert>
 #include <cstdlib>
 #include <sstream>
 #include <utility>
 
-#include "app/tab_behavior.h"
-#include "app/tab_behaviors/simple_tab_behavior.h"
-#include "app/tab_behaviors/web_tab_behavior.h"
+#include "browser/tab_behavior.h"
+#include "browser/tab_behaviors/simple_tab_behavior.h"
+#include "browser/tab_behaviors/web_tab_behavior.h"
 
 namespace cronymax {
 
@@ -97,7 +97,7 @@ TabId TabManager::Open(TabKind kind, const OpenParams& params) {
 }
 
 TabId TabManager::FindOrCreateSingleton(TabKind kind, bool* out_created) {
-  auto reg = singleton_kinds_registered_.find(kind);
+  [[maybe_unused]] auto reg = singleton_kinds_registered_.find(kind);
   assert(reg != singleton_kinds_registered_.end() && reg->second &&
          "FindOrCreateSingleton called for an unregistered kind");
   auto existing = singletons_.find(kind);

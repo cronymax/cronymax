@@ -1,4 +1,4 @@
-#include "app/desktop_app.h"
+#include "browser/desktop_app.h"
 
 #include "include/cef_command_line.h"
 #include "include/cef_sandbox_mac.h"

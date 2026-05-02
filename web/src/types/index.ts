@@ -3,7 +3,7 @@
  * counterparts to the channel registry in bridge_channels.ts.
  *
  * Keep the field names and types in sync with the producers in
- * src/app/bridge_handler.cc and src/workspace/space_store.cc.
+ * app/browser/bridge_handler.cc and app/workspace/space_store.cc.
  */
 
 import { z } from "zod";
@@ -44,7 +44,7 @@ export const TerminalExitPayloadSchema = z.object({
 });
 
 // ── browser tabs ─────────────────────────────────────────────────────
-// Wire format from src/app/browser_manager.cc / main_window.cc:
+// Wire format from app/browser/browser_manager.cc / main_window.cc:
 //   {id: number, url: string, title: string, is_pinned: boolean}
 export const BrowserTabSchema = z.object({
   id: z.number(),
@@ -194,7 +194,7 @@ export const TerminalListResponseSchema = z.object({
 });
 
 // ── terminal blocks (persisted command rows) ─────────────────────────
-// Wire format from src/app/bridge_handler.cc terminal.block_save / blocks_load.
+// Wire format from app/browser/bridge_handler.cc terminal.block_save / blocks_load.
 export const TerminalBlockSchema = z.object({
   id: z.number().optional(),
   command: z.string(),

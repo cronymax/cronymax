@@ -4,16 +4,25 @@
 # macOS). Included from the top-level CMakeLists.txt when CRONYMAX_BUILD_APP
 # is ON.
 
-set(CEF_ROOT "" CACHE PATH "Path to a CEF binary distribution for macOS.")
-
-if(NOT CEF_ROOT)
-  message(FATAL_ERROR
-    "CRONYMAX_BUILD_APP=ON requires -DCEF_ROOT=/path/to/cef_binary_*")
+# CEF distribution layout. Two modes:
+#
+#   1. (default) Build CEF_ROOT from the in-tree cef/ submodule plus a
+#      downloaded prebuilt framework. Set CRONYMAX_CEF_DIST_URL to a CEF
+#      binary archive matching the submodule commit; the framework is staged
+#      under ${CMAKE_BINARY_DIR}/cef-staging/.
+#
+#   2. (override) Pass -DCEF_ROOT=/path/to/cef_binary_* to point at an
+#      already-extracted upstream binary distribution. The submodule is
+#      ignored in that case.
+if(NOT CEF_ROOT OR NOT EXISTS "${CEF_ROOT}/cmake/FindCEF.cmake")
+  include(${CMAKE_SOURCE_DIR}/cmake/CefSubmodule.cmake)
 endif()
 
-if(NOT EXISTS "${CEF_ROOT}/cmake")
+if(NOT EXISTS "${CEF_ROOT}/cmake/FindCEF.cmake")
   message(FATAL_ERROR
-    "CEF_ROOT does not look like a CEF binary distribution: ${CEF_ROOT}")
+    "CEF_ROOT does not look like a CEF binary distribution: ${CEF_ROOT}\n"
+    "Either set CRONYMAX_CEF_DIST_URL (uses the cef/ submodule) or pass "
+    "-DCEF_ROOT=/path/to/cef_binary_*.")
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CEF_ROOT}/cmake")
@@ -23,52 +32,52 @@ add_subdirectory("${CEF_LIBCEF_DLL_WRAPPER_PATH}"
                  "${CMAKE_BINARY_DIR}/libcef_dll_wrapper")
 
 # ---------------------------------------------------------------------------
-# Main app target: src/app/* → cronymax.app
+# Main app target: app/browser/* → cronymax.app
 # ---------------------------------------------------------------------------
 
 set(CRONYMAX_APP_SRCS
-  src/app/app_delegate.cc
-  src/app/app_delegate.h
-  src/app/bridge_handler.cc
-  src/app/bridge_handler.h
-  src/app/client_handler.cc
-  src/app/client_handler.h
-  src/app/desktop_app.cc
-  src/app/desktop_app.h
-  src/app/main_window.cc
-  src/app/main_window.h
-  src/app/space_manager.cc
-  src/app/space_manager.h
+  app/browser/app_delegate.cc
+  app/browser/app_delegate.h
+  app/browser/bridge_handler.cc
+  app/browser/bridge_handler.h
+  app/browser/client_handler.cc
+  app/browser/client_handler.h
+  app/browser/desktop_app.cc
+  app/browser/desktop_app.h
+  app/browser/main_window.cc
+  app/browser/main_window.h
+  app/browser/space_manager.cc
+  app/browser/space_manager.h
   # arc-style-tab-cards (Phase 1 skeleton)
-  src/app/tab.cc
-  src/app/tab.h
-  src/app/tab_behavior.h
-  src/app/tab_toolbar.cc
-  src/app/tab_toolbar.h
-  src/app/tab_manager.cc
-  src/app/tab_manager.h
+  app/browser/tab.cc
+  app/browser/tab.h
+  app/browser/tab_behavior.h
+  app/browser/tab_toolbar.cc
+  app/browser/tab_toolbar.h
+  app/browser/tab_manager.cc
+  app/browser/tab_manager.h
   # arc-style-tab-cards (Phase 3+ behaviors)
-  src/app/tab_behaviors/simple_tab_behavior.cc
-  src/app/tab_behaviors/simple_tab_behavior.h
-  src/app/tab_behaviors/web_tab_behavior.cc
-  src/app/tab_behaviors/web_tab_behavior.h
+  app/browser/tab_behaviors/simple_tab_behavior.cc
+  app/browser/tab_behaviors/simple_tab_behavior.h
+  app/browser/tab_behaviors/web_tab_behavior.cc
+  app/browser/tab_behaviors/web_tab_behavior.h
 )
 
 if(APPLE)
   list(APPEND CRONYMAX_APP_SRCS
-    src/app/main_mac.mm
-    src/app/mac_view_style.h
-    src/app/mac_view_style.mm
+    app/browser/main_mac.mm
+    app/browser/mac_view_style.h
+    app/browser/mac_view_style.mm
   )
 else()
-  list(APPEND CRONYMAX_APP_SRCS src/app/main.cc)
+  list(APPEND CRONYMAX_APP_SRCS app/browser/main.cc)
 endif()
 
 add_executable(cronymax_app MACOSX_BUNDLE ${CRONYMAX_APP_SRCS})
 
 target_include_directories(cronymax_app PRIVATE
   ${CEF_ROOT}
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/app
 )
 
 SET_EXECUTABLE_TARGET_PROPERTIES(cronymax_app)
@@ -96,16 +105,16 @@ if(APPLE)
   set(VERSION_SHORT   "${PROJECT_VERSION}")
   set_target_properties(cronymax_app PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST
-      "${CMAKE_CURRENT_SOURCE_DIR}/src/app/mac/Info.plist.in"
+      "${CMAKE_CURRENT_SOURCE_DIR}/app/browser/mac/Info.plist.in"
   )
 
   COPY_MAC_FRAMEWORK("cronymax_app" "${CEF_BINARY_DIR}"
                      "$<TARGET_BUNDLE_DIR:cronymax_app>")
 
   set(CRONYMAX_HELPER_SRCS
-    src/app/process_helper_mac.cc
-    src/app/render_app.cc
-    src/app/render_app.h
+    app/browser/process_helper_mac.cc
+    app/browser/render_app.cc
+    app/browser/render_app.h
   )
   set(CRONYMAX_HELPER_TARGET      "cronymax_app_helper")
   set(CRONYMAX_HELPER_OUTPUT_NAME "cronymax Helper")
@@ -120,7 +129,7 @@ if(APPLE)
     set(_helper_output_name "${CRONYMAX_HELPER_OUTPUT_NAME}${_name_suffix}")
     set(_helper_info_plist  "${CMAKE_BINARY_DIR}/helper-Info${_target_suffix}.plist")
 
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/app/mac/helper-Info.plist.in" _plist_contents)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/app/browser/mac/helper-Info.plist.in" _plist_contents)
     string(REPLACE "\${EXECUTABLE_NAME}" "${_helper_output_name}" _plist_contents ${_plist_contents})
     string(REPLACE "\${PRODUCT_NAME}"    "${_helper_output_name}" _plist_contents ${_plist_contents})
     string(REPLACE "\${BUNDLE_ID_SUFFIX}" "${_plist_suffix}"      _plist_contents ${_plist_contents})
@@ -131,7 +140,7 @@ if(APPLE)
     SET_EXECUTABLE_TARGET_PROPERTIES(${_helper_target})
     target_include_directories(${_helper_target} PRIVATE
       ${CEF_ROOT}
-      ${CMAKE_CURRENT_SOURCE_DIR}/src
+      ${CMAKE_CURRENT_SOURCE_DIR}/app
     )
     target_link_libraries(${_helper_target} PRIVATE
       libcef_dll_wrapper

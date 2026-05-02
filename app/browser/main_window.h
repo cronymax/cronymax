@@ -5,9 +5,9 @@
 #include <string>
 #include <vector>
 
-#include "app/client_handler.h"
-#include "app/space_manager.h"
-#include "app/tab_manager.h"
+#include "browser/client_handler.h"
+#include "browser/space_manager.h"
+#include "browser/tab_manager.h"
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_label_button.h"

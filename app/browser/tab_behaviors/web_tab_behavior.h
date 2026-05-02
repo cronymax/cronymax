@@ -18,8 +18,8 @@
 #include <memory>
 #include <string>
 
-#include "app/tab.h"
-#include "app/tab_behavior.h"
+#include "browser/tab.h"
+#include "browser/tab_behavior.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_label_button.h"
 #include "include/views/cef_textfield.h"

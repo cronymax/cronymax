@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "app/tab.h"
+#include "browser/tab.h"
 #include "include/views/cef_view.h"
 
 namespace cronymax {

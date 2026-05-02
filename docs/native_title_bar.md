@@ -13,7 +13,7 @@ unification with the sidebar.
 4. Render the title-bar zone with the *exact* same color as the sidebar
    so the chrome reads as one continuous surface.
 
-## Window styling — `src/app/mac_view_style.mm`
+## Window styling — `app/browser/mac_view_style.mm`
 
 `StyleMainWindowTranslucent` is invoked once per `NSWindow` after CEF
 realizes the content view.
@@ -36,7 +36,7 @@ the same vibrancy read visibly different above and below the titlebar
 seam. A flat opaque fill is the only deterministic way to guarantee the
 two surfaces match.
 
-## Title-bar layout — `src/app/main_window.cc`
+## Title-bar layout — `app/browser/main_window.cc`
 
 `BuildTitleBar()` constructs a horizontal `CefBoxLayout` panel sized
 `(0, kTitleBarH = 38)` with `kTitleBarBg = 0xFF14141A`:
@@ -123,10 +123,10 @@ does not paint an opaque GPU clear color *underneath* the page color.
 
 | File                                   | Responsibility                                      |
 | -------------------------------------- | --------------------------------------------------- |
-| `src/app/mac_view_style.mm`            | Window styling, drag overlay, transparency helpers. |
-| `src/app/mac_view_style.h`             | Public C++ API for the helpers above.               |
-| `src/app/main_window.cc`               | Title-bar layout, drag refresh cadence, color.      |
-| `src/app/main_mac.mm`                  | Global `CefSettings.background_color = 0`.          |
+| `app/browser/mac_view_style.mm`            | Window styling, drag overlay, transparency helpers. |
+| `app/browser/mac_view_style.h`             | Public C++ API for the helpers above.               |
+| `app/browser/main_window.cc`               | Title-bar layout, drag refresh cadence, color.      |
+| `app/browser/main_mac.mm`                  | Global `CefSettings.background_color = 0`.          |
 | `web/src/panels/sidebar/App.tsx`       | Sidebar root paints `#14141a`.                      |
 | `web/src/shared/design/theme.css`      | Transparent base resets for shell panels.           |
 

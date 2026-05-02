@@ -37,7 +37,7 @@ Agent task
   -> Agent panel
 ```
 
-> **Note:** `AgentGraph` (`src/agent/agent_graph.h`) and the `agent.graph.*`
+> **Note:** `AgentGraph` (`app/agent/agent_graph.h`) and the `agent.graph.*`
 > bridge channels are now an _internal_ data model only — used by the
 > per-Agent ReAct loop and not exposed to the renderer. With
 > `agent-document-orchestration`, multi-agent collaboration is expressed
