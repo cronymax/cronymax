@@ -1,0 +1,10 @@
+name: freeform
+display_name: Freeform Document
+description: |
+  Catch-all document type with no required structure. Use this for ad-hoc
+  agent outputs that don't fit one of the structured types (research notes,
+  meeting summaries, exploratory write-ups). The Schema reviewer accepts
+  any non-empty body.
+required_sections: []
+optional_sections: []
+front_matter_required: []

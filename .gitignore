@@ -1,0 +1,16 @@
+build/
+build-cef*/
+out/
+/.cef-cache/
+.DS_Store
+*.log
+compile_commands.json
+
+# Frontend (Vite + pnpm)
+node_modules/
+web/dist/
+web/.vite/
+# Build artifacts
+/target
+**/*.rs.bk
+Cargo.lock

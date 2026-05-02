@@ -1,0 +1,6 @@
+name: 'Chat'
+kind: 'worker'
+llm: 'gpt-5.4'
+memory_namespace: 'Chat'
+system_prompt: |
+  You are a helpful assistant.

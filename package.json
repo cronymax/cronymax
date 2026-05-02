@@ -1,0 +1,9 @@
+{
+  "name": "cronymax",
+  "private": true,
+  "packageManager": "bun@1.3.13",
+  "workspaces": [
+    "web",
+    "third_party/vscode-codicons"
+  ]
+}
