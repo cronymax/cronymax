@@ -1,0 +1,29 @@
+{
+  // Use Apple clangd 21.0 — matches the project compiler (/usr/bin/c++)
+  // and has better Apple SDK / Objective-C++ knowledge than LLVM-18.
+  "clangd.path": "/usr/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--clang-tidy",
+    "--completion-style=detailed",
+    "--header-insertion=iwyu"
+  ],
+  // Disable ms-vscode.cpptools IntelliSense engine to eliminate the
+  // clangd/cpptools conflict. The cpptools debugger (cppdbg) still works.
+  "C_Cpp.intelliSenseEngine": "disabled",
+  // Use clangd as the formatter for C/C++ files.
+  "[cpp]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+  },
+  "[c]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+  },
+  "cSpell.words": [
+    "cronymax",
+    "oneshot"
+  ],
+  "chat.tools.terminal.autoApprove": {
+    "openspec": true,
+    "git submodule": true
+  }
+}

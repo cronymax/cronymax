@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "types": [
+      "node"
+    ],
+    // Compile vite.config.ts only for type-checking. Keep the emitted .js
+    // / .d.ts files out of the web/ root (they used to pollute the source
+    // tree and looked like a duplicate hand-written config).
+    "outDir": "node_modules/.cache/tsc-vite-config",
+    "declarationDir": "node_modules/.cache/tsc-vite-config"
+  },
+  "include": [
+    "vite.config.ts"
+  ]
+}

@@ -1,0 +1,26 @@
+CompileFlags:
+  CompilationDatabase: build
+
+Diagnostics:
+  UnusedIncludes: Strict
+  ClangTidy:
+    Add:
+      - bugprone-integer-overflow
+      - bugprone-signed-char-misuse
+      - bugprone-use-after-move
+      - modernize-use-override
+      - modernize-use-nullptr
+      - modernize-loop-convert
+      - performance-unnecessary-copy-initialization
+      - performance-move-const-arg
+      - performance-for-range-copy
+      - readability-container-size-empty
+    Remove: ["*"]
+
+Index:
+  Background: Build
+
+InlayHints:
+  Enabled: Yes
+  ParameterNames: Yes
+  DeducedTypes: Yes

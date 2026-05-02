@@ -1,0 +1,299 @@
+# Release workflow — triggered by version tags (v*.*.*).
+#
+# Jobs:
+#   web-build      — ubuntu-latest: typecheck, lint, build web frontend (bun + Vite)
+#   native-arm64   — macos-15 (Apple Silicon): build .app + package arm64 DMG
+#   native-x86_64  — macos-13 (Intel): build .app + package x86_64 DMG
+#   release        — ubuntu-latest: create GitHub Release, upload both DMGs
+#
+# Signing: ad-hoc only (no Apple Developer ID).
+# Gatekeeper workaround is documented in assets/installer/README.txt (bundled in DMG).
+#
+# CEF URLs are sourced from cmake/cef-version.env.
+# SHA256s are NOT passed to cmake to avoid cache invalidation
+# (cmake re-downloads if CRONYMAX_CEF_DIST_SHA256 is set, even on cache hit).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Web build — runs once on ubuntu to produce web/dist/ artifact
+  # ---------------------------------------------------------------------------
+  web-build:
+    name: Web build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (no submodules needed for web)
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Checkout vscode-codicons submodule
+        # @vscode/codicons is a workspace:* dep in third_party/; the native CEF
+        # submodule is large (~400 MB) and not needed for the web build.
+        run: git submodule update --init third_party/vscode-codicons
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+
+      - name: Cache bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          HUSKY: "0"
+
+      - name: Typecheck
+        run: bun run --cwd web typecheck
+
+      - name: Lint
+        run: bun run --cwd web lint
+
+      - name: Build
+        run: bun run --cwd web build
+
+      - name: Upload web dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 2. Native arm64 build (macos-15 / Apple Silicon)
+  # ---------------------------------------------------------------------------
+  native-arm64:
+    name: Native build (arm64)
+    runs-on: macos-15
+    needs: web-build
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Source CEF version env
+        run: |
+          set -a
+          source cmake/cef-version.env
+          set +a
+          echo "CEF_ARM64_URL=$CEF_ARM64_URL" >> "$GITHUB_ENV"
+
+      - name: Restore CEF cache (arm64)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cef-cache
+          key: cef-arm64-${{ hashFiles('cmake/cef-version.env') }}
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-arm64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-arm64-
+
+      - name: Set up Rust toolchain
+        run: |
+          rustup update stable
+          rustup target add aarch64-apple-darwin
+
+      - name: Download web dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Derive version from tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "TAG_VERSION=$TAG_VERSION" >> "$GITHUB_ENV"
+
+      - name: Configure (arm64)
+        run: |
+          cmake -B build \
+            -DCRONYMAX_BUILD_APP=ON \
+            -DCRONYMAX_BUILD_WEB=OFF \
+            -DCRONYMAX_BUILD_TOOLS=OFF \
+            -DCRONYMAX_VERSION="${TAG_VERSION}" \
+            -DCRONYMAX_CEF_DIST_URL="${CEF_ARM64_URL}" \
+            -DCRONYMAX_CEF_CACHE_DIR="$HOME/.cef-cache" \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (arm64)
+        run: cmake --build build --config Release --parallel
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Package DMG (arm64)
+        run: |
+          DMG_STAGING="dmg-staging-arm64"
+          mkdir -p "$DMG_STAGING"
+          cp -R "build/cronymax.app" "$DMG_STAGING/"
+
+          create-dmg \
+            --volname "cronymax" \
+            --volicon "assets/installer/AppIcon.icns" \
+            --background "assets/installer/dmg-background.png" \
+            --window-pos 200 120 \
+            --window-size 660 400 \
+            --icon-size 128 \
+            --icon "cronymax.app" 165 185 \
+            --hide-extension "cronymax.app" \
+            --app-drop-link 495 185 \
+            --add-file "README.txt" "assets/installer/README.txt" 330 320 \
+            --hdiutil-retries 10 \
+            "cronymax-${TAG_VERSION}-arm64.dmg" \
+            "$DMG_STAGING"
+
+      - name: Upload arm64 DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-arm64
+          path: cronymax-*-arm64.dmg
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 3. Native x86_64 build (macos-15-intel / Intel)
+  # ---------------------------------------------------------------------------
+  native-x86_64:
+    name: Native build (x86_64)
+    runs-on: macos-15-intel
+    needs: web-build
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Source CEF version env
+        run: |
+          set -a
+          source cmake/cef-version.env
+          set +a
+          echo "CEF_X86_64_URL=$CEF_X86_64_URL" >> "$GITHUB_ENV"
+
+      - name: Restore CEF cache (x86_64)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cef-cache
+          key: cef-x86_64-${{ hashFiles('cmake/cef-version.env') }}
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-x86_64-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-x86_64-
+
+      - name: Set up Rust toolchain
+        run: |
+          rustup update stable
+          rustup target add x86_64-apple-darwin
+
+      - name: Download web dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Derive version from tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "TAG_VERSION=$TAG_VERSION" >> "$GITHUB_ENV"
+
+      - name: Configure (x86_64)
+        run: |
+          cmake -B build \
+            -DCRONYMAX_BUILD_APP=ON \
+            -DCRONYMAX_BUILD_WEB=OFF \
+            -DCRONYMAX_BUILD_TOOLS=OFF \
+            -DCRONYMAX_VERSION="${TAG_VERSION}" \
+            -DCRONYMAX_CEF_DIST_URL="${CEF_X86_64_URL}" \
+            -DCRONYMAX_CEF_CACHE_DIR="$HOME/.cef-cache" \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (x86_64)
+        run: cmake --build build --config Release --parallel
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Package DMG (x86_64)
+        run: |
+          DMG_STAGING="dmg-staging-x86_64"
+          mkdir -p "$DMG_STAGING"
+          cp -R "build/cronymax.app" "$DMG_STAGING/"
+
+          create-dmg \
+            --volname "cronymax" \
+            --volicon "assets/installer/AppIcon.icns" \
+            --background "assets/installer/dmg-background.png" \
+            --window-pos 200 120 \
+            --window-size 660 400 \
+            --icon-size 128 \
+            --icon "cronymax.app" 165 185 \
+            --hide-extension "cronymax.app" \
+            --app-drop-link 495 185 \
+            --add-file "README.txt" "assets/installer/README.txt" 330 320 \
+            --hdiutil-retries 10 \
+            "cronymax-${TAG_VERSION}-x86_64.dmg" \
+            "$DMG_STAGING"
+
+      - name: Upload x86_64 DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-x86_64
+          path: cronymax-*-x86_64.dmg
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # 4. GitHub Release — creates release and attaches both DMGs
+  # ---------------------------------------------------------------------------
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [native-arm64, native-x86_64]
+    permissions:
+      contents: write
+    steps:
+      - name: Download arm64 DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: dmg-arm64
+          path: release-assets/
+
+      - name: Download x86_64 DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: dmg-x86_64
+          path: release-assets/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "cronymax ${{ github.ref_name }}" \
+            --generate-notes \
+            release-assets/*.dmg

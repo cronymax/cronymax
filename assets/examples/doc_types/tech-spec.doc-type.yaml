@@ -1,0 +1,15 @@
+name: tech-spec
+display_name: Technical Specification
+description: How a feature will be built — components, data, API, risks.
+required_sections:
+  - heading: Overview
+    min_words: 30
+  - heading: Components
+  - heading: Data Model
+  - heading: API
+  - heading: Risks
+    kind: list
+    min_items: 1
+front_matter_required:
+  - title
+  - related_prd

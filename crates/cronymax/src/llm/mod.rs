@@ -1,0 +1,33 @@
+//! LLM provider abstraction (task 5.2).
+//!
+//! The runtime owns the agent loop, so it also owns the LLM HTTP
+//! contract. This module defines the provider-facing abstraction:
+//!
+//! * [`messages`] — chat history primitives + tool definitions.
+//! * [`provider`] — the [`provider::LlmProvider`] trait + streaming
+//!   event types.
+//! * [`openai`] — concrete OpenAI-chat-compatible streaming client
+//!   (`POST /chat/completions` with `stream: true` + tool calls).
+//! * [`mock`] — scripted in-process provider used by tests and as a
+//!   safe default when no real provider is configured.
+//!
+//! The agent loop in [`crate::agent_loop`] consumes
+//! [`provider::LlmEvent`] streams; nothing else in the crate touches
+//! the wire format.
+
+pub mod copilot_auth;
+pub mod messages;
+pub mod migration;
+pub mod mock;
+pub mod openai;
+pub mod provider;
+pub mod registry;
+mod stream;
+
+pub use messages::{
+    ChatMessage, ChatRole, FinishReason, LlmRequest, ToolCall, ToolDef,
+};
+pub use mock::{MockLlmProvider, MockScript, ScriptStep};
+pub use openai::{OpenAiConfig, OpenAiProvider};
+pub use provider::{LlmEvent, LlmProvider, LlmStream};
+pub use registry::{LlmProviderEntry, LlmProviderKind, LlmProviderRegistry};

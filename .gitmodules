@@ -1,0 +1,18 @@
+[submodule "cef"]
+	path = cef
+	url = https://bitbucket.org/chromiumembedded/cef.git        # CEF's translator.py (run by cmake/CefSubmodule.cmake) writes
+        # generated wrapper sources into the submodule. The local exclude at
+        # .git/modules/cef/info/exclude hides them from the submodule's own
+        # `git status`, but `ignore = dirty` is what keeps the parent repo's
+        # status clean if any other untracked content shows up there.
+        ignore = dirty
+
+[submodule "third_party/nlohmann/json"]
+	path = third_party/nlohmann/json
+	url = https://github.com/nlohmann/json.git
+[submodule "third_party/yaml-cpp"]
+	path = third_party/yaml-cpp
+	url = https://github.com/jbeder/yaml-cpp.git
+[submodule "third_party/vscode-codicons"]
+	path = third_party/vscode-codicons
+	url = https://github.com/microsoft/vscode-codicons.git

@@ -1,0 +1,325 @@
+@import "tailwindcss";
+
+/*
+ * Vite's `root` is `web/public/`, so Tailwind v4's auto source detection
+ * only scans inside public/. Explicitly point it at the panel sources
+ * (sibling `web/src/`) so utility classes referenced there are emitted.
+ */
+@source "../../../src/**/*.{ts,tsx,html}";
+@source "../../../public/**/*.html";
+@source "../../../node_modules/streamdown/dist/*.js";
+
+/*
+ * Unified semantic design tokens. Tailwind v4 picks these up via @theme
+ * and exposes utility classes such as `bg-ui-bg-body`,
+ * `text-ui-text-title`, and `border-ui-border`.
+ */
+@theme {
+  /* Brand */
+  --color-cronymax-primary: #22b8a7;
+  --color-cronymax-secondary: #86e6d6;
+
+  /* Backgrounds */
+  --color-cronymax-body: #0e1716;
+  --color-cronymax-base: #131f1d;
+  --color-cronymax-float: #182625;
+  --color-cronymax-mask: rgba(2, 8, 8, 0.52);
+
+  /* Fills */
+  --color-cronymax-active: #22b8a7;
+  --color-cronymax-disabled: rgba(220, 236, 232, 0.08);
+  --color-cronymax-focus: rgba(34, 184, 167, 0.26);
+  --color-cronymax-hover: rgba(34, 184, 167, 0.12);
+  --color-cronymax-pressed: rgba(34, 184, 167, 0.2);
+  --color-cronymax-selected: rgba(34, 184, 167, 0.16);
+  --color-cronymax-tag: #183b37;
+
+  /* Texts */
+  --color-cronymax-title: #e8f2f0;
+  --color-cronymax-caption: #9db2ad;
+  --color-cronymax-disabled: #647773;
+  --color-cronymax-placeholder: #7c918c;
+
+  /* Lines */
+  --color-cronymax-border: #29403d;
+  --color-cronymax-divider: #1f302e;
+
+  /* Functions */
+  --color-cronymax-info: #78a9ff;
+  --color-cronymax-success: #4fcb7f;
+  --color-cronymax-warning: #f0b24a;
+  --color-cronymax-error: #ff7a7a;
+
+  /* Radiuses */
+  --radius-cronymax-popover: 12px;
+  --radius-cronymax-pill: 999px;
+
+  /* Shadows */
+  --shadow-cronymax-popover: 0 -10px 28px rgba(0, 0, 0, 0.35);
+  --shadow-cronymax-elev-1: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-cronymax-elev-2: 0 4px 16px rgba(0, 0, 0, 0.3);
+
+  --font-family-sans:
+    -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+  --font-family-mono: ui-monospace, "SF Mono", "Menlo", "Monaco", monospace;
+}
+
+/* ── Light palette (default; useTheme writes data-theme="light") ──── */
+:root,
+:root[data-theme="light"] {
+  /* Brand */
+  --color-cronymax-primary: #0f8f83;
+  --color-cronymax-secondary: #6fd8c7;
+
+  /* Backgrounds */
+  --color-cronymax-body: #f3f7f6;
+  --color-cronymax-base: #fcfefd;
+  --color-cronymax-float: #ffffff;
+  --color-cronymax-mask: rgba(14, 24, 23, 0.16);
+
+  /* Fills */
+  --color-cronymax-active: #0f8f83;
+  --color-cronymax-disabled: rgba(15, 28, 27, 0.08);
+  --color-cronymax-focus: rgba(15, 143, 131, 0.22);
+  --color-cronymax-hover: rgba(15, 143, 131, 0.1);
+  --color-cronymax-pressed: rgba(15, 143, 131, 0.18);
+  --color-cronymax-selected: rgba(15, 143, 131, 0.14);
+  --color-cronymax-tag: #ddf6f1;
+
+  /* Texts */
+  --color-cronymax-title: #13201e;
+  --color-cronymax-caption: #5a6e69;
+  --color-cronymax-disabled: #9daeaa;
+  --color-cronymax-placeholder: #7d908c;
+
+  /* Lines */
+  --color-cronymax-border: #d5e2de;
+  --color-cronymax-divider: #e5eeeb;
+
+  /* Functions */
+  --color-cronymax-info: #2f6bff;
+  --color-cronymax-success: #238a57;
+  --color-cronymax-warning: #c98318;
+  --color-cronymax-error: #d64545;
+
+  --shadow-cronymax-popover: 0 -8px 28px rgba(15, 17, 22, 0.1);
+  --shadow-cronymax-elev-1: 0 1px 2px rgba(15, 17, 22, 0.08);
+  --shadow-cronymax-elev-2: 0 4px 16px rgba(15, 17, 22, 0.1);
+
+  /* Streamdown markdown renderer variables (light) */
+  --sdm-bg: #ffffff;
+  --sdm-fg: #13201e;
+  --sdm-c: #e5eeeb;
+  --sdm-tbg: #f3f7f6;
+  --shiki-dark-bg: #f3f7f6;
+  --streamdown-caret: #0f8f83;
+}
+
+/* ── Dark palette (explicit override) ──────────────────────────────── */
+:root[data-theme="dark"] {
+  /* Brand */
+  --color-cronymax-primary: #22b8a7;
+  --color-cronymax-secondary: #86e6d6;
+
+  /* Backgrounds */
+  --color-cronymax-body: #0e1716;
+  --color-cronymax-base: #131f1d;
+  --color-cronymax-float: #182625;
+  --color-cronymax-mask: rgba(2, 8, 8, 0.52);
+
+  /* Fills */
+  --color-cronymax-active: #22b8a7;
+  --color-cronymax-disabled: rgba(220, 236, 232, 0.08);
+  --color-cronymax-focus: rgba(34, 184, 167, 0.26);
+  --color-cronymax-hover: rgba(34, 184, 167, 0.12);
+  --color-cronymax-pressed: rgba(34, 184, 167, 0.2);
+  --color-cronymax-selected: rgba(34, 184, 167, 0.16);
+  --color-cronymax-tag: #183b37;
+
+  /* Texts */
+  --color-cronymax-title: #e8f2f0;
+  --color-cronymax-caption: #9db2ad;
+  --color-cronymax-disabled: #647773;
+  --color-cronymax-placeholder: #7c918c;
+
+  /* Lines */
+  --color-cronymax-border: #29403d;
+  --color-cronymax-divider: #1f302e;
+
+  /* Functions */
+  --color-cronymax-info: #78a9ff;
+  --color-cronymax-success: #4fcb7f;
+  --color-cronymax-warning: #f0b24a;
+  --color-cronymax-error: #ff7a7a;
+
+  /* Shadows */
+  --shadow-cronymax-popover: 0 -10px 28px rgba(0, 0, 0, 0.35);
+  --shadow-cronymax-elev-1: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-cronymax-elev-2: 0 4px 16px rgba(0, 0, 0, 0.3);
+
+  /* Streamdown markdown renderer variables */
+  --sdm-bg: #182625;
+  --sdm-fg: #e8f2f0;
+  --sdm-c: #1f302e;
+  --sdm-tbg: #182625;
+  --shiki-dark-bg: #182625;
+  --streamdown-caret: #22b8a7;
+}
+
+/* ── System-follow: when data-theme is absent, follow the OS ───────── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --color-cronymax-primary: #22b8a7;
+    --color-cronymax-secondary: #86e6d6;
+
+    /* Backgrounds */
+    --color-cronymax-body: #0e1716;
+    --color-cronymax-base: #131f1d;
+    --color-cronymax-float: #182625;
+    --color-cronymax-mask: rgba(2, 8, 8, 0.52);
+
+    /* Fills */
+    --color-cronymax-active: #22b8a7;
+    --color-cronymax-disabled: rgba(220, 236, 232, 0.08);
+    --color-cronymax-focus: rgba(34, 184, 167, 0.26);
+    --color-cronymax-hover: rgba(34, 184, 167, 0.12);
+    --color-cronymax-pressed: rgba(34, 184, 167, 0.2);
+    --color-cronymax-selected: rgba(34, 184, 167, 0.16);
+    --color-cronymax-tag: #183b37;
+
+    /* Texts */
+    --color-cronymax-title: #e8f2f0;
+    --color-cronymax-caption: #9db2ad;
+    --color-cronymax-disabled: #647773;
+    --color-cronymax-placeholder: #7c918c;
+
+    /* Lines */
+    --color-cronymax-border: #29403d;
+    --color-cronymax-divider: #1f302e;
+
+    /* Functions */
+    --color-cronymax-info: #78a9ff;
+    --color-cronymax-success: #4fcb7f;
+    --color-cronymax-warning: #f0b24a;
+    --color-cronymax-error: #ff7a7a;
+
+    /* Shadows */
+    --shadow-cronymax-popover: 0 -10px 28px rgba(0, 0, 0, 0.35);
+    --shadow-cronymax-elev-1: 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-cronymax-elev-2: 0 4px 16px rgba(0, 0, 0, 0.3);
+  }
+}
+
+/* Base resets shared by every panel root document. The shell panels
+ * (sidebar, topbar) intentionally use a transparent background so the
+ * native NSVisualEffectView blur shows through (Arc-style chrome). The
+ * body class on each panel HTML opts in/out of this with `bg-transparent`
+ * or an explicit color. */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: transparent;
+  color: var(--color-cronymax-title);
+  font-family: var(--font-family-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Window-drag affordance for the Cocoa shell. Apply `.app-drag` to a
+ * background container to make it act like a titlebar (click-and-drag
+ * moves the NSWindow). Apply `.no-drag` to any interactive child
+ * (button, input, row) so it remains clickable. */
+.app-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* ── WYSIWYG markdown editor (Milkdown / ProseMirror) ─────────────── */
+.cronymax-wysiwyg .ProseMirror {
+  outline: none;
+  padding: 0.625rem 0.75rem;
+  min-height: 220px;
+  color: var(--color-cronymax-title);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  font-family: var(--font-family-sans);
+  caret-color: var(--color-cronymax-primary);
+}
+.cronymax-wysiwyg .ProseMirror > * + * {
+  margin-top: 0.5em;
+}
+.cronymax-wysiwyg .ProseMirror p {
+  margin: 0;
+}
+.cronymax-wysiwyg .ProseMirror h1,
+.cronymax-wysiwyg .ProseMirror h2,
+.cronymax-wysiwyg .ProseMirror h3,
+.cronymax-wysiwyg .ProseMirror h4 {
+  font-weight: 600;
+  color: var(--color-cronymax-title);
+  line-height: 1.35;
+}
+.cronymax-wysiwyg .ProseMirror h1 {
+  font-size: 1.3em;
+}
+.cronymax-wysiwyg .ProseMirror h2 {
+  font-size: 1.15em;
+}
+.cronymax-wysiwyg .ProseMirror h3 {
+  font-size: 1em;
+}
+.cronymax-wysiwyg .ProseMirror ul,
+.cronymax-wysiwyg .ProseMirror ol {
+  padding-left: 1.5em;
+  margin: 0;
+}
+.cronymax-wysiwyg .ProseMirror li + li {
+  margin-top: 0.2em;
+}
+.cronymax-wysiwyg .ProseMirror code {
+  font-family: var(--font-family-mono);
+  font-size: 0.875em;
+  background: var(--color-cronymax-float);
+  border: 1px solid var(--color-cronymax-border);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+  color: var(--color-cronymax-secondary);
+}
+.cronymax-wysiwyg .ProseMirror pre {
+  background: var(--color-cronymax-float);
+  border: 1px solid var(--color-cronymax-border);
+  border-radius: 4px;
+  padding: 0.6em 0.75em;
+  overflow-x: auto;
+  margin: 0;
+}
+.cronymax-wysiwyg .ProseMirror pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-cronymax-title);
+}
+.cronymax-wysiwyg .ProseMirror blockquote {
+  border-left: 2px solid var(--color-cronymax-primary);
+  margin: 0;
+  padding-left: 0.75em;
+  color: var(--color-cronymax-caption);
+}
+.cronymax-wysiwyg .ProseMirror a {
+  color: var(--color-cronymax-primary);
+  text-decoration: underline;
+}
+.cronymax-wysiwyg .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--color-cronymax-divider);
+  margin: 0.75em 0;
+}
+.cronymax-wysiwyg .ProseMirror ::selection {
+  background: var(--color-cronymax-selected);
+}
