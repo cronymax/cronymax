@@ -1,0 +1,29 @@
+# Bug-fix loop demonstrating @mention backward routing: when the Coder
+# encounters an ambiguity, they mention @product in the patch's Risks
+# section, and the Router delivers the message back to the Product agent
+# even though there is no forward edge from coder → product.
+name: bug-fix-loop
+description: Product describes a bug; Architect plans the fix; Coder writes the patch (and may @-mention @product for clarification).
+
+agents:
+  - product
+  - architect
+  - coder
+  - critic
+
+edges:
+  - from: product
+    to: architect
+    port: prd
+  - from: architect
+    to: coder
+    port: tech-spec
+  - from: coder
+    to: product
+    port: code-patch
+    requires_human_approval: true
+
+max_review_rounds: 2
+on_review_exhausted: approve
+reviewer_timeout_secs: 60
+reviewer_enabled: true

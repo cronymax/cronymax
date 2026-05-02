@@ -1,0 +1,12 @@
+build/
+build-cef*/
+out/
+third_party/
+.DS_Store
+*.log
+compile_commands.json
+
+# Frontend (Vite + pnpm)
+web/node_modules/
+web/dist/
+web/.vite/

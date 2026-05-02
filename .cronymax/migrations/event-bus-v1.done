@@ -1,0 +1,1 @@
+event-bus v1: legacy trace.jsonl preserved on disk; AppEvent stream is the new source of truth.

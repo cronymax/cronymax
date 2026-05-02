@@ -1,0 +1,25 @@
+# Two-agent flow: a Product manager writes a PRD, then an Architect turns
+# it into a tech-spec. The Critic reviews each submission. Demonstrates the
+# baseline document → review → routing pipeline.
+name: simple-prd-to-spec
+description: Product writes a PRD; Architect turns it into a tech-spec.
+
+agents:
+  - product
+  - architect
+  - critic
+
+edges:
+  - from: product
+    to: architect
+    port: prd
+    requires_human_approval: true
+  - from: architect
+    to: product
+    port: tech-spec
+    requires_human_approval: true
+
+max_review_rounds: 3
+on_review_exhausted: halt
+reviewer_timeout_secs: 60
+reviewer_enabled: true

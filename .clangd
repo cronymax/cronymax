@@ -1,0 +1,15 @@
+CompileFlags:
+  CompilationDatabase: build
+
+Diagnostics:
+  UnusedIncludes: Strict
+  ClangTidy:
+    Add: ["*"]
+
+Index:
+  Background: Build
+
+InlayHints:
+  Enabled: Yes
+  ParameterNames: Yes
+  DeducedTypes: Yes

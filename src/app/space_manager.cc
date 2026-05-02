@@ -1,0 +1,342 @@
+#include "app/space_manager.h"
+
+#include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <sstream>
+
+#include "event_bus/event_bus.h"
+#include "flow/workspace_layout.h"
+#include "platform/macos/notifications.h"
+
+namespace cronymax {
+
+namespace {
+
+int64_t NowMs() {
+  using namespace std::chrono;
+  return duration_cast<milliseconds>(system_clock::now().time_since_epoch())
+      .count();
+}
+
+// Generate a simple UUID-like id (not cryptographically strong — prototype).
+std::string MakeId() {
+  static std::mt19937_64 rng{std::random_device{}()};
+  const uint64_t a = rng();
+  const uint64_t b = rng();
+  char buf[37];
+  std::snprintf(buf, sizeof(buf),
+                "%08x-%04x-%04x-%04x-%012llx",
+                static_cast<uint32_t>(a >> 32),
+                static_cast<uint32_t>((a >> 16) & 0xffff),
+                static_cast<uint32_t>(a & 0xffff),
+                static_cast<uint32_t>(b >> 48),
+                static_cast<unsigned long long>(b & 0x0000ffffffffffff));
+  return buf;
+}
+
+}  // namespace
+
+TerminalSession* Space::FindTerminal(const std::string& tid) {
+  for (auto& t : terminals)
+    if (t->id == tid) return t.get();
+  return nullptr;
+}
+
+TerminalSession* Space::ActiveTerminal() {
+  if (!active_terminal_id.empty()) {
+    if (auto* t = FindTerminal(active_terminal_id)) return t;
+  }
+  if (!terminals.empty()) {
+    active_terminal_id = terminals.front()->id;
+    return terminals.front().get();
+  }
+  return nullptr;
+}
+
+TerminalSession* Space::CreateTerminal() {
+  auto t = std::make_unique<TerminalSession>();
+  t->id = "t" + std::to_string(next_terminal_seq);
+  t->name = "Terminal " + std::to_string(next_terminal_seq);
+  ++next_terminal_seq;
+  t->pty = std::make_unique<PtySession>();
+  active_terminal_id = t->id;
+  terminals.push_back(std::move(t));
+  return terminals.back().get();
+}
+
+bool Space::CloseTerminal(const std::string& tid) {
+  for (auto it = terminals.begin(); it != terminals.end(); ++it) {
+    if ((*it)->id == tid) {
+      if ((*it)->pty && (*it)->pty->running()) (*it)->pty->Stop();
+      terminals.erase(it);
+      if (active_terminal_id == tid) {
+        active_terminal_id = terminals.empty() ? "" : terminals.front()->id;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+SpaceManager::SpaceManager() = default;
+SpaceManager::~SpaceManager() = default;
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+bool SpaceManager::Init(const std::filesystem::path& db_path) {
+  if (!store_.Open(db_path)) {
+    return false;
+  }
+
+  const auto rows = store_.ListSpaces();
+  for (const auto& row : rows) {
+    spaces_.push_back(InstantiateSpace(row));
+  }
+
+  if (spaces_.empty()) {
+    return true;  // Caller should call CreateSpace for a default Space.
+  }
+
+  // Restore last-active Space (already sorted by last_active desc).
+  // Use SwitchTo so per-Space registries (Phase A) and any switch
+  // callbacks are invoked consistently.
+  SwitchTo(spaces_.front()->id);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// CreateSpace
+// ---------------------------------------------------------------------------
+
+std::string SpaceManager::CreateSpace(const std::string& name,
+                                      const std::filesystem::path& root_path) {
+  if (!std::filesystem::is_directory(root_path)) {
+    return {};
+  }
+
+  SpaceRow row;
+  row.id = MakeId();
+  row.name = name;
+  row.root_path = root_path.string();
+  row.created_at = NowMs();
+  row.last_active = NowMs();
+
+  if (!store_.CreateSpace(row)) {
+    return {};
+  }
+
+  spaces_.push_back(InstantiateSpace(row));
+  // If this is the first Space, activate it so registries (Phase A) and
+  // ActiveSpace() are usable immediately.
+  if (active_index_ < 0) {
+    SwitchTo(row.id);
+  }
+  return row.id;
+}
+
+// ---------------------------------------------------------------------------
+// SwitchTo
+// ---------------------------------------------------------------------------
+
+bool SpaceManager::SwitchTo(const std::string& space_id) {
+  for (int i = 0; i < static_cast<int>(spaces_.size()); ++i) {
+    if (spaces_[static_cast<size_t>(i)]->id == space_id) {
+      const std::string old_id =
+          (active_index_ >= 0)
+              ? spaces_[static_cast<size_t>(active_index_)]->id
+              : "";
+      active_index_ = i;
+      store_.UpdateLastActive(space_id, NowMs());
+
+      // Phase A task 4.5: lazily set up the .cronymax/ skeleton and
+      // per-Space registries on first activation. Subsequent switches
+      // reuse the cached registries; the FsWatcher keeps them fresh.
+      Space* sp = spaces_[static_cast<size_t>(i)].get();
+      if (!sp->agent_registry) {
+        WorkspaceLayout layout(sp->workspace_root);
+        std::string err;
+        layout.EnsureSkeleton(&err);  // best-effort; ignore err for now
+
+        sp->agent_registry =
+            std::make_unique<AgentRegistry>(layout.AgentsDir());
+        sp->flow_registry =
+            std::make_unique<FlowRegistry>(layout.FlowsDir());
+        sp->doc_type_registry = std::make_unique<DocTypeRegistry>(
+            builtin_doc_types_dir_, layout.DocTypesDir());
+        sp->agent_registry->Refresh();
+        sp->flow_registry->Refresh();
+        sp->doc_type_registry->Refresh();
+
+        sp->fs_watcher = std::make_unique<FsWatcher>();
+        std::vector<std::filesystem::path> watch_paths = {
+            layout.AgentsDir(), layout.FlowsDir(), layout.DocTypesDir()};
+        AgentRegistry* ar = sp->agent_registry.get();
+        FlowRegistry* fr = sp->flow_registry.get();
+        DocTypeRegistry* dr = sp->doc_type_registry.get();
+        sp->fs_watcher->Start(watch_paths, std::chrono::milliseconds(250),
+                              [ar, fr, dr]() {
+                                ar->Refresh();
+                                fr->Refresh();
+                                dr->Refresh();
+                              });
+
+        // FlowRuntime: rehydrate any prior runs from disk so the renderer
+        // can list/resume them. The event emitter is wired by the caller
+        // (BridgeHandler) once it has a renderer broadcast channel.
+        sp->flow_runtime = std::make_unique<FlowRuntime>(
+            sp->workspace_root, sp->flow_registry.get(),
+            sp->agent_registry.get(), sp->doc_type_registry.get());
+        sp->flow_runtime->SetSpaceId(sp->id);
+        sp->flow_runtime->RehydrateFromDisk();
+
+        // EventBus: typed event store for the channel view, inbox, and
+        // status dot. Borrows the SpaceStore's sqlite3 handle.
+        sp->event_bus = std::make_unique<event_bus::EventBus>(
+            &store_, sp->id, sp->workspace_root);
+        // Wire FlowRuntime to push lifecycle events through the bus.
+        sp->flow_runtime->SetEventBus(sp->event_bus.get());
+
+        // Migration marker: existing trace.jsonl files are TraceEvent-shaped
+        // (legacy), not AppEvent-shaped, so a faithful replay is not
+        // possible without a kind-mapping table. Write a marker so future
+        // releases know not to re-attempt this migration. The legacy files
+        // remain on disk and `rebuild_trace` can rewrite them from
+        // EventBus going forward.
+        {
+          namespace fs = std::filesystem;
+          const fs::path marker_dir =
+              fs::path(sp->workspace_root) / ".cronymax" / "migrations";
+          const fs::path marker = marker_dir / "event-bus-v1.done";
+          std::error_code ec;
+          if (!fs::exists(marker, ec)) {
+            fs::create_directories(marker_dir, ec);
+            std::ofstream m(marker);
+            if (m.is_open()) {
+              m << "event-bus v1: legacy trace.jsonl preserved on disk; "
+                << "AppEvent stream is the new source of truth.\n";
+            }
+          }
+        }
+
+        // macOS native bridge: subscribe to needs-action events and
+        // refresh the dock badge after every Append. Best-effort; on
+        // non-Apple platforms these calls are no-ops.
+        {
+          event_bus::Scope all;  // empty scope = all events for this Space.
+          auto* bus_ptr = sp->event_bus.get();
+          bus_ptr->Subscribe(all, [bus_ptr](const event_bus::AppEvent& e) {
+            const std::string kind = event_bus::AppEventKindToString(e.kind);
+            if (bus_ptr->IsKindEnabledForNotifications(kind) &&
+                platform::macos::IsNotificationAuthorized()) {
+              std::string body;
+              if (e.payload.is_object()) {
+                const auto& body_v = e.payload.Get("body");
+                const auto& message_v = e.payload.Get("message");
+                if (body_v.is_string()) body = body_v.as_string();
+                else if (message_v.is_string()) body = message_v.as_string();
+              }
+              if (body.empty()) body = "(" + kind + ")";
+              std::string deeplink = "cronymax://inbox/" + e.id;
+              platform::macos::PostNotification(
+                  /*title=*/kind, body, deeplink);
+            }
+            // Refresh dock badge from the inbox unread count after
+            // every Append. Inexpensive single COUNT(*) query.
+            event_bus::InboxQuery iq;
+            iq.state = event_bus::InboxState::kUnread;
+            iq.limit = 1;
+            const auto inbox = bus_ptr->ListInbox(iq);
+            platform::macos::SetDockBadgeCount(inbox.unread_count);
+          });
+        }
+      }
+
+      if (switch_callback_) {
+        switch_callback_(old_id, space_id);
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// DeleteSpace
+// ---------------------------------------------------------------------------
+
+bool SpaceManager::DeleteSpace(const std::string& space_id) {
+  const int idx = [&]() -> int {
+    for (int i = 0; i < static_cast<int>(spaces_.size()); ++i) {
+      if (spaces_[static_cast<size_t>(i)]->id == space_id) return i;
+    }
+    return -1;
+  }();
+
+  if (idx < 0) return false;
+
+  // If deleting the active Space and others exist, switch first.
+  if (idx == active_index_ && spaces_.size() > 1) {
+    const int next =
+        (idx + 1) < static_cast<int>(spaces_.size()) ? idx + 1 : idx - 1;
+    SwitchTo(spaces_[static_cast<size_t>(next)]->id);
+  }
+
+  store_.DeleteSpace(space_id);
+  spaces_.erase(spaces_.begin() + idx);
+
+  // Adjust active_index_ after removal.
+  if (spaces_.empty()) {
+    active_index_ = -1;
+  } else if (active_index_ >= static_cast<int>(spaces_.size())) {
+    active_index_ = static_cast<int>(spaces_.size()) - 1;
+  }
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Accessors
+// ---------------------------------------------------------------------------
+
+Space* SpaceManager::ActiveSpace() {
+  if (active_index_ < 0 || active_index_ >= static_cast<int>(spaces_.size())) {
+    return nullptr;
+  }
+  return spaces_[static_cast<size_t>(active_index_)].get();
+}
+
+const Space* SpaceManager::ActiveSpace() const {
+  if (active_index_ < 0 || active_index_ >= static_cast<int>(spaces_.size())) {
+    return nullptr;
+  }
+  return spaces_[static_cast<size_t>(active_index_)].get();
+}
+
+Space* SpaceManager::FindSpace(const std::string& space_id) {
+  for (auto& sp : spaces_) {
+    if (sp->id == space_id) return sp.get();
+  }
+  return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Private helpers
+// ---------------------------------------------------------------------------
+
+std::unique_ptr<Space> SpaceManager::InstantiateSpace(
+    const SpaceRow& row) {
+  auto sp = std::make_unique<Space>();
+  sp->id = row.id;
+  sp->name = row.name;
+  sp->workspace_root = row.root_path;
+  sp->agent_runtime = std::make_unique<AgentRuntime>(sp->workspace_root);
+  sp->CreateTerminal();  // start with one terminal
+  return sp;
+}
+
+}  // namespace cronymax

@@ -1,0 +1,18 @@
+# CEF app layer — conservative tidy profile.
+# Standalone config (no InheritParentConfig) because the CEF zone has
+# fundamentally different constraints: -fno-rtti, -fno-exceptions,
+# CefRefPtr<> as the smart pointer, and new-based object construction
+# via IMPLEMENT_REFCOUNTING. Checks that conflict with those patterns
+# are excluded here.
+Checks: >
+  modernize-use-override,
+  bugprone-use-after-move,
+  readability-container-size-empty,
+  -clang-analyzer-*,
+  -modernize-use-smart-pointers,
+  -cppcoreguidelines-owning-memory,
+  -performance-*
+
+WarningsAsErrors: ""
+
+HeaderFilterRegex: "src/app/.*"

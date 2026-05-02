@@ -1,0 +1,16 @@
+name: code-description
+display_name: Code Description
+description: |
+  Narrative summary of a code change or implementation. Used by the coder
+  agent to hand off implementation context to reviewers and downstream
+  agents (e.g. the test-plan author).
+required_sections:
+  - { heading: "Summary", min_words: 20 }
+  - { heading: "Files Changed", min_items: 1, kind: list }
+  - { heading: "How To Verify" }
+optional_sections:
+  - { heading: "Follow-ups" }
+  - { heading: "Open Questions" }
+front_matter_required:
+  - author
+  - owner_agent

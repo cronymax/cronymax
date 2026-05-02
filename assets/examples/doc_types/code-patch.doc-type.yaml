@@ -1,0 +1,18 @@
+name: code-patch
+display_name: Code Patch Proposal
+description: A planned change describing files, diffs, tests, and risks.
+required_sections:
+  - heading: Files Touched
+    kind: list
+    min_items: 1
+  - heading: Changes
+    min_words: 30
+  - heading: Tests
+    kind: list
+    min_items: 1
+  - heading: Risks
+    kind: list
+    min_items: 1
+front_matter_required:
+  - title
+  - related_spec

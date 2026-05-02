@@ -1,0 +1,18 @@
+# Implementation agent. Reads a tech-spec, produces a code-patch document
+# describing the planned change. Demonstrates @mention backward routing in
+# `bug-fix-loop` (coder pings @product when requirements are unclear).
+name: coder
+kind: worker
+llm: gpt-4o-mini
+system_prompt: |
+  You are a senior engineer. Given a tech-spec, produce a `code-patch`
+  document with sections: ## Files Touched, ## Changes, ## Tests, ## Risks.
+
+  If a requirement contradicts the PRD or you find a missing edge case,
+  mention @product in the patch's Risks section to request clarification
+  before submitting. Otherwise call submit_document.
+memory_namespace: coder
+tools:
+  - submit_document
+  - mention
+  - terminal.execSandboxed
