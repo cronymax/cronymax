@@ -61,8 +61,8 @@ function Row({
       className={
         "no-drag group flex h-7 cursor-pointer items-center gap-2 rounded-md px-2 text-xs " +
         (active
-          ? "bg-cronymax-surface-2 text-cronymax-fg"
-          : "text-cronymax-fg-muted hover:bg-cronymax-surface-2 hover:text-cronymax-fg")
+          ? "bg-cronymax-float text-cronymax-title"
+          : "text-cronymax-caption hover:bg-cronymax-float hover:text-cronymax-title")
       }
     >
       <span className="flex h-3.5 w-3.5 flex-none items-center justify-center text-[11px]">
@@ -93,7 +93,7 @@ function Row({
           e.preventDefault();
           onClose();
         }}
-        className="flex h-4 w-4 flex-none items-center justify-center rounded text-cronymax-fg-muted opacity-60 hover:bg-cronymax-border hover:text-white hover:opacity-100"
+        className="flex h-4 w-4 flex-none items-center justify-center rounded text-cronymax-caption opacity-60 hover:bg-cronymax-border hover:text-white hover:opacity-100"
       >
         ×
       </button>
@@ -223,11 +223,11 @@ export function App() {
   return (
     <aside
       ref={dragRef as React.RefObject<HTMLElement>}
-      className="app-drag flex h-full flex-col bg-cronymax-bg pt-7 text-cronymax-fg"
+      className="app-drag flex h-full flex-col bg-cronymax-body pt-7 text-cronymax-title"
     >
       {/* Space header */}
       <div className="no-drag relative flex items-center gap-2 px-3 py-2.5">
-        <span className="h-2.5 w-2.5 flex-none rounded-full bg-cronymax-accent" />
+        <span className="h-2.5 w-2.5 flex-none rounded-full bg-cronymax-primary" />
         <span className="flex-1 truncate text-sm font-medium">
           {activeSpaceName}
         </span>
@@ -240,14 +240,14 @@ export function App() {
             dispatch({ type: "toggleSpaces", open: next });
             if (next) void refreshSpaces();
           }}
-          className="flex h-5 w-5 items-center justify-center rounded text-cronymax-fg-muted hover:bg-cronymax-surface-2 hover:text-white"
+          className="flex h-5 w-5 items-center justify-center rounded text-cronymax-caption hover:bg-cronymax-float hover:text-white"
         >
           ▾
         </button>
         {spacesOpen && (
           <div
             onClick={(e) => e.stopPropagation()}
-            className="absolute left-3 right-3 top-full z-10 mt-1 rounded-lg border border-cronymax-border bg-cronymax-surface p-1 shadow-elev-2"
+            className="absolute left-3 right-3 top-full z-10 mt-1 rounded-lg border border-cronymax-border bg-cronymax-base p-1 shadow-cronymax-elev-2"
           >
             <ul>
               {spaces.map((sp) => (
@@ -255,10 +255,10 @@ export function App() {
                   key={sp.id}
                   onClick={() => void switchSpace(sp.id, sp.name)}
                   className={
-                    "cursor-pointer rounded px-2 py-1.5 text-xs hover:bg-cronymax-surface-2 " +
+                    "cursor-pointer rounded px-2 py-1.5 text-xs hover:bg-cronymax-float " +
                     (sp.id === activeSpaceId
-                      ? "text-cronymax-fg"
-                      : "text-cronymax-fg-muted")
+                      ? "text-cronymax-title"
+                      : "text-cronymax-caption")
                   }
                 >
                   {sp.name}
@@ -271,7 +271,7 @@ export function App() {
                 dispatch({ type: "toggleSpaces", open: false });
                 void createSpace();
               }}
-              className="mt-1 w-full rounded px-2 py-1.5 text-left text-xs text-cronymax-accent-soft hover:bg-cronymax-surface-2"
+              className="mt-1 w-full rounded px-2 py-1.5 text-left text-xs text-cronymax-secondary hover:bg-cronymax-float"
             >
               + New Space
             </button>
@@ -281,7 +281,7 @@ export function App() {
 
       {/* Items section */}
       <section className="no-drag flex-1 overflow-auto px-2 pb-4">
-        <div className="no-drag px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-cronymax-fg-muted">
+        <div className="no-drag px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-cronymax-caption">
           Tabs
         </div>
         <ul className="no-drag space-y-0.5">

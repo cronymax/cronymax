@@ -30,10 +30,9 @@ using TabId = std::string;
 // match TabSummary / ToolbarState discriminators on the TS side.
 enum class TabKind {
   kWeb = 0,
-  kTerminal,
   kChat,
-  kAgent,
-  kGraph,
+  kTerminal,
+  kSettings,
 };
 
 const char* TabKindToString(TabKind kind);
@@ -79,6 +78,13 @@ class Tab : public TabContext {
   // The Tab forwards to the behavior's ApplyToolbarState.
   void OnToolbarState(const ToolbarState& state);
 
+  // Apply the full theme chrome for this tab — updates the default card/
+  // toolbar background (bg_base) and the behavior's widget colors (fg from
+  // text_title, pill-surface from bg_float). Call this instead of the bare
+  // SetDefaultChromeArgb when the full ThemeChrome is available.
+  void ApplyTheme(cef_color_t bg_base, cef_color_t bg_float,
+                  cef_color_t text_title);
+
   TabKind kind() const { return kind_; }
   CefRefPtr<CefPanel> card() const { return card_; }
   TabBehavior* behavior() const { return behavior_.get(); }
@@ -91,6 +97,8 @@ class Tab : public TabContext {
   void SetToolbarState(const ToolbarState& state) override;
   void SetChromeTheme(const std::string& css_color_or_empty) override;
   void RequestClose() override;
+
+  void SetDefaultChromeArgb(cef_color_t argb);
 
  private:
   TabId id_;
@@ -105,6 +113,12 @@ class Tab : public TabContext {
 
   // Toolbar wrapper (created in Build). The actual CefPanel lives inside.
   std::unique_ptr<TabToolbar> toolbar_;
+  cef_color_t default_chrome_argb_ = 0;
+  std::string chrome_override_;
+  // Stored from the last ApplyTheme call so SetChromeTheme can re-apply
+  // behavior widget colors whenever the page drives a toolbar color change.
+  cef_color_t text_fg_ = 0;
+  cef_color_t surface_bg_ = 0;
 
   // Content host: a FillLayout panel that the behavior populates with a
   // single child view (typically a CefBrowserView).

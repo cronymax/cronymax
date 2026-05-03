@@ -26,7 +26,7 @@ import type {
   AgentRunSnapshot,
 } from "@/agent_runtime";
 import { Flows } from "@/components/FlowEditor";
-import { useStore, type PermissionRequest } from "../agent/store";
+import { useStore, type PermissionRequest } from "./store";
 
 // ── types ─────────────────────────────────────────────────────────────────
 
@@ -60,7 +60,7 @@ function buildReActGraph(maxIters: number): AgentGraphInstance {
 // ── shared input styles ───────────────────────────────────────────────────
 
 const inputCls =
-  "w-full rounded border border-cronymax-border bg-cronymax-surface px-2 py-1 text-xs text-cronymax-fg outline-none focus:border-cronymax-accent";
+  "w-full rounded border border-cronymax-border bg-cronymax-base px-2 py-1 text-xs text-cronymax-title outline-none focus:border-cronymax-primary";
 
 // ── shared Field ──────────────────────────────────────────────────────────
 
@@ -73,7 +73,7 @@ function Field({
 }) {
   return (
     <div className="mb-3">
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-cronymax-fg-muted">
+      <div className="mb-1 text-[11px] uppercase tracking-wide text-cronymax-caption">
         {label}
       </div>
       {children}
@@ -87,7 +87,7 @@ function AppearanceTab() {
   const { mode, setMode } = useTheme();
   return (
     <div className="p-4">
-      <p className="mb-3 text-xs text-cronymax-fg-muted">
+      <p className="mb-3 text-xs text-cronymax-caption">
         System follows your macOS appearance and switches automatically.
       </p>
       <div className="flex gap-2">
@@ -96,8 +96,8 @@ function AppearanceTab() {
             key={m}
             className={`flex-1 cursor-pointer rounded border px-3 py-2 text-center text-xs capitalize transition-colors ${
               mode === m
-                ? "border-cronymax-accent bg-cronymax-accent/10 text-cronymax-fg"
-                : "border-cronymax-border bg-cronymax-surface text-cronymax-fg-muted hover:text-cronymax-fg"
+                ? "border-cronymax-primary bg-cronymax-primary/10 text-cronymax-title"
+                : "border-cronymax-border bg-cronymax-base text-cronymax-caption hover:text-cronymax-title"
             }`}
           >
             <input
@@ -260,7 +260,7 @@ function ModelSelect({
           onClick={() => void doFetch()}
           disabled={fetching || !provider.base_url}
           title="Fetch available models"
-          className="rounded border border-cronymax-border px-2 text-xs hover:bg-cronymax-surface-2 disabled:opacity-40"
+          className="rounded border border-cronymax-border px-2 text-xs hover:bg-cronymax-float disabled:opacity-40"
         >
           {fetching ? "…" : "⟳"}
         </button>
@@ -278,8 +278,8 @@ function ModelSelect({
               className={
                 "rounded border px-1.5 py-0.5 text-[11px] " +
                 (m === value
-                  ? "border-cronymax-accent bg-cronymax-accent/20 text-cronymax-fg"
-                  : "border-cronymax-border text-cronymax-fg-muted hover:text-cronymax-fg")
+                  ? "border-cronymax-primary bg-cronymax-primary/20 text-cronymax-title"
+                  : "border-cronymax-border text-cronymax-caption hover:text-cronymax-title")
               }
             >
               {m}
@@ -377,9 +377,9 @@ function CopilotOauthBlock({
     oauth.phase === "awaiting_user" ||
     oauth.phase === "polling";
   return (
-    <div className="mt-2 rounded border border-cronymax-border bg-cronymax-surface-2 p-2 text-xs">
+    <div className="mt-2 rounded border border-cronymax-border bg-cronymax-float p-2 text-xs">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-cronymax-fg-muted">
+        <span className="text-cronymax-caption">
           {hasKey
             ? "Token present. Sign in again to refresh it."
             : "Sign in with your GitHub account to fetch a Copilot token."}
@@ -388,7 +388,7 @@ function CopilotOauthBlock({
           <button
             type="button"
             onClick={onSignIn}
-            className="rounded bg-cronymax-accent px-2 py-0.5 text-[11px] text-white hover:opacity-90"
+            className="rounded bg-cronymax-primary px-2 py-0.5 text-[11px] text-white hover:opacity-90"
           >
             Sign in with GitHub
           </button>
@@ -396,32 +396,32 @@ function CopilotOauthBlock({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded border border-cronymax-border px-2 py-0.5 text-[11px] text-cronymax-fg hover:bg-cronymax-surface"
+            className="rounded border border-cronymax-border px-2 py-0.5 text-[11px] text-cronymax-title hover:bg-cronymax-base"
           >
             Cancel
           </button>
         )}
       </div>
       {oauth.phase === "starting" && (
-        <p className="mt-1 text-cronymax-fg-muted">Requesting device code…</p>
+        <p className="mt-1 text-cronymax-caption">Requesting device code…</p>
       )}
       {(oauth.phase === "awaiting_user" || oauth.phase === "polling") &&
         oauth.user_code && (
           <div className="mt-2 space-y-1">
-            <p className="text-cronymax-fg-muted">
+            <p className="text-cronymax-caption">
               Enter this code on{" "}
               <a
                 href={oauth.verification_uri}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="underline hover:text-cronymax-accent"
+                className="underline hover:text-cronymax-primary"
               >
                 {oauth.verification_uri}
               </a>
               :
             </p>
             <div className="flex items-center gap-2">
-              <code className="select-all rounded bg-cronymax-surface px-2 py-1 font-mono text-sm tracking-widest">
+              <code className="select-all rounded bg-cronymax-base px-2 py-1 font-mono text-sm tracking-widest">
                 {oauth.user_code}
               </code>
               <button
@@ -431,11 +431,11 @@ function CopilotOauthBlock({
                     .writeText(oauth.user_code ?? "")
                     .catch(() => undefined)
                 }
-                className="rounded border border-cronymax-border px-2 py-0.5 text-[11px] hover:bg-cronymax-surface"
+                className="rounded border border-cronymax-border px-2 py-0.5 text-[11px] hover:bg-cronymax-base"
               >
                 Copy
               </button>
-              <span className="text-[11px] text-cronymax-fg-muted">
+              <span className="text-[11px] text-cronymax-caption">
                 {oauth.phase === "polling" ? "Waiting for authorization…" : ""}
               </span>
             </div>
@@ -703,14 +703,14 @@ function ProvidersTab() {
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-[220px] flex-col border-r border-cronymax-border bg-cronymax-surface-2">
+      <aside className="flex w-[220px] flex-col border-r border-cronymax-border bg-cronymax-float">
         <div className="flex items-center justify-between border-b border-cronymax-border px-2 py-1.5">
           <span className="text-xs font-semibold">Providers</span>
           <div className="flex items-center gap-1">
             <button
               type="button"
               onClick={() => onAdd("github_copilot")}
-              className="rounded border border-cronymax-border bg-cronymax-surface px-1.5 py-0.5 text-[11px] text-cronymax-fg hover:bg-cronymax-surface-2"
+              className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-[11px] text-cronymax-title hover:bg-cronymax-float"
               title="Quick-add GitHub Copilot"
             >
               + Copilot
@@ -718,7 +718,7 @@ function ProvidersTab() {
             <button
               type="button"
               onClick={() => onAdd("openai")}
-              className="rounded bg-cronymax-accent px-1.5 py-0.5 text-xs text-white hover:opacity-90"
+              className="rounded bg-cronymax-primary px-1.5 py-0.5 text-xs text-white hover:opacity-90"
               title="New provider"
             >
               +
@@ -727,7 +727,7 @@ function ProvidersTab() {
         </div>
         <ul className="flex-1 overflow-auto py-1">
           {providers.length === 0 && (
-            <li className="px-2 py-1 text-[11px] text-cronymax-fg-muted">
+            <li className="px-2 py-1 text-[11px] text-cronymax-caption">
               No providers configured.
             </li>
           )}
@@ -742,8 +742,8 @@ function ProvidersTab() {
                   className={
                     "flex w-full flex-col items-start gap-0 px-2 py-1 text-left text-xs " +
                     (isSelected
-                      ? "bg-cronymax-accent/15 text-cronymax-fg"
-                      : "text-cronymax-fg-muted hover:bg-cronymax-surface hover:text-cronymax-fg")
+                      ? "bg-cronymax-primary/15 text-cronymax-title"
+                      : "text-cronymax-caption hover:bg-cronymax-base hover:text-cronymax-title")
                   }
                 >
                   <span className="flex w-full items-center gap-1 font-medium">
@@ -766,7 +766,7 @@ function ProvidersTab() {
 
       <section className="flex-1 overflow-auto p-3">
         {!draft && (
-          <p className="text-xs text-cronymax-fg-muted">
+          <p className="text-xs text-cronymax-caption">
             Select a provider to edit or activate it. Click <b>+</b> to add a
             new one. Credentials are stored in the workspace SQLite kv store.
           </p>
@@ -850,15 +850,13 @@ function ProvidersTab() {
               />
             </Field>
 
-            {msg && (
-              <p className="mb-3 text-xs text-cronymax-fg-muted">{msg}</p>
-            )}
+            {msg && <p className="mb-3 text-xs text-cronymax-caption">{msg}</p>}
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => void onSave()}
                 disabled={busy}
-                className="rounded bg-cronymax-accent px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
               >
                 Save
               </button>
@@ -879,7 +877,7 @@ function ProvidersTab() {
                   setDraft(null);
                   setMsg(null);
                 }}
-                className="rounded border border-cronymax-border bg-cronymax-surface px-3 py-1 text-xs hover:bg-cronymax-surface-2"
+                className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs hover:bg-cronymax-float"
               >
                 Cancel
               </button>
@@ -1048,13 +1046,13 @@ function AgentsTab() {
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-[200px] flex-col border-r border-cronymax-border bg-cronymax-surface-2">
+      <aside className="flex w-[200px] flex-col border-r border-cronymax-border bg-cronymax-float">
         <div className="flex items-center justify-between border-b border-cronymax-border px-2 py-1.5">
           <span className="text-xs font-semibold">Agents</span>
           <button
             type="button"
             onClick={onNew}
-            className="rounded bg-cronymax-accent px-1.5 py-0.5 text-xs text-white hover:opacity-90"
+            className="rounded bg-cronymax-primary px-1.5 py-0.5 text-xs text-white hover:opacity-90"
             title="New agent"
           >
             +
@@ -1062,7 +1060,7 @@ function AgentsTab() {
         </div>
         <ul className="flex-1 overflow-auto py-1">
           {agents.length === 0 && (
-            <li className="px-2 py-1 text-[11px] text-cronymax-fg-muted">
+            <li className="px-2 py-1 text-[11px] text-cronymax-caption">
               No agents registered.
             </li>
           )}
@@ -1074,8 +1072,8 @@ function AgentsTab() {
                 className={
                   "flex w-full flex-col items-start px-2 py-1 text-left text-xs " +
                   (selected === a.name && !creating
-                    ? "bg-cronymax-accent/15 text-cronymax-fg"
-                    : "text-cronymax-fg-muted hover:bg-cronymax-surface hover:text-cronymax-fg")
+                    ? "bg-cronymax-primary/15 text-cronymax-title"
+                    : "text-cronymax-caption hover:bg-cronymax-base hover:text-cronymax-title")
                 }
               >
                 <span className="font-medium">{a.name}</span>
@@ -1090,7 +1088,7 @@ function AgentsTab() {
 
       <section className="flex-1 overflow-auto p-3">
         {!draft && (
-          <p className="text-xs text-cronymax-fg-muted">
+          <p className="text-xs text-cronymax-caption">
             Select an agent to view or edit, or click <b>+</b> to create one.
             Files live under{" "}
             <code>.cronymax/agents/&lt;name&gt;.agent.yaml</code>.
@@ -1110,7 +1108,7 @@ function AgentsTab() {
                 placeholder="my_worker"
               />
               {!creating && (
-                <p className="mt-1 text-[10px] text-cronymax-fg-muted">
+                <p className="mt-1 text-[10px] text-cronymax-caption">
                   Rename by deleting and recreating.
                 </p>
               )}
@@ -1182,7 +1180,7 @@ function AgentsTab() {
                 type="button"
                 onClick={() => void onSave()}
                 disabled={busy}
-                className="rounded bg-cronymax-accent px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
               >
                 {creating ? "Create" : "Save"}
               </button>
@@ -1204,7 +1202,7 @@ function AgentsTab() {
                   setSelected(null);
                   setError(null);
                 }}
-                className="rounded border border-cronymax-border bg-cronymax-surface px-3 py-1 text-xs hover:bg-cronymax-surface-2"
+                className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs hover:bg-cronymax-float"
               >
                 Cancel
               </button>
@@ -1277,20 +1275,20 @@ function WorkspaceTab() {
 
   const taCls =
     "w-full min-h-[100px] resize-y rounded border border-cronymax-border " +
-    "bg-cronymax-surface px-2 py-1 font-mono text-xs text-cronymax-fg " +
-    "outline-none focus:border-cronymax-accent";
+    "bg-cronymax-base px-2 py-1 font-mono text-xs text-cronymax-title " +
+    "outline-none focus:border-cronymax-primary";
 
   return (
     <div className="h-full overflow-auto p-4">
       {!profile ? (
-        <p className="text-xs text-cronymax-fg-muted">Loading profile…</p>
+        <p className="text-xs text-cronymax-caption">Loading profile…</p>
       ) : (
         <div className="max-w-[600px]">
           <h2 className="mb-1 text-sm font-semibold">{profile.space_name}</h2>
-          <p className="mb-4 break-all text-[11px] text-cronymax-fg-muted">
+          <p className="mb-4 break-all text-[11px] text-cronymax-caption">
             <code>{profile.workspace_root}</code>
           </p>
-          <p className="mb-4 rounded border border-cronymax-border bg-cronymax-surface-2 p-2 text-[11px] text-cronymax-fg-muted">
+          <p className="mb-4 rounded border border-cronymax-border bg-cronymax-float p-2 text-[11px] text-cronymax-caption">
             Overrides supplement the default sandbox rules. Persisted to{" "}
             <code>.cronymax/space.profile.yaml</code>.
           </p>
@@ -1331,13 +1329,13 @@ function WorkspaceTab() {
               spellCheck={false}
             />
           </Field>
-          {msg && <p className="mb-3 text-xs text-cronymax-fg-muted">{msg}</p>}
+          {msg && <p className="mb-3 text-xs text-cronymax-caption">{msg}</p>}
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => void onSave()}
               disabled={busy}
-              className="rounded bg-cronymax-accent px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+              className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
               Save profile
             </button>
@@ -1345,7 +1343,7 @@ function WorkspaceTab() {
               type="button"
               onClick={() => void reload()}
               disabled={busy}
-              className="rounded border border-cronymax-border bg-cronymax-surface px-3 py-1 text-xs text-cronymax-fg hover:bg-cronymax-surface-2"
+              className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs text-cronymax-title hover:bg-cronymax-float"
             >
               Reload
             </button>
@@ -1375,8 +1373,8 @@ function SpaceRow({
       className={
         "group flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 text-xs " +
         (active
-          ? "bg-cronymax-surface-2 text-cronymax-fg"
-          : "text-cronymax-fg-muted hover:bg-cronymax-surface-2 hover:text-cronymax-fg")
+          ? "bg-cronymax-float text-cronymax-title"
+          : "text-cronymax-caption hover:bg-cronymax-float hover:text-cronymax-title")
       }
     >
       <span className="flex-1 truncate">{space.name}</span>
@@ -1515,12 +1513,12 @@ function RunnerTab() {
   return (
     <div className="flex h-full flex-col">
       <section className="border-b border-cronymax-border px-3 py-2">
-        <div className="mb-1 flex items-center justify-between text-xs text-cronymax-fg-muted">
+        <div className="mb-1 flex items-center justify-between text-xs text-cronymax-caption">
           <span>Spaces</span>
           <button
             type="button"
             onClick={() => void newSpace()}
-            className="rounded bg-cronymax-surface px-1.5 text-cronymax-fg hover:bg-cronymax-surface-2"
+            className="rounded bg-cronymax-base px-1.5 text-cronymax-title hover:bg-cronymax-float"
           >
             +
           </button>
@@ -1544,19 +1542,19 @@ function RunnerTab() {
         onKeyDown={onTaskKeyDown}
         spellCheck={false}
         placeholder="Ask the agent…  (⌘/Ctrl+Enter to run)"
-        className="m-3 min-h-[80px] resize-y rounded border border-cronymax-border bg-cronymax-surface-2 p-2 text-sm text-cronymax-fg outline-none focus:border-cronymax-accent"
+        className="m-3 min-h-[80px] resize-y rounded border border-cronymax-border bg-cronymax-float p-2 text-sm text-cronymax-title outline-none focus:border-cronymax-primary"
       />
       <div className="flex justify-end gap-2 px-3">
         <button
           type="button"
           onClick={() => void runTask()}
           disabled={state.status === "running"}
-          className="rounded bg-cronymax-accent px-3 py-1 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded bg-cronymax-primary px-3 py-1 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Run
         </button>
       </div>
-      <pre className="m-3 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-cronymax-border bg-cronymax-surface-2 p-2 text-xs text-cronymax-fg">
+      <pre className="m-3 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-cronymax-border bg-cronymax-float p-2 text-xs text-cronymax-title">
         {state.result}
       </pre>
     </div>
@@ -1574,20 +1572,20 @@ function PermissionOverlay({
 }) {
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[340px] rounded-md border border-cronymax-border bg-cronymax-surface-2 p-4 text-sm text-cronymax-fg shadow-lg">
+      <div className="w-[340px] rounded-md border border-cronymax-border bg-cronymax-float p-4 text-sm text-cronymax-title shadow-lg">
         <p className="mb-3 whitespace-pre-wrap">{perm.prompt}</p>
         <div className="flex justify-end gap-2">
           <button
             type="button"
             onClick={() => onResolve(true)}
-            className="rounded bg-cronymax-accent px-3 py-1 text-xs font-medium text-white hover:opacity-90"
+            className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90"
           >
             Allow
           </button>
           <button
             type="button"
             onClick={() => onResolve(false)}
-            className="rounded border border-cronymax-border bg-cronymax-surface px-3 py-1 text-xs text-cronymax-fg hover:bg-cronymax-surface-2"
+            className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs text-cronymax-title hover:bg-cronymax-float"
           >
             Deny
           </button>
@@ -1616,7 +1614,7 @@ function TabBar({
   onChange: (t: SettingsTab) => void;
 }) {
   return (
-    <nav className="flex items-center gap-0 border-b border-cronymax-border bg-cronymax-surface-2 px-1">
+    <nav className="flex items-center gap-0 border-b border-cronymax-border bg-cronymax-float px-1">
       {TAB_LABELS.map((t) => (
         <button
           key={t.id}
@@ -1625,8 +1623,8 @@ function TabBar({
           className={
             "border-b-2 px-3 py-1.5 text-xs transition " +
             (tab === t.id
-              ? "border-cronymax-accent text-cronymax-fg"
-              : "border-transparent text-cronymax-fg-muted hover:text-cronymax-fg")
+              ? "border-cronymax-primary text-cronymax-title"
+              : "border-transparent text-cronymax-caption hover:text-cronymax-title")
           }
         >
           {t.label}
@@ -1696,13 +1694,13 @@ export function App() {
   }, []);
 
   return (
-    <main className="relative flex h-screen w-screen flex-col bg-cronymax-surface text-cronymax-fg">
-      <header className="flex items-center justify-between border-b border-cronymax-border bg-cronymax-surface-2 px-4 py-2">
+    <main className="relative flex h-screen w-screen flex-col bg-cronymax-base text-cronymax-title">
+      <header className="flex items-center justify-between border-b border-cronymax-border bg-cronymax-float px-4 py-2">
         <h1 className="text-sm font-semibold tracking-wide">Settings</h1>
         <button
           type="button"
           onClick={onClose}
-          className="rounded px-2 py-0.5 text-xs text-cronymax-fg-muted hover:bg-cronymax-surface hover:text-cronymax-fg"
+          className="rounded px-2 py-0.5 text-xs text-cronymax-caption hover:bg-cronymax-base hover:text-cronymax-title"
           title="Close"
         >
           ✕

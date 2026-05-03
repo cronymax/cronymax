@@ -33,6 +33,16 @@ class TabBehavior {
   // don't push state (or haven't been migrated yet) need not override.
   virtual void ApplyToolbarState(const ToolbarState& /*state*/) {}
 
+  // Called whenever the shell theme changes so the behavior can adapt any
+  // hardcoded widget colors. `text_fg` is the readable foreground color
+  // (text_title token), `surface_bg` is the float-surface background
+  // (bg_float token), `toolbar_bg` is the toolbar panel background
+  // (bg_base token — use this as the button background to blend with the
+  // toolbar panel). Default no-op for behaviors that have no widgets.
+  virtual void ApplyThemeColors(cef_color_t /*text_fg*/,
+                                cef_color_t /*surface_bg*/,
+                                cef_color_t /*toolbar_bg*/ = 0) {}
+
   // Optional: return the CEF browser identifier for this behavior's primary
   // browser, or 0 if it does not host a browser yet (or is not a browser-
   // backed kind). Used by MainWindow to pair browser events to the owning

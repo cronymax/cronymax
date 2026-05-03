@@ -1,8 +1,8 @@
-import type { ReactNode } from 'react';
+import type { ReactNode } from "react";
 
 export function Pill({
   children,
-  className = '',
+  className = "",
 }: {
   children: ReactNode;
   className?: string;
@@ -10,9 +10,9 @@ export function Pill({
   return (
     <div
       className={[
-        'flex items-center gap-2 rounded-pill bg-cronymax-surface-2 px-3 py-1 text-xs',
+        "flex items-center gap-2 rounded-pill bg-cronymax-float px-3 py-1 text-xs",
         className,
-      ].join(' ')}
+      ].join(" ")}
     >
       {children}
     </div>

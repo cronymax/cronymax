@@ -163,7 +163,7 @@ function parseMention(
 function MessageView({ message }: { message: Message }) {
   if (message.role === "trace") {
     return (
-      <div className="py-1 font-mono text-[11px] text-cronymax-fg-muted whitespace-pre-wrap">
+      <div className="py-1 font-mono text-[11px] text-cronymax-caption whitespace-pre-wrap">
         {message.content}
       </div>
     );
@@ -183,18 +183,18 @@ function MessageView({ message }: { message: Message }) {
     <div
       className={
         "border-l-2 py-2 pl-3 " +
-        (isUser ? "border-cronymax-accent" : "border-cronymax-border")
+        (isUser ? "border-cronymax-primary" : "border-cronymax-border")
       }
     >
       <div
         className={
           "mb-1 text-[10px] font-semibold uppercase tracking-wide " +
-          (isUser ? "text-cronymax-accent" : "text-cronymax-fg-muted")
+          (isUser ? "text-cronymax-primary" : "text-cronymax-caption")
         }
       >
         {label}
       </div>
-      <div className="whitespace-pre-wrap break-words text-sm text-cronymax-fg">
+      <div className="whitespace-pre-wrap break-words text-sm text-cronymax-title">
         {message.content}
       </div>
     </div>
@@ -476,8 +476,8 @@ export function App() {
   }, [dispatch, state.activeChatId]);
 
   return (
-    <main className="flex h-screen flex-col bg-cronymax-surface text-cronymax-fg">
-      <header className="flex items-center gap-3 border-b border-cronymax-border bg-cronymax-surface-2 px-3 py-2 text-sm">
+    <main className="flex h-screen flex-col bg-cronymax-base text-cronymax-title">
+      <header className="flex items-center gap-3 border-b border-cronymax-border bg-cronymax-float px-3 py-2 text-sm">
         <span className="flex-1 truncate font-semibold">{state.chatName}</span>
 
         {/* Mode toggle: Agent (p2p) vs Flow (multi-agent room) */}
@@ -499,8 +499,8 @@ export function App() {
               className={
                 "px-2 py-0.5 transition " +
                 (state.chatMode === m.id
-                  ? "bg-cronymax-accent text-white"
-                  : "text-cronymax-fg-muted hover:text-cronymax-fg")
+                  ? "bg-cronymax-primary text-white"
+                  : "text-cronymax-caption hover:text-cronymax-title")
               }
             >
               {m.label}
@@ -509,7 +509,7 @@ export function App() {
         </div>
 
         {state.chatMode === "agent" ? (
-          <label className="flex items-center gap-1 text-xs text-cronymax-fg-muted">
+          <label className="flex items-center gap-1 text-xs text-cronymax-caption">
             Agent:
             <select
               value={state.selectedAgent}
@@ -517,7 +517,7 @@ export function App() {
                 dispatch({ type: "setSelectedAgent", name: e.target.value });
                 persistSelectedAgent(e.target.value);
               }}
-              className="rounded border border-cronymax-border bg-cronymax-surface px-1.5 py-0.5 text-xs text-cronymax-fg"
+              className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs text-cronymax-title"
             >
               {state.agents.length === 0 && (
                 <option value="">(no agents)</option>
@@ -530,7 +530,7 @@ export function App() {
             </select>
           </label>
         ) : (
-          <label className="flex items-center gap-1 text-xs text-cronymax-fg-muted">
+          <label className="flex items-center gap-1 text-xs text-cronymax-caption">
             Flow:
             <select
               value={state.selectedFlow}
@@ -538,7 +538,7 @@ export function App() {
                 dispatch({ type: "setSelectedFlow", name: e.target.value });
                 persistSelectedFlow(e.target.value);
               }}
-              className="rounded border border-cronymax-border bg-cronymax-surface px-1.5 py-0.5 text-xs text-cronymax-fg"
+              className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs text-cronymax-title"
             >
               {state.flows.length === 0 && <option value="">(no flows)</option>}
               {state.flows.map((n) => (
@@ -553,7 +553,7 @@ export function App() {
         <button
           type="button"
           onClick={onClear}
-          className="rounded border border-cronymax-border bg-cronymax-surface px-2 py-0.5 text-xs text-cronymax-fg hover:bg-cronymax-surface-2"
+          className="rounded border border-cronymax-border bg-cronymax-base px-2 py-0.5 text-xs text-cronymax-title hover:bg-cronymax-float"
         >
           Clear
         </button>
@@ -576,7 +576,7 @@ export function App() {
 
       <form
         onSubmit={onSubmit}
-        className="flex gap-2 border-t border-cronymax-border bg-cronymax-surface-2 p-2"
+        className="flex gap-2 border-t border-cronymax-border bg-cronymax-float p-2"
       >
         <textarea
           ref={inputRef}
@@ -588,12 +588,12 @@ export function App() {
               : "Send a message…"
           }
           onKeyDown={onKeyDown}
-          className="flex-1 resize-none rounded border border-cronymax-border bg-cronymax-surface px-2 py-1.5 text-sm text-cronymax-fg outline-none focus:border-cronymax-accent"
+          className="flex-1 resize-none rounded border border-cronymax-border bg-cronymax-base px-2 py-1.5 text-sm text-cronymax-title outline-none focus:border-cronymax-primary"
         />
         <button
           type="submit"
           disabled={state.running}
-          className="rounded bg-cronymax-accent px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded bg-cronymax-primary px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {state.running ? "…" : "Send"}
         </button>

@@ -1,4 +1,4 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Component, type ErrorInfo, type ReactNode } from "react";
 
 interface Props {
   children: ReactNode;
@@ -22,20 +22,20 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     // eslint-disable-next-line no-console
-    console.error('[ErrorBoundary]', error, info.componentStack);
+    console.error("[ErrorBoundary]", error, info.componentStack);
   }
 
   render(): ReactNode {
     if (this.state.err) {
       if (this.props.fallback) return this.props.fallback(this.state.err);
       return (
-        <div className="m-4 rounded-popover border border-cronymax-danger bg-cronymax-surface p-4 text-cronymax-fg">
-          <h3 className="text-sm font-semibold text-cronymax-danger mb-2">
+        <div className="m-4 rounded-popover border border-cronymax-error bg-cronymax-base p-4 text-cronymax-title">
+          <h3 className="text-sm font-semibold text-cronymax-error mb-2">
             panel error
           </h3>
-          <pre className="text-xs whitespace-pre-wrap font-mono text-cronymax-fg-muted">
+          <pre className="text-xs whitespace-pre-wrap font-mono text-cronymax-caption">
             {this.state.err.message}
-            {this.state.err.stack ? '\n\n' + this.state.err.stack : ''}
+            {this.state.err.stack ? "\n\n" + this.state.err.stack : ""}
           </pre>
         </div>
       );

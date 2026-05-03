@@ -15,12 +15,12 @@ export function DocumentCard({ thread, flowId, runId }: Props) {
       ? "bg-green-700/40 text-green-200"
       : verdict === "request_changes"
         ? "bg-amber-700/40 text-amber-200"
-        : "bg-cronymax-surface-2 text-cronymax-fg/70";
+        : "bg-cronymax-float text-cronymax-title/70";
 
   const canReview = !!flowId && !!runId;
 
   return (
-    <div className="self-start w-full max-w-[640px] rounded-lg border border-cronymax-border bg-cronymax-surface p-3 text-sm">
+    <div className="self-start w-full max-w-[640px] rounded-lg border border-cronymax-border bg-cronymax-base p-3 text-sm">
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
           <div className="font-mono text-xs opacity-70 truncate">

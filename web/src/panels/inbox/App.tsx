@@ -84,8 +84,8 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen flex-col bg-cronymax-bg text-cronymax-fg">
-      <header className="flex items-center gap-2 border-b border-cronymax-border bg-cronymax-surface px-3 py-2">
+    <div className="flex h-screen flex-col bg-cronymax-body text-cronymax-title">
+      <header className="flex items-center gap-2 border-b border-cronymax-border bg-cronymax-base px-3 py-2">
         <div className="text-sm font-medium">Inbox</div>
         <div className="text-xs opacity-60">
           {unreadCount} unread · {needsActionCount} need action
@@ -99,8 +99,8 @@ export function App() {
               className={
                 "px-2 py-1 text-xs " +
                 (stateFilter === s
-                  ? "bg-cronymax-accent text-white"
-                  : "bg-cronymax-surface hover:bg-cronymax-surface-2")
+                  ? "bg-cronymax-primary text-white"
+                  : "bg-cronymax-base hover:bg-cronymax-float")
               }
               onClick={() => setStateFilter(s)}
             >
@@ -147,7 +147,7 @@ function Row({ row, onRead, onSnooze }: RowProps) {
     <div className="flex items-start gap-2 border-b border-cronymax-border px-3 py-2">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 text-xs">
-          <span className="rounded bg-cronymax-surface-2 px-1.5 py-0.5 font-mono">
+          <span className="rounded bg-cronymax-float px-1.5 py-0.5 font-mono">
             {row.kind || "event"}
           </span>
           <span className="opacity-60 font-mono truncate">{row.flow_id}</span>
@@ -157,8 +157,8 @@ function Row({ row, onRead, onSnooze }: RowProps) {
               (row.state === "unread"
                 ? "bg-amber-700/40 text-amber-200"
                 : row.state === "snoozed"
-                  ? "bg-cronymax-surface-2 text-cronymax-fg/70"
-                  : "bg-cronymax-surface-2 text-cronymax-fg/50")
+                  ? "bg-cronymax-float text-cronymax-title/70"
+                  : "bg-cronymax-float text-cronymax-title/50")
             }
           >
             {row.state}
@@ -172,7 +172,7 @@ function Row({ row, onRead, onSnooze }: RowProps) {
         {row.state !== "read" && (
           <button
             type="button"
-            className="rounded bg-cronymax-accent/80 px-2 py-1 text-xs text-white hover:bg-cronymax-accent"
+            className="rounded bg-cronymax-primary/80 px-2 py-1 text-xs text-white hover:bg-cronymax-primary"
             onClick={onRead}
           >
             Acknowledge
@@ -181,18 +181,18 @@ function Row({ row, onRead, onSnooze }: RowProps) {
         <div className="relative">
           <button
             type="button"
-            className="rounded bg-cronymax-surface-2 px-2 py-1 text-xs hover:bg-cronymax-surface"
+            className="rounded bg-cronymax-float px-2 py-1 text-xs hover:bg-cronymax-base"
             onClick={() => setSnoozeOpen((v) => !v)}
           >
             Snooze ▾
           </button>
           {snoozeOpen && (
-            <div className="absolute right-0 z-10 mt-1 flex flex-col rounded border border-cronymax-border bg-cronymax-surface shadow">
+            <div className="absolute right-0 z-10 mt-1 flex flex-col rounded border border-cronymax-border bg-cronymax-base shadow">
               {SNOOZE_OPTIONS.map((opt) => (
                 <button
                   key={opt.label}
                   type="button"
-                  className="px-3 py-1 text-left text-xs hover:bg-cronymax-surface-2"
+                  className="px-3 py-1 text-left text-xs hover:bg-cronymax-float"
                   onClick={() => {
                     setSnoozeOpen(false);
                     onSnooze(opt.ms);
@@ -203,7 +203,7 @@ function Row({ row, onRead, onSnooze }: RowProps) {
               ))}
               <button
                 type="button"
-                className="px-3 py-1 text-left text-xs hover:bg-cronymax-surface-2"
+                className="px-3 py-1 text-left text-xs hover:bg-cronymax-float"
                 onClick={() => {
                   setSnoozeOpen(false);
                   const hrs = window.prompt("Snooze for how many hours?", "8");

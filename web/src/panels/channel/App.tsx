@@ -30,8 +30,8 @@ export function App() {
   const renderedDocs = new Set<string>();
 
   return (
-    <div className="flex h-screen flex-col bg-cronymax-bg text-cronymax-fg">
-      <header className="flex items-center gap-2 border-b border-cronymax-border bg-cronymax-surface px-3 py-2">
+    <div className="flex h-screen flex-col bg-cronymax-body text-cronymax-title">
+      <header className="flex items-center gap-2 border-b border-cronymax-border bg-cronymax-base px-3 py-2">
         <div className="text-sm font-medium">Channel</div>
         <div className="text-xs opacity-60 font-mono">
           {scope.flow_id || "(no flow)"}
@@ -136,7 +136,7 @@ function RunPill({
   if (!run.last_subkind) return null;
   const cls = run.active
     ? "bg-emerald-700/40 text-emerald-200"
-    : "bg-cronymax-surface-2 text-cronymax-fg/70";
+    : "bg-cronymax-float text-cronymax-title/70";
   return (
     <span className={`rounded px-2 py-0.5 text-[10px] uppercase ${cls}`}>
       {run.last_subkind.replace("_", " ")}

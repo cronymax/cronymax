@@ -109,6 +109,7 @@ void WebTabBehavior::BuildToolbar(TabToolbar* toolbar, TabContext* /*context*/) 
       "\u25C0");  // ◀
   back_btn_->SetEnabled(false);
   back_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
+  back_btn_->SetBackgroundColor(0);
   toolbar->leading()->AddChildView(back_btn_);
 
   fwd_btn_ = CefLabelButton::CreateLabelButton(
@@ -120,6 +121,7 @@ void WebTabBehavior::BuildToolbar(TabToolbar* toolbar, TabContext* /*context*/) 
       "\u25B6");  // ▶
   fwd_btn_->SetEnabled(false);
   fwd_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
+  fwd_btn_->SetBackgroundColor(0);
   toolbar->leading()->AddChildView(fwd_btn_);
 
   refresh_btn_ = CefLabelButton::CreateLabelButton(
@@ -134,6 +136,7 @@ void WebTabBehavior::BuildToolbar(TabToolbar* toolbar, TabContext* /*context*/) 
       }),
       "\u21BB");  // ↻
   refresh_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
+  refresh_btn_->SetBackgroundColor(0);
   toolbar->leading()->AddChildView(refresh_btn_);
 
   // Middle: URL pill.
@@ -163,6 +166,7 @@ void WebTabBehavior::BuildToolbar(TabToolbar* toolbar, TabContext* /*context*/) 
       }),
       "\u2295");  // ⊕
   new_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
+  new_btn_->SetBackgroundColor(0);
   toolbar->trailing()->AddChildView(new_btn_);
 }
 
@@ -205,6 +209,26 @@ void WebTabBehavior::ApplyToolbarState(const ToolbarState& /*state*/) {
   // Web tabs author their own toolbar state from native browser events; no
   // renderer push is expected on this channel for web kind. (The schema
   // permits it for symmetry; we just no-op.)
+}
+
+void WebTabBehavior::ApplyThemeColors(cef_color_t text_fg,
+                                      cef_color_t surface_bg,
+                                      cef_color_t toolbar_bg) {
+  // Update every toolbar widget built in BuildToolbar so they use the
+  // current theme's foreground / surface colors instead of hardcoded values.
+  for (auto* btn : {back_btn_.get(), fwd_btn_.get(), refresh_btn_.get(),
+                    new_btn_.get()}) {
+    if (!btn) continue;
+    btn->SetTextColor(CEF_BUTTON_STATE_NORMAL, text_fg);
+    btn->SetTextColor(CEF_BUTTON_STATE_HOVERED, text_fg);
+    // Match button background to the toolbar panel so Chromium's default
+    // button background (which follows macOS dark-mode) doesn't bleed through.
+    if (toolbar_bg != 0) btn->SetBackgroundColor(toolbar_bg);
+  }
+  if (url_field_) {
+    url_field_->SetBackgroundColor(surface_bg);
+    url_field_->SetTextColor(text_fg);
+  }
 }
 
 void WebTabBehavior::FocusUrlField() {

@@ -30,18 +30,11 @@ const srcDir = resolve(__dirname, "src");
 const panelsDir = resolve(srcDir, "panels");
 
 const panelEntries = {
-  popover: resolve(panelsDir, "popover/index.html"),
   sidebar: resolve(panelsDir, "sidebar/index.html"),
-  terminal: resolve(panelsDir, "terminal/index.html"),
+  popover: resolve(panelsDir, "popover/index.html"),
   chat: resolve(panelsDir, "chat/index.html"),
-  agent: resolve(panelsDir, "agent/index.html"),
-  flow: resolve(panelsDir, "chat/index.html"),
-  channel: resolve(panelsDir, "channel/index.html"),
-  editor: resolve(panelsDir, "editor/index.html"),
-  inbox: resolve(panelsDir, "inbox/index.html"),
-  workbench: resolve(panelsDir, "workbench/index.html"),
+  terminal: resolve(panelsDir, "terminal/index.html"),
   settings: resolve(panelsDir, "settings/index.html"),
-  "popover-chrome": resolve(panelsDir, "popover-chrome/index.html"),
 };
 
 export default defineConfig({

@@ -6,7 +6,7 @@ import type { ThemeMode, ThemeResolved } from "@/types";
 /**
  * `useTheme` — single source of truth for the renderer-side theme state.
  *
- * Behaviour (refine-ui-theme-layout):
+ * Behaviour (refine-cronymax-theme-layout):
  *  - On mount, calls `theme.get` to fetch the persisted mode and the
  *    resolved appearance (system follow has already been computed by
  *    the host).

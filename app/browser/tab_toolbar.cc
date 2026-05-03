@@ -10,13 +10,12 @@ namespace cronymax {
 
 namespace {
 
-// Default dark chrome color (cronymax dark fallback). Mirrors the value
-// referenced in design.md D4 / specs/tab-chrome-theme.
-constexpr cef_color_t kDefaultChromeArgb = 0xFF0E0E10;
+constexpr cef_color_t kDefaultChromeArgb = 0xFF131F1D;
 
-cef_color_t ParseCssColorOrDefault(const std::string& css) {
+cef_color_t ParseCssColorOrDefault(const std::string& css,
+                                   cef_color_t fallback) {
   if (css.empty()) {
-    return kDefaultChromeArgb;
+    return fallback;
   }
   // Accept #RRGGBB and #AARRGGBB only in the skeleton. Full CSS parsing is
   // deferred to Phase 11 (chrome theme pipeline).
@@ -32,7 +31,7 @@ cef_color_t ParseCssColorOrDefault(const std::string& css) {
       return static_cast<cef_color_t>(v);
     }
   }
-  return kDefaultChromeArgb;
+  return fallback;
 }
 
 }  // namespace
@@ -46,23 +45,27 @@ CefRefPtr<CefPanel> TabToolbar::Build() {
   root_box.inside_border_insets = {0, 8, 0, 8};
   root_box.between_child_spacing = 6;
   root_layout_ = root_->SetToBoxLayout(root_box);
-  root_->SetBackgroundColor(kDefaultChromeArgb);
+  if (default_chrome_argb_ == 0) default_chrome_argb_ = kDefaultChromeArgb;
+  root_->SetBackgroundColor(default_chrome_argb_);
 
   leading_ = CefPanel::CreatePanel(nullptr);
   CefBoxLayoutSettings slot_box;
   slot_box.horizontal = true;
   slot_box.between_child_spacing = 4;
   leading_->SetToBoxLayout(slot_box);
+  leading_->SetBackgroundColor(default_chrome_argb_);
   root_->AddChildView(leading_);
   root_layout_->SetFlexForView(leading_, 0);
 
   middle_ = CefPanel::CreatePanel(nullptr);
   middle_->SetToBoxLayout(slot_box);
+  middle_->SetBackgroundColor(default_chrome_argb_);
   root_->AddChildView(middle_);
   root_layout_->SetFlexForView(middle_, 1);
 
   trailing_ = CefPanel::CreatePanel(nullptr);
   trailing_->SetToBoxLayout(slot_box);
+  trailing_->SetBackgroundColor(default_chrome_argb_);
   root_->AddChildView(trailing_);
   root_layout_->SetFlexForView(trailing_, 0);
 
@@ -73,7 +76,25 @@ void TabToolbar::SetChromeColor(const std::string& css_color_or_empty) {
   if (!root_) {
     return;
   }
-  root_->SetBackgroundColor(ParseCssColorOrDefault(css_color_or_empty));
+  current_override_ = css_color_or_empty;
+  const cef_color_t color =
+      ParseCssColorOrDefault(css_color_or_empty, default_chrome_argb_);
+  root_->SetBackgroundColor(color);
+  if (leading_)  leading_->SetBackgroundColor(color);
+  if (middle_)   middle_->SetBackgroundColor(color);
+  if (trailing_) trailing_->SetBackgroundColor(color);
+}
+
+void TabToolbar::SetDefaultChromeArgb(cef_color_t argb) {
+  if (argb == 0) return;
+  default_chrome_argb_ = argb;
+  if (!root_ || !current_override_.empty()) {
+    return;
+  }
+  root_->SetBackgroundColor(default_chrome_argb_);
+  if (leading_)  leading_->SetBackgroundColor(default_chrome_argb_);
+  if (middle_)   middle_->SetBackgroundColor(default_chrome_argb_);
+  if (trailing_) trailing_->SetBackgroundColor(default_chrome_argb_);
 }
 
 }  // namespace cronymax

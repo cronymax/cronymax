@@ -68,7 +68,7 @@ export function Composer({ flowId, runId, knownAgents = [] }: Props) {
   return (
     <form
       onSubmit={onSubmit}
-      className="border-t border-cronymax-border bg-cronymax-surface p-2"
+      className="border-t border-cronymax-border bg-cronymax-base p-2"
     >
       {mentions.length > 0 && (
         <div className="mb-1 flex flex-wrap gap-1">
@@ -78,7 +78,7 @@ export function Composer({ flowId, runId, knownAgents = [] }: Props) {
               className={
                 "rounded px-1.5 py-0.5 text-[11px] font-mono " +
                 (m.known
-                  ? "bg-cronymax-surface-2 text-cronymax-fg/80"
+                  ? "bg-cronymax-float text-cronymax-title/80"
                   : "bg-red-900/40 text-red-200 ring-1 ring-red-500/40")
               }
               title={m.known ? undefined : "unknown agent"}
@@ -94,10 +94,10 @@ export function Composer({ flowId, runId, knownAgents = [] }: Props) {
         onKeyDown={onKey}
         rows={2}
         placeholder="Message channel… (Cmd/Ctrl+Enter to send, @mention agents)"
-        className="w-full resize-none rounded border border-cronymax-border bg-cronymax-surface-2 px-2 py-1 text-sm text-cronymax-fg outline-none focus:border-cronymax-accent"
+        className="w-full resize-none rounded border border-cronymax-border bg-cronymax-float px-2 py-1 text-sm text-cronymax-title outline-none focus:border-cronymax-primary"
       />
       <div className="mt-1 flex items-center justify-between">
-        <div className="text-[11px] text-cronymax-fg/60">
+        <div className="text-[11px] text-cronymax-title/60">
           {unknown.length > 0
             ? `Unknown: ${unknown.map((u) => "@" + u).join(", ")}`
             : error || ""}
@@ -105,7 +105,7 @@ export function Composer({ flowId, runId, knownAgents = [] }: Props) {
         <button
           type="submit"
           disabled={!canSend}
-          className="rounded bg-cronymax-accent px-3 py-1 text-xs text-white disabled:opacity-40"
+          className="rounded bg-cronymax-primary px-3 py-1 text-xs text-white disabled:opacity-40"
         >
           {sending ? "Sending…" : "Send"}
         </button>

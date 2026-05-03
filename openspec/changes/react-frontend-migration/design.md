@@ -113,7 +113,7 @@ const Channels = {
 @import "tailwindcss";
 
 @theme {
-  --color-cronymax-bg: #0d0e10;
+  --color-cronymax: #0d0e10;
   --color-cronymax-fg: #e8e8ea;
   --color-cronymax-accent: #7c5cff;
   --radius-popover: 12px;

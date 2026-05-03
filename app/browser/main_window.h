@@ -50,13 +50,16 @@ class MainWindow : public CefWindowDelegate,
   void BuildChrome(CefRefPtr<CefWindow> window);
 
   // refine-ui-theme-layout: chrome color descriptor pushed to every
-  // native surface (titlebar, sidebar, content frame, NSWindow
-  // background, content frame border).
+  // native surface. This mirrors the shell-relevant semantic token
+  // subset from theme.css rather than the full renderer palette.
   struct ThemeChrome {
-    cef_color_t window_bg;   // chrome fill (titlebar, sidebar, body)
-    cef_color_t border;      // 1 px content frame outline
-    cef_color_t fg;          // primary text on chrome
-    cef_color_t fg_muted;    // secondary text on chrome
+    cef_color_t bg_body;       // titlebar, sidebar, window background
+    cef_color_t bg_base;       // content frame base surface
+    cef_color_t bg_float;      // floating surfaces (mirrored to renderer)
+    cef_color_t bg_mask;       // scrims/overlays (mirrored to renderer)
+    cef_color_t border;        // 1 px content frame outline
+    cef_color_t text_title;    // primary text on shell surfaces
+    cef_color_t text_caption;  // secondary text on shell surfaces
   };
   // Compute the canonical chrome for a resolved appearance.
   static ThemeChrome ChromeFor(const std::string& resolved /*"light"|"dark"*/);
@@ -175,6 +178,9 @@ class MainWindow : public CefWindowDelegate,
   // native-title-bar: (re)install the macOS AppKit drag overlay above the
   // title-bar spacer so dragging from that strip moves the window.
   void RefreshTitleBarDragRegion();
+  // Arc-style: change the top and bottom insets of content_outer_ and force
+  // re-layout. Used to vertically center the content card when a popover is open.
+  void SetContentOuterVInsets(int top, int bottom);
 
   // refine-ui-theme-layout: persisted theme mode (`system|light|dark`)
   // and the most recently applied chrome (so subsequent paints can

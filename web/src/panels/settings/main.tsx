@@ -7,7 +7,7 @@ installThemeMirror();
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { App } from "./App";
-import { Provider } from "../agent/store";
+import { Provider } from "./store";
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("root element missing");

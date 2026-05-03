@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <string>
+
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_panel.h"
 
@@ -27,10 +29,13 @@ class TabToolbar {
   CefRefPtr<CefPanel> trailing() const { return trailing_; }
 
   // Replace the toolbar background (chrome theme application). Empty string
-  // restores default dark.
+  // restores the current default theme color.
   void SetChromeColor(const std::string& css_color_or_empty);
+  void SetDefaultChromeArgb(cef_color_t argb);
 
  private:
+  cef_color_t default_chrome_argb_ = 0;
+  std::string current_override_;
   CefRefPtr<CefPanel> root_;
   CefRefPtr<CefBoxLayout> root_layout_;
   CefRefPtr<CefPanel> leading_;

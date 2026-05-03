@@ -38,6 +38,8 @@ class WebTabBehavior : public TabBehavior {
   void BuildToolbar(TabToolbar* toolbar, TabContext* context) override;
   CefRefPtr<CefView> BuildContent(TabContext* context) override;
   void ApplyToolbarState(const ToolbarState& state) override;
+  void ApplyThemeColors(cef_color_t text_fg, cef_color_t surface_bg,
+                        cef_color_t toolbar_bg) override;
   int BrowserId() const override { return browser_id_; }
 
   // Programmatic navigation API used by MainWindow shell callbacks.

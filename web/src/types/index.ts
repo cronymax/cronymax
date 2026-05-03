@@ -268,11 +268,14 @@ export type ThemeMode = z.infer<typeof ThemeModeSchema>;
 export const ThemeResolvedSchema = z.enum(["light", "dark"]);
 export type ThemeResolved = z.infer<typeof ThemeResolvedSchema>;
 
-const ChromeColorsSchema = z.object({
-  window_bg: z.string(),
+const ThemeChromeSchema = z.object({
+  bg_body: z.string(),
+  bg_base: z.string(),
+  bg_float: z.string(),
+  bg_mask: z.string(),
   border: z.string(),
-  fg: z.string(),
-  fg_muted: z.string(),
+  text_title: z.string(),
+  text_caption: z.string(),
 });
 
 export const ThemeGetResponseSchema = z.object({
@@ -283,7 +286,7 @@ export const ThemeSetPayloadSchema = z.object({ mode: ThemeModeSchema });
 export const ThemeChangedPayloadSchema = z.object({
   mode: ThemeModeSchema,
   resolved: ThemeResolvedSchema,
-  chrome: ChromeColorsSchema,
+  chrome: ThemeChromeSchema,
 });
 
 // ── shell.settings_popover_open (refine-ui-theme-layout) ──────────────

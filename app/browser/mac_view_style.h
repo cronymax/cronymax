@@ -77,6 +77,12 @@ void StyleContentBrowserView(void* window_nsview,
                              cef_color_t bg_argb,
                              const CefRect& card_rect);
 
+// Apply a soft drop shadow to the embedded content BrowserView so the tab
+// card appears to float above the window background. Takes the BrowserView's
+// own CefWindowHandle (bv->GetBrowser()->GetHost()->GetWindowHandle()).
+// Safe to call multiple times; subsequent calls refresh the shadow.
+void AddContentCardShadow(void* bv_nsview);
+
 // Make a CEF BrowserView's NSView fully transparent (no opaque chrome
 // fill) so the window's NSVisualEffectView vibrancy shows through the
 // transparent HTML body. Used for the sidebar / shell panels.

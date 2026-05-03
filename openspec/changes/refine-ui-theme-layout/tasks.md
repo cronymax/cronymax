@@ -1,6 +1,6 @@
 ## 1. Theme tokens (renderer)
 
-- [x] 1.1 In `web/src/styles/theme.css`, split the existing `@theme` block into a Light token set on `:root` and a Dark token set on `[data-theme="dark"]`. Cover at minimum: `--color-cronymax-bg`, `-surface`, `-surface-2`, `-border`, `-fg`, `-fg-muted`, `-accent`, `-accent-soft`, `-success`, `-danger`, `-warning`.
+- [x] 1.1 In `web/src/styles/theme.css`, split the existing `@theme` block into a Light token set on `:root` and a Dark token set on `[data-theme="dark"]`. Cover at minimum: `--color-cronymax`, `-surface`, `-surface-2`, `-border`, `-fg`, `-fg-muted`, `-accent`, `-accent-soft`, `-success`, `-danger`, `-warning`.
 - [x] 1.2 Add a `@media (prefers-color-scheme: dark) { :root:not([data-theme]) { ... } }` block that mirrors the Dark set so `data-theme` absent (initial paint) still respects the OS in `system` mode.
 - [x] 1.3 Pick the Light palette: `bg #f6f6f8`, `surface #ffffff`, `surface-2 #efeff3`, `border #d8d8de`, `fg #18181c`, `fg-muted #5f6470`. Keep the existing Dark palette as is for the Dark set.
 - [ ] 1.4 Build the web bundle (`cmake --build build --target cronymax_web -j 8`); verify both palettes render by manually toggling `data-theme` in DevTools.
@@ -29,7 +29,7 @@
 
 - [x] 5.1 Add `struct ThemeChrome { cef_color_t window_bg; cef_color_t border; cef_color_t fg; cef_color_t fg_muted; };` to `app/browser/main_window.h` and a `ThemeChrome current_chrome_;` member plus `void ApplyThemeChrome(const ThemeChrome&);`.
 - [x] 5.2 Refactor `BuildTitleBar` to call `panel->SetBackgroundColor(current_chrome_.window_bg)` instead of `kTitleBarBg`. Remove the `kTitleBarBg = 0xFF14141A` constant.
-- [x] 5.3 Refactor the sidebar background path: drop the inline `style={{ backgroundColor: "#14141a" }}` in `web/src/panels/sidebar/App.tsx` and replace with `bg-cronymax-bg`. Set the `BrowserView`'s `background_color` to a transparent color so the underlying panel paints through.
+- [x] 5.3 Refactor the sidebar background path: drop the inline `style={{ backgroundColor: "#14141a" }}` in `web/src/panels/sidebar/App.tsx` and replace with `bg-cronymax`. Set the `BrowserView`'s `background_color` to a transparent color so the underlying panel paints through.
 - [x] 5.4 In `app/browser/mac_view_style.mm`, change `StyleMainWindowTranslucent` to read the chrome `window_bg` from a thread-local-or-passed value rather than the hard-coded `#14141a`. Add `void SetMainWindowBackgroundColor(NSWindow*, cef_color_t)`.
 - [x] 5.5 `ApplyThemeChrome` SHALL: call `titlebar_panel_->SetBackgroundColor`, `body_panel_->SetBackgroundColor`, the macOS window background helper, and update the content frame's border CALayer color (see Section 6).
 

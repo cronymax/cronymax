@@ -4,7 +4,7 @@ import type { Space, TabSummary } from "@/types";
 /**
  * Sidebar state.
  *
- * `refine-ui-theme-layout` (per the design's Decision 6) collapses the
+ * `refine-cronymax-theme-layout` (per the design's Decision 6) collapses the
  * legacy three-list layout (tabs/terminals/chats with separate active ids
  * and a `panel: Panel` enum) into a single unified `tabs: TabSummary[]`
  * with one `activeTabId: string | null`. The native shell broadcasts a

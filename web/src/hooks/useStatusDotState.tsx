@@ -81,7 +81,7 @@ export function useStatusDotState(): StatusDot {
 }
 
 const COLORS: Record<StatusDot, string> = {
-  off: "bg-cronymax-fg/20",
+  off: "bg-cronymax-title/20",
   activity: "bg-emerald-400 animate-pulse",
   attention: "bg-amber-400",
   error: "bg-red-500",

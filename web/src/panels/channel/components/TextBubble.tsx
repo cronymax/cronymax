@@ -12,8 +12,8 @@ export function TextBubble({ event }: Props) {
       className={
         "max-w-[80%] rounded-lg px-3 py-2 text-sm " +
         (isMe
-          ? "self-end bg-cronymax-accent text-white"
-          : "self-start bg-cronymax-surface-2 text-cronymax-fg")
+          ? "self-end bg-cronymax-primary text-white"
+          : "self-start bg-cronymax-float text-cronymax-title")
       }
     >
       <div className="text-[10px] uppercase tracking-wide opacity-60">

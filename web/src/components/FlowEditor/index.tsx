@@ -45,9 +45,9 @@ const NODE_W = 200;
 const NODE_H = 72;
 
 const KIND_BG: Record<string, string> = {
-  worker: "bg-cronymax-accent/15 border-cronymax-accent/40",
+  worker: "bg-cronymax-primary/15 border-cronymax-primary/40",
   reviewer: "bg-purple-500/15 border-purple-500/40",
-  unknown: "bg-cronymax-surface-2 border-cronymax-border",
+  unknown: "bg-cronymax-float border-cronymax-border",
 };
 
 function kindBg(kind: string | undefined): string {
@@ -96,7 +96,7 @@ function FieldGroup({
 }) {
   return (
     <div className="mb-3">
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-cronymax-fg-muted">
+      <div className="mb-1 text-[11px] uppercase tracking-wide text-cronymax-caption">
         {label}
       </div>
       {children}
@@ -105,7 +105,7 @@ function FieldGroup({
 }
 
 const INPUT_CLS =
-  "w-full rounded border border-cronymax-border bg-cronymax-surface px-2 py-1 text-xs text-cronymax-fg outline-none focus:border-cronymax-accent";
+  "w-full rounded border border-cronymax-border bg-cronymax-base px-2 py-1 text-xs text-cronymax-title outline-none focus:border-cronymax-primary";
 
 export function Flows() {
   // The graph panel exposes its own Provider so its store stays isolated
@@ -388,19 +388,19 @@ export function FlowEditor() {
 
   // ── render ──────────────────────────────────────────────────────────────
   const btnCls =
-    "rounded border border-cronymax-border bg-cronymax-surface px-2 py-1 text-xs text-cronymax-fg hover:bg-cronymax-surface-2";
+    "rounded border border-cronymax-border bg-cronymax-base px-2 py-1 text-xs text-cronymax-title hover:bg-cronymax-float";
   const btnDangerCls =
     "rounded border border-red-500/50 bg-red-500/10 px-2 py-1 text-xs text-red-300 hover:bg-red-500/20";
 
   return (
-    <main className="flex h-full flex-col bg-cronymax-surface text-cronymax-fg">
+    <main className="flex h-full flex-col bg-cronymax-base text-cronymax-title">
       {/* Toolbar */}
-      <header className="flex flex-wrap items-center gap-2 border-b border-cronymax-border bg-cronymax-surface-2 px-3 py-2 text-xs">
+      <header className="flex flex-wrap items-center gap-2 border-b border-cronymax-border bg-cronymax-float px-3 py-2 text-xs">
         <span className="font-semibold">Flow</span>
         <select
           value={state.activeFlowName}
           onChange={(e) => onSelectFlow(e.target.value)}
-          className="rounded border border-cronymax-border bg-cronymax-surface px-1.5 py-0.5 text-xs"
+          className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs"
           title="Switch flow"
         >
           {state.flowNames.length === 0 ? (
@@ -420,7 +420,7 @@ export function FlowEditor() {
             dispatch({ type: "setFlowNameInput", value: e.target.value })
           }
           placeholder="flow name"
-          className="rounded border border-cronymax-border bg-cronymax-surface px-1.5 py-0.5 text-xs outline-none focus:border-cronymax-accent"
+          className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs outline-none focus:border-cronymax-primary"
         />
         <div className="ml-auto flex items-center gap-1.5">
           <button
@@ -461,7 +461,7 @@ export function FlowEditor() {
       <div className="flex flex-1 overflow-hidden">
         {/* Canvas */}
         <div
-          className="relative flex-1 overflow-auto bg-cronymax-surface"
+          className="relative flex-1 overflow-auto bg-cronymax-base"
           onClick={(e) => {
             if (e.target === e.currentTarget) {
               dispatch({ type: "select", id: null });
@@ -542,7 +542,7 @@ export function FlowEditor() {
                 minHeight: NODE_H,
               };
               const ring = isSelected
-                ? "ring-2 ring-cronymax-accent"
+                ? "ring-2 ring-cronymax-primary"
                 : isRunning
                   ? "ring-2 ring-yellow-400 animate-pulse"
                   : isDone
@@ -569,7 +569,7 @@ export function FlowEditor() {
                     {isLead && (
                       <span
                         title="Lead agent: handles unaddressed messages and cannot be deleted."
-                        className="rounded bg-cronymax-accent/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-cronymax-accent"
+                        className="rounded bg-cronymax-primary/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-cronymax-primary"
                       >
                         Lead
                       </span>
@@ -585,14 +585,14 @@ export function FlowEditor() {
                           e.stopPropagation();
                           dispatch({ type: "deleteNode", id: n.id });
                         }}
-                        className="text-cronymax-fg-muted hover:text-red-300"
+                        className="text-cronymax-caption hover:text-red-300"
                         title="Delete"
                       >
                         ×
                       </button>
                     )}
                   </div>
-                  <code className="block truncate text-[11px] text-cronymax-fg-muted">
+                  <code className="block truncate text-[11px] text-cronymax-caption">
                     {previewLine(n) || "no doc-type / reviewers set"}
                   </code>
                 </div>
@@ -645,7 +645,7 @@ export function FlowEditor() {
       {/* Trace bar */}
       <section
         className={
-          "border-t border-cronymax-border bg-cronymax-surface-2 transition-all " +
+          "border-t border-cronymax-border bg-cronymax-float transition-all " +
           (traceOpen ? "h-40" : "h-7")
         }
       >
@@ -653,14 +653,14 @@ export function FlowEditor() {
           <button
             type="button"
             onClick={() => setTraceOpen((v) => !v)}
-            className="text-cronymax-fg-muted hover:text-cronymax-fg"
+            className="text-cronymax-caption hover:text-cronymax-title"
           >
             Trace {traceOpen ? "▾" : "▸"}
           </button>
           <button
             type="button"
             onClick={() => dispatch({ type: "clearTrace" })}
-            className="text-cronymax-fg-muted hover:text-cronymax-fg"
+            className="text-cronymax-caption hover:text-cronymax-title"
           >
             Clear
           </button>
@@ -668,7 +668,7 @@ export function FlowEditor() {
         {traceOpen && (
           <pre
             ref={traceLogRef}
-            className="h-[calc(100%-1.75rem)] overflow-auto whitespace-pre-wrap break-words p-2 font-mono text-[11px] text-cronymax-fg-muted"
+            className="h-[calc(100%-1.75rem)] overflow-auto whitespace-pre-wrap break-words p-2 font-mono text-[11px] text-cronymax-caption"
           >
             {state.trace}
           </pre>
@@ -727,15 +727,15 @@ function Inspector({
 
   if (!node) {
     return (
-      <aside className="flex h-full w-[320px] flex-col border-l border-cronymax-border bg-cronymax-surface-2">
+      <aside className="flex h-full w-[320px] flex-col border-l border-cronymax-border bg-cronymax-float">
         <div className="flex items-center justify-between border-b border-cronymax-border px-3 py-2 text-sm">
           <span>Inspector</span>
         </div>
-        <p className="px-3 py-2 text-xs text-cronymax-fg-muted">
+        <p className="px-3 py-2 text-xs text-cronymax-caption">
           Click a node to edit which Agent it represents, what doc-type it
           produces, and which reviewers should validate that document.
         </p>
-        <p className="px-3 py-2 text-xs text-cronymax-fg-muted">
+        <p className="px-3 py-2 text-xs text-cronymax-caption">
           Click an edge label to set the doc-type carried over the edge or
           require human approval.
         </p>
@@ -758,7 +758,7 @@ function Inspector({
   }
 
   return (
-    <aside className="flex h-full w-[320px] flex-col border-l border-cronymax-border bg-cronymax-surface-2">
+    <aside className="flex h-full w-[320px] flex-col border-l border-cronymax-border bg-cronymax-float">
       <div className="flex items-center justify-between border-b border-cronymax-border px-3 py-2 text-sm">
         <span className="truncate">
           {kind === "reviewer" ? "Reviewer" : "Agent"}: {node.name}
@@ -766,7 +766,7 @@ function Inspector({
         <button
           type="button"
           onClick={onClose}
-          className="text-cronymax-fg-muted hover:text-cronymax-fg"
+          className="text-cronymax-caption hover:text-cronymax-title"
         >
           ×
         </button>
@@ -820,7 +820,7 @@ function Inspector({
             <FieldGroup label="Reviewers">
               {state.agentCatalog.filter((a) => a.kind === "reviewer")
                 .length === 0 ? (
-                <div className="text-[11px] text-cronymax-fg-muted">
+                <div className="text-[11px] text-cronymax-caption">
                   No reviewer agents registered.
                 </div>
               ) : (
@@ -838,7 +838,7 @@ function Inspector({
                           onChange={() => toggleReviewer(a.name)}
                         />
                         <span>{a.name}</span>
-                        <span className="text-[10px] text-cronymax-fg-muted">
+                        <span className="text-[10px] text-cronymax-caption">
                           {a.llm}
                         </span>
                       </label>
@@ -849,7 +849,7 @@ function Inspector({
           </>
         )}
 
-        <div className="mt-4 text-[11px] text-cronymax-fg-muted">
+        <div className="mt-4 text-[11px] text-cronymax-caption">
           Node #{node.id} · kind={kind}
         </div>
       </div>
@@ -875,13 +875,13 @@ function EdgeInspector({
   const from = state.nodes.find((n) => n.id === edge.from_id);
   const to = state.nodes.find((n) => n.id === edge.to_id);
   return (
-    <aside className="flex h-full w-[320px] flex-col border-l border-cronymax-border bg-cronymax-surface-2">
+    <aside className="flex h-full w-[320px] flex-col border-l border-cronymax-border bg-cronymax-float">
       <div className="flex items-center justify-between border-b border-cronymax-border px-3 py-2 text-sm">
         <span className="truncate">Edge</span>
         <button
           type="button"
           onClick={onClose}
-          className="text-cronymax-fg-muted hover:text-cronymax-fg"
+          className="text-cronymax-caption hover:text-cronymax-title"
         >
           ×
         </button>
@@ -966,7 +966,7 @@ function AgentPicker({
       onClick={onClose}
     >
       <div
-        className="w-[420px] max-h-[70vh] overflow-auto rounded-md border border-cronymax-border bg-cronymax-surface-2 p-3 shadow-xl"
+        className="w-[420px] max-h-[70vh] overflow-auto rounded-md border border-cronymax-border bg-cronymax-float p-3 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-2 flex items-center justify-between">
@@ -974,13 +974,13 @@ function AgentPicker({
           <button
             type="button"
             onClick={onClose}
-            className="text-cronymax-fg-muted hover:text-cronymax-fg"
+            className="text-cronymax-caption hover:text-cronymax-title"
           >
             ×
           </button>
         </div>
         {list.length === 0 ? (
-          <p className="text-xs text-cronymax-fg-muted">
+          <p className="text-xs text-cronymax-caption">
             No matching agents are registered. Define agents under your
             workspace's <code>agents/</code> directory and reload.
           </p>
@@ -991,10 +991,10 @@ function AgentPicker({
                 <button
                   type="button"
                   onClick={() => onPick(a.name, a.kind)}
-                  className="flex w-full items-center justify-between rounded border border-cronymax-border bg-cronymax-surface px-2 py-1.5 text-left text-xs hover:bg-cronymax-surface-2"
+                  className="flex w-full items-center justify-between rounded border border-cronymax-border bg-cronymax-base px-2 py-1.5 text-left text-xs hover:bg-cronymax-float"
                 >
                   <span className="font-medium">{a.name}</span>
-                  <span className="text-[10px] text-cronymax-fg-muted">
+                  <span className="text-[10px] text-cronymax-caption">
                     {a.kind} · {a.llm}
                   </span>
                 </button>

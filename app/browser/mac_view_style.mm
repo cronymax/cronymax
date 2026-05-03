@@ -26,6 +26,41 @@ NSColor* ColorFromArgb(cef_color_t argb) {
   return [NSColor colorWithSRGBRed:r green:g blue:b alpha:a];
 }
 
+// Build a CGPath (in CALayer non-flipped coordinates) for a rectangle
+// with per-corner rounding driven by a CACornerMask. Ownership: caller
+// must CGPathRelease the returned path.
+CGPathRef RoundedRectPathForLayer(CGRect r, CGFloat radius,
+                                  CACornerMask corners) {
+  // CA non-flipped: minY=bottom, maxY=top.
+  const CGFloat blr = (corners & kCALayerMinXMinYCorner) ? radius : 0;  // BL
+  const CGFloat brr = (corners & kCALayerMaxXMinYCorner) ? radius : 0;  // BR
+  const CGFloat tlr = (corners & kCALayerMinXMaxYCorner) ? radius : 0;  // TL
+  const CGFloat trr = (corners & kCALayerMaxXMaxYCorner) ? radius : 0;  // TR
+  const CGFloat minX = CGRectGetMinX(r), maxX = CGRectGetMaxX(r);
+  const CGFloat minY = CGRectGetMinY(r), maxY = CGRectGetMaxY(r);
+  CGMutablePathRef p = CGPathCreateMutable();
+  // Start: top-left after corner.
+  CGPathMoveToPoint(p, NULL, minX + tlr, maxY);
+  // Top edge → top-right corner.
+  CGPathAddLineToPoint(p, NULL, maxX - trr, maxY);
+  if (trr > 0) CGPathAddArcToPoint(p, NULL, maxX, maxY, maxX, maxY - trr, trr);
+  else         CGPathAddLineToPoint(p, NULL, maxX, maxY);
+  // Right edge → bottom-right corner.
+  CGPathAddLineToPoint(p, NULL, maxX, minY + brr);
+  if (brr > 0) CGPathAddArcToPoint(p, NULL, maxX, minY, maxX - brr, minY, brr);
+  else         CGPathAddLineToPoint(p, NULL, maxX, minY);
+  // Bottom edge → bottom-left corner.
+  CGPathAddLineToPoint(p, NULL, minX + blr, minY);
+  if (blr > 0) CGPathAddArcToPoint(p, NULL, minX, minY, minX, minY + blr, blr);
+  else         CGPathAddLineToPoint(p, NULL, minX, minY);
+  // Left edge → top-left corner.
+  CGPathAddLineToPoint(p, NULL, minX, maxY - tlr);
+  if (tlr > 0) CGPathAddArcToPoint(p, NULL, minX, maxY, minX + tlr, maxY, tlr);
+  else         CGPathAddLineToPoint(p, NULL, minX, maxY);
+  CGPathCloseSubpath(p);
+  return p;
+}
+
 }  // namespace
 }  // namespace cronymax
 
@@ -49,28 +84,74 @@ void StyleOverlayBrowserView(void* nsview_ptr,
   if (!nsview_ptr) return;
   NSView* view = (__bridge NSView*)nsview_ptr;
 
-  // Round the requested corners on the BrowserView's NSView itself.
-  view.wantsLayer = YES;
-  if (CALayer* layer = view.layer) {
-    layer.cornerRadius = radius;
-    layer.maskedCorners = ToCACornerMask(corner_mask);
-    layer.masksToBounds = YES;
+  const CACornerMask cm = ToCACornerMask(corner_mask);
+  const CGFloat r = (CGFloat)radius;
+
+  // Find the overlay root NSView — the topmost NSView in this overlay
+  // widget's own view hierarchy (direct child of the main window's
+  // contentView). CEF wraps the BrowserView in multiple intermediate NSViews
+  // (BrowserView → ContentsView → Widget NSView) so we must find the root to
+  // apply the mask there, ensuring ALL sublayers are clipped.
+  NSView* windowContent = view.window ? view.window.contentView : nil;
+  NSView* overlayRoot = view;
+  {
+    NSView* cur = view;
+    while (cur.superview && cur.superview != windowContent) {
+      cur = cur.superview;
+    }
+    overlayRoot = cur;
   }
 
-  // Drop shadow lives on the parent overlay container so it can render
-  // outside the rounded child. CEF places each overlay BrowserView into its
-  // own host NSView; that's what we want to shadow. Walk up one level so we
-  // don't paint into the clipped layer above.
-  if (!with_shadow) return;
-  NSView* host = view.superview;
-  if (!host) return;
-  host.wantsLayer = YES;
-  if (CALayer* hl = host.layer) {
-    hl.masksToBounds = NO;
-    hl.shadowColor = [NSColor blackColor].CGColor;
-    hl.shadowOpacity = 0.35f;
-    hl.shadowRadius = 28.0f;
-    hl.shadowOffset = CGSizeMake(0, -10);
+  // Clear every intermediate CALayer background so the corner regions exposed
+  // by the mask appear transparent rather than filled with opaque gray.
+  for (NSView* anc = view;
+       anc && anc != windowContent;
+       anc = anc.superview) {
+    anc.wantsLayer = YES;
+    if (CALayer* al = anc.layer) {
+      al.backgroundColor = [NSColor clearColor].CGColor;
+      al.masksToBounds = NO;
+    }
+  }
+
+  // Clip the overlay to rounded corners using a CAShapeLayer mask on the
+  // overlay root layer.
+  //
+  // WHY NOT cornerRadius+masksToBounds:
+  // Chromium's compositor manages its own IOSurface-backed CALayer subtree.
+  // On macOS, cornerRadius+masksToBounds on the NSView's backing layer does
+  // not reliably clip these IOSurface sublayers — they composite directly into
+  // the parent bypassing the cornerRadius clip.  A layer.mask IS applied by
+  // WindowServer at blend time to the full composited output of the layer
+  // (including all IOSurface sublayers), so it works correctly.
+  //
+  // WHY masksToBounds = NO:
+  // The drop shadow must render outside the layer's bounds rectangle, so
+  // masksToBounds must stay off.  The mask clips the visual content while
+  // leaving the shadow free to bleed outside.
+  overlayRoot.wantsLayer = YES;
+  if (CALayer* rl = overlayRoot.layer) {
+    rl.masksToBounds = NO;
+
+    CAShapeLayer* shapeMask = [CAShapeLayer layer];
+    CGPathRef maskPath = RoundedRectPathForLayer(rl.bounds, r, cm);
+    shapeMask.path = maskPath;
+    CGPathRelease(maskPath);
+    rl.mask = shapeMask;
+
+    if (with_shadow) {
+      rl.shadowColor   = [NSColor blackColor].CGColor;
+      rl.shadowOpacity = 0.55f;
+      rl.shadowRadius  = 44.0f;
+      rl.shadowOffset  = CGSizeMake(0, -18);
+      // Explicit shadow path so the shadow follows the rounded corners
+      // regardless of how CA computes the silhouette with a mask present.
+      CGPathRef sp = RoundedRectPathForLayer(rl.bounds, r, cm);
+      rl.shadowPath = sp;
+      CGPathRelease(sp);
+    } else {
+      rl.shadowOpacity = 0.0f;
+    }
   }
 }
 
@@ -140,6 +221,70 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
     cl.masksToBounds = YES;
     cl.backgroundColor = chromeColor.CGColor;
   }
+
+  // Vertically center the traffic-light buttons in our 38 pt custom titlebar.
+  // This must be deferred to the NEXT run-loop cycle: the style-mask changes
+  // above trigger an AppKit layout pass that repositions the buttons to their
+  // natural positions; if we set frames synchronously here, that layout pass
+  // runs afterwards and overwrites us.
+  // We use contentLayoutRect to measure the actual native titlebar height
+  // (avoids any hardcoded assumption about the OS default) and shift each
+  // button down by (kTitleBarH - nativeH) / 2.  If the button's superview
+  // (_NSTitlebarContainerView) is shorter than kTitleBarH we expand it first
+  // so the button can actually land at the computed y.
+  dispatch_async(dispatch_get_main_queue(), ^{
+    // Block retains |window| in MRC — safe since the window outlives this tick.
+    NSWindow* w = window;
+    if (!w) return;
+    const CGFloat kTitleBarH = 38.0;
+
+    // Actual native titlebar height = window height − "safe" content height.
+    NSRect clr  = w.contentLayoutRect;
+    CGFloat winH = NSHeight(w.contentView.bounds);
+    CGFloat natH = winH - NSHeight(clr);
+    if (natH < 4.0) return;  // window not yet laid out, skip
+
+    // How far to move each button DOWN so it centres in kTitleBarH.
+    CGFloat shift = (kTitleBarH - natH) * 0.5;
+    if (shift < 0.5) return;  // already centred
+
+    NSButton* btns[3] = {
+        [w standardWindowButton:NSWindowCloseButton],
+        [w standardWindowButton:NSWindowMiniaturizeButton],
+        [w standardWindowButton:NSWindowZoomButton],
+    };
+
+    // The container (_NSTitlebarContainerView) is the direct child of
+    // _NSThemeFrame that owns the buttons.  Walk up from the first button
+    // to find it; if its height < kTitleBarH the desired origin.y would be
+    // negative, so we expand it downward first.
+    NSView* themeFrame = w.contentView.superview;
+    NSView* container  = nil;
+    if (btns[0]) {
+      NSView* v = btns[0].superview;
+      while (v && v.superview && v.superview != themeFrame) v = v.superview;
+      if (v && v.superview == themeFrame) container = v;
+    }
+    if (container && NSHeight(container.bounds) < kTitleBarH) {
+      [container setTranslatesAutoresizingMaskIntoConstraints:YES];
+      NSRect cf = container.frame;
+      CGFloat extra = kTitleBarH - cf.size.height;
+      cf.origin.y    -= extra;
+      cf.size.height  = kTitleBarH;
+      container.frame = cf;
+      container.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+      NSButton* btn = btns[i];
+      if (!btn) continue;
+      [btn setTranslatesAutoresizingMaskIntoConstraints:YES];
+      NSRect f = btn.frame;
+      f.origin.y -= shift;
+      if (f.origin.y < 0) f.origin.y = 0;
+      btn.frame = f;
+    }
+  });
 }
 
 }  // namespace cronymax
@@ -250,6 +395,23 @@ void StyleContentBrowserView(void* window_nsview_ptr,
     v.tag         = kCornerPunchTag;
     v.frame       = NSMakeRect(patches[i].x, patches[i].y, r, r);
     [root addSubview:v];
+  }
+}
+
+void AddContentCardShadow(void* bv_nsview_ptr) {
+  if (!bv_nsview_ptr) return;
+  NSView* view = (__bridge NSView*)bv_nsview_ptr;
+  // Shadow is placed on the BrowserView's host (superview) so it can
+  // bleed outside the clipped layer area and appear around the card edge.
+  NSView* host = view.superview;
+  if (!host) return;
+  host.wantsLayer = YES;
+  if (CALayer* hl = host.layer) {
+    hl.masksToBounds = NO;
+    hl.shadowColor = [NSColor blackColor].CGColor;
+    hl.shadowOpacity = 0.28f;
+    hl.shadowRadius = 22.0f;
+    hl.shadowOffset = CGSizeMake(0, -6);
   }
 }
 

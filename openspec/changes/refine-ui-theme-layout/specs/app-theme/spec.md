@@ -7,7 +7,7 @@ The renderer SHALL define two complete sets of design tokens — one for Light, 
 #### Scenario: Light tokens applied
 
 - **WHEN** the resolved theme mode is `light`
-- **THEN** `getComputedStyle(document.documentElement).getPropertyValue('--color-cronymax-bg')` returns the Light `bg` value, and Tailwind utilities such as `bg-cronymax-bg` paint that color
+- **THEN** `getComputedStyle(document.documentElement).getPropertyValue('--color-cronymax')` returns the Light `bg` value, and Tailwind utilities such as `bg-cronymax` paint that color
 
 #### Scenario: Dark tokens applied
 
