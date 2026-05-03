@@ -3,7 +3,7 @@
 
 #include <string>
 
-#include "common/json_value.h"
+#include <nlohmann/json.hpp>
 
 namespace cronymax::event_bus {
 
@@ -37,7 +37,7 @@ struct AppEvent {
   std::string run_id;      // empty when not scoped
   std::string agent_id;    // empty when not scoped
   AppEventKind kind = AppEventKind::kSystem;
-  JsonValue payload;       // object
+  nlohmann::json payload = nlohmann::json::object();  // object
 
   // Render the event as compact JSON (no trailing newline).
   std::string ToJson() const;

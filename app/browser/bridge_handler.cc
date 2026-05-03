@@ -9,6 +9,8 @@
 #include <set>
 #include <sstream>
 
+#include <nlohmann/json.hpp>
+
 #include "document/document_store.h"
 #include "document/review_store.h"
 #include "document/reviews_state.h"
@@ -1834,13 +1836,14 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
       e.space_id = sp->id;
       e.flow_id = flow_id;
       e.agent_id = "user";
-      auto payload_obj = JsonValue::Object();
-      payload_obj.as_object()["doc_id"] = JsonValue::String(name);
-      payload_obj.as_object()["doc_path"] = JsonValue::String(name + ".md");
-      payload_obj.as_object()["revision"] = JsonValue::Number(wr.revision);
-      payload_obj.as_object()["sha256"] = JsonValue::String(wr.sha256_hex);
-      payload_obj.as_object()["producer"] = JsonValue::String("user");
-      payload_obj.as_object()["source"] = JsonValue::String("workbench_save");
+      nlohmann::json payload_obj = {
+        {"doc_id",   name},
+        {"doc_path", name + ".md"},
+        {"revision", wr.revision},
+        {"sha256",   wr.sha256_hex},
+        {"producer", "user"},
+        {"source",   "workbench_save"},
+      };
       e.payload = std::move(payload_obj);
       sp->event_bus->Append(std::move(e));
     }
@@ -2053,13 +2056,14 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
       e.run_id = run_id;
       e.agent_id = "user";
       // doc payload mirrors the FlowRuntime emission shape.
-      auto payload_obj = JsonValue::Object();
-      payload_obj.as_object()["doc_id"] = JsonValue::String(name);
-      payload_obj.as_object()["doc_path"] = JsonValue::String(name + ".md");
-      payload_obj.as_object()["revision"] = JsonValue::Number(wr.revision);
-      payload_obj.as_object()["sha256"] = JsonValue::String(wr.sha256_hex);
-      payload_obj.as_object()["producer"] = JsonValue::String("user");
-      payload_obj.as_object()["source"] = JsonValue::String("suggestion_apply");
+      nlohmann::json payload_obj = {
+        {"doc_id",   name},
+        {"doc_path", name + ".md"},
+        {"revision", wr.revision},
+        {"sha256",   wr.sha256_hex},
+        {"producer", "user"},
+        {"source",   "suggestion_apply"},
+      };
       e.payload = std::move(payload_obj);
       // EventBus::Append fills in id + ts_ms for us.
       sp->event_bus->Append(std::move(e));
@@ -2371,24 +2375,17 @@ bool BridgeHandler::HandleEvents(CefRefPtr<CefBrowser> browser,
     evt.agent_id = ExtractJsonString(payload, "agent_id");
     // Parse payload field as a JSON object, default to {body, mentions:[]}
     // built from the raw text/mentions fields when absent.
-    JsonValue p_raw;
-    std::string perr;
     bool have_payload = false;
-    if (JsonValue::Parse(std::string(payload), &p_raw, &perr) &&
-        p_raw.is_object()) {
-      const auto& inner = p_raw.Get("payload");
-      if (inner.is_object()) {
-        evt.payload = inner;
-        have_payload = true;
-      }
+    auto p_raw = nlohmann::json::parse(std::string(payload), nullptr, false);
+    if (!p_raw.is_discarded() && p_raw.is_object() &&
+        p_raw.contains("payload") && p_raw["payload"].is_object()) {
+      evt.payload = p_raw["payload"];
+      have_payload = true;
     }
     if (!have_payload) {
       // Fall back to constructing { body, mentions:[] } from top-level fields.
       auto body = ExtractJsonString(payload, "body");
-      JsonValue obj = JsonValue::Object();
-      obj.as_object()["body"] = JsonValue::String(body);
-      obj.as_object()["mentions"] = JsonValue::Array();
-      evt.payload = std::move(obj);
+      evt.payload = {{"body", body}, {"mentions", nlohmann::json::array()}};
     }
     auto id = bus->Append(std::move(evt));
     callback->Success("{\"id\":" + JsonString(id) + "}");

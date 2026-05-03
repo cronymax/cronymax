@@ -235,10 +235,10 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
                 platform::macos::IsNotificationAuthorized()) {
               std::string body;
               if (e.payload.is_object()) {
-                const auto& body_v = e.payload.Get("body");
-                const auto& message_v = e.payload.Get("message");
-                if (body_v.is_string()) body = body_v.as_string();
-                else if (message_v.is_string()) body = message_v.as_string();
+                if (e.payload.contains("body") && e.payload["body"].is_string())
+                  body = e.payload["body"].get<std::string>();
+                else if (e.payload.contains("message") && e.payload["message"].is_string())
+                  body = e.payload["message"].get<std::string>();
               }
               if (body.empty()) body = "(" + kind + ")";
               std::string deeplink = "cronymax://inbox/" + e.id;

@@ -8,8 +8,9 @@
 #include <sstream>
 #include <system_error>
 
+#include <nlohmann/json.hpp>
+
 #include "agent/agent_runtime.h"
-#include "common/json_value.h"
 #include "document/agent_registry.h"
 #include "document/doc_type_registry.h"
 #include "document/document_store.h"
@@ -38,8 +39,7 @@ event_bus::AppEvent MakeSystemRunEvent(const std::string& subkind,
   evt.run_id = run_id;
   evt.flow_id = flow_id;
   evt.agent_id = agent_id;
-  JsonValue payload = JsonValue::Object();
-  payload.as_object()["subkind"] = JsonValue::String(subkind);
+  nlohmann::json payload = {{"subkind", subkind}};
   evt.payload = std::move(payload);
   return evt;
 }
@@ -84,44 +84,37 @@ FlowRunStatus ParseFlowRunStatus(const std::string& s) {
 // ---------------------------------------------------------------------------
 
 std::string FlowRunState::ToJson() const {
-  JsonValue root = JsonValue::Object();
-  auto& o = root.as_object();
-  o["run_id"] = JsonValue::String(run_id);
-  o["flow_id"] = JsonValue::String(flow_id);
-  o["status"] = JsonValue::String(FlowRunStatusToString(status));
-  o["started_at"] = JsonValue::String(started_at_iso);
-  o["ended_at"] = JsonValue::String(ended_at_iso);
-  o["failure_reason"] = JsonValue::String(failure_reason);
-  o["initial_input"] = JsonValue::String(initial_input);
-
-  JsonValue agents = JsonValue::Array();
-  for (const auto& a : agents_in_flight) {
-    agents.as_array().push_back(JsonValue::String(a));
-  }
-  o["agents_in_flight"] = agents;
-
-  JsonValue docs = JsonValue::Array();
+  nlohmann::json j = {
+    {"run_id",       run_id},
+    {"flow_id",      flow_id},
+    {"status",       FlowRunStatusToString(status)},
+    {"started_at",   started_at_iso},
+    {"ended_at",     ended_at_iso},
+    {"failure_reason", failure_reason},
+    {"initial_input",  initial_input},
+  };
+  nlohmann::json agents = nlohmann::json::array();
+  for (const auto& a : agents_in_flight) agents.push_back(a);
+  j["agents_in_flight"] = std::move(agents);
+  nlohmann::json docs = nlohmann::json::array();
   for (const auto& d : documents) {
-    JsonValue obj = JsonValue::Object();
-    auto& dom = obj.as_object();
-    dom["name"] = JsonValue::String(d.name);
-    dom["type"] = JsonValue::String(d.type);
-    dom["producer_agent"] = JsonValue::String(d.producer_agent);
-    dom["current_revision"] =
-        JsonValue::Number(static_cast<double>(d.current_revision));
-    docs.as_array().push_back(obj);
+    docs.push_back({
+      {"name",             d.name},
+      {"type",             d.type},
+      {"producer_agent",   d.producer_agent},
+      {"current_revision", d.current_revision},
+    });
   }
-  o["documents"] = docs;
-
-  return root.Dump(true);
+  j["documents"] = std::move(docs);
+  return j.dump();
 }
 
 bool FlowRunState::FromJson(const std::string& json, FlowRunState* out,
                             std::string* err) {
-  JsonValue v;
-  std::string parse_err;
-  if (!JsonValue::Parse(json, &v, &parse_err)) {
-    if (err) *err = "parse: " + parse_err;
+  nlohmann::json v;
+  v = nlohmann::json::parse(json, nullptr, false);
+  if (v.is_discarded()) {
+    if (err) *err = "JSON parse error";
     return false;
   }
   if (!v.is_object()) {
@@ -129,35 +122,33 @@ bool FlowRunState::FromJson(const std::string& json, FlowRunState* out,
     return false;
   }
   auto str_field = [&](const char* key, std::string* dst) {
-    const auto& jv = v.Get(key);
-    if (jv.is_string()) *dst = jv.as_string();
+    if (v.contains(key) && v[key].is_string()) *dst = v[key].get<std::string>();
   };
-  str_field("run_id", &out->run_id);
-  str_field("flow_id", &out->flow_id);
-  str_field("started_at", &out->started_at_iso);
-  str_field("ended_at", &out->ended_at_iso);
+  str_field("run_id",        &out->run_id);
+  str_field("flow_id",       &out->flow_id);
+  str_field("started_at",    &out->started_at_iso);
+  str_field("ended_at",      &out->ended_at_iso);
   str_field("failure_reason", &out->failure_reason);
-  str_field("initial_input", &out->initial_input);
-  if (const auto& s = v.Get("status"); s.is_string()) {
-    out->status = ParseFlowRunStatus(s.as_string());
-  }
-  if (const auto& arr = v.Get("agents_in_flight"); arr.is_array()) {
-    for (const auto& el : arr.as_array()) {
-      if (el.is_string()) out->agents_in_flight.push_back(el.as_string());
+  str_field("initial_input",  &out->initial_input);
+  if (v.contains("status") && v["status"].is_string())
+    out->status = ParseFlowRunStatus(v["status"].get<std::string>());
+  if (v.contains("agents_in_flight") && v["agents_in_flight"].is_array()) {
+    for (const auto& el : v["agents_in_flight"]) {
+      if (el.is_string()) out->agents_in_flight.push_back(el.get<std::string>());
     }
   }
-  if (const auto& arr = v.Get("documents"); arr.is_array()) {
-    for (const auto& el : arr.as_array()) {
+  if (v.contains("documents") && v["documents"].is_array()) {
+    for (const auto& el : v["documents"]) {
       if (!el.is_object()) continue;
       FlowRunDocumentEntry entry;
-      if (const auto& s = el.Get("name"); s.is_string()) entry.name = s.as_string();
-      if (const auto& s = el.Get("type"); s.is_string()) entry.type = s.as_string();
-      if (const auto& s = el.Get("producer_agent"); s.is_string()) {
-        entry.producer_agent = s.as_string();
-      }
-      if (const auto& n = el.Get("current_revision"); n.is_number()) {
-        entry.current_revision = static_cast<int>(n.as_number());
-      }
+      if (el.contains("name") && el["name"].is_string())
+        entry.name = el["name"].get<std::string>();
+      if (el.contains("type") && el["type"].is_string())
+        entry.type = el["type"].get<std::string>();
+      if (el.contains("producer_agent") && el["producer_agent"].is_string())
+        entry.producer_agent = el["producer_agent"].get<std::string>();
+      if (el.contains("current_revision") && el["current_revision"].is_number())
+        entry.current_revision = el["current_revision"].get<int>();
       out->documents.push_back(std::move(entry));
     }
   }

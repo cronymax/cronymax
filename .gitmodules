@@ -6,3 +6,10 @@
         # `git status`, but `ignore = dirty` is what keeps the parent repo's
         # status clean if any other untracked content shows up there.
         ignore = dirty
+
+[submodule "third_party/nlohmann/json"]
+	path = third_party/nlohmann/json
+	url = https://github.com/nlohmann/json.git
+[submodule "third_party/yaml-cpp"]
+	path = third_party/yaml-cpp
+	url = https://github.com/jbeder/yaml-cpp.git

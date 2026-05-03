@@ -32,27 +32,21 @@ if(NOT TARGET SQLite3::SQLite3)
 endif()
 
 # ---------------------------------------------------------------------------
-# yaml-cpp (static) via FetchContent — used by app/flow and app/document for
-# parsing flow.yaml, agent.yaml, and doc-type schemas. Round-trip writing is
-# not required in this change.
+# yaml-cpp — git submodule at third_party/yaml-cpp.
 # ---------------------------------------------------------------------------
-include(FetchContent)
-set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS   OFF CACHE BOOL "" FORCE)
 set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
-set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL       OFF CACHE BOOL "" FORCE)
 set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-# yaml-cpp 0.8.0 declares cmake_minimum_required < 3.5, which CMake 4.x no
-# longer supports. Force a compatible policy version when descending into the
-# fetched subdirectory.
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
-FetchContent_Declare(
-  yaml-cpp
-  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-  GIT_TAG        0.8.0
-  GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(yaml-cpp)
+add_subdirectory(third_party/yaml-cpp)
+
+# ---------------------------------------------------------------------------
+# nlohmann/json — git submodule at third_party/nlohmann/json.
+# ---------------------------------------------------------------------------
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+set(JSON_Install    OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/nlohmann/json)
 
 # ---------------------------------------------------------------------------
 # Module libraries (flat layout — one static lib per app/<module>).
@@ -60,10 +54,10 @@ FetchContent_MakeAvailable(yaml-cpp)
 
 # common: shared types and path utilities used by every other module.
 add_library(cronymax_common STATIC
-  app/common/json_value.cc
   app/common/path_utils.cc
   app/common/uuid_v7.cc
 )
+target_link_libraries(cronymax_common PUBLIC nlohmann_json)
 target_include_directories(cronymax_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
 # macOS notification + dock-badge shim. On Apple, build the Objective-C++
@@ -114,7 +108,7 @@ add_library(cronymax_event_bus STATIC
   app/event_bus/event_bus.cc
 )
 target_link_libraries(cronymax_event_bus
-  PUBLIC cronymax_common cronymax_workspace SQLite3::SQLite3
+  PUBLIC cronymax_common cronymax_workspace SQLite3::SQLite3 nlohmann_json
 )
 target_include_directories(cronymax_event_bus PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
@@ -153,7 +147,7 @@ add_library(cronymax_document STATIC
   app/document/schema_reviewer.cc
 )
 target_link_libraries(cronymax_document
-  PUBLIC cronymax_common cronymax_workspace yaml-cpp
+  PUBLIC cronymax_common cronymax_workspace yaml-cpp nlohmann_json
 )
 target_include_directories(cronymax_document PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
@@ -173,7 +167,7 @@ add_library(cronymax_flow STATIC
   app/flow/workspace_layout.cc
 )
 target_link_libraries(cronymax_flow
-  PUBLIC cronymax_common cronymax_workspace cronymax_agent cronymax_document cronymax_event_bus yaml-cpp
+  PUBLIC cronymax_common cronymax_workspace cronymax_agent cronymax_document cronymax_event_bus yaml-cpp nlohmann_json
   PRIVATE "-framework CoreServices"
 )
 target_include_directories(cronymax_flow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)

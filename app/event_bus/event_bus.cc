@@ -5,6 +5,8 @@
 #include <sqlite3.h>
 #include <system_error>
 
+#include <nlohmann/json.hpp>
+
 #include "common/uuid_v7.h"
 #include "workspace/space_store.h"
 
@@ -70,28 +72,28 @@ bool EventBus::ScopeMatches(const Scope& s, const AppEvent& e) const {
 bool EventBus::TriageNeedsAction(const AppEvent& e) const {
   switch (e.kind) {
     case AppEventKind::kReviewEvent: {
-      const auto& verdict = e.payload.Get("verdict");
-      const auto& reviewer = e.payload.Get("reviewer");
-      return verdict.is_string() && verdict.as_string() == "request_changes" &&
-             reviewer.is_string() && reviewer.as_string() == "human";
+      return e.payload.contains("verdict") && e.payload["verdict"].is_string() &&
+             e.payload["verdict"].get<std::string>() == "request_changes" &&
+             e.payload.contains("reviewer") && e.payload["reviewer"].is_string() &&
+             e.payload["reviewer"].get<std::string>() == "human";
     }
     case AppEventKind::kText: {
-      const auto& m = e.payload.Get("mentions");
-      if (!m.is_array()) return false;
-      for (const auto& v : m.as_array()) {
-        if (v.is_string() && v.as_string() == kCurrentUserId) return true;
+      if (!e.payload.contains("mentions") || !e.payload["mentions"].is_array())
+        return false;
+      for (const auto& v : e.payload["mentions"]) {
+        if (v.is_string() && v.get<std::string>() == kCurrentUserId) return true;
       }
       return false;
     }
     case AppEventKind::kError: {
-      const auto& scope = e.payload.Get("scope");
-      return !(scope.is_string() && scope.as_string() == "tool");
+      return !(e.payload.contains("scope") && e.payload["scope"].is_string() &&
+               e.payload["scope"].get<std::string>() == "tool");
     }
     case AppEventKind::kSystem: {
-      const auto& sub = e.payload.Get("subkind");
-      const auto& cause = e.payload.Get("cause");
-      return sub.is_string() && sub.as_string() == "run_paused" &&
-             cause.is_string() && cause.as_string() == "human_approval";
+      return e.payload.contains("subkind") && e.payload["subkind"].is_string() &&
+             e.payload["subkind"].get<std::string>() == "run_paused" &&
+             e.payload.contains("cause") && e.payload["cause"].is_string() &&
+             e.payload["cause"].get<std::string>() == "human_approval";
     }
     default:
       return false;
@@ -138,7 +140,7 @@ std::string EventBus::Append(AppEvent evt) {
       const std::string kind_s = AppEventKindToString(evt.kind);
       BindText(stmt, 7, kind_s);
       const std::string payload_s =
-          evt.payload.is_object() ? evt.payload.Dump(true) : "{}";
+          evt.payload.is_object() ? evt.payload.dump() : "{}";
       BindText(stmt, 8, payload_s);
       sqlite3_step(stmt);
       sqlite3_finalize(stmt);
@@ -201,14 +203,9 @@ ListResult EventBus::List(const ListQuery& q) const {
     e.run_id = ColText(stmt, 4);
     e.agent_id = ColText(stmt, 5);
     AppEventKindFromString(ColText(stmt, 6), &e.kind);
-    JsonValue payload;
-    std::string err;
-    if (JsonValue::Parse(ColText(stmt, 7), &payload, &err) &&
-        payload.is_object()) {
-      e.payload = payload;
-    } else {
-      e.payload = JsonValue::Object();
-    }
+    const std::string payload_str = ColText(stmt, 7);
+    auto parsed = nlohmann::json::parse(payload_str, nullptr, false);
+    e.payload = (parsed.is_object()) ? parsed : nlohmann::json::object();
     out.events.push_back(std::move(e));
   }
   sqlite3_finalize(stmt);
