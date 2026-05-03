@@ -13,6 +13,16 @@
  * radii, and shadows used across all panels. Tailwind v4 picks these
  * up via @theme and exposes them as utility classes (bg-cronymax-bg,
  * rounded-popover, shadow-popover, etc).
+ *
+ * Theme model (`refine-ui-theme-layout`):
+ *   - The Tailwind `@theme` block declares the *names* (and seeds Dark
+ *     defaults) so utility classes are generated.
+ *   - `:root` redefines the colors to the Light palette so unattributed
+ *     documents paint Light.
+ *   - `:root[data-theme="dark"]` swaps to the Dark palette when the user
+ *     pins Dark mode.
+ *   - `@media (prefers-color-scheme: dark) :root:not([data-theme])`
+ *     handles `system` mode (the hook leaves data-theme unset).
  */
 @theme {
   --color-cronymax-bg: #0d0e10;
@@ -37,6 +47,66 @@
   --font-family-sans:
     -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
   --font-family-mono: ui-monospace, "SF Mono", "Menlo", "Monaco", monospace;
+}
+
+/* ── Light palette (default; useTheme writes data-theme="light") ──── */
+:root,
+:root[data-theme="light"] {
+  --color-cronymax-bg: #f6f6f8;
+  --color-cronymax-surface: #ffffff;
+  --color-cronymax-surface-2: #efeff3;
+  --color-cronymax-border: #d8d8de;
+  --color-cronymax-fg: #18181c;
+  --color-cronymax-fg-muted: #5f6470;
+  --color-cronymax-accent: #6244e0;
+  --color-cronymax-accent-soft: #8a73ff;
+  --color-cronymax-success: #16a34a;
+  --color-cronymax-danger: #dc2626;
+  --color-cronymax-warning: #d97706;
+
+  --shadow-popover: 0 -8px 28px rgba(15, 17, 22, 0.1);
+  --shadow-elev-1: 0 1px 2px rgba(15, 17, 22, 0.08);
+  --shadow-elev-2: 0 4px 16px rgba(15, 17, 22, 0.1);
+}
+
+/* ── Dark palette (explicit override) ──────────────────────────────── */
+:root[data-theme="dark"] {
+  --color-cronymax-bg: #0d0e10;
+  --color-cronymax-surface: #15171b;
+  --color-cronymax-surface-2: #1c1e23;
+  --color-cronymax-border: #2a2d33;
+  --color-cronymax-fg: #e8e8ea;
+  --color-cronymax-fg-muted: #9aa0a8;
+  --color-cronymax-accent: #7c5cff;
+  --color-cronymax-accent-soft: #a896ff;
+  --color-cronymax-success: #4ade80;
+  --color-cronymax-danger: #f87171;
+  --color-cronymax-warning: #fbbf24;
+
+  --shadow-popover: 0 -10px 28px rgba(0, 0, 0, 0.35);
+  --shadow-elev-1: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-elev-2: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* ── System-follow: when data-theme is absent, follow the OS ───────── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --color-cronymax-bg: #0d0e10;
+    --color-cronymax-surface: #15171b;
+    --color-cronymax-surface-2: #1c1e23;
+    --color-cronymax-border: #2a2d33;
+    --color-cronymax-fg: #e8e8ea;
+    --color-cronymax-fg-muted: #9aa0a8;
+    --color-cronymax-accent: #7c5cff;
+    --color-cronymax-accent-soft: #a896ff;
+    --color-cronymax-success: #4ade80;
+    --color-cronymax-danger: #f87171;
+    --color-cronymax-warning: #fbbf24;
+
+    --shadow-popover: 0 -10px 28px rgba(0, 0, 0, 0.35);
+    --shadow-elev-1: 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-elev-2: 0 4px 16px rgba(0, 0, 0, 0.3);
+  }
 }
 
 /* Base resets shared by every panel root document. The shell panels

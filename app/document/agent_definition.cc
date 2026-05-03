@@ -85,10 +85,14 @@ LoadResult<AgentDefinition> AgentDefinition::LoadFromString(
   } else {
     return std::move(r).error();
   }
-  if (auto r = RequireString(root, path, "llm"); r.ok()) {
-    def.llm_ = std::move(r).value();
-  } else {
-    return std::move(r).error();
+  // llm is optional — an empty or absent value means "use the workspace
+  // default model" (resolved at runtime by the LLM router).
+  if (auto llm_node = root["llm"]; llm_node) {
+    try {
+      def.llm_ = llm_node.as<std::string>();
+    } catch (const YAML::Exception& ex) {
+      return MakeYamlError(path, ex);
+    }
   }
   if (auto r = RequireString(root, path, "system_prompt"); r.ok()) {
     def.system_prompt_ = std::move(r).value();

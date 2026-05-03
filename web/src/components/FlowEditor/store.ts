@@ -180,7 +180,11 @@ function reducer(state: State, action: Action): State {
         selectedId: action.node.id,
         selectedEdgeIndex: null,
       };
-    case "deleteNode":
+    case "deleteNode": {
+      // Lead node (smallest id) is non-deletable: it owns the @-fallback
+      // routing in flow chat mode.
+      const lead = leadNodeId(state.nodes);
+      if (action.id === lead) return state;
       return {
         ...state,
         nodes: state.nodes.filter((n) => n.id !== action.id),
@@ -189,6 +193,7 @@ function reducer(state: State, action: Action): State {
         ),
         selectedId: state.selectedId === action.id ? null : state.selectedId,
       };
+    }
     case "select":
       return { ...state, selectedId: action.id, selectedEdgeIndex: null };
     case "selectEdge":
@@ -334,4 +339,41 @@ export function syncLegacyKey(spec: FlowSpec): void {
   } catch {
     /* ignore */
   }
+}
+
+// ── Built-in "Chat" seed flow ─────────────────────────────────────────────
+//
+// This preset is written to localStorage the first time the flow editor
+// opens with an empty flow store. It represents the simplest useful
+// configuration: a single worker agent with no explicit tool restrictions
+// (= the Space defaults, i.e. all registered skills). Users can freely
+// rename, reconfigure, or delete it.
+export const SEED_CHAT_FLOW: FlowSpec = {
+  nodes: [
+    {
+      id: 1,
+      type: "agent",
+      name: "Chat",
+      x: 80,
+      y: 60,
+      // agent_name left blank so the user picks from the inspector once
+      // the agent registry is populated. tools defaults to all skills.
+      config: {
+        agent_name: "Chat",
+        agent_kind: "worker",
+        produces: "",
+        reviewers: "",
+      },
+    },
+  ],
+  edges: [],
+};
+// Lead-agent convention: the node with the smallest id in a flow is the
+// "lead" — it cannot be deleted, and it receives messages in flow chat
+// mode that don't address a specific agent via @mention.
+export function leadNodeId(nodes: GraphNode[]): number | null {
+  if (nodes.length === 0) return null;
+  let lead = nodes[0]!;
+  for (const n of nodes) if (n.id < lead.id) lead = n;
+  return lead.id;
 }

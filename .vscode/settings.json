@@ -20,5 +20,8 @@
   },
   "cSpell.words": [
     "cronymax"
-  ]
+  ],
+  "chat.tools.terminal.autoApprove": {
+    "openspec": true
+  }
 }

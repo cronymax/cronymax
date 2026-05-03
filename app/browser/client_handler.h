@@ -82,6 +82,10 @@ class ClientHandler : public CefClient,
   void SetShellCallbacks(ShellCallbacks cbs) {
     bridge_handler_->SetShellCallbacks(std::move(cbs));
   }
+  // refine-ui-theme-layout: pass-through for theme.* callbacks.
+  void SetThemeCallbacks(ThemeCallbacks cbs) {
+    bridge_handler_->SetThemeCallbacks(std::move(cbs));
+  }
 
   // Called by MainWindow so OnAfterCreated can set browser_id on the new tab.
   std::function<void(int browser_id)> on_browser_created;

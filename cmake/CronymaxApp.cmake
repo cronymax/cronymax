@@ -88,6 +88,12 @@ target_link_libraries(cronymax_app PRIVATE
   ${CEF_STANDARD_LIBS}
 )
 
+if(APPLE)
+  target_link_libraries(cronymax_app PRIVATE
+    "-framework QuartzCore"
+  )
+endif()
+
 set_target_properties(cronymax_app PROPERTIES
   OUTPUT_NAME "cronymax"
   MACOSX_BUNDLE_GUI_IDENTIFIER  "dev.prototype.cronymax"

@@ -40,6 +40,8 @@ const panelEntries = {
   editor: resolve(panelsDir, "editor/index.html"),
   inbox: resolve(panelsDir, "inbox/index.html"),
   workbench: resolve(panelsDir, "workbench/index.html"),
+  settings: resolve(panelsDir, "settings/index.html"),
+  "popover-chrome": resolve(panelsDir, "popover-chrome/index.html"),
 };
 
 export default defineConfig({

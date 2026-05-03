@@ -188,6 +188,8 @@ bool BridgeHandler::OnQuery(CefRefPtr<CefBrowser> browser,
     return HandleBrowser(browser, channel, payload, callback);
   if (channel.rfind("shell.", 0) == 0)
     return HandleShell(channel, payload, callback);
+  if (channel.rfind("theme.", 0) == 0)
+    return HandleTheme(channel, payload, callback);
   if (channel.rfind("tab.", 0) == 0)
     return HandleTab(channel, payload, callback);
 
@@ -824,6 +826,14 @@ bool BridgeHandler::HandleShell(std::string_view channel,
     return true;
   }
 
+  if (channel == "shell.popover_navigate") {
+    const std::string url = JsonUnescape(JsonGet(std::string(payload), "url"));
+    if (!url.empty() && shell_cbs_.popover_navigate)
+      shell_cbs_.popover_navigate(url);
+    callback->Success("ok");
+    return true;
+  }
+
   if (channel == "shell.window_drag") {
     if (shell_cbs_.window_drag) shell_cbs_.window_drag();
     callback->Success("ok");
@@ -837,7 +847,48 @@ bool BridgeHandler::HandleShell(std::string_view channel,
     return true;
   }
 
+  if (channel == "shell.settings_popover_open") {
+    // refine-ui-theme-layout: open Settings as a popover anchored at the
+    // window. MainWindow resolves the URL via ResourceUrl().
+    if (shell_cbs_.settings_popover_open) shell_cbs_.settings_popover_open();
+    callback->Success("ok");
+    return true;
+  }
+
   callback->Failure(404, "unknown shell channel");
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Theme channels (refine-ui-theme-layout)
+// ---------------------------------------------------------------------------
+
+bool BridgeHandler::HandleTheme(std::string_view channel,
+                                std::string_view payload,
+                                CefRefPtr<Callback> callback) {
+  const std::string p(payload);
+
+  if (channel == "theme.get") {
+    if (!theme_cbs_.get_mode) {
+      callback->Success("{\"mode\":\"system\",\"resolved\":\"dark\"}");
+      return true;
+    }
+    callback->Success(theme_cbs_.get_mode());
+    return true;
+  }
+
+  if (channel == "theme.set") {
+    const std::string mode = JsonGet(p, "mode");
+    if (mode != "system" && mode != "light" && mode != "dark") {
+      callback->Failure(400, "invalid mode");
+      return true;
+    }
+    if (theme_cbs_.set_mode) theme_cbs_.set_mode(mode);
+    callback->Success("ok");
+    return true;
+  }
+
+  callback->Failure(404, "unknown theme channel");
   return true;
 }
 

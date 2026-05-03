@@ -25,9 +25,33 @@ class LLMClient {
   // ---------------------------------------------------------------------------
 
   async loadConfig() {
+    // window.aiDesktop.send returns an already-parsed object (via the typed
+    // bridge), so we must handle both object and string responses.
+    const parseIfNeeded = (v) => (typeof v === "string" ? JSON.parse(v) : v);
+
+    // Prefer the new providers list (configured via the Providers settings tab).
+    try {
+      const responseStr = await window.aiDesktop.send(
+        "llm.providers.get",
+        "{}",
+      );
+      const resp = parseIfNeeded(responseStr); // { raw: "...", active_id: "..." }
+      const providers = parseIfNeeded(resp.raw || "[]");
+      const active =
+        providers.find((p) => p.id === resp.active_id) || providers[0];
+      if (active && (active.base_url || active.api_key)) {
+        this.baseUrl = active.base_url || "";
+        this.apiKey = active.api_key || "";
+        if (active.default_model) this.model = active.default_model;
+        return;
+      }
+    } catch (_e) {
+      // fall through to legacy config
+    }
+    // Legacy fallback.
     try {
       const raw = await window.aiDesktop.send("llm.config.get", "");
-      const cfg = JSON.parse(raw);
+      const cfg = parseIfNeeded(raw);
       if (cfg.base_url) this.baseUrl = cfg.base_url;
       if (cfg.api_key) this.apiKey = cfg.api_key;
     } catch (e) {
@@ -40,7 +64,7 @@ class LLMClient {
     this.apiKey = apiKey;
     await window.aiDesktop.send(
       "llm.config.set",
-      JSON.stringify({ base_url: baseUrl, api_key: apiKey })
+      JSON.stringify({ base_url: baseUrl, api_key: apiKey }),
     );
   }
 
@@ -57,7 +81,12 @@ class LLMClient {
    *          | { type: "done", finish_reason: string }}
    */
   async *chat(model, messages, tools = []) {
-    const endpoint = (this.baseUrl || "http://localhost:11434") + "/v1/chat/completions";
+    // base_url is the API base (e.g. "https://api.openai.com/v1" or
+    // "https://api.githubcopilot.com"). Append /chat/completions directly
+    // so providers that don't use a /v1 prefix (e.g. GitHub Copilot) work.
+    const endpoint =
+      (this.baseUrl || "http://localhost:11434").replace(/\/+$/, "") +
+      "/chat/completions";
 
     const body = {
       model: model || this.model,
@@ -141,7 +170,12 @@ class LLMClient {
           const fr = choice.finish_reason;
           if (fr === "tool_calls") {
             for (const [, tc] of toolCalls) {
-              yield { type: "tool_call", id: tc.id, name: tc.name, input: tc.input };
+              yield {
+                type: "tool_call",
+                id: tc.id,
+                name: tc.name,
+                input: tc.input,
+              };
             }
             toolCalls.clear();
             yield { type: "done", finish_reason: "tool_calls" };

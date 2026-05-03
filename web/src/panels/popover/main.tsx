@@ -1,6 +1,9 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "@/styles/theme.css";
+import { installThemeMirror } from "@/styles/installThemeMirror";
+
+installThemeMirror();
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { App } from "./App";
 

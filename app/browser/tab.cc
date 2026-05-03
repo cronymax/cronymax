@@ -31,11 +31,19 @@ Tab::Tab(TabId id, TabKind kind, std::unique_ptr<TabBehavior> behavior)
 
 Tab::~Tab() = default;
 
+namespace {
+// Same base dark chrome color used by TabToolbar (0xFF0E0E10).
+// The card panel adopts this so any gap area matches the toolbar background,
+// making the toolbar + content appear as one unified floating card.
+constexpr cef_color_t kCardBgArgb = 0xFF0E0E10;
+}  // namespace
+
 void Tab::Build() {
   assert(!built_ && "Tab::Build called twice");
   built_ = true;
 
   card_ = CefPanel::CreatePanel(nullptr);
+  card_->SetBackgroundColor(kCardBgArgb);
   CefBoxLayoutSettings card_box;
   card_box.horizontal = false;
   card_layout_ = card_->SetToBoxLayout(card_box);

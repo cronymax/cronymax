@@ -18,6 +18,14 @@ CACornerMask ToCACornerMask(int mask) {
   return out;
 }
 
+NSColor* ColorFromArgb(cef_color_t argb) {
+  CGFloat a = ((argb >> 24) & 0xFF) / 255.0;
+  CGFloat r = ((argb >> 16) & 0xFF) / 255.0;
+  CGFloat g = ((argb >>  8) & 0xFF) / 255.0;
+  CGFloat b = ((argb >>  0) & 0xFF) / 255.0;
+  return [NSColor colorWithSRGBRed:r green:g blue:b alpha:a];
+}
+
 }  // namespace
 }  // namespace cronymax
 
@@ -95,7 +103,7 @@ void ApplyCardStyle(void* nsview_ptr) {
   }
 }
 
-void StyleMainWindowTranslucent(void* nswindow_ptr) {
+void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
   if (!nswindow_ptr) return;
   // CEF returns the NSView* of the window's content view as the window
   // handle, not the NSWindow itself. Walk up to the hosting NSWindow.
@@ -110,51 +118,138 @@ void StyleMainWindowTranslucent(void* nswindow_ptr) {
   window.titleVisibility = NSWindowTitleHidden;
   window.movableByWindowBackground = YES;
 
-  // Solid opaque dark window — NO NSVisualEffectView. Vibrancy under the
+  // Solid opaque chrome — NO NSVisualEffectView. Vibrancy under the
   // AppKit titlebar zone reads visibly different from vibrancy under the
   // body region; a flat opaque color guarantees a single uniform chrome.
-  static NSColor* const kChromeColor =
-      [NSColor colorWithSRGBRed:0x14 / 255.0
-                          green:0x14 / 255.0
-                           blue:0x1A / 255.0
-                          alpha:1.0];
+  // refine-ui-theme-layout: caller threads the active chrome color in;
+  // 0 falls back to the legacy dark default.
+  NSColor* chromeColor =
+      argb == 0
+          ? [NSColor colorWithSRGBRed:0x14 / 255.0
+                                green:0x14 / 255.0
+                                 blue:0x1A / 255.0
+                                alpha:1.0]
+          : ColorFromArgb(argb);
   window.opaque = YES;
-  window.backgroundColor = kChromeColor;
+  window.backgroundColor = chromeColor;
   window.hasShadow = YES;
 
   content.wantsLayer = YES;
   if (CALayer* cl = content.layer) {
     cl.cornerRadius = 12.0;
     cl.masksToBounds = YES;
-    cl.backgroundColor = kChromeColor.CGColor;
+    cl.backgroundColor = chromeColor.CGColor;
   }
 }
 
-void StyleContentBrowserView(void* nsview_ptr,
-                             double radius,
-                             bool with_shadow) {
-  if (!nsview_ptr) return;
-  NSView* view = (__bridge NSView*)nsview_ptr;
-  view.wantsLayer = YES;
-  if (CALayer* layer = view.layer) {
-    layer.cornerRadius = radius;
-    layer.maskedCorners =
-        kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner |
-        kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
-    layer.masksToBounds = YES;
-    layer.borderWidth = 0.5;
-    layer.borderColor = [NSColor colorWithWhite:1.0 alpha:0.08].CGColor;
+}  // namespace cronymax
+
+// Solid NSView placed at each corner of the floating card.
+// It paints the window chrome color, then cuts a quarter-circle via a
+// CAShapeLayer mask so the card's corner appears rounded.
+// Which corner: 0=BL 1=BR 2=TR 3=TL  (NSView y=0 at bottom, not flipped).
+@interface CronymaxCornerPunchView : NSView {
+  NSInteger _tag;
+}
+@property(nonatomic, assign) int punchCorner;
+@property(nonatomic, assign) CGFloat punchRadius;
+@property(nonatomic, strong) NSColor* punchColor;
+- (void)setTag:(NSInteger)tag;
+- (NSInteger)tag;
+@end
+
+@implementation CronymaxCornerPunchView
+- (void)setTag:(NSInteger)t { _tag = t; }
+- (NSInteger)tag { return _tag; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
+- (BOOL)wantsUpdateLayer { return YES; }
+- (BOOL)wantsLayer { return YES; }
+- (void)updateLayer {
+  self.layer.backgroundColor = self.punchColor
+      ? self.punchColor.CGColor
+      : NSColor.blackColor.CGColor;
+  // Install a circular cutout via CAShapeLayer mask.
+  CGFloat s  = self.bounds.size.width;   // width == height == radius
+  CGFloat r  = self.punchRadius;
+  CGMutablePathRef path = CGPathCreateMutable();
+  // Full square.
+  CGPathAddRect(path, NULL, CGRectMake(0, 0, s, s));
+  // Subtract a quarter-circle whose center is at the inward corner.
+  // punchCorner: 0=BL,1=BR,2=TR,3=TL in NSView (y=0 at bottom).
+  // In CALayer (y=0 at bottom, same as NSView on non-flipped view):
+  CGPoint center;
+  switch (self.punchCorner) {
+    case 0:  center = CGPointMake(s, s); break;  // BL → arc center at BR of patch
+    case 1:  center = CGPointMake(0, s); break;  // BR → arc center at BL of patch
+    case 2:  center = CGPointMake(0, 0); break;  // TR → arc center at TL of patch
+    case 3:  center = CGPointMake(s, 0); break;  // TL → arc center at TR of patch
+    default: center = CGPointMake(0, 0); break;
   }
-  if (!with_shadow) return;
-  NSView* host = view.superview;
-  if (!host) return;
-  host.wantsLayer = YES;
-  if (CALayer* hl = host.layer) {
-    hl.masksToBounds = NO;
-    hl.shadowColor = [NSColor blackColor].CGColor;
-    hl.shadowOpacity = 0.25f;
-    hl.shadowRadius = 14.0f;
-    hl.shadowOffset = CGSizeMake(0, -2);
+  CGPathAddArc(path, NULL, center.x, center.y, r,
+               0, 2 * M_PI, 0);  // Full circle, but only r-sized view is clipped
+  // Use even-odd fill rule to cut the circle from the square.
+  CAShapeLayer* mask = [CAShapeLayer layer];
+  mask.path = path;
+  mask.fillRule = kCAFillRuleEvenOdd;
+  self.layer.mask = mask;
+  CGPathRelease(path);
+}
+@end
+
+namespace cronymax {
+
+// A tag value so we can find and remove previously installed punch views.
+static constexpr NSInteger kCornerPunchTag = 0x43524E58;  // "CRNX"
+
+void StyleContentBrowserView(void* window_nsview_ptr,
+                             double radius,
+                             cef_color_t bg_argb,
+                             const CefRect& card_rect) {
+  if (!window_nsview_ptr) return;
+  NSView* root = (__bridge NSView*)window_nsview_ptr;
+
+  // Remove any previously installed punch views.
+  NSMutableArray* old = [NSMutableArray array];
+  for (NSView* sv in root.subviews) {
+    if (sv.tag == kCornerPunchTag) [old addObject:sv];
+  }
+  for (NSView* sv in old) [sv removeFromSuperview];
+
+  // card_rect is in Chromium/CefRect coordinates: y grows down, y=0 at top
+  // of the window content area. NSView default (non-flipped): y=0 at bottom.
+  CGFloat rootH  = root.bounds.size.height;
+  CGFloat cardX  = card_rect.x;
+  CGFloat cardY  = card_rect.y;      // y from top
+  CGFloat cardW  = card_rect.width;
+  CGFloat cardH  = card_rect.height;
+  CGFloat r      = (CGFloat)radius;
+
+  // Build fill color.
+  NSColor* fill = ColorFromArgb(bg_argb);
+
+  // 4 corner positions in NSView (y=0 at bottom) coordinates:
+  // Bottom-left  (NSView): (cardX, rootH - cardY - cardH)
+  // Bottom-right (NSView): (cardX + cardW - r, rootH - cardY - cardH)
+  // Top-right    (NSView): (cardX + cardW - r, rootH - cardY - r)
+  // Top-left     (NSView): (cardX,             rootH - cardY - r)
+  CGFloat nsCardBottom = rootH - cardY - cardH;  // y=0 at bottom
+  CGFloat nsCardTop    = rootH - cardY;           // y=0 at bottom, top edge
+
+  struct { CGFloat x, y; int corner; } patches[4] = {
+    { cardX,              nsCardBottom,     0 },  // BL
+    { cardX + cardW - r,  nsCardBottom,     1 },  // BR
+    { cardX + cardW - r,  nsCardTop    - r, 2 },  // TR
+    { cardX,              nsCardTop    - r, 3 },  // TL
+  };
+
+  for (int i = 0; i < 4; i++) {
+    CronymaxCornerPunchView* v = [[CronymaxCornerPunchView alloc] init];
+    v.punchColor  = fill;
+    v.punchCorner = patches[i].corner;
+    v.punchRadius = r;
+    v.tag         = kCornerPunchTag;
+    v.frame       = NSMakeRect(patches[i].x, patches[i].y, r, r);
+    [root addSubview:v];
   }
 }
 
@@ -457,6 +552,73 @@ void InstallTitleBarDragOverlay(void* nswindow_handle,
     [nodrag addObject:[NSValue valueWithRect:NSMakeRect(lx, ly, r.width, r.height)]];
   }
   overlay.noDragRects = nodrag;
+}
+
+// ---------------------------------------------------------------------------
+// refine-ui-theme-layout: live theme application helpers
+// ---------------------------------------------------------------------------
+
+void SetMainWindowBackgroundColor(void* nswindow_ptr, cef_color_t argb) {
+  if (!nswindow_ptr) return;
+  NSView* content = (__bridge NSView*)nswindow_ptr;
+  NSWindow* window = content.window;
+  if (!window) return;
+  NSColor* color = ColorFromArgb(argb);
+  window.backgroundColor = color;
+  if (CALayer* cl = content.layer) {
+    cl.backgroundColor = color.CGColor;
+  }
+}
+
+void InstallRoundedFrame(void* nsview_ptr,
+                         double radius,
+                         cef_color_t border_argb) {
+  if (!nsview_ptr) return;
+  NSView* view = (__bridge NSView*)nsview_ptr;
+  view.wantsLayer = YES;
+  if (CALayer* layer = view.layer) {
+    layer.cornerRadius = radius;
+    layer.maskedCorners =
+        kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner |
+        kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
+    layer.masksToBounds = YES;
+    layer.borderWidth = 1.0;
+    layer.borderColor = ColorFromArgb(border_argb).CGColor;
+  }
+}
+
+const char* CurrentSystemAppearance() {
+  if (@available(macOS 10.14, *)) {
+    NSAppearance* appearance = NSApp.effectiveAppearance;
+    NSAppearanceName best = [appearance
+        bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua,
+                                              NSAppearanceNameDarkAqua ]];
+    if ([best isEqualToString:NSAppearanceNameDarkAqua]) return "dark";
+  }
+  return "light";
+}
+
+void* AddSystemAppearanceObserver(void (*on_changed)(void* user), void* user) {
+  if (!on_changed) return nullptr;
+  // AppleInterfaceThemeChangedNotification fires on the
+  // NSDistributedNotificationCenter when System Settings toggles
+  // Light/Dark. Run the callback on the main queue so MainWindow can
+  // safely re-post onto TID_UI.
+  id token = [[NSDistributedNotificationCenter defaultCenter]
+      addObserverForName:@"AppleInterfaceThemeChangedNotification"
+                  object:nil
+                   queue:[NSOperationQueue mainQueue]
+              usingBlock:^(NSNotification* /*note*/) {
+                on_changed(user);
+              }];
+  // Retain the observer token across the bridge.
+  return (__bridge_retained void*)token;
+}
+
+void RemoveSystemAppearanceObserver(void* token) {
+  if (!token) return;
+  id obs = (__bridge_transfer id)token;
+  [[NSDistributedNotificationCenter defaultCenter] removeObserver:obs];
 }
 
 }  // namespace cronymax

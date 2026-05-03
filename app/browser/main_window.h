@@ -39,9 +39,36 @@ class MainWindow : public CefWindowDelegate,
   void OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
                              const CefRect& new_bounds) override;
 
+  // refine-ui-theme-layout: invoked by the macOS appearance observer
+  // (NSDistributedNotificationCenter on AppleInterfaceThemeChanged) when
+  // the system flips Light/Dark while the user is in `system` mode.
+  // Re-resolves and re-broadcasts.
+  void OnSystemAppearanceChanged();
+
  private:
   std::string ResourceUrl(const std::string& relative_path) const;
   void BuildChrome(CefRefPtr<CefWindow> window);
+
+  // refine-ui-theme-layout: chrome color descriptor pushed to every
+  // native surface (titlebar, sidebar, content frame, NSWindow
+  // background, content frame border).
+  struct ThemeChrome {
+    cef_color_t window_bg;   // chrome fill (titlebar, sidebar, body)
+    cef_color_t border;      // 1 px content frame outline
+    cef_color_t fg;          // primary text on chrome
+    cef_color_t fg_muted;    // secondary text on chrome
+  };
+  // Compute the canonical chrome for a resolved appearance.
+  static ThemeChrome ChromeFor(const std::string& resolved /*"light"|"dark"*/);
+  // Push current_chrome_ to every native surface and broadcast
+  // theme.changed to renderers.
+  void ApplyThemeChrome(const ThemeChrome& chrome);
+  // Returns "light"|"dark" — collapses theme_mode_ via system follow.
+  std::string ResolveAppearance() const;
+  // Invoked by HandleTheme via callback. Persists, recomputes, broadcasts.
+  void HandleThemeModeChange(const std::string& mode);
+  // Compose JSON used by both `theme.get` and `theme.changed`.
+  std::string ThemeStateJson(bool include_chrome) const;
 
   // Open a new web tab navigating to `url`. Returns the new tab id (empty
   // on failure). Mounts/activates the tab in the content host.
@@ -77,6 +104,12 @@ class MainWindow : public CefWindowDelegate,
   // Layout views.
   CefRefPtr<CefBrowserView> sidebar_view_;   // web/public/sidebar.html
   CefRefPtr<CefPanel>       content_panel_;  // FillLayout, hosts active card
+  // refine-ui-theme-layout: outer wrapper that paints the rounded 12 px
+  // border around content_panel_. Inset by 8 px from body_panel_.
+  CefRefPtr<CefPanel>       content_frame_;
+  // Outer box with inside_border_insets providing the floating-card gap.
+  // Needs window_bg color so the gap strips are visually visible.
+  CefRefPtr<CefPanel>       content_outer_;
   // native-title-bar: root layout flipped from H to V; the body box hosts
   // the existing `[sidebar | content_outer]` row directly under the title
   // bar.
@@ -112,23 +145,25 @@ class MainWindow : public CefWindowDelegate,
 
   // Popover (overlay inside the main window — Arc "Little Arc" style).
   CefRefPtr<CefBrowserView>      popover_view_;
-  // Native chrome strip (rounded toolbar with URL field + actions). The
-  // strip is a CefPanel hosted as an overlay above the content view; it
-  // replaced the legacy HTML chrome BrowserView in arc-style-tab-cards.
-  CefRefPtr<CefPanel>            popover_chrome_panel_;
-  CefRefPtr<CefTextfield>        popover_url_field_;
+  // HTML chrome strip (URL toolbar). Uses a CefBrowserView so the dark
+  // background paints correctly on macOS overlay NSViews (CefPanel
+  // SetBackgroundColor has no effect in overlay mode on macOS).
+  CefRefPtr<CefBrowserView>      popover_chrome_view_;
   CefRefPtr<CefPanel>            popover_root_;
   CefRefPtr<CefOverlayController> popover_overlay_;
   CefRefPtr<CefOverlayController> popover_chrome_overlay_;
   CefRefPtr<CefWindow>           main_window_;
   int popover_owner_browser_id_ = 0;
   int popover_content_browser_id_ = 0;
+  // Browser id of the chrome-strip BrowserView — excluded from URL updates.
+  int popover_chrome_browser_id_ = 0;
+  // True when the current popover is one of the bundled `panels/*` pages
+  // (e.g. Settings). Those panels provide their own title bar, so the
+  // native URL-bar chrome strip is suppressed.
+  bool popover_is_builtin_ = false;
   void LayoutPopover();
-  // Build the native popover chrome panel (URL field + action buttons).
-  // Stores `popover_url_field_` for later URL push-down.
-  CefRefPtr<CefPanel> BuildPopoverChromePanel(const std::string& initial_url);
-  // Navigate the popover content view to whatever the URL field holds.
-  void NavigatePopoverToFieldUrl();
+  // Build the HTML popover chrome strip BrowserView (URL field + buttons).
+  CefRefPtr<CefBrowserView> BuildPopoverChromeView(const std::string& initial_url);
 
   // native-title-bar: build the top title-bar panel
   // (lights pad | spacer | btn_web | btn_term | btn_chat | win pad).
@@ -140,6 +175,15 @@ class MainWindow : public CefWindowDelegate,
   // native-title-bar: (re)install the macOS AppKit drag overlay above the
   // title-bar spacer so dragging from that strip moves the window.
   void RefreshTitleBarDragRegion();
+
+  // refine-ui-theme-layout: persisted theme mode (`system|light|dark`)
+  // and the most recently applied chrome (so subsequent paints can
+  // short-circuit and the broadcast can include accurate hex colors).
+  std::string theme_mode_ = "system";
+  ThemeChrome current_chrome_{};
+  // Opaque NSDistributedNotificationCenter observer token (macOS only).
+  // Released by RemoveSystemAppearanceObserver in the destructor.
+  void* appearance_observer_ = nullptr;
 
   IMPLEMENT_REFCOUNTING(MainWindow);
   DISALLOW_COPY_AND_ASSIGN(MainWindow);

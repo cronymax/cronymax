@@ -29,7 +29,6 @@ export interface State {
   result: string;
   spaces: Space[];
   activeSpaceId: string | null;
-  settingsOpen: boolean;
   llmBaseUrl: string;
   llmApiKey: string;
   llmModel: string;
@@ -46,8 +45,6 @@ export type Action =
   | { type: "resetResult" }
   | { type: "setSpaces"; spaces: Space[] }
   | { type: "setActiveSpace"; id: string | null }
-  | { type: "openSettings" }
-  | { type: "closeSettings" }
   | { type: "setLlmConfig"; baseUrl: string; apiKey: string; model: string }
   | {
       type: "updateLlmField";
@@ -63,7 +60,6 @@ const initial: State = {
   result: "",
   spaces: [],
   activeSpaceId: null,
-  settingsOpen: false,
   llmBaseUrl: "",
   llmApiKey: "",
   llmModel: "gpt-4o-mini",
@@ -93,10 +89,6 @@ function reducer(state: State, action: Action): State {
       };
     case "setActiveSpace":
       return { ...state, activeSpaceId: action.id };
-    case "openSettings":
-      return { ...state, settingsOpen: true };
-    case "closeSettings":
-      return { ...state, settingsOpen: false };
     case "setLlmConfig":
       return {
         ...state,

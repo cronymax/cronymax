@@ -21,7 +21,7 @@ demo:
   mode, Monaco source mode, side-by-side / inline diff view, a block-anchored
   comment rail, and one-click suggested-edit acceptance that writes a new
   revision. See [docs/document_workbench.md](docs/document_workbench.md).
-- A `native_probe` CLI <comment>that can validate the native runtime</comment> without CEF.
+- A `native_probe` CLI `<comment>`that can validate the native runtime`</comment>` without CEF.
 
 ## Getting Started
 
@@ -35,7 +35,7 @@ demo:
 | Ninja      | optional            | `brew install ninja` (faster builds)                                  |
 | pnpm       | 10.x                | `brew install pnpm` — required when `CRONYMAX_BUILD_WEB=ON` (default) |
 | Node.js    | 20+                 | `brew install node@20`                                                |
-| CEF binary | 147.0.10 macosarm64 | See [Download CEF](#download-cef) below                               |
+| CEF binary | 147.0.10 macosarm64 | See[Download CEF](#download-cef) below                                |
 
 ### Clone
 
@@ -92,9 +92,9 @@ cd web && pnpm install --frozen-lockfile && cd ..
 ```sh
 cmake -S . -B build \
   -DCRONYMAX_BUILD_APP=ON \
-  -DCRONYMAX_CEF_DIST_URL="$CRONYMAX_CEF_DIST_URL" \
   -DPROJECT_ARCH=arm64 \
-  -DCMAKE_BUILD_TYPE=Debug
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCRONYMAX_CEF_DIST_URL="$CRONYMAX_CEF_DIST_URL"
 cmake --build build --target cronymax_app -j8
 ```
 

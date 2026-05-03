@@ -33,6 +33,12 @@ struct ShellCallbacks {
   std::function<void()> popover_refresh;
   // Promote the popover to a real tab and close the popover
   std::function<void()> popover_open_as_tab;
+  // Navigate the popover content to a URL (sent from the HTML chrome strip)
+  std::function<void(const std::string& url)> popover_navigate;
+  // refine-ui-theme-layout: open the Settings panel as a popover
+  // anchored at the window. MainWindow resolves the panel URL via
+  // ResourceUrl("panels/settings/index.html") so dev/prod both work.
+  std::function<void()> settings_popover_open;
   // Navigates the active web tab
   std::function<void(const std::string& url)> navigate;
   // Go back / forward in active tab
@@ -84,6 +90,16 @@ struct ShellCallbacks {
       set_chrome_theme;
 };
 
+// refine-ui-theme-layout: theme.* bridge callbacks. Read/write the
+// persisted UI theme selection ("system"|"light"|"dark") and observe
+// the resolved appearance after system follow.
+struct ThemeCallbacks {
+  // Returns JSON {"mode":"system|light|dark","resolved":"light|dark"}.
+  std::function<std::string()> get_mode;
+  // Persists the new mode and triggers a chrome repaint + broadcast.
+  std::function<void(const std::string& mode)> set_mode;
+};
+
 // Callback type used by Human-node permission requests.
 // Called with true = allow, false = deny.
 using PermissionCallback = std::function<void(bool)>;
@@ -114,6 +130,10 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
 
   // Register shell callbacks (called by MainWindow after BuildChrome).
   void SetShellCallbacks(ShellCallbacks cbs) { shell_cbs_ = std::move(cbs); }
+
+  // refine-ui-theme-layout: register theme callbacks (called by
+  // MainWindow once persistence + appearance observers are wired).
+  void SetThemeCallbacks(ThemeCallbacks cbs) { theme_cbs_ = std::move(cbs); }
 
   // Called by ClientHandler::OnBeforeClose so per-browser event-bus
   // subscribers can be torn down.
@@ -146,6 +166,9 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
                      std::string_view payload,
                      CefRefPtr<Callback> callback);
   bool HandleShell(std::string_view channel,
+                   std::string_view payload,
+                   CefRefPtr<Callback> callback);
+  bool HandleTheme(std::string_view channel,
                    std::string_view payload,
                    CefRefPtr<Callback> callback);
   bool HandleTab(std::string_view channel,
@@ -182,6 +205,7 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
 
   SpaceManager* space_manager_;  // Owned by MainWindow.
   ShellCallbacks shell_cbs_;
+  ThemeCallbacks theme_cbs_;
 
   // Pending permission requests: request_id → callback.
   std::mutex perm_mutex_;

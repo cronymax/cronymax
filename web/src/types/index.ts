@@ -262,6 +262,33 @@ export const AgentRunPayloadSchema = z.object({
   task: z.string(),
 });
 
+// ── theme (refine-ui-theme-layout) ─────────────────────────────────────
+export const ThemeModeSchema = z.enum(["system", "light", "dark"]);
+export type ThemeMode = z.infer<typeof ThemeModeSchema>;
+export const ThemeResolvedSchema = z.enum(["light", "dark"]);
+export type ThemeResolved = z.infer<typeof ThemeResolvedSchema>;
+
+const ChromeColorsSchema = z.object({
+  window_bg: z.string(),
+  border: z.string(),
+  fg: z.string(),
+  fg_muted: z.string(),
+});
+
+export const ThemeGetResponseSchema = z.object({
+  mode: ThemeModeSchema,
+  resolved: ThemeResolvedSchema,
+});
+export const ThemeSetPayloadSchema = z.object({ mode: ThemeModeSchema });
+export const ThemeChangedPayloadSchema = z.object({
+  mode: ThemeModeSchema,
+  resolved: ThemeResolvedSchema,
+  chrome: ChromeColorsSchema,
+});
+
+// ── shell.settings_popover_open (refine-ui-theme-layout) ──────────────
+export const ShellSettingsPopoverOpenPayloadSchema = EmptySchema;
+export const ShellSettingsPopoverOpenResponseSchema = EmptySchema;
 
 // ── agent-event-bus / inbox (re-exported) ─────────────────────────────
 export * from "./events";

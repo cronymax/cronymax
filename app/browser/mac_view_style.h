@@ -35,13 +35,47 @@ void StyleOverlayBrowserView(void* nsview,
 // hide the title bar (still draggable; traffic lights remain), give the
 // content area a vibrant blurred background, and round the window corners.
 // `nswindow` is a CefWindowHandle returned by CefWindow::GetWindowHandle().
-void StyleMainWindowTranslucent(void* nswindow);
+// `argb` is the cronymax chrome color (used as both NSWindow.backgroundColor
+// and the content layer fill). Pass `0` to keep the legacy dark default.
+void StyleMainWindowTranslucent(void* nswindow, cef_color_t argb = 0);
+
+// refine-ui-theme-layout: live-update the NSWindow chrome color without
+// re-running the full StyleMainWindowTranslucent pipeline. Used by
+// MainWindow::ApplyThemeChrome when the theme flips.
+void SetMainWindowBackgroundColor(void* nswindow, cef_color_t argb);
+
+// refine-ui-theme-layout: install/refresh a 12 px rounded outline on a
+// CEF panel's NSView. The view receives `cornerRadius`, `masksToBounds`,
+// and a 1 pt border colored with `border_argb`. Call once after the
+// view is realized and again from ApplyThemeChrome to retint.
+void InstallRoundedFrame(void* nsview,
+                         double radius,
+                         cef_color_t border_argb);
+
+// refine-ui-theme-layout: returns "light" or "dark" based on the current
+// effective NSApp appearance. Called by MainWindow::ResolveAppearance
+// when the user is in `system` mode.
+const char* CurrentSystemAppearance();
+
+// refine-ui-theme-layout: subscribe to AppleInterfaceThemeChangedNotification
+// (NSDistributedNotificationCenter, broadcast when macOS toggles
+// Light/Dark). Returns an opaque token (the Cocoa observer ptr); the
+// caller stores it and may unsubscribe by passing it back to
+// `RemoveSystemAppearanceObserver`. The callback is dispatched on the
+// main thread; it must re-marshal to TID_UI itself.
+void* AddSystemAppearanceObserver(void (*on_changed)(void* user),
+                                  void* user);
+void RemoveSystemAppearanceObserver(void* token);
 
 // Round the corners and add a soft shadow to a CEF BrowserView's NSView.
-// Used to make the active web tab float inside the window with a margin.
-void StyleContentBrowserView(void* nsview,
-                             double corner_radius,
-                             bool with_shadow);
+// `window_nsview` is the window's content NSView (from CefWindow::GetWindowHandle()).
+// `radius` is the corner radius.
+// `bg_argb` is the window chrome color used to paint the corner-punch overlays.
+// `card_rect` is the card's bounds in window-content-view coordinates (y grows down).
+void StyleContentBrowserView(void* window_nsview,
+                             double radius,
+                             cef_color_t bg_argb,
+                             const CefRect& card_rect);
 
 // Make a CEF BrowserView's NSView fully transparent (no opaque chrome
 // fill) so the window's NSVisualEffectView vibrancy shows through the

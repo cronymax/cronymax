@@ -35,7 +35,6 @@ import {
   AgentRunPayloadSchema,
   BrowserTabSchema,
   TabIdPayloadSchema,
-  TabsListResponseSchema,
   TabCreatedSchema,
   TabClosedSchema,
   TabTitleChangedSchema,
@@ -48,6 +47,11 @@ import {
   ShellTabOpenSingletonResponseSchema,
   ShellNewTabKindPayloadSchema,
   ShellNewTabKindResponseSchema,
+  ShellSettingsPopoverOpenPayloadSchema,
+  ShellSettingsPopoverOpenResponseSchema,
+  ThemeGetResponseSchema,
+  ThemeSetPayloadSchema,
+  ThemeChangedPayloadSchema,
   TabSetToolbarStatePayloadSchema,
   TabSetChromeThemePayloadSchema,
   TabsListSnapshotSchema,
@@ -91,8 +95,12 @@ export const Channels = {
   "shell.popover_close": chan({ req: EmptySchema, res: EmptySchema }),
   "shell.popover_refresh": chan({ req: EmptySchema, res: EmptySchema }),
   "shell.popover_open_as_tab": chan({ req: EmptySchema, res: EmptySchema }),
+  "shell.popover_navigate": chan({
+    req: z.object({ url: z.string() }),
+    res: EmptySchema,
+  }),
   "shell.window_drag": chan({ req: EmptySchema, res: EmptySchema }),
-  "shell.tabs_list": chan({ req: EmptySchema, res: TabsListResponseSchema }),
+  "shell.tabs_list": chan({ req: EmptySchema, res: TabsListSnapshotSchema }),
   "shell.tab_new": chan({
     req: ShellNavigatePayloadSchema,
     res: BrowserTabSchema,
@@ -107,6 +115,15 @@ export const Channels = {
     req: ShellNewTabKindPayloadSchema,
     res: ShellNewTabKindResponseSchema,
   }),
+  // refine-ui-theme-layout: open Settings as a top-of-window popover
+  "shell.settings_popover_open": chan({
+    req: ShellSettingsPopoverOpenPayloadSchema,
+    res: ShellSettingsPopoverOpenResponseSchema,
+  }),
+
+  // refine-ui-theme-layout: theme persistence + system follow
+  "theme.get": chan({ req: EmptySchema, res: ThemeGetResponseSchema }),
+  "theme.set": chan({ req: ThemeSetPayloadSchema, res: EmptySchema }),
 
   // ── arc-style-tab-cards: per-tab toolbar + chrome theme push ──────
   "tab.set_toolbar_state": chan({
@@ -491,6 +508,7 @@ export const Events = {
   "terminal.exit": TerminalExitPayloadSchema,
   "terminal.restart_requested": EmptySchema,
   "popover.url_changed": z.object({ url: z.string() }),
+  "popover_chrome.url_changed": z.object({ url: z.string() }),
   "shell.tabs_changed": z.array(BrowserTabSchema),
   "shell.tab_created": TabCreatedSchema,
   "shell.tab_closed": TabClosedSchema,
@@ -504,6 +522,8 @@ export const Events = {
   "agent.task_from_command": AgentTaskFromCommandPayloadSchema,
   "space.created": SpaceSchema,
   "space.deleted": z.object({ space_id: z.string() }),
+  // refine-ui-theme-layout: theme broadcast for all panels
+  "theme.changed": ThemeChangedPayloadSchema,
 
   // ── agent-event-bus broadcast ──────────────────────────────────────
   event: AppEventSchema,

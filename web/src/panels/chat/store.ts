@@ -5,10 +5,20 @@ import { createPanelStore } from "@/hooks/usePanelStore";
 
 export type Role = "user" | "assistant" | "system" | "trace";
 
+export type ChatMode = "agent" | "flow";
+
 export interface Message {
   id: number;
   role: Role;
   content: string;
+  /** Optional speaker label for assistant messages (agent display name). */
+  agentName?: string;
+}
+
+export interface AgentSummary {
+  name: string;
+  kind: string;
+  llm: string;
 }
 
 export interface State {
@@ -18,6 +28,9 @@ export interface State {
   running: boolean;
   flows: string[];
   selectedFlow: string;
+  agents: AgentSummary[];
+  selectedAgent: string;
+  chatMode: ChatMode;
   msgSeq: number;
 }
 
@@ -26,15 +39,18 @@ export type Action =
       type: "loadChat";
       id: string;
       name: string;
-      history: Array<{ role: Role; content: string }>;
+      history: Array<{ role: Role; content: string; agentName?: string }>;
     }
-  | { type: "addMessage"; role: Role; content: string }
+  | { type: "addMessage"; role: Role; content: string; agentName?: string }
   | { type: "updateMessage"; id: number; content: string }
   | { type: "appendToMessage"; id: number; chunk: string }
   | { type: "setRunning"; running: boolean }
   | { type: "clearHistory" }
   | { type: "setFlows"; flows: string[]; selected: string }
-  | { type: "setSelectedFlow"; name: string };
+  | { type: "setSelectedFlow"; name: string }
+  | { type: "setAgents"; agents: AgentSummary[]; selected: string }
+  | { type: "setSelectedAgent"; name: string }
+  | { type: "setChatMode"; mode: ChatMode };
 
 const initial: State = {
   activeChatId: null,
@@ -43,6 +59,9 @@ const initial: State = {
   running: false,
   flows: [],
   selectedFlow: "",
+  agents: [],
+  selectedAgent: "",
+  chatMode: "agent",
   msgSeq: 1,
 };
 
@@ -53,6 +72,7 @@ function reducer(state: State, action: Action): State {
         id: i + 1,
         role: m.role,
         content: m.content,
+        ...(m.agentName ? { agentName: m.agentName } : {}),
       }));
       return {
         ...state,
@@ -67,6 +87,7 @@ function reducer(state: State, action: Action): State {
         id: state.msgSeq,
         role: action.role,
         content: action.content,
+        ...(action.agentName ? { agentName: action.agentName } : {}),
       };
       return {
         ...state,
@@ -96,6 +117,16 @@ function reducer(state: State, action: Action): State {
       return { ...state, flows: action.flows, selectedFlow: action.selected };
     case "setSelectedFlow":
       return { ...state, selectedFlow: action.name };
+    case "setAgents":
+      return {
+        ...state,
+        agents: action.agents,
+        selectedAgent: action.selected,
+      };
+    case "setSelectedAgent":
+      return { ...state, selectedAgent: action.name };
+    case "setChatMode":
+      return { ...state, chatMode: action.mode };
     default:
       return state;
   }
@@ -175,13 +206,49 @@ export function loadFlowsList(): {
   }
   const names = Object.keys(flowsObj).sort();
   const stored = localStorage.getItem("chat_active_flow") || "";
-  const selected = stored && names.includes(stored) ? stored : "";
+  // Default to "Chat" if no selection has been persisted yet (matches the
+  // seed flow created by FlowEditor on first run).
+  const selected =
+    stored && names.includes(stored)
+      ? stored
+      : names.includes("Chat")
+        ? "Chat"
+        : (names[0] ?? "");
   return { flows: names, selected };
 }
 
 export function persistSelectedFlow(name: string): void {
   try {
     localStorage.setItem("chat_active_flow", name);
+  } catch {
+    /* ignore */
+  }
+}
+
+// ── agent / mode helpers ──────────────────────────────────────────────────
+export function loadSelectedAgent(agents: string[]): string {
+  const stored = localStorage.getItem("chat_active_agent") || "";
+  if (stored && agents.includes(stored)) return stored;
+  if (agents.includes("Chat")) return "Chat";
+  return agents[0] ?? "";
+}
+
+export function persistSelectedAgent(name: string): void {
+  try {
+    localStorage.setItem("chat_active_agent", name);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function loadChatMode(): ChatMode {
+  const stored = localStorage.getItem("chat_mode");
+  return stored === "flow" ? "flow" : "agent";
+}
+
+export function persistChatMode(mode: ChatMode): void {
+  try {
+    localStorage.setItem("chat_mode", mode);
   } catch {
     /* ignore */
   }

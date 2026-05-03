@@ -30,6 +30,8 @@ import {
   migrateLegacy,
   syncLegacyKey,
   useStore,
+  SEED_CHAT_FLOW,
+  leadNodeId,
   type FlowSpec,
   type GraphEdge,
   type GraphNode,
@@ -138,6 +140,12 @@ export function FlowEditor() {
   // ── init: load flows + remote catalogs ──────────────────────────────────
   useEffect(() => {
     const flows = migrateLegacy(loadAllFlows());
+    // Seed a built-in "Chat" flow the first time the editor opens on a
+    // fresh installation (no flows in localStorage).
+    if (Object.keys(flows).length === 0) {
+      flows["Chat"] = { ...SEED_CHAT_FLOW };
+      saveAllFlows(flows);
+    }
     const names = Object.keys(flows).sort();
     let active = getActiveFlowName();
     if (active && !flows[active]) active = "";
@@ -152,10 +160,28 @@ export function FlowEditor() {
     }
 
     // Load agent + doc-type registries from the native bridge.
+    // If the registry is empty on first run, auto-seed a default "Chat" agent.
     bridge
       .send("agent.registry.list")
-      .then((res) => {
-        dispatch({ type: "setAgentCatalog", agents: res.agents ?? [] });
+      .then(async (res) => {
+        let agents = res.agents ?? [];
+        if (agents.length === 0) {
+          try {
+            await bridge.send("agent.registry.save", {
+              name: "Chat",
+              kind: "worker",
+              llm: "",
+              system_prompt: "You are a helpful assistant.",
+              memory_namespace: "",
+              tools_csv: "",
+            });
+            const refreshed = await bridge.send("agent.registry.list");
+            agents = refreshed.agents ?? [];
+          } catch {
+            // Seeding failed (e.g. bridge not available); continue with empty catalog.
+          }
+        }
+        dispatch({ type: "setAgentCatalog", agents });
       })
       .catch((err: Error) => {
         // eslint-disable-next-line no-console
@@ -523,6 +549,7 @@ export function FlowEditor() {
                     ? "ring-2 ring-green-400"
                     : "";
               const kind = n.config.agent_kind || "unknown";
+              const isLead = leadNodeId(state.nodes) === n.id;
               return (
                 <div
                   key={n.id}
@@ -539,21 +566,31 @@ export function FlowEditor() {
                     <span className="rounded bg-black/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
                       {kind === "reviewer" ? "Reviewer" : "Agent"}
                     </span>
+                    {isLead && (
+                      <span
+                        title="Lead agent: handles unaddressed messages and cannot be deleted."
+                        className="rounded bg-cronymax-accent/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-cronymax-accent"
+                      >
+                        Lead
+                      </span>
+                    )}
                     <span className="flex-1 truncate font-medium">
                       {n.name}
                     </span>
-                    <button
-                      type="button"
-                      data-role="delete"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        dispatch({ type: "deleteNode", id: n.id });
-                      }}
-                      className="text-cronymax-fg-muted hover:text-red-300"
-                      title="Delete"
-                    >
-                      ×
-                    </button>
+                    {!isLead && (
+                      <button
+                        type="button"
+                        data-role="delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          dispatch({ type: "deleteNode", id: n.id });
+                        }}
+                        className="text-cronymax-fg-muted hover:text-red-300"
+                        title="Delete"
+                      >
+                        ×
+                      </button>
+                    )}
                   </div>
                   <code className="block truncate text-[11px] text-cronymax-fg-muted">
                     {previewLine(n) || "no doc-type / reviewers set"}
