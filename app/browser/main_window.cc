@@ -17,6 +17,7 @@
 #include "include/wrapper/cef_helpers.h"
 
 #if defined(__APPLE__)
+#include "browser/icon_registry.h"
 #include "browser/mac_view_style.h"
 #include "browser/tab.h"
 #include "browser/tab_behavior.h"
@@ -1216,10 +1217,12 @@ CefRefPtr<CefPanel> MainWindow::BuildTitleBar() {
   panel->AddChildView(spacer_);
   layout->SetFlexForView(spacer_, 1);
 
-  // 3. New-tab buttons.
-  auto add_btn = [&](CefRefPtr<CefLabelButton>* slot, const std::string& label,
-                     const std::string& tooltip, const std::string& kind) {
-    auto btn = CefLabelButton::CreateLabelButton(
+  // 3. New-tab buttons. (unified-icons: text label kept, glyph replaced
+  // with a registry-backed CefImage via MakeIconLabelButton.)
+  auto add_btn = [&](CefRefPtr<CefLabelButton>* slot, IconId icon,
+                     const std::string& label, const std::string& tooltip,
+                     const std::string& kind) {
+    auto btn = MakeIconLabelButton(
         new FnButtonDelegate([this, kind]() {
           // Defer to a UI tick so click handler unwinds before any tab
           // mutation walks the view tree.
@@ -1229,26 +1232,26 @@ CefRefPtr<CefPanel> MainWindow::BuildTitleBar() {
               },
               CefRefPtr<MainWindow>(this), kind));
         }),
-        label);
+        icon, label, tooltip);
     btn->SetTextColor(CEF_BUTTON_STATE_NORMAL, kTitleBarBtnFg);
     btn->SetTextColor(CEF_BUTTON_STATE_HOVERED, 0xFFFFFFFF);
     btn->SetBackgroundColor(
         current_chrome_.bg_body == 0 ? kTitleBarBgFallback
                                      : current_chrome_.bg_body);
-    btn->SetTooltipText(tooltip);
     panel->AddChildView(btn);
     layout->SetFlexForView(btn, 0);
     *slot = btn;
   };
-  add_btn(&btn_web_,  "\xE2\x8A\x95 Web",       "New web tab",  "web");
-  add_btn(&btn_term_, "\xE2\x8C\xA8 Terminal",  "New terminal", "terminal");
-  add_btn(&btn_chat_, "\xF0\x9F\x92\xAC Chat",  "New chat",     "chat");
+  add_btn(&btn_web_,  IconId::kTabWeb,      "Web",      "New web tab",  "web");
+  add_btn(&btn_term_, IconId::kTabTerminal, "Terminal", "New terminal", "terminal");
+  add_btn(&btn_chat_, IconId::kTabChat,     "Chat",     "New chat",     "chat");
 
   // Settings: opens the Settings popover (refine-ui-theme-layout).
   // Replaces the legacy "activate Agent singleton" path so settings now
   // float over the active tab regardless of which tab is focused.
+  // (unified-icons: glyph replaced with kSettings icon.)
   {
-    auto btn = CefLabelButton::CreateLabelButton(
+    auto btn = MakeIconLabelButton(
         new FnButtonDelegate([this]() {
           CefPostTask(TID_UI, base::BindOnce(
               [](CefRefPtr<MainWindow> self) {
@@ -1257,7 +1260,7 @@ CefRefPtr<CefPanel> MainWindow::BuildTitleBar() {
               },
               CefRefPtr<MainWindow>(this)));
         }),
-        "\xE2\x9A\x99 Settings");
+        IconId::kSettings, "Settings", "Open settings");
     btn->SetTextColor(CEF_BUTTON_STATE_NORMAL, kTitleBarBtnFg);
     btn->SetTextColor(CEF_BUTTON_STATE_HOVERED, 0xFFFFFFFF);
     btn->SetBackgroundColor(
@@ -1643,12 +1646,19 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
   if (content_outer_)  content_outer_->SetBackgroundColor(chrome.bg_body);
   if (content_frame_)  content_frame_->SetBackgroundColor(chrome.bg_base);
   // Titlebar action buttons must use a readable foreground against bg_body.
-  for (auto* b : {btn_web_.get(), btn_term_.get(), btn_chat_.get(),
-                  btn_settings_.get()}) {
+  // dark_mode = true when text is light (dark background), false otherwise.
+  const bool title_dark = ((chrome.text_title >> 8) & 0xFF) > 0x80;
+  constexpr IconId kTitleBtnIcons[] = {
+      IconId::kTabWeb, IconId::kTabTerminal, IconId::kTabChat, IconId::kSettings};
+  CefRefPtr<CefLabelButton>* kTitleBtns[] = {
+      &btn_web_, &btn_term_, &btn_chat_, &btn_settings_};
+  for (int i = 0; i < 4; ++i) {
+    auto* b = kTitleBtns[i]->get();
     if (!b) continue;
     b->SetTextColor(CEF_BUTTON_STATE_NORMAL,  chrome.text_title);
     b->SetTextColor(CEF_BUTTON_STATE_HOVERED, chrome.text_title);
     b->SetBackgroundColor(chrome.bg_body);
+    IconRegistry::ApplyToButton(*kTitleBtns[i], kTitleBtnIcons[i], title_dark);
   }
   if (tabs_) {
     for (const auto& summary : tabs_->Snapshot()) {

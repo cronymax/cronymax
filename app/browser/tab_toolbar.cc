@@ -42,8 +42,9 @@ CefRefPtr<CefPanel> TabToolbar::Build() {
   root_ = CefPanel::CreatePanel(nullptr);
   CefBoxLayoutSettings root_box;
   root_box.horizontal = true;
-  root_box.inside_border_insets = {0, 8, 0, 8};
+  root_box.inside_border_insets = {4, 8, 4, 8};
   root_box.between_child_spacing = 6;
+  root_box.cross_axis_alignment = CEF_AXIS_ALIGNMENT_CENTER;
   root_layout_ = root_->SetToBoxLayout(root_box);
   if (default_chrome_argb_ == 0) default_chrome_argb_ = kDefaultChromeArgb;
   root_->SetBackgroundColor(default_chrome_argb_);

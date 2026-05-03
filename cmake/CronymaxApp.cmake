@@ -48,6 +48,10 @@ set(CRONYMAX_APP_SRCS
   app/browser/main_window.h
   app/browser/space_manager.cc
   app/browser/space_manager.h
+  # unified-icons: semantic icon registry + native button factories.
+  app/browser/icon_data.h
+  app/browser/icon_registry.h
+  app/browser/icon_registry.cc
   # arc-style-tab-cards (Phase 1 skeleton)
   app/browser/tab.cc
   app/browser/tab.h
@@ -68,16 +72,42 @@ if(APPLE)
     app/browser/main_mac.mm
     app/browser/mac_view_style.h
     app/browser/mac_view_style.mm
+    # unified-icons: macOS implementation — NSImage rasterisation of embedded SVGs.
+    app/browser/icon_registry_mac.mm
   )
 else()
   list(APPEND CRONYMAX_APP_SRCS app/browser/main.cc)
 endif()
+
+# ---------------------------------------------------------------------------
+# Codicons SVG embedding: generate icon_data.cc at build time from the
+# vscode-codicons submodule so the binary carries all SVGs as string literals.
+# No runtime file I/O and no bundle Resources/icons/ copy needed.
+# ---------------------------------------------------------------------------
+set(CODICONS_SRC_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vscode-codicons/src/icons")
+set(ICON_DATA_CC "${CMAKE_BINARY_DIR}/generated/browser/icon_data.cc")
+file(GLOB CODICON_SVG_FILES "${CODICONS_SRC_DIR}/*.svg")
+
+add_custom_command(
+  OUTPUT  "${ICON_DATA_CC}"
+  COMMAND ${CMAKE_COMMAND}
+    -DICONS_DIR=${CODICONS_SRC_DIR}
+    -DOUTPUT_FILE=${ICON_DATA_CC}
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateIconData.cmake"
+  DEPENDS ${CODICON_SVG_FILES}
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateIconData.cmake"
+  COMMENT "Generating icon_data.cc from Codicons SVG sources"
+  VERBATIM
+)
+list(APPEND CRONYMAX_APP_SRCS "${ICON_DATA_CC}")
 
 add_executable(cronymax_app MACOSX_BUNDLE ${CRONYMAX_APP_SRCS})
 
 target_include_directories(cronymax_app PRIVATE
   ${CEF_ROOT}
   ${CMAKE_CURRENT_SOURCE_DIR}/app
+  ${CMAKE_BINARY_DIR}/generated
 )
 
 SET_EXECUTABLE_TARGET_PROPERTIES(cronymax_app)

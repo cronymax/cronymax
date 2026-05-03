@@ -7,6 +7,6 @@ out/
 compile_commands.json
 
 # Frontend (Vite + pnpm)
-web/node_modules/
+node_modules/
 web/dist/
 web/.vite/

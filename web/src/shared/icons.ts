@@ -1,0 +1,74 @@
+// Copyright (c) 2026.
+//
+// Cronymax icon vocabulary — string-union mirror of the C++ IconId enum
+// in app/browser/icon_registry.h. Keep this list in sync with
+// assets/icons/README.md (the canonical mapping table) when adding or
+// removing icons.
+
+import type { FunctionComponent, SVGProps } from "react";
+import ArrowLeft from "@vscode/codicons/src/icons/arrow-left.svg?react";
+import ArrowRight from "@vscode/codicons/src/icons/arrow-right.svg?react";
+import Refresh from "@vscode/codicons/src/icons/refresh.svg?react";
+import Close from "@vscode/codicons/src/icons/close.svg?react";
+import Add from "@vscode/codicons/src/icons/add.svg?react";
+import SettingsGear from "@vscode/codicons/src/icons/settings-gear.svg?react";
+import Terminal from "@vscode/codicons/src/icons/terminal.svg?react";
+import CommentDiscussion from "@vscode/codicons/src/icons/comment-discussion.svg?react";
+import TypeHierarchy from "@vscode/codicons/src/icons/type-hierarchy.svg?react";
+import Globe from "@vscode/codicons/src/icons/globe.svg?react";
+import DebugStop from "@vscode/codicons/src/icons/debug-stop.svg?react";
+import Sparkle from "@vscode/codicons/src/icons/sparkle.svg?react";
+import Tools from "@vscode/codicons/src/icons/tools.svg?react";
+import Save from "@vscode/codicons/src/icons/save.svg?react";
+import Trash from "@vscode/codicons/src/icons/trash.svg?react";
+import LinkExternal from "@vscode/codicons/src/icons/link-external.svg?react";
+
+export type SvgComponent = FunctionComponent<SVGProps<SVGSVGElement>>;
+
+/**
+ * Every Codicon name used anywhere in the React panels. Adding a new icon
+ * SHALL require:
+ *
+ *   1. Adding the name here.
+ *   2. Adding a corresponding `?react` import above and an entry in `codiconComponents`.
+ *   3. If the icon is also needed in the native chrome, adding the
+ *      `IconId` value in `app/browser/icon_registry.h` and a matching
+ *      entry to `kSpecs[]` in `app/browser/icon_registry.cc`.
+ */
+export type IconName =
+  | "arrow-left"
+  | "arrow-right"
+  | "refresh"
+  | "close"
+  | "add"
+  | "settings-gear"
+  | "terminal"
+  | "comment-discussion"
+  | "type-hierarchy"
+  | "globe"
+  | "debug-stop"
+  | "sparkle"
+  | "tools"
+  | "save"
+  | "trash"
+  | "link-external";
+
+/** SVG React components for each icon, transformed at build time by vite-plugin-svgr. */
+export const codiconComponents: Record<IconName, SvgComponent> = {
+  "arrow-left": ArrowLeft,
+  "arrow-right": ArrowRight,
+  refresh: Refresh,
+  close: Close,
+  add: Add,
+  "settings-gear": SettingsGear,
+  terminal: Terminal,
+  "comment-discussion": CommentDiscussion,
+  "type-hierarchy": TypeHierarchy,
+  globe: Globe,
+  "debug-stop": DebugStop,
+  sparkle: Sparkle,
+  tools: Tools,
+  save: Save,
+  trash: Trash,
+  "link-external": LinkExternal,
+};

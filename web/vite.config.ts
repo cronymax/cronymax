@@ -2,6 +2,7 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import svgr from "vite-plugin-svgr";
 import { resolve } from "node:path";
 
 // Vite emits `<script type="module" crossorigin ...>` and
@@ -26,6 +27,7 @@ function stripCrossorigin(): Plugin {
 // and production. We disable Vite's own publicDir handling because `root`
 // is already pointed at it; otherwise Vite would refuse to start ("publicDir
 // must not be inside root").
+
 const srcDir = resolve(__dirname, "src");
 const panelsDir = resolve(srcDir, "panels");
 
@@ -41,7 +43,7 @@ export default defineConfig({
   base: "./",
   root: srcDir,
   publicDir: false,
-  plugins: [react(), tailwindcss(), stripCrossorigin()],
+  plugins: [svgr(), react(), tailwindcss(), stripCrossorigin()],
   resolve: {
     alias: {
       "@": srcDir,

@@ -26,6 +26,7 @@ import type {
   AgentRunSnapshot,
 } from "@/agent_runtime";
 import { Flows } from "@/components/FlowEditor";
+import { Icon } from "@/shared/components/Icon";
 import { useStore, type PermissionRequest } from "./store";
 
 // ── types ─────────────────────────────────────────────────────────────────
@@ -1386,8 +1387,9 @@ function SpaceRow({
         }}
         className="opacity-0 transition group-hover:opacity-100"
         title="Delete space"
+        aria-label="Delete space"
       >
-        ×
+        <Icon name="close" size={12} aria-hidden="true" />
       </button>
     </li>
   );
@@ -1702,8 +1704,9 @@ export function App() {
           onClick={onClose}
           className="rounded px-2 py-0.5 text-xs text-cronymax-caption hover:bg-cronymax-base hover:text-cronymax-title"
           title="Close"
+          aria-label="Close"
         >
-          ✕
+          <Icon name="close" size={12} aria-hidden="true" />
         </button>
       </header>
 

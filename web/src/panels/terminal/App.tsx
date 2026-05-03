@@ -1,6 +1,8 @@
 import { useEffect, useRef, useCallback, type FormEvent } from "react";
 import { bridge } from "@/bridge";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
+import { Icon } from "@/shared/components/Icon";
+import type { IconName } from "@/shared/icons";
 import { useStore, type Block, type PaneState } from "./store";
 
 // ── small helpers ──────────────────────────────────────────────────────
@@ -26,21 +28,22 @@ function ActionBar({
   block: Block;
   onAction: (action: BlockAction) => void;
 }) {
-  const aiBtns: { label: string; action: BlockAction }[] = [
-    { label: "✨ Explain", action: "Explain" },
-    { label: "🔧 Fix", action: "Fix" },
-    { label: "↻ Retry", action: "Retry" },
+  const aiBtns: { icon: IconName; label: string; action: BlockAction }[] = [
+    { icon: "sparkle", label: "Explain", action: "Explain" },
+    { icon: "tools", label: "Fix", action: "Fix" },
+    { icon: "refresh", label: "Retry", action: "Retry" },
   ];
   return (
     <div className="flex items-center justify-between gap-1.5 border-t border-[#2b3138] bg-[#111317] px-2.5 py-1.5">
       <div className="flex gap-1.5">
-        {aiBtns.map(({ label, action }) => (
+        {aiBtns.map(({ icon, label, action }) => (
           <button
             key={action}
             type="button"
             onClick={() => onAction(action)}
-            className="h-6 rounded border border-[rgba(123,140,255,0.35)] bg-[#1c222a] px-2.5 text-[11px] text-[#c7d2fe] transition hover:border-[#7b8cff] hover:bg-[rgba(123,140,255,0.12)] hover:text-white"
+            className="inline-flex h-6 items-center gap-1 rounded border border-[rgba(123,140,255,0.35)] bg-[#1c222a] px-2.5 text-[11px] text-[#c7d2fe] transition hover:border-[#7b8cff] hover:bg-[rgba(123,140,255,0.12)] hover:text-white"
           >
+            <Icon name={icon} size={12} aria-hidden="true" />
             {label}
           </button>
         ))}

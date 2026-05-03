@@ -16,7 +16,7 @@ namespace cronymax {
 class TabToolbar {
  public:
   // Fixed visual height of the toolbar strip in DIPs.
-  static constexpr int kHeight = 40;
+  static constexpr int kHeight = 24;
 
   TabToolbar();
 

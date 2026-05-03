@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { bridge } from "@/bridge";
+import { Icon } from "@/shared/components/Icon";
 
 export function App() {
   const [url, setUrl] = useState("");
@@ -53,7 +54,8 @@ export function App() {
       <button
         onClick={() => bridge.send("shell.popover_refresh", {})}
         title="Reload"
-        className="shrink-0 text-sm leading-none"
+        aria-label="Reload"
+        className="shrink-0 inline-flex items-center justify-center"
         style={{
           color: "#9AA0A8",
           background: "transparent",
@@ -61,14 +63,15 @@ export function App() {
           cursor: "pointer",
         }}
       >
-        ↻
+        <Icon name="refresh" />
       </button>
 
       {/* Open as tab */}
       <button
         onClick={() => bridge.send("shell.popover_open_as_tab", {})}
         title="Open as tab"
-        className="shrink-0 text-sm leading-none"
+        aria-label="Open as tab"
+        className="shrink-0 inline-flex items-center justify-center"
         style={{
           color: "#9AA0A8",
           background: "transparent",
@@ -76,14 +79,15 @@ export function App() {
           cursor: "pointer",
         }}
       >
-        ↗
+        <Icon name="link-external" />
       </button>
 
       {/* Close popover */}
       <button
         onClick={() => bridge.send("shell.popover_close", {})}
         title="Close"
-        className="shrink-0 text-sm leading-none"
+        aria-label="Close"
+        className="shrink-0 inline-flex items-center justify-center"
         style={{
           color: "#9AA0A8",
           background: "transparent",
@@ -91,7 +95,7 @@ export function App() {
           cursor: "pointer",
         }}
       >
-        ✕
+        <Icon name="close" />
       </button>
     </div>
   );

@@ -2,6 +2,8 @@ import { useCallback, useEffect } from "react";
 import { bridge } from "@/bridge";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { useDragRegions } from "@/hooks/useDragRegions";
+import { Icon } from "@/shared/components/Icon";
+import type { IconName } from "@/shared/icons";
 import type { TabKind, TabSummary } from "@/types";
 import { useStore } from "./store";
 
@@ -26,19 +28,19 @@ function faviconFor(url?: string): string | null {
   return null;
 }
 
-function glyphFor(kind: TabKind): string {
+function iconNameForKind(kind: TabKind): IconName {
   switch (kind) {
     case "terminal":
-      return "⌨";
+      return "terminal";
     case "chat":
-      return "💬";
+      return "comment-discussion";
     case "agent":
-      return "⚙";
+      return "settings-gear";
     case "graph":
-      return "▦";
+      return "type-hierarchy";
     case "web":
     default:
-      return "🌐";
+      return "globe";
   }
 }
 
@@ -65,7 +67,7 @@ function Row({
           : "text-cronymax-caption hover:bg-cronymax-float hover:text-cronymax-title")
       }
     >
-      <span className="flex h-3.5 w-3.5 flex-none items-center justify-center text-[11px]">
+      <span className="flex h-3.5 w-3.5 flex-none items-center justify-center">
         {iconUrl ? (
           <img
             src={iconUrl}
@@ -77,7 +79,7 @@ function Row({
             }}
           />
         ) : (
-          glyphFor(tab.kind)
+          <Icon name={iconNameForKind(tab.kind)} size={14} aria-hidden="true" />
         )}
       </span>
       <span className="flex-1 truncate">{tab.displayName}</span>
@@ -94,8 +96,9 @@ function Row({
           onClose();
         }}
         className="flex h-4 w-4 flex-none items-center justify-center rounded text-cronymax-caption opacity-60 hover:bg-cronymax-border hover:text-white hover:opacity-100"
+        aria-label="Close"
       >
-        ×
+        <Icon name="close" size={12} aria-hidden="true" />
       </button>
     </li>
   );

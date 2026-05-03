@@ -21,6 +21,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { bridge } from "@/bridge";
+import { Icon } from "@/shared/components/Icon";
 import {
   Provider,
   loadAllFlows,
@@ -440,16 +441,21 @@ export function FlowEditor() {
             + Reviewer
           </button>
           <span className="mx-1 h-4 w-px bg-cronymax-border" />
-          <button type="button" onClick={onSaveFlow} className={btnCls}>
-            💾 Save
+          <button
+            type="button"
+            onClick={onSaveFlow}
+            className={btnCls + " inline-flex items-center gap-1"}
+          >
+            <Icon name="save" size={12} aria-hidden="true" /> Save
           </button>
           <button
             type="button"
             onClick={onDeleteFlow}
-            className={btnCls}
+            className={btnCls + " inline-flex items-center gap-1"}
             title="Delete this flow"
+            aria-label="Delete this flow"
           >
-            🗑
+            <Icon name="trash" size={12} aria-hidden="true" />
           </button>
           <button type="button" onClick={onClear} className={btnDangerCls}>
             Clear
@@ -587,8 +593,9 @@ export function FlowEditor() {
                         }}
                         className="text-cronymax-caption hover:text-red-300"
                         title="Delete"
+                        aria-label="Delete"
                       >
-                        ×
+                        <Icon name="close" size={12} aria-hidden="true" />
                       </button>
                     )}
                   </div>
@@ -767,8 +774,9 @@ function Inspector({
           type="button"
           onClick={onClose}
           className="text-cronymax-caption hover:text-cronymax-title"
+          aria-label="Close"
         >
-          ×
+          <Icon name="close" size={12} aria-hidden="true" />
         </button>
       </div>
       <div className="flex-1 overflow-auto px-3 py-2">
@@ -882,8 +890,9 @@ function EdgeInspector({
           type="button"
           onClick={onClose}
           className="text-cronymax-caption hover:text-cronymax-title"
+          aria-label="Close"
         >
-          ×
+          <Icon name="close" size={12} aria-hidden="true" />
         </button>
       </div>
       <div className="flex-1 overflow-auto px-3 py-2">
@@ -975,8 +984,9 @@ function AgentPicker({
             type="button"
             onClick={onClose}
             className="text-cronymax-caption hover:text-cronymax-title"
+            aria-label="Close"
           >
-            ×
+            <Icon name="close" size={12} aria-hidden="true" />
           </button>
         </div>
         {list.length === 0 ? (

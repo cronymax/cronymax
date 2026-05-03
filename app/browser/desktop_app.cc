@@ -3,6 +3,10 @@
 #include "browser/main_window.h"
 #include "include/wrapper/cef_helpers.h"
 
+#if defined(__APPLE__)
+#include "browser/icon_registry.h"
+#endif
+
 namespace cronymax {
 
 DesktopApp::DesktopApp() {
@@ -14,6 +18,12 @@ DesktopApp::DesktopApp() {
 
 void DesktopApp::OnContextInitialized() {
   CEF_REQUIRE_UI_THREAD();
+#if defined(__APPLE__)
+  // unified-icons: rasterise every vendored Codicons SVG into a CefImage
+  // before any CefWindow is created so MainWindow::CreateControls() can
+  // synchronously read images out of the registry while building buttons.
+  IconRegistry::Init();
+#endif
   MainWindow::Create();
 }
 

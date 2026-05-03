@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "browser/client_handler.h"
+#include "browser/icon_registry.h"
 #include "browser/tab_toolbar.h"
 #include "include/base/cef_callback.h"
 #include "include/cef_browser.h"
@@ -99,32 +100,33 @@ WebTabBehavior::~WebTabBehavior() {
 }
 
 void WebTabBehavior::BuildToolbar(TabToolbar* toolbar, TabContext* /*context*/) {
-  // Leading: back / forward / refresh.
-  back_btn_ = CefLabelButton::CreateLabelButton(
+  // Leading: back / forward / refresh. (unified-icons: registry-backed
+  // CefImage replaces the previous Unicode glyph text.)
+  back_btn_ = MakeIconButton(
       new FunctionButtonDelegate([this]() {
         if (browser_view_ && browser_view_->GetBrowser()) {
           browser_view_->GetBrowser()->GoBack();
         }
       }),
-      "\u25C0");  // ◀
+      IconId::kBack, "Back");
   back_btn_->SetEnabled(false);
   back_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
   back_btn_->SetBackgroundColor(0);
   toolbar->leading()->AddChildView(back_btn_);
 
-  fwd_btn_ = CefLabelButton::CreateLabelButton(
+  fwd_btn_ = MakeIconButton(
       new FunctionButtonDelegate([this]() {
         if (browser_view_ && browser_view_->GetBrowser()) {
           browser_view_->GetBrowser()->GoForward();
         }
       }),
-      "\u25B6");  // ▶
+      IconId::kForward, "Forward");
   fwd_btn_->SetEnabled(false);
   fwd_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
   fwd_btn_->SetBackgroundColor(0);
   toolbar->leading()->AddChildView(fwd_btn_);
 
-  refresh_btn_ = CefLabelButton::CreateLabelButton(
+  refresh_btn_ = MakeIconButton(
       new FunctionButtonDelegate([this]() {
         auto br = browser_view_ ? browser_view_->GetBrowser() : nullptr;
         if (!br) return;
@@ -134,7 +136,7 @@ void WebTabBehavior::BuildToolbar(TabToolbar* toolbar, TabContext* /*context*/) 
           br->Reload();
         }
       }),
-      "\u21BB");  // ↻
+      IconId::kRefresh, "Refresh");
   refresh_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
   refresh_btn_->SetBackgroundColor(0);
   toolbar->leading()->AddChildView(refresh_btn_);
@@ -147,9 +149,11 @@ void WebTabBehavior::BuildToolbar(TabToolbar* toolbar, TabContext* /*context*/) 
   url_field_->SetText(current_url_);
   url_field_->SetBackgroundColor(kPillBg);
   url_field_->SetTextColor(kPillFg);
+  // Explicit preferred height keeps the pill compact; the toolbar root uses
+  // CEF_AXIS_ALIGNMENT_CENTER so the field is vertically centred at this size
+  // rather than being stretched to the full toolbar inner height.
   toolbar->middle()->AddChildView(url_field_);
-  // Make the URL textfield consume all available middle-slot width;
-  // without an explicit flex it falls back to its preferred (tiny) width.
+  // Make the URL textfield consume all available middle-slot width.
   if (auto middle_layout = toolbar->middle()->GetLayout()) {
     if (auto box = middle_layout->AsBoxLayout()) {
       box->SetFlexForView(url_field_, 1);
@@ -158,13 +162,13 @@ void WebTabBehavior::BuildToolbar(TabToolbar* toolbar, TabContext* /*context*/) 
 
   // Trailing: new-tab placeholder. Phase 10 wires the dock button properly;
   // this is a click target so the toolbar feels live in Phase 3 smoke-tests.
-  new_btn_ = CefLabelButton::CreateLabelButton(
+  new_btn_ = MakeIconButton(
       new FunctionButtonDelegate([this]() {
         if (browser_view_ && browser_view_->GetBrowser()) {
           browser_view_->GetBrowser()->GetMainFrame()->LoadURL("about:blank");
         }
       }),
-      "\u2295");  // ⊕
+      IconId::kNewTab, "New Tab");
   new_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
   new_btn_->SetBackgroundColor(0);
   toolbar->trailing()->AddChildView(new_btn_);
@@ -214,16 +218,30 @@ void WebTabBehavior::ApplyToolbarState(const ToolbarState& /*state*/) {
 void WebTabBehavior::ApplyThemeColors(cef_color_t text_fg,
                                       cef_color_t surface_bg,
                                       cef_color_t toolbar_bg) {
+  // dark_mode = true when text is light (dark background), false otherwise.
+  const bool dark = ((text_fg >> 8) & 0xFF) > 0x80;
+  current_dark_mode_ = dark;
   // Update every toolbar widget built in BuildToolbar so they use the
   // current theme's foreground / surface colors instead of hardcoded values.
-  for (auto* btn : {back_btn_.get(), fwd_btn_.get(), refresh_btn_.get(),
-                    new_btn_.get()}) {
-    if (!btn) continue;
-    btn->SetTextColor(CEF_BUTTON_STATE_NORMAL, text_fg);
-    btn->SetTextColor(CEF_BUTTON_STATE_HOVERED, text_fg);
-    // Match button background to the toolbar panel so Chromium's default
-    // button background (which follows macOS dark-mode) doesn't bleed through.
-    if (toolbar_bg != 0) btn->SetBackgroundColor(toolbar_bg);
+  const struct { CefRefPtr<CefLabelButton>* btn; IconId id; } kFixedBtns[] = {
+    {&back_btn_,    IconId::kBack},
+    {&fwd_btn_,     IconId::kForward},
+    {&new_btn_,     IconId::kNewTab},
+  };
+  for (const auto& e : kFixedBtns) {
+    if (!e.btn->get()) continue;
+    e.btn->get()->SetTextColor(CEF_BUTTON_STATE_NORMAL,  text_fg);
+    e.btn->get()->SetTextColor(CEF_BUTTON_STATE_HOVERED, text_fg);
+    if (toolbar_bg != 0) e.btn->get()->SetBackgroundColor(toolbar_bg);
+    IconRegistry::ApplyToButton(*e.btn, e.id, dark);
+  }
+  // refresh_btn_ alternates between kRefresh and kStop depending on load state.
+  if (refresh_btn_) {
+    refresh_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL,  text_fg);
+    refresh_btn_->SetTextColor(CEF_BUTTON_STATE_HOVERED, text_fg);
+    if (toolbar_bg != 0) refresh_btn_->SetBackgroundColor(toolbar_bg);
+    IconRegistry::ApplyToButton(
+        refresh_btn_, is_loading_ ? IconId::kStop : IconId::kRefresh, dark);
   }
   if (url_field_) {
     url_field_->SetBackgroundColor(surface_bg);
@@ -319,7 +337,14 @@ void WebTabBehavior::NavigateToCurrentField() {
 
 void WebTabBehavior::UpdateRefreshStopGlyph() {
   if (!refresh_btn_) return;
-  refresh_btn_->SetText(is_loading_ ? "\u2715" : "\u21BB");  // ✕ / ↻
+  // unified-icons: swap the registry image instead of the text glyph.
+  // Use current_dark_mode_ so the tint matches the active theme even when
+  // this fires from OnLoadingStateChange (outside of ApplyThemeColors).
+  IconRegistry::ApplyToButton(
+      refresh_btn_, is_loading_ ? IconId::kStop : IconId::kRefresh,
+      current_dark_mode_);
+  refresh_btn_->SetAccessibleName(is_loading_ ? "Stop" : "Refresh");
+  refresh_btn_->SetTooltipText(is_loading_ ? "Stop" : "Refresh");
 }
 
 }  // namespace cronymax

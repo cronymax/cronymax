@@ -74,6 +74,7 @@ class WebTabBehavior : public TabBehavior {
   bool is_loading_ = false;
   bool can_go_back_ = false;
   bool can_go_forward_ = false;
+  bool current_dark_mode_ = true;  // tracks last tint variant from ApplyThemeColors
   int browser_id_ = 0;
 
   CefRefPtr<CefBrowserView> browser_view_;
