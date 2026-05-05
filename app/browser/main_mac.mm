@@ -79,6 +79,55 @@ int main(int argc, char* argv[]) {
     AiDesktopAppDelegate* delegate = [[AiDesktopAppDelegate alloc] init];
     NSApp.delegate = delegate;
 
+    // Install a minimal main menu so macOS routes standard Edit key
+    // equivalents (Cmd+C/X/V/A/Z) through the responder chain into the
+    // focused CEF BrowserView / NSTextView / HTML input element.
+    // Without this menu the actions are never looked up and copy/paste
+    // silently do nothing.
+    {
+      NSMenu* mainMenu = [[NSMenu alloc] initWithTitle:@""];
+
+      // App menu (index 0 — required by AppKit, title is ignored)
+      NSMenuItem* appItem = [[NSMenuItem alloc] initWithTitle:@"App"
+                                                       action:nil
+                                                keyEquivalent:@""];
+      NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"App"];
+      [appMenu addItemWithTitle:@"Quit"
+                         action:@selector(terminate:)
+                  keyEquivalent:@"q"];
+      appItem.submenu = appMenu;
+      [mainMenu addItem:appItem];
+
+      // Edit menu — supplies the key equivalents for copy/paste/etc.
+      NSMenuItem* editItem = [[NSMenuItem alloc] initWithTitle:@"Edit"
+                                                        action:nil
+                                                 keyEquivalent:@""];
+      NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+      [editMenu addItemWithTitle:@"Undo"
+                          action:@selector(undo:)
+                   keyEquivalent:@"z"];
+      [editMenu addItemWithTitle:@"Redo"
+                          action:@selector(redo:)
+                   keyEquivalent:@"Z"];  // Shift+Cmd+Z
+      [editMenu addItem:[NSMenuItem separatorItem]];
+      [editMenu addItemWithTitle:@"Cut"
+                          action:@selector(cut:)
+                   keyEquivalent:@"x"];
+      [editMenu addItemWithTitle:@"Copy"
+                          action:@selector(copy:)
+                   keyEquivalent:@"c"];
+      [editMenu addItemWithTitle:@"Paste"
+                          action:@selector(paste:)
+                   keyEquivalent:@"v"];
+      [editMenu addItemWithTitle:@"Select All"
+                          action:@selector(selectAll:)
+                   keyEquivalent:@"a"];
+      editItem.submenu = editMenu;
+      [mainMenu addItem:editItem];
+
+      NSApp.mainMenu = mainMenu;
+    }
+
     CefRunMessageLoop();
     CefShutdown();
 
