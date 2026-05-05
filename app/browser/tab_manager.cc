@@ -85,6 +85,10 @@ TabId TabManager::Open(TabKind kind, const OpenParams& params) {
   }
   TabId id = NewId();
   auto tab = std::make_unique<Tab>(id, kind, std::move(behavior));
+  // Apply seed metadata from open params (e.g. "chat_id" for restored tabs).
+  for (const auto& [k, v] : effective.meta) {
+    tab->SetMeta(k, v);
+  }
   tab->Build();
   tabs_.push_back(std::move(tab));
 
@@ -168,9 +172,20 @@ std::vector<TabSummary> TabManager::Snapshot() const {
   out.reserve(tabs_.size());
   for (const auto& t : tabs_) {
     out.push_back(
-        TabSummary{t->tab_id(), t->kind(), DisplayNameFor(t.get())});
+        TabSummary{t->tab_id(), t->kind(), DisplayNameFor(t.get()), t->meta()});
   }
   return out;
+}
+
+void TabManager::SetTabMeta(const TabId& id, const std::string& key,
+                            const std::string& value) {
+  if (Tab* t = Get(id)) t->SetMeta(key, value);
+}
+
+std::string TabManager::GetTabMeta(const TabId& id,
+                                   const std::string& key) const {
+  if (const Tab* t = Get(id)) return t->GetMeta(key);
+  return {};
 }
 
 std::unique_ptr<TabBehavior> TabManager::MakeBehavior(TabKind kind,

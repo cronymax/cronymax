@@ -68,6 +68,7 @@ import {
   InboxListRes,
   InboxStateChangeReq,
   InboxSnoozeReq,
+  TerminalRunPayloadSchema,
 } from "./types";
 
 interface ChannelDef<Req extends z.ZodTypeAny, Res extends z.ZodTypeAny> {
@@ -115,6 +116,19 @@ export const Channels = {
     req: ShellNewTabKindPayloadSchema,
     res: ShellNewTabKindResponseSchema,
   }),
+  // Tab identity: returns the calling tab's id + arbitrary metadata.
+  "shell.this_tab_id": chan({
+    req: EmptySchema,
+    res: z.object({
+      tabId: z.string(),
+      meta: z.record(z.string()),
+    }),
+  }),
+  // Renderer-push: set one metadata key on the calling tab.
+  "shell.tab_set_meta": chan({
+    req: z.object({ key: z.string(), value: z.string() }),
+    res: EmptySchema,
+  }),
   // refine-ui-theme-layout: open Settings as a top-of-window popover
   "shell.settings_popover_open": chan({
     req: ShellSettingsPopoverOpenPayloadSchema,
@@ -150,6 +164,14 @@ export const Channels = {
   }),
   "terminal.block_save": chan({
     req: TerminalBlockSavePayloadSchema,
+    res: EmptySchema,
+  }),
+  "terminal.run": chan({
+    req: TerminalRunPayloadSchema,
+    res: EmptySchema,
+  }),
+  "terminal.resize": chan({
+    req: z.object({ id: z.string(), cols: z.number(), rows: z.number() }),
     res: EmptySchema,
   }),
 

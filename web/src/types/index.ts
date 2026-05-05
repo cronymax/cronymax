@@ -218,6 +218,11 @@ export const TerminalBlocksLoadPayloadSchema = z.object({
   space_id: z.string().optional(),
 });
 
+export const TerminalRunPayloadSchema = z.object({
+  id: z.string(),
+  command: z.string(),
+});
+
 // ── agent ────────────────────────────────────────────────────────────
 export const AgentTaskFromCommandPayloadSchema = z.object({
   action: z.string(),

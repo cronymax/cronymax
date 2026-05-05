@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 
@@ -100,6 +101,16 @@ class Tab : public TabContext {
 
   void SetDefaultChromeArgb(cef_color_t argb);
 
+  // Arbitrary string key-value metadata (e.g. "chat_id" for chat tabs).
+  void SetMeta(const std::string& key, const std::string& value) {
+    meta_[key] = value;
+  }
+  std::string GetMeta(const std::string& key) const {
+    auto it = meta_.find(key);
+    return it != meta_.end() ? it->second : std::string{};
+  }
+  const std::map<std::string, std::string>& meta() const { return meta_; }
+
  private:
   TabId id_;
   TabKind kind_;
@@ -123,6 +134,9 @@ class Tab : public TabContext {
   // Content host: a FillLayout panel that the behavior populates with a
   // single child view (typically a CefBrowserView).
   CefRefPtr<CefPanel> content_host_;
+
+  // Arbitrary metadata (e.g. "chat_id" → chatId for chat tabs).
+  std::map<std::string, std::string> meta_;
 };
 
 }  // namespace cronymax

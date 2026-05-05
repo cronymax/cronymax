@@ -226,7 +226,7 @@ bool BridgeHandler::OnQuery(CefRefPtr<CefBrowser> browser,
   if (channel.rfind("browser.", 0) == 0)
     return HandleBrowser(browser, channel, payload, callback);
   if (channel.rfind("shell.", 0) == 0)
-    return HandleShell(channel, payload, callback);
+    return HandleShell(browser, channel, payload, callback);
   if (channel.rfind("theme.", 0) == 0)
     return HandleTheme(channel, payload, callback);
   if (channel.rfind("tab.", 0) == 0)
@@ -371,7 +371,13 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
             const std::string payload =
                 "{\"id\":" + JsonString(tid) +
                 ",\"data\":" + JsonString(data) + "}";
-            SendEvent(browser, "terminal.output", payload);
+            // Broadcast to all renderers so both Chat and Terminal panels
+            // receive output from any terminal they are watching.
+            if (shell_cbs_.broadcast_event) {
+              shell_cbs_.broadcast_event("terminal.output", payload);
+            } else {
+              SendEvent(browser, "terminal.output", payload);
+            }
           },
           [this, browser, tid](int code) {
             const std::string payload =
@@ -416,6 +422,17 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
 
   if (channel == "terminal.restart") {
     if (shell_cbs_.terminal_restart) shell_cbs_.terminal_restart();
+    callback->Success("ok");
+    return true;
+  }
+
+  if (channel == "terminal.run") {
+    auto* term = resolve_terminal(p_str);
+    if (!term) { callback->Failure(404, "no such terminal"); return true; }
+    const std::string command = JsonGet(p_str, "command");
+    if (!command.empty() && term->pty->running()) {
+      term->pty->Write(command + "\n");
+    }
     callback->Success("ok");
     return true;
   }
@@ -1024,7 +1041,8 @@ void BridgeHandler::SendEvent(CefRefPtr<CefBrowser> browser,
 // Shell channels (sidebar ↔ MainWindow tab / panel management)
 // ---------------------------------------------------------------------------
 
-bool BridgeHandler::HandleShell(std::string_view channel,
+bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
+                                std::string_view channel,
                                 std::string_view payload,
                                 CefRefPtr<Callback> callback) {
   const std::string p(payload);
@@ -1097,6 +1115,27 @@ bool BridgeHandler::HandleShell(std::string_view channel,
     const std::string kind = JsonGet(p, "kind");
     const std::string out = shell_cbs_.new_tab_kind(kind);
     callback->Success(out.empty() ? "{}" : out);
+    return true;
+  }
+
+  if (channel == "shell.this_tab_id") {
+    if (!shell_cbs_.this_tab_id) {
+      callback->Success("{\"tabId\":\"\",\"meta\":{}}");
+      return true;
+    }
+    const int bid = browser ? browser->GetIdentifier() : 0;
+    callback->Success(shell_cbs_.this_tab_id(bid));
+    return true;
+  }
+
+  if (channel == "shell.tab_set_meta") {
+    const std::string key   = JsonGet(p, "key");
+    const std::string value = JsonGet(p, "value");
+    if (!key.empty() && shell_cbs_.tab_set_meta) {
+      const int bid = browser ? browser->GetIdentifier() : 0;
+      shell_cbs_.tab_set_meta(bid, key, value);
+    }
+    callback->Success("ok");
     return true;
   }
 

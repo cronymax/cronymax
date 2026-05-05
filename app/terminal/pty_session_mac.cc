@@ -60,7 +60,7 @@ bool PtySession::Start(const std::filesystem::path& cwd,
                       std::string(home) + "/.zshrc\"\n";
       }
       rc_content +=
-          "# AI Desktop shell integration (OSC 133)\n"
+          "# AI Desktop shell integration (OSC 133 + OSC 7)\n"
           "function _ai_preexec() {\n"
           "  printf '\\033]133;C\\007'\n"
           "  export _AI_CMD_START=$SECONDS\n"
@@ -69,9 +69,15 @@ bool PtySession::Start(const std::filesystem::path& cwd,
           "  local ec=$?\n"
           "  printf \"\\033]133;D;%d\\007\" $ec\n"
           "}\n"
+          "# OSC 7: emit CWD on every directory change and on startup\n"
+          "function _ai_cwd() {\n"
+          "  printf '\\033]7;file://%s%s\\007' \"$HOST\" \"$PWD\"\n"
+          "}\n"
           "autoload -Uz add-zsh-hook\n"
           "add-zsh-hook preexec _ai_preexec\n"
-          "add-zsh-hook precmd  _ai_precmd\n";
+          "add-zsh-hook precmd  _ai_precmd\n"
+          "add-zsh-hook chpwd   _ai_cwd\n"
+          "_ai_cwd\n";  // emit CWD immediately so title bar is populated
       int fd = open(rc_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
       if (fd >= 0) {
         write(fd, rc_content.c_str(), rc_content.size());

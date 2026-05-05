@@ -30,6 +30,8 @@ struct OpenParams {
   // kind is in the auto-numbered set ({kTerminal, kChat}), TabManager::Open
   // assigns "<KindDisplayName> N".
   std::string display_name;
+  // Optional seed metadata (e.g. "chat_id" for restored chat tabs).
+  std::map<std::string, std::string> meta;
 };
 
 // Lightweight per-tab snapshot used by `shell.tabs_list` events. Phase 2
@@ -38,6 +40,7 @@ struct TabSummary {
   TabId id;
   TabKind kind;
   std::string display_name;   // pulled from behavior in later phases
+  std::map<std::string, std::string> meta;  // arbitrary per-tab metadata
 };
 
 class TabBehavior;
@@ -98,6 +101,12 @@ class TabManager {
   Tab* FindByBrowserId(int browser_id);
 
   std::vector<TabSummary> Snapshot() const;
+
+  // Set/get arbitrary metadata on a tab (e.g. "chat_id" for chat tabs).
+  // No-op / empty if the tab doesn't exist.
+  void SetTabMeta(const TabId& id, const std::string& key,
+                  const std::string& value);
+  std::string GetTabMeta(const TabId& id, const std::string& key) const;
 
   const TabId& active_tab_id() const { return active_tab_id_; }
   size_t size() const { return tabs_.size(); }

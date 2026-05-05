@@ -7,25 +7,86 @@
 #include "browser/mac_view_style.h"
 
 // ---------------------------------------------------------------------------
-// Shadow layer lifetime management
+// Popover drop-shadow NSView
 // ---------------------------------------------------------------------------
-// Core Animation has a known limitation: when a layer has BOTH a mask AND a
-// shadow, the shadow is suppressed (even with an explicit shadowPath).  To
-// work around this, we add a SIBLING shadow-only CALayer positioned behind
-// the overlay's root layer in the window's content view layer.  This helper
-// object owns the shadow layer and removes it from its superlayer when
-// deallocated — it is stored as an associated object on the overlay root
-// NSView so its lifetime is tied to the view.
-@interface CronymaxShadowLayerOwner : NSObject
-@property(nonatomic, strong) CALayer* layer;
+// Uses Core Animation's built-in layer shadow (shadowPath + shadowOpacity etc.)
+// rather than CGContext drawing.  CA renders the shadow at WindowServer
+// compositing time — ABOVE CEF's IOSurface layers, so it is always visible.
+//
+// Why CGContext approaches (drawRect: + CGContextSetShadowWithColor / kCGBlendModeClear)
+// failed in earlier iterations:
+//
+//   1. CGContextSetShadowWithColor generates a SOFTWARE shadow written into
+//      the layer's own bitmap backing store.  That bitmap lives in the AppKit
+//      CA layer tree, which composites BELOW CEF's GPU-compositor IOSurface
+//      layers.  The shadow pixels are perpetually hidden under the IOSurface.
+//
+//   2. kCGBlendModeClear is supposed to erase the opaque fill so only the
+//      shadow ring survives.  In practice, when CA manages the context for a
+//      layer-backed view, the blend mode may not write (0,0,0,0) as expected,
+//      leaving the opaque black fill visible through the transparent IOSurface
+//      during page load — causing the "lost background color" regression.
+//
+// CA shadowPath approach:
+//   • Layer has NO content (backgroundColor = clearColor, no drawRect:).
+//   • shadowPath is set to the popover's rounded-rect outline.
+//   • CA / WindowServer renders the shadow FROM this path at compositing time,
+//     spreading it outward into the margin area.
+//   • Because the shadow is composited by WindowServer at the CA level (not
+//     drawn into a bitmap), it sits ABOVE the CEF IOSurface in the final
+//     frame — it is visible.  The layer interior is transparent, so the
+//     popover's CEF content (including background_color during load) shows
+//     through unmodified.
+//   • masksToBounds = NO lets the shadow bleed beyond the layer's own bounds.
+@interface CronymaxPopoverShadowView : NSView
 @end
-@implementation CronymaxShadowLayerOwner
-- (void)dealloc {
-  [_layer removeFromSuperlayer];
+@implementation CronymaxPopoverShadowView
+- (instancetype)initWithFrame:(NSRect)frame {
+  self = [super initWithFrame:frame];
+  if (self) {
+    self.wantsLayer = YES;
+    self.layer.backgroundColor = [NSColor clearColor].CGColor;
+    self.layer.masksToBounds   = NO;
+  }
+  return self;
 }
+- (BOOL)isOpaque { return NO; }
+- (void)dealloc { [self removeFromSuperview]; }
+@end
+
+// ---------------------------------------------------------------------------
+// Popover scrim NSView
+// ---------------------------------------------------------------------------
+// A flat semi-transparent layer placed between the main-content NSViews and
+// the popover overlay in z-order.  Because it lies in the sibling CA layer
+// tree ABOVE the main-content NSViews (including their GPU IOSurface
+// sub-layers), it visually dims the content panel.
+//
+// Mouse impermeability: NSView.hitTest: returns `self` for any point inside
+// the view's bounds when the view has no subviews.  Events delivered to the
+// scrim are silently consumed — nothing forwards them to the content below.
+//
+// The titlebar (top 38 pt) and sidebar (left 240 pt, configured by caller)
+// are excluded from the scrim frame so traffic lights and sidebar remain
+// fully interactive.
+@interface CronymaxPopoverScrimView : NSView
+@end
+@implementation CronymaxPopoverScrimView
+- (instancetype)initWithFrame:(NSRect)frame {
+  self = [super initWithFrame:frame];
+  if (self) {
+    self.wantsLayer = YES;
+    self.layer.backgroundColor =
+        [NSColor colorWithWhite:0 alpha:0.35f].CGColor;
+  }
+  return self;
+}
+- (BOOL)isOpaque { return NO; }
+- (void)dealloc { [self removeFromSuperview]; }
 @end
 
 static char kPopoverShadowOwnerKey;
+static char kPopoverScrimKey;
 
 namespace cronymax {
 
@@ -167,36 +228,100 @@ void StyleOverlayBrowserView(void* nsview_ptr,
     rl.mask = shapeMask;
   }
 
-  // Sibling shadow layer: reuse existing one (created on a previous
-  // LayoutPopover call) or create a new one.
-  if (with_shadow && windowContent.layer) {
-    CronymaxShadowLayerOwner* owner =
+  // Drop-shadow NSView: same frame as the overlay, shadow extends outward via
+  // CA layer shadow properties.  See CronymaxPopoverShadowView above.
+  if (with_shadow && windowContent) {
+    CronymaxPopoverShadowView* shadowView =
         objc_getAssociatedObject(overlayRoot, &kPopoverShadowOwnerKey);
-    CALayer* shadowLayer = owner ? owner.layer : nil;
 
-    if (!shadowLayer) {
-      shadowLayer = [CALayer layer];
-      shadowLayer.masksToBounds = NO;
-      [windowContent.layer insertSublayer:shadowLayer
-                                    below:overlayRoot.layer];
-      CronymaxShadowLayerOwner* newOwner =
-          [[CronymaxShadowLayerOwner alloc] init];
-      newOwner.layer = shadowLayer;
+    if (!shadowView || shadowView.superview != windowContent) {
+      if (shadowView) [shadowView removeFromSuperview];
+      shadowView = [[CronymaxPopoverShadowView alloc]
+                        initWithFrame:overlayRoot.frame];
+      [windowContent addSubview:shadowView
+                      positioned:NSWindowBelow
+                      relativeTo:overlayRoot];
       objc_setAssociatedObject(overlayRoot, &kPopoverShadowOwnerKey,
-                               newOwner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                               shadowView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    // Sync frame to match the overlay (called on every LayoutPopover).
-    shadowLayer.frame = overlayRoot.layer.frame;
-    shadowLayer.backgroundColor = [NSColor clearColor].CGColor;
-    shadowLayer.shadowColor = [NSColor blackColor].CGColor;
-    shadowLayer.shadowOpacity = 0.90f;
-    shadowLayer.shadowRadius = 22.0f;
-    shadowLayer.shadowOffset = CGSizeMake(0, -8);
-    CGPathRef sp = RoundedRectPathForLayer(shadowLayer.bounds, r, cm);
-    shadowLayer.shadowPath = sp;
-    CGPathRelease(sp);
+    // Keep the shadow layer in sync with the overlay frame.
+    shadowView.frame = overlayRoot.frame;
+
+    if (CALayer* sl = shadowView.layer) {
+      sl.masksToBounds = NO;
+      sl.shadowOpacity = 0.55f;
+      sl.shadowRadius  = 20.0f;
+      sl.shadowOffset  = CGSizeMake(0, -6);
+      sl.shadowColor   = [NSColor blackColor].CGColor;
+      // shadowPath is in the layer's own (non-flipped) coordinate system.
+      // Bounds origin is always {0,0}; size matches the frame dimensions.
+      const CGRect sb = CGRectMake(0, 0,
+                                   overlayRoot.frame.size.width,
+                                   overlayRoot.frame.size.height);
+      CGPathRef sp = CGPathCreateWithRoundedRect(sb, r, r, NULL);
+      sl.shadowPath = sp;
+      CGPathRelease(sp);
+    }
   }
+}
+
+void ShowPopoverScrim(void* overlay_nsview_ptr, int sidebar_width) {
+  if (!overlay_nsview_ptr) return;
+  NSView* view = (__bridge NSView*)overlay_nsview_ptr;
+  NSView* windowContent = view.window ? view.window.contentView : nil;
+  if (!windowContent) return;
+
+  // Walk up to the overlay root (direct child of contentView).
+  NSView* overlayRoot = view;
+  for (NSView* cur = view;
+       cur.superview && cur.superview != windowContent;
+       cur = cur.superview) {
+    overlayRoot = cur.superview;
+  }
+
+  // Get or create the scrim.
+  CronymaxPopoverScrimView* scrim =
+      objc_getAssociatedObject(windowContent, &kPopoverScrimKey);
+  if (!scrim) {
+    scrim = [[CronymaxPopoverScrimView alloc] initWithFrame:NSZeroRect];
+    objc_setAssociatedObject(windowContent, &kPopoverScrimKey, scrim,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
+
+  // Insert into the hierarchy if needed.  The scrim must sit between the
+  // main-content NSViews and the popover overlays.  Insert it just below the
+  // shadow view (which is itself below the overlay root), so the z-order is:
+  //   … main content … scrim … shadow … overlayRoot …
+  if (scrim.superview != windowContent) {
+    [scrim removeFromSuperview];
+    CronymaxPopoverShadowView* shadow =
+        objc_getAssociatedObject(overlayRoot, &kPopoverShadowOwnerKey);
+    NSView* anchor = shadow ? shadow : overlayRoot;
+    [windowContent addSubview:scrim
+                    positioned:NSWindowBelow
+                    relativeTo:anchor];
+  }
+
+  // Frame: from x=sidebar_width to the right edge, full height excluding the
+  // 38 pt titlebar at the top.  AppKit coordinates are unflipped (y=0 at
+  // bottom), so the titlebar occupies the top-most 38 pt of the content view.
+  NSRect f = windowContent.bounds;
+  const CGFloat kTitleBarH = 38.0;
+  f.origin.x   = sidebar_width;
+  f.size.width  = MAX(0.0, f.size.width - sidebar_width);
+  f.origin.y   = 0.0;
+  f.size.height = MAX(0.0, f.size.height - kTitleBarH);
+  scrim.frame  = f;
+  scrim.hidden = NO;
+}
+
+void HidePopoverScrim(void* window_nsview_ptr) {
+  if (!window_nsview_ptr) return;
+  NSView* content = (__bridge NSView*)window_nsview_ptr;
+  CronymaxPopoverScrimView* scrim =
+      objc_getAssociatedObject(content, &kPopoverScrimKey);
+  if (scrim) [scrim removeFromSuperview];
 }
 
 void ApplyCardStyle(void* nsview_ptr) {

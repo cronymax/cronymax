@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "include/base/cef_callback.h"
 #include "include/cef_app.h"
 #include "runtime_bridge/legacy_importer.h"
@@ -255,8 +257,9 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
 
   BuildChrome(window);
 
-  // Open the Chat tab as the default landing surface (visible on first launch).
-  {
+  // Restore persisted sidebar tabs (chat/terminal) from the previous session.
+  // Falls back to opening a default Chat tab on first launch.
+  if (!RestoreSidebarTabs()) {
     TabId id = tabs_->Open(TabKind::kChat, OpenParams{});
     if (Tab* tab = tabs_->Get(id)) {
       tab->ApplyTheme(current_chrome_.bg_base, current_chrome_.bg_float,
@@ -708,6 +711,35 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     return true;
   };
 
+  // Tab identity query: returns JSON {tabId, meta} for the calling browser.
+  sh.this_tab_id = [this](int browser_id) -> std::string {
+    Tab* t = tabs_ ? tabs_->FindByBrowserId(browser_id) : nullptr;
+    std::string js = "{\"tabId\":\"";
+    js += t ? JsEsc(t->tab_id()) : "";
+    js += "\",\"meta\":{";
+    if (t) {
+      bool first_meta = true;
+      for (const auto& [k, v] : t->meta()) {
+        if (!first_meta) js += ",";
+        first_meta = false;
+        js += "\""; js += JsEsc(k); js += "\":\""; js += JsEsc(v); js += "\"";
+      }
+    }
+    js += "}}";
+    return js;
+  };
+
+  // Renderer-push: store one meta key on the calling tab and persist.
+  sh.tab_set_meta = [this](int browser_id,
+                            const std::string& key,
+                            const std::string& value) -> bool {
+    Tab* t = tabs_ ? tabs_->FindByBrowserId(browser_id) : nullptr;
+    if (!t) return false;
+    t->SetMeta(key, value);
+    PersistSidebarTabs();
+    return true;
+  };
+
   // Emitter hook: broadcast snapshot + active id whenever TabManager mutates.
   tabs_->SetOnChange([this]() {
     // shell.tabs_list snapshot
@@ -757,6 +789,9 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     // 4.5: persist any title changes to SpaceStore so the active Space's
     // tabs come back with the right names after a switch / restart.
     PersistTabTitlesIfChanged();
+
+    // Persist sidebar tab layout (chat/terminal) so it survives restarts.
+    PersistSidebarTabs();
   });
 
   client_handler_->SetShellCallbacks(std::move(sh));
@@ -851,6 +886,21 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     if (popover_chrome_view_ && popover_chrome_view_->GetBrowser() &&
         popover_chrome_view_->GetBrowser()->GetIdentifier() == browser_id) {
       popover_chrome_browser_id_ = browser_id;
+    }
+    // When the popover content browser is created, apply corners/shadow/scrim.
+    // GetBrowser() is nil during OpenPopover's CefPostTask because CEF Alloy
+    // creates the browser asynchronously after AddOverlayView returns.  This
+    // on_browser_created handler is the first reliable moment to style the
+    // popover and install the scrim.
+    if (popover_view_ && popover_view_->GetBrowser() &&
+        popover_view_->GetBrowser()->GetIdentifier() == browser_id) {
+      // LayoutPopover re-asserts the correct CEF bounds AND calls
+      // StylePopoverContent / StylePopoverChrome which require GetBrowser() != nil.
+      LayoutPopover();
+#if defined(__APPLE__)
+      auto pb = popover_view_->GetBrowser();
+      if (pb) ShowPopoverScrim(pb->GetHost()->GetWindowHandle(), 240);
+#endif
     }
     // Round the content corners now that the browser (and its NSView tree)
     // is fully initialized. ShowActiveTab posts the same call but
@@ -1138,6 +1188,12 @@ void MainWindow::OpenPopover(const std::string& url, int owner_browser_id) {
         const int content_mask = builtin ? kCornerAll : kCornerBottom;
         StylePopoverContent(content, content_mask);
         if (!builtin && chrome_view) StylePopoverChrome(chrome_view);
+#if defined(__APPLE__)
+        // Show the scrim AFTER StylePopoverContent so the shadow view is
+        // already in the hierarchy and the scrim can sit below it.
+        auto b = content->GetBrowser();
+        if (b) ShowPopoverScrim(b->GetHost()->GetWindowHandle(), 240);
+#endif
       },
       popover_view_, popover_chrome_view_, builtin_for_style));
 }
@@ -1162,6 +1218,9 @@ void MainWindow::ClosePopover() {
   popover_is_builtin_ = false;
   // Restore the normal content-panel insets now that the popover is gone.
   SetContentOuterVInsets(0, 8);
+#if defined(__APPLE__)
+  if (main_window_) HidePopoverScrim(main_window_->GetWindowHandle());
+#endif
 }
 
 void MainWindow::UpdatePopoverVisibility() {
@@ -1180,6 +1239,19 @@ void MainWindow::UpdatePopoverVisibility() {
   }
   popover_overlay_->SetVisible(visible);
   if (popover_chrome_overlay_) popover_chrome_overlay_->SetVisible(visible);
+#if defined(__APPLE__)
+  // Sync the scrim with the popover overlay visibility.  When the owning
+  // tab goes to the background the scrim is removed; it is recreated when
+  // the tab comes back to the foreground.
+  if (main_window_) {
+    if (visible && popover_view_) {
+      auto b = popover_view_->GetBrowser();
+      if (b) ShowPopoverScrim(b->GetHost()->GetWindowHandle(), 240);
+    } else {
+      HidePopoverScrim(main_window_->GetWindowHandle());
+    }
+  }
+#endif
 }
 
 void MainWindow::LayoutPopover() {
@@ -1219,6 +1291,16 @@ void MainWindow::LayoutPopover() {
   StylePopoverContent(popover_view_, content_mask);
   if (!popover_is_builtin_ && popover_chrome_view_)
     StylePopoverChrome(popover_chrome_view_);
+#if defined(__APPLE__)
+  // Keep the scrim frame in sync with the window bounds.  ShowPopoverScrim
+  // is idempotent: it reuses the existing scrim view and only updates its
+  // frame.  Skip when the browser is not yet available (on_browser_created
+  // will install the scrim once it fires).
+  if (popover_view_) {
+    auto pb = popover_view_->GetBrowser();
+    if (pb) ShowPopoverScrim(pb->GetHost()->GetWindowHandle(), 240);
+  }
+#endif
 }
 
 void MainWindow::OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
@@ -1719,6 +1801,83 @@ void MainWindow::PersistTabClosed(const std::string& tab_id) {
   space_manager_.store().DeleteTab(it->second);
   tab_db_ids_.erase(it);
   tab_persisted_titles_.erase(tab_id);
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar tab persistence (chat + terminal tabs survive app restarts)
+// ---------------------------------------------------------------------------
+
+void MainWindow::PersistSidebarTabs() {
+  if (!tabs_) return;
+  nlohmann::json obj = nlohmann::json::object();
+  nlohmann::json arr = nlohmann::json::array();
+  for (const auto& s : tabs_->Snapshot()) {
+    if (s.kind != TabKind::kChat && s.kind != TabKind::kTerminal) continue;
+    nlohmann::json entry;
+    entry["id"]          = s.id;
+    entry["kind"]        = TabKindToString(s.kind);
+    entry["displayName"] = s.display_name;
+    nlohmann::json meta_obj = nlohmann::json::object();
+    for (const auto& [k, v] : s.meta) meta_obj[k] = v;
+    entry["meta"] = meta_obj;
+    arr.push_back(std::move(entry));
+  }
+  obj["tabs"]        = std::move(arr);
+  obj["activeTabId"] = tabs_->active_tab_id();
+  space_manager_.store().SetKv("ui.sidebar_tabs", obj.dump());
+}
+
+bool MainWindow::RestoreSidebarTabs() {
+  const std::string raw = space_manager_.store().GetKv("ui.sidebar_tabs");
+  if (raw.empty()) return false;
+  nlohmann::json obj;
+  obj = nlohmann::json::parse(raw, nullptr, /*allow_exceptions=*/false);
+  if (obj.is_discarded()) return false;
+  const auto& arr = obj.value("tabs", nlohmann::json::array());
+  if (!arr.is_array() || arr.empty()) return false;
+
+  std::string active_id = obj.value("activeTabId", std::string{});
+  std::string first_id;
+
+  for (const auto& entry : arr) {
+    const std::string kind_s = entry.value("kind", std::string{});
+    TabKind kind;
+    bool kind_from_string_ok = false;
+    if (kind_s == "chat") {
+      kind = TabKind::kChat;
+      kind_from_string_ok = true;
+    } else if (kind_s == "terminal") {
+      kind = TabKind::kTerminal;
+      kind_from_string_ok = true;
+    }
+    if (!kind_from_string_ok) continue;
+
+    OpenParams params;
+    params.display_name = entry.value("displayName", std::string{});
+    const auto& meta_obj = entry.value("meta", nlohmann::json::object());
+    if (meta_obj.is_object()) {
+      for (const auto& [k, v] : meta_obj.items()) {
+        if (v.is_string()) params.meta[k] = v.get<std::string>();
+      }
+    }
+
+    const TabId id = tabs_->Open(kind, params);
+    if (id.empty()) continue;
+    if (Tab* tab = tabs_->Get(id)) {
+      tab->ApplyTheme(current_chrome_.bg_base, current_chrome_.bg_float,
+                      current_chrome_.text_title);
+    }
+    if (first_id.empty()) first_id = id;
+    // Note: restored tabs get new IDs (TabManager::NewId), so we can't
+    // map the stored activeTabId directly. We activate by position index.
+  }
+
+  // Activate: try to match by stored index (first chat tab if stored active
+  // was a chat, first terminal if terminal). For simplicity just activate
+  // the first restored tab.
+  const std::string activate_id = first_id;
+  if (!activate_id.empty()) tabs_->Activate(activate_id);
+  return !first_id.empty();
 }
 
 // ---------------------------------------------------------------------------

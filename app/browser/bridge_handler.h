@@ -105,6 +105,15 @@ struct ShellCallbacks {
   std::function<bool(const std::string& tab_id,
                      const std::string& css_color_or_empty)>
       set_chrome_theme;
+
+  // Tab identity + metadata. `this_tab_id` returns JSON:
+  //   {"tabId":"...", "meta":{"chat_id":"...", ...}}
+  // for the calling browser. `tab_set_meta` stores one key on the calling
+  // tab and also triggers a persist cycle.
+  std::function<std::string(int browser_id)> this_tab_id;
+  std::function<bool(int browser_id,
+                     const std::string& key,
+                     const std::string& value)> tab_set_meta;
 };
 
 // refine-ui-theme-layout: theme.* bridge callbacks. Read/write the
@@ -196,7 +205,8 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
                      std::string_view channel,
                      std::string_view payload,
                      CefRefPtr<Callback> callback);
-  bool HandleShell(std::string_view channel,
+  bool HandleShell(CefRefPtr<CefBrowser> browser,
+                   std::string_view channel,
                    std::string_view payload,
                    CefRefPtr<Callback> callback);
   bool HandleTheme(std::string_view channel,

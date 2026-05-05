@@ -159,6 +159,12 @@ class MainWindow : public CefWindowDelegate,
   // Remove a tab row from SpaceStore. No-op if the tab was never persisted.
   void PersistTabClosed(const std::string& tab_id);
 
+  // Sidebar tab persistence: serialize chat/terminal tabs to SpaceStore kv.
+  // RestoreSidebarTabs returns true if any tabs were restored, false if the
+  // caller should open the default tab instead.
+  void PersistSidebarTabs();
+  bool RestoreSidebarTabs();
+
   // Popover (overlay inside the main window — Arc "Little Arc" style).
   CefRefPtr<CefBrowserView>      popover_view_;
   // HTML chrome strip (URL toolbar). Uses a CefBrowserView so the dark
