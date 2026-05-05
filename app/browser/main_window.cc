@@ -896,11 +896,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
         popover_view_->GetBrowser()->GetIdentifier() == browser_id) {
       // LayoutPopover re-asserts the correct CEF bounds AND calls
       // StylePopoverContent / StylePopoverChrome which require GetBrowser() != nil.
-      LayoutPopover();
-#if defined(__APPLE__)
-      auto pb = popover_view_->GetBrowser();
-      if (pb) ShowPopoverScrim(pb->GetHost()->GetWindowHandle(), 240);
-#endif
+      LayoutPopover();  // ShowPopoverScrim is called inside LayoutPopover.
     }
     // Round the content corners now that the browser (and its NSView tree)
     // is fully initialized. ShowActiveTab posts the same call but
@@ -1142,7 +1138,6 @@ void MainWindow::OpenPopover(const std::string& url, int owner_browser_id) {
     LayoutPopover();
     UpdatePopoverVisibility();
     if (popover_view_) popover_view_->RequestFocus();
-    SetContentOuterVInsets(24, 24);
     return;
   }
 
@@ -1174,9 +1169,6 @@ void MainWindow::OpenPopover(const std::string& url, int owner_browser_id) {
   UpdatePopoverVisibility();
   if (popover_view_) popover_view_->RequestFocus();
 
-  // Arc-style: visually recess the main content card when a popover is
-  // in front. Equal top/bottom insets so the card is vertically centered.
-  SetContentOuterVInsets(24, 24);
   const bool builtin_for_style = is_builtin;
   CefPostTask(TID_UI, base::BindOnce(
       [](CefRefPtr<CefBrowserView> content,
@@ -1188,12 +1180,6 @@ void MainWindow::OpenPopover(const std::string& url, int owner_browser_id) {
         const int content_mask = builtin ? kCornerAll : kCornerBottom;
         StylePopoverContent(content, content_mask);
         if (!builtin && chrome_view) StylePopoverChrome(chrome_view);
-#if defined(__APPLE__)
-        // Show the scrim AFTER StylePopoverContent so the shadow view is
-        // already in the hierarchy and the scrim can sit below it.
-        auto b = content->GetBrowser();
-        if (b) ShowPopoverScrim(b->GetHost()->GetWindowHandle(), 240);
-#endif
       },
       popover_view_, popover_chrome_view_, builtin_for_style));
 }
@@ -1239,14 +1225,18 @@ void MainWindow::UpdatePopoverVisibility() {
   }
   popover_overlay_->SetVisible(visible);
   if (popover_chrome_overlay_) popover_chrome_overlay_->SetVisible(visible);
+
+  // Shrink the content card only for the tab that owns the popover; restore
+  // normal insets when the popover's owning tab is not the active one.
+  SetContentOuterVInsets(visible ? 24 : 0, visible ? 24 : 8);
+
 #if defined(__APPLE__)
   // Sync the scrim with the popover overlay visibility.  When the owning
   // tab goes to the background the scrim is removed; it is recreated when
   // the tab comes back to the foreground.
   if (main_window_) {
     if (visible && popover_view_) {
-      auto b = popover_view_->GetBrowser();
-      if (b) ShowPopoverScrim(b->GetHost()->GetWindowHandle(), 240);
+      LayoutPopover();  // recomputes bounds and reinstalls scrim
     } else {
       HidePopoverScrim(main_window_->GetWindowHandle());
     }
@@ -1292,14 +1282,20 @@ void MainWindow::LayoutPopover() {
   if (!popover_is_builtin_ && popover_chrome_view_)
     StylePopoverChrome(popover_chrome_view_);
 #if defined(__APPLE__)
-  // Keep the scrim frame in sync with the window bounds.  ShowPopoverScrim
-  // is idempotent: it reuses the existing scrim view and only updates its
-  // frame.  Skip when the browser is not yet available (on_browser_created
-  // will install the scrim once it fires).
-  if (popover_view_) {
-    auto pb = popover_view_->GetBrowser();
-    if (pb) ShowPopoverScrim(pb->GetHost()->GetWindowHandle(), 240);
-  }
+  // The scrim must cover the CONTENT CARD (the scaled-down underlying tab),
+  // not the popover footprint.  The popover (child NSWindow) floats above the
+  // scrim, so the scrim is visible as a darkened frame at the card's edges.
+  // SetContentOuterVInsets(24, 24) is called on popover open, so the card
+  // starts at y = kTitleBarH + 24 with top/bottom insets of 24 pt.
+  constexpr int kCardVInset = 24;  // mirrors SetContentOuterVInsets(24, 24)
+  constexpr int kCardHInset =  8;  // mirrors content_outer_ inside_border_insets
+  const int card_x = kSidebarW + kCardHInset;
+  const int card_y = kTitleBarH + kCardVInset;
+  const int card_w = content_w - kCardHInset * 2;
+  const int card_h = content_h - kCardVInset * 2;
+  ShowPopoverScrim(main_window_->GetWindowHandle(),
+                  card_x, card_y, card_w, card_h,
+                  kContentCornerRadius);
 #endif
 }
 

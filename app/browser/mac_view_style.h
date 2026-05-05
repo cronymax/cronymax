@@ -133,13 +133,16 @@ void InstallTitleBarDragOverlay(void* nswindow_handle,
                                 const CefRect* nodrag_rects,
                                 size_t nodrag_count);
 
-// Show a semi-transparent mouse-blocking scrim over the main content panel
-// while a popover is displayed.  The scrim covers the area to the right of
-// the sidebar (x >= sidebar_width) and below the titlebar, absorbing all
-// pointer events so the underlying tab content is unreachable.
-// `overlay_nsview` is the popover BrowserView's CefWindowHandle.
-// `sidebar_width` is the sidebar width in points (usually 240).
-void ShowPopoverScrim(void* overlay_nsview, int sidebar_width);
+// Show a semi-transparent mouse-blocking scrim sized to the popover bounds.
+// `main_window_nsview` is CefWindow::GetWindowHandle() (the main window's
+// contentView NSView).  pop_x/pop_y/pop_w/pop_h are in CEF coordinates
+// (origin at top-left of the window, y increasing downward).  The scrim is
+// converted to AppKit coordinates internally and placed as the topmost NSView
+// of the main window so it sits above the main-tab content but below the
+// popover child NSWindow.
+void ShowPopoverScrim(void* main_window_nsview,
+                     int pop_x, int pop_y, int pop_w, int pop_h,
+                     double corner_radius = 0.0);
 
 // Remove the scrim installed by ShowPopoverScrim.
 // `window_nsview` is CefWindow::GetWindowHandle() (the contentView NSView).

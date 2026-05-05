@@ -57,18 +57,29 @@
 // ---------------------------------------------------------------------------
 // Popover scrim NSView
 // ---------------------------------------------------------------------------
-// A flat semi-transparent layer placed between the main-content NSViews and
-// the popover overlay in z-order.  Because it lies in the sibling CA layer
-// tree ABOVE the main-content NSViews (including their GPU IOSurface
-// sub-layers), it visually dims the content panel.
+// Visually dims the main content panel while a popover is displayed and
+// absorbs all pointer events so the underlying tab content is unreachable.
 //
-// Mouse impermeability: NSView.hitTest: returns `self` for any point inside
-// the view's bounds when the view has no subviews.  Events delivered to the
-// scrim are silently consumed — nothing forwards them to the content below.
+// WHY layer.backgroundColor DOES NOT WORK:
+//   Plain NSView backing-layer fills live in the AppKit CA compositing tier.
+//   CEF's GPU compositor places IOSurface-backed CALayers ABOVE the entire
+//   AppKit CA layer tree, so any backgroundColor is composited below the
+//   main-content IOSurface — permanently invisible.
 //
-// The titlebar (top 38 pt) and sidebar (left 240 pt, configured by caller)
-// are excluded from the scrim frame so traffic lights and sidebar remain
-// fully interactive.
+// WHY CA shadowPath WORKS (same principle as CronymaxPopoverShadowView):
+//   CA shadows are rasterized by WindowServer at compositing time, ABOVE
+//   the IOSurface layers.  A CA shadow with:
+//     shadowRadius  = 0   → no blur, sharp edges (fills exactly the path)
+//     shadowOffset  = (0,0)
+//     shadowOpacity = dim amount
+//     shadowPath    = content-area rectangle
+//   produces a solid semi-transparent dark rectangle rendered above the
+//   main-tab IOSurface but below the popover overlay's IOSurface (because
+//   the scrim NSView sits below the overlay root in z-order).
+//
+// Mouse impermeability: hitTest returns `self` for any point in bounds
+// when the view has no subviews and is not hidden, regardless of the layer's
+// visual content.  Events land on the scrim and are silently consumed.
 @interface CronymaxPopoverScrimView : NSView
 @end
 @implementation CronymaxPopoverScrimView
@@ -76,8 +87,8 @@
   self = [super initWithFrame:frame];
   if (self) {
     self.wantsLayer = YES;
-    self.layer.backgroundColor =
-        [NSColor colorWithWhite:0 alpha:0.35f].CGColor;
+    self.layer.backgroundColor = [NSColor clearColor].CGColor;
+    self.layer.masksToBounds   = NO;
   }
   return self;
 }
@@ -87,6 +98,9 @@
 
 static char kPopoverShadowOwnerKey;
 static char kPopoverScrimKey;
+// Forward declaration so ShowPopoverScrim (defined earlier in the file) can
+// reference the tag without depending on the definition order.
+static constexpr NSInteger kCornerPunchTagFwd = 0x43524E58;  // "CRNX"
 
 namespace cronymax {
 
@@ -266,61 +280,61 @@ void StyleOverlayBrowserView(void* nsview_ptr,
   }
 }
 
-void ShowPopoverScrim(void* overlay_nsview_ptr, int sidebar_width) {
-  if (!overlay_nsview_ptr) return;
-  NSView* view = (__bridge NSView*)overlay_nsview_ptr;
-  NSView* windowContent = view.window ? view.window.contentView : nil;
-  if (!windowContent) return;
+void ShowPopoverScrim(void* main_window_nsview_ptr,
+                     int pop_x, int pop_y, int pop_w, int pop_h,
+                     double corner_radius) {
+  if (!main_window_nsview_ptr) return;
+  NSView* root = (__bridge NSView*)main_window_nsview_ptr;
+  NSView* wc = root.window ? root.window.contentView : root;
+  if (!wc) return;
 
-  // Walk up to the overlay root (direct child of contentView).
-  NSView* overlayRoot = view;
-  for (NSView* cur = view;
-       cur.superview && cur.superview != windowContent;
-       cur = cur.superview) {
-    overlayRoot = cur.superview;
-  }
-
-  // Get or create the scrim.
   CronymaxPopoverScrimView* scrim =
-      objc_getAssociatedObject(windowContent, &kPopoverScrimKey);
+      objc_getAssociatedObject(wc, &kPopoverScrimKey);
   if (!scrim) {
     scrim = [[CronymaxPopoverScrimView alloc] initWithFrame:NSZeroRect];
-    objc_setAssociatedObject(windowContent, &kPopoverScrimKey, scrim,
+    objc_setAssociatedObject(wc, &kPopoverScrimKey, scrim,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   }
 
-  // Insert into the hierarchy if needed.  The scrim must sit between the
-  // main-content NSViews and the popover overlays.  Insert it just below the
-  // shadow view (which is itself below the overlay root), so the z-order is:
-  //   … main content … scrim … shadow … overlayRoot …
-  if (scrim.superview != windowContent) {
-    [scrim removeFromSuperview];
-    CronymaxPopoverShadowView* shadow =
-        objc_getAssociatedObject(overlayRoot, &kPopoverShadowOwnerKey);
-    NSView* anchor = shadow ? shadow : overlayRoot;
-    [windowContent addSubview:scrim
-                    positioned:NSWindowBelow
-                    relativeTo:anchor];
-  }
+  // Insert the scrim as topmost.  Corner punch views (kCornerPunchTagFwd)
+  // intentionally stay BELOW the scrim: the scrim covers the entire card
+  // area, so punch views don't need to be visible while the scrim is shown.
+  // Raising them above the scrim would make their bg-body-colored squares
+  // visible as artifacts at the card corners on top of the overlay.
+  // When the scrim is hidden (popover closed), punch views are naturally
+  // the topmost non-scrim views and work correctly.
+  [scrim removeFromSuperview];
+  [wc addSubview:scrim positioned:NSWindowAbove relativeTo:nil];
 
-  // Frame: from x=sidebar_width to the right edge, full height excluding the
-  // 38 pt titlebar at the top.  AppKit coordinates are unflipped (y=0 at
-  // bottom), so the titlebar occupies the top-most 38 pt of the content view.
-  NSRect f = windowContent.bounds;
-  const CGFloat kTitleBarH = 38.0;
-  f.origin.x   = sidebar_width;
-  f.size.width  = MAX(0.0, f.size.width - sidebar_width);
-  f.origin.y   = 0.0;
-  f.size.height = MAX(0.0, f.size.height - kTitleBarH);
-  scrim.frame  = f;
-  scrim.hidden = NO;
+  // Convert CEF coordinates (origin top-left, y down) to AppKit (origin
+  // bottom-left, y up).  The contentView bounds height equals the full CEF
+  // window height because the app uses NSWindowStyleMaskFullSizeContentView.
+  NSRect wf = wc.bounds;
+  NSRect f;
+  f.origin.x    = (CGFloat)pop_x;
+  f.size.width  = (CGFloat)pop_w;
+  f.size.height = (CGFloat)pop_h;
+  f.origin.y    = NSHeight(wf) - (CGFloat)pop_y - (CGFloat)pop_h;
+  scrim.frame   = NSIntersectionRect(f, wf);  // clamp to visible window area
+  scrim.hidden  = NO;
+
+  if (CALayer* sl = scrim.layer) {
+    sl.shadowOpacity  = 0.0f;
+    sl.backgroundColor = [NSColor colorWithWhite:0 alpha:0.25f].CGColor;
+    // Round the scrim corners to match the card corner radius so the
+    // bg_body-colored corner punch views below show through at each corner,
+    // preserving the rounded-card appearance while the overlay is visible.
+    sl.cornerRadius   = (CGFloat)corner_radius;
+    sl.masksToBounds  = (corner_radius > 0.0);
+  }
 }
 
 void HidePopoverScrim(void* window_nsview_ptr) {
   if (!window_nsview_ptr) return;
-  NSView* content = (__bridge NSView*)window_nsview_ptr;
+  NSView* root = (__bridge NSView*)window_nsview_ptr;
+  NSView* wc = root.window ? root.window.contentView : root;
   CronymaxPopoverScrimView* scrim =
-      objc_getAssociatedObject(content, &kPopoverScrimKey);
+      objc_getAssociatedObject(wc, &kPopoverScrimKey);
   if (scrim) [scrim removeFromSuperview];
 }
 
@@ -559,6 +573,17 @@ void StyleContentBrowserView(void* window_nsview_ptr,
     v.tag         = kCornerPunchTag;
     v.frame       = NSMakeRect(patches[i].x, patches[i].y, r, r);
     [root addSubview:v];
+  }
+
+  // Punch views are inserted via addSubview: which places them topmost.
+  // If a scrim is already present (popover is open), re-raise it above the
+  // newly added punch views so punch views stay below the scrim.
+  // Both the scrim and punch views live in root (the main window contentView).
+  CronymaxPopoverScrimView* existingScrim =
+      objc_getAssociatedObject(root, &kPopoverScrimKey);
+  if (existingScrim && existingScrim.superview == root) {
+    [existingScrim removeFromSuperview];
+    [root addSubview:existingScrim positioned:NSWindowAbove relativeTo:nil];
   }
 }
 
