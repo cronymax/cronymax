@@ -531,8 +531,15 @@ export const Events = {
 
 /** Channels marked fastPath skip full Zod validation on inbound events
  *  for throughput. The handler still receives the payload but as `unknown`
- *  cast — it must validate itself if needed. */
-export const FastPathEvents = new Set<keyof typeof Events>(["terminal.output"]);
+ *  cast — it must validate itself if needed.
+ *
+ *  "event" is fast-pathed because it carries both legacy AppEvent payloads
+ *  AND runtime-protocol envelopes { tag:"event", subscription, event:{...} }
+ *  which do not match AppEventSchema.  Each handler guards its own shape. */
+export const FastPathEvents = new Set<keyof typeof Events>([
+  "terminal.output",
+  "event",
+]);
 
 export type ChannelName = keyof typeof Channels;
 export type EventName = keyof typeof Events;

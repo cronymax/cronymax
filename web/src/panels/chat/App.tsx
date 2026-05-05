@@ -6,8 +6,8 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
+import { Streamdown } from "streamdown";
 import { bridge } from "@/bridge";
-import type { AgentGraphInstance, AgentTraceDetail } from "@/agent_runtime";
 import {
   useStore,
   loadHistory,
@@ -25,112 +25,7 @@ import {
   type Message,
 } from "./store";
 
-interface SavedFlowSpec {
-  nodes: Array<{
-    id: string | number;
-    type: string;
-    config?: Record<string, unknown>;
-  }>;
-  edges?: Array<{ from_id: string | number; to_id: string | number }>;
-}
-
-function buildGraphFromSpec(spec: SavedFlowSpec): AgentGraphInstance {
-  const g = new window.AgentGraph();
-  const byId = new Map(spec.nodes.map((n) => [String(n.id), n]));
-  const outMap = new Map<string, string[]>();
-  (spec.edges || []).forEach((e) => {
-    const f = String(e.from_id);
-    const t = String(e.to_id);
-    if (!outMap.has(f)) outMap.set(f, []);
-    outMap.get(f)!.push(t);
-  });
-
-  const ordered: SavedFlowSpec["nodes"] = [];
-  const seen = new Set<string>();
-  const start = spec.nodes.find((n) => n.type === "start");
-
-  function pushNode(id: string): void {
-    if (seen.has(id)) return;
-    seen.add(id);
-    const node = byId.get(id);
-    if (!node || node.type === "start") return;
-    ordered.push(node);
-    (outMap.get(id) || []).forEach(pushNode);
-  }
-
-  if (start) (outMap.get(String(start.id)) || []).forEach(pushNode);
-  spec.nodes
-    .filter((n) => n.type !== "start")
-    .forEach((n) => {
-      if (!seen.has(String(n.id))) ordered.push(n);
-    });
-
-  ordered.forEach((n) => {
-    const id = String(n.id);
-    const cfg = n.config ?? {};
-    if (n.type === "llm") {
-      g.addLLMNode(id, {
-        system: (cfg.system as string) || "You are a helpful assistant.",
-        model: (cfg.model as string) || "",
-      });
-    } else if (n.type === "tool") {
-      g.addToolNode(id, {
-        tool_name: (cfg.tool_name as string) || "terminal_exec",
-      });
-    } else if (n.type === "human") {
-      g.addHumanNode(id, { prompt: (cfg.prompt as string) || "Approve?" });
-    } else if (n.type === "cond") {
-      g.addConditionNode(id, (run) => {
-        const expr = ((cfg.condition as string) || "").trim();
-        const trueNext = ((cfg.true_next as string) || "").trim();
-        const falseNext = ((cfg.false_next as string) || "").trim();
-        const has =
-          (Array.isArray(run.tool_calls) && run.tool_calls.length > 0) ||
-          run.finish_reason === "tool_calls";
-        let pass = false;
-        if (!expr || expr === "always") pass = true;
-        else if (expr === "has_tool_call" || expr === "has_tool_calls")
-          pass = has;
-        else if (expr === "no_tool_call" || expr === "no_tool_calls")
-          pass = !has;
-        else pass = has;
-        if (pass && trueNext) return trueNext;
-        if (!pass && falseNext) return falseNext;
-        return null;
-      });
-    } else if (n.type === "agent") {
-      // FlowEditor "agent" canvas nodes map to plain LLM conversation nodes.
-      // agent_kind: "worker" → helpful assistant; "reviewer" → reviewer persona.
-      const kind = (cfg.agent_kind as string) || "worker";
-      const system =
-        (cfg.system as string) ||
-        (kind === "reviewer"
-          ? "You are a careful reviewer. Evaluate the previous output and give concise feedback."
-          : "You are a helpful assistant.");
-      g.addLLMNode(id, { system, model: (cfg.model as string) || "" });
-    }
-  });
-
-  return g;
-}
-
-function buildDefaultGraph(): AgentGraphInstance {
-  const g = new window.AgentGraph();
-  g.addLLMNode("llm", { system: "You are a helpful assistant." });
-  return g;
-}
-
-// Build a single-LLM-node graph from a registered agent definition.
-// Used by both "agent" mode and by @-mention routing in "flow" mode.
-async function buildGraphFromAgent(name: string): Promise<AgentGraphInstance> {
-  const def = await bridge.send("agent.registry.load", { name });
-  const g = new window.AgentGraph();
-  g.addLLMNode("agent", {
-    system: def.system_prompt || "You are a helpful assistant.",
-    model: def.llm || "",
-  });
-  return g;
-}
+// ── components ────────────────────────────────────────────────────────────
 
 // Look up the lead agent for a flow: by convention the node with the
 // smallest id (== the first one created, == the seeded "Chat" node for
@@ -160,7 +55,13 @@ function parseMention(
 
 // ── components ────────────────────────────────────────────────────────────
 
-function MessageView({ message }: { message: Message }) {
+function MessageView({
+  message,
+  isStreaming,
+}: {
+  message: Message;
+  isStreaming: boolean;
+}) {
   if (message.role === "trace") {
     return (
       <div className="py-1 font-mono text-[11px] text-cronymax-caption whitespace-pre-wrap">
@@ -194,9 +95,17 @@ function MessageView({ message }: { message: Message }) {
       >
         {label}
       </div>
-      <div className="whitespace-pre-wrap break-words text-sm text-cronymax-title">
-        {message.content}
-      </div>
+      {isUser ? (
+        <div className="whitespace-pre-wrap break-words text-sm text-cronymax-title">
+          {message.content}
+        </div>
+      ) : (
+        <div className="text-sm text-cronymax-title">
+          <Streamdown animated isAnimating={isStreaming}>
+            {message.content}
+          </Streamdown>
+        </div>
+      )}
     </div>
   );
 }
@@ -330,114 +239,136 @@ export function App() {
       let assistantMsgId: number | null = null;
       let assistantText = "";
 
-      let graph: AgentGraphInstance;
-      try {
-        // Load provider credentials directly via the typed bridge and apply
-        // them to the shared llmClient before building the graph. This is
-        // more reliable than calling window.llmClient.loadConfig() which
-        // goes through window.aiDesktop and has had JSON double-parse issues.
-        try {
-          const provRes = await bridge.send("llm.providers.get");
-          const providers = JSON.parse(provRes.raw || "[]") as Array<{
-            id: string;
-            base_url?: string;
-            api_key?: string;
-            default_model?: string;
-          }>;
-          const active =
-            providers.find((p) => p.id === provRes.active_id) || providers[0];
-          if (active) {
-            window.llmClient.baseUrl = active.base_url ?? "";
-            window.llmClient.apiKey = active.api_key ?? "";
-            if (active.default_model)
-              window.llmClient.model = active.default_model;
-          }
-        } catch {
-          // non-fatal — llmClient keeps whatever creds it had
-        }
-        if (speaker && agentNames.includes(speaker)) {
-          graph = await buildGraphFromAgent(speaker);
-        } else if (state.chatMode === "flow" && state.selectedFlow) {
-          const spec = loadSavedGraph(state.selectedFlow);
-          graph = spec ? buildGraphFromSpec(spec) : buildDefaultGraph();
-        } else {
-          graph = buildDefaultGraph();
-        }
-      } catch (err) {
-        dispatch({
-          type: "addMessage",
-          role: "system",
-          content: "Failed to build graph: " + (err as Error).message,
-        });
-        dispatch({ type: "setRunning", running: false });
-        return;
-      }
+      // Register the event listener BEFORE sending the run request so we
+      // never miss events from a run that fails or completes quickly. The
+      // listener is safe to install early: it filters by tag and run_id.
+      let runId = "";
+      // Deduplicate events by sequence number. Even after fixing the C++
+      // subscription count, multiple C++ event_subs_ entries (Lambda S +
+      // accumulated Lambda A per run) can broadcast the same event repeatedly.
+      // The sequence number in the envelope is unique per event; duplicates
+      // carry the same number and are dropped here.
+      const seenSeqs = new Set<number>();
+      const off = bridge.on("event", (raw: unknown) => {
+        const ev = raw as Record<string, unknown> | null;
+        if (!ev) return;
 
-      graph.addEventListener("trace", (e) => {
-        const d: AgentTraceDetail = e.detail;
-        if (d.type === "llm_delta" && typeof d.content === "string") {
-          if (assistantMsgId === null) {
-            assistantMsgId = state.msgSeq + 2;
+        // RuntimeToClient::Event shape: {tag:"event", subscription, event:{sequence,payload:{kind,...}}}
+        if (ev.tag === "event") {
+          const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
+          // Drop duplicate broadcasts of the same event (same sequence number).
+          const seq = inner.sequence as number | undefined;
+          if (typeof seq === "number") {
+            if (seenSeqs.has(seq)) return;
+            seenSeqs.add(seq);
+          }
+          const pl =
+            (inner.payload as Record<string, unknown> | undefined) ?? {};
+          const pRunId =
+            (pl.run_id as string | undefined) ??
+            ((inner as Record<string, unknown>).run_id as string | undefined);
+          if (pRunId && runId && pRunId !== runId) return;
+          const kind = pl.kind as string | undefined;
+          if (kind === "token") {
+            const content = (pl.delta ?? pl.content) as string | undefined;
+            if (content) {
+              if (assistantMsgId === null) {
+                assistantMsgId = state.msgSeq + 2;
+                dispatch({
+                  type: "addMessage",
+                  role: "assistant",
+                  content: "",
+                  agentName: speaker || undefined,
+                });
+              }
+              assistantText += content;
+              dispatch({
+                type: "updateMessage",
+                id: assistantMsgId,
+                content: assistantText,
+              });
+            }
+          } else if (kind === "run_status") {
+            const status = pl.status as string | undefined;
+            if (
+              status === "succeeded" ||
+              status === "failed" ||
+              status === "cancelled"
+            ) {
+              dispatch({
+                type: "appendToMessage",
+                id: traceMsgId,
+                chunk: status === "succeeded" ? "\n✓ done" : `\n✗ ${status}`,
+              });
+              if (assistantMsgId === null && assistantText === "") {
+                assistantText =
+                  status === "succeeded" ? "(completed)" : `(no output)`;
+                dispatch({
+                  type: "addMessage",
+                  role: "assistant",
+                  content: assistantText,
+                  agentName: speaker || undefined,
+                });
+              }
+              newHistory.push({
+                role: "assistant",
+                content: assistantText,
+                ...(speaker ? { agentName: speaker } : {}),
+              });
+              persistHistory(id, newHistory);
+              off();
+              dispatch({ type: "setRunning", running: false });
+              inputRef.current?.focus();
+            }
+          } else if (kind === "log") {
             dispatch({
-              type: "addMessage",
-              role: "assistant",
-              content: "",
-              agentName: speaker || undefined,
+              type: "appendToMessage",
+              id: traceMsgId,
+              chunk: `\n→ ${pl.message ?? ""}`,
             });
           }
-          assistantText += d.content;
-          dispatch({
-            type: "updateMessage",
-            id: assistantMsgId,
-            content: assistantText,
-          });
-        } else if (d.type === "node_enter") {
-          dispatch({
-            type: "appendToMessage",
-            id: traceMsgId,
-            chunk: `\n→ ${d.node_type ?? "?"} ${d.node_id ?? ""}`,
-          });
-        } else if (d.type === "error") {
+          return;
+        }
+
+        // AppEvent shape: {kind:"agent_status"|"text"|..., run_id?}
+        if (typeof ev.run_id === "string" && ev.run_id !== runId) return;
+        if (ev.kind === "error") {
+          const pl2 = (ev.payload as Record<string, unknown> | undefined) ?? {};
           dispatch({
             type: "appendToMessage",
             id: traceMsgId,
-            chunk: `\n✗ ${d.message ?? ""}`,
+            chunk: `\n✗ ${pl2.message ?? "error"}`,
           });
         }
       });
 
       try {
-        const result = await graph.run({ task: body });
-        if (assistantMsgId === null) {
-          assistantText = result.output || "(no output)";
-          dispatch({
-            type: "addMessage",
-            role: "assistant",
-            content: assistantText,
-            agentName: speaker || undefined,
-          });
-        }
-        newHistory.push({
-          role: "assistant",
-          content: assistantText,
-          ...(speaker ? { agentName: speaker } : {}),
-        });
-        persistHistory(id, newHistory);
-        dispatch({
-          type: "appendToMessage",
-          id: traceMsgId,
-          chunk: "\n✓ done",
-        });
+        runId = await bridge.send("agent.run", { task: body });
+        if (!runId) throw new Error("runtime did not return run_id");
+
+        // Subscribe to runtime events for this run so tokens/trace stream in.
+        await bridge
+          .send("events.subscribe", { run_id: runId })
+          .catch(() => {});
       } catch (err) {
+        off();
         dispatch({
           type: "addMessage",
           role: "system",
-          content: "Error: " + ((err as Error)?.message || String(err)),
+          content: "Failed to start run: " + (err as Error).message,
         });
-      } finally {
         dispatch({ type: "setRunning", running: false });
-        inputRef.current?.focus();
+        return;
       }
+
+      // Safety timeout: clean up if the run takes more than 5 minutes.
+      setTimeout(
+        () => {
+          off();
+          if (state.running) dispatch({ type: "setRunning", running: false });
+        },
+        5 * 60 * 1000,
+      );
     },
     [
       state.running,
@@ -570,7 +501,16 @@ export function App() {
         className="flex-1 overflow-y-auto divide-y divide-cronymax-border px-4 py-2"
       >
         {state.messages.map((m) => (
-          <MessageView key={m.id} message={m} />
+          <MessageView
+            key={m.id}
+            message={m}
+            isStreaming={
+              state.running &&
+              m.role === "assistant" &&
+              m.id ===
+                state.messages.filter((x) => x.role === "assistant").at(-1)?.id
+            }
+          />
         ))}
       </div>
 

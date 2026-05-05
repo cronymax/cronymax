@@ -54,6 +54,14 @@ struct FlowBindings {
 // Space (one per active `(flow_run_id, agent_id)` pair). Each owns its
 // own ToolRegistry, message history, and FileBroker so there is no
 // cross-Agent state leakage.
+//
+// MIGRATION (rust-runtime-migration, group 9 / 10): this in-process
+// AgentRuntime is being replaced by a runtime-managed run owned by
+// `crates/cronymax`. New code MUST NOT extend AgentRuntime; new run
+// lifecycle, tool dispatch, and ReAct semantics belong in the Rust
+// runtime and are reached over GIPS via the (still-to-build) C++
+// proxy. SpaceManager will lose its `agent_runtime_` field once the
+// proxy lands. See `openspec/changes/rust-runtime-migration/`.
 class AgentRuntime {
  public:
   // Legacy ctor — equivalent to AgentRuntime(workspace_root, {}, {}).

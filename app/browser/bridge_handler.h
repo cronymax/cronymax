@@ -6,10 +6,27 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "browser/space_manager.h"
 #include "include/wrapper/cef_message_router.h"
+#include "runtime_bridge/runtime_proxy.h"
+
+// MIGRATION (rust-runtime-migration, group 8): the agent.*, review.*,
+// inbox.*, events.*, and permission.* channels handled below are
+// transitioning to forward to the Rust runtime over GIPS via a
+// host-side `RuntimeProxy` (not yet implemented). New channels for
+// these surfaces MUST go through the proxy; do not add new in-process
+// orchestration paths here. Compatibility shims that route through
+// both old and new paths are forbidden by design Decision 6.
+//
+// Per-handler removal-path notes live alongside each Handle*() method
+// in the .cc; the hard cutover is gated on:
+//   1. Standalone `cronymax-runtime` boot from `crony/bin/`.
+//   2. C++ GIPS client (mirrors `gips::ipc::Endpoint` shape).
+//   3. RuntimeProxy abstraction in app/runtime_bridge/.
+// See `openspec/changes/rust-runtime-migration/tasks.md` group 8.
 
 namespace cronymax {
 
@@ -131,6 +148,14 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   // Register shell callbacks (called by MainWindow after BuildChrome).
   void SetShellCallbacks(ShellCallbacks cbs) { shell_cbs_ = std::move(cbs); }
 
+  // Attach the runtime proxy (called by MainWindow after bridge starts).
+  // Once set, orchestration channels forward through the proxy instead of
+  // the legacy in-process runtime.
+  void SetRuntimeProxy(RuntimeProxy* proxy) {
+    runtime_proxy_ = proxy;
+    if (proxy) SetupCapabilityHandler();
+  }
+
   // refine-ui-theme-layout: register theme callbacks (called by
   // MainWindow once persistence + appearance observers are wired).
   void SetThemeCallbacks(ThemeCallbacks cbs) { theme_cbs_ = std::move(cbs); }
@@ -138,6 +163,12 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   // Called by ClientHandler::OnBeforeClose so per-browser event-bus
   // subscribers can be torn down.
   void OnBrowserClosed(int browser_id);
+
+  // (task 4.2) Called by MainWindow when the active Space changes.
+  // Tears down runtime event subscriptions for the old space and
+  // initialises the auto-subscription for the new space.
+  void OnSpaceSwitch(const std::string& old_space_id,
+                     const std::string& new_space_id);
 
  private:
   bool HandleTerminal(CefRefPtr<CefBrowser> browser,
@@ -203,7 +234,12 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
                            std::string_view payload,
                            CefRefPtr<Callback> callback);
 
+  // Install the user_approval capability handler on the RuntimeProxy.
+  // Called automatically from SetRuntimeProxy.
+  void SetupCapabilityHandler();
+
   SpaceManager* space_manager_;  // Owned by MainWindow.
+  RuntimeProxy* runtime_proxy_ = nullptr;  // Set by MainWindow after startup.
   ShellCallbacks shell_cbs_;
   ThemeCallbacks theme_cbs_;
 
@@ -211,10 +247,26 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   std::mutex perm_mutex_;
   std::map<std::string, PermissionCallback> pending_permissions_;
 
+  // Pending runtime capability replies: capability correlation_id → reply fn.
+  // Populated by SetupCapabilityHandler when the runtime sends a
+  // user_approval capability call; consumed by HandlePermission.
+  std::mutex cap_reply_mu_;
+  std::unordered_map<std::string, RuntimeProxy::CapabilityReplyFn>
+      pending_cap_replies_;
+
   // Cleanup callbacks per browser. EventBus subscriptions register a
   // closure here; OnBrowserClosed runs them all to release tokens.
   std::mutex browser_subs_mutex_;
   std::map<int, std::vector<std::function<void()>>> browser_subs_;
+
+  // (task 4.2) Per-space RuntimeProxy event sub tokens and runtime sub IDs.
+  // Key: space_id. Cleaned up by OnSpaceSwitch when space becomes inactive.
+  struct SpaceRuntimeSub {
+    int64_t ev_token = -1;            // RuntimeProxy::SubscribeEvents token
+    std::string runtime_sub_id;       // Runtime-side subscription UUID
+  };
+  std::mutex space_subs_mu_;
+  std::unordered_map<std::string, SpaceRuntimeSub> space_runtime_subs_;
 };
 
 }  // namespace cronymax

@@ -86,6 +86,14 @@ class ClientHandler : public CefClient,
   void SetThemeCallbacks(ThemeCallbacks cbs) {
     bridge_handler_->SetThemeCallbacks(std::move(cbs));
   }
+  // (task 4.2) Pass-through to BridgeHandler for runtime proxy wiring.
+  void SetRuntimeProxy(RuntimeProxy* proxy) {
+    bridge_handler_->SetRuntimeProxy(proxy);
+  }
+  // (task 4.2) Pass-through to BridgeHandler for space switch events.
+  void OnSpaceSwitch(const std::string& old_id, const std::string& new_id) {
+    bridge_handler_->OnSpaceSwitch(old_id, new_id);
+  }
 
   // Called by MainWindow so OnAfterCreated can set browser_id on the new tab.
   std::function<void(int browser_id)> on_browser_created;

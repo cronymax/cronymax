@@ -12,13 +12,13 @@
 #include <nlohmann/json.hpp>
 
 #include "document/document_store.h"
-#include "document/review_store.h"
-#include "document/reviews_state.h"
 #include "event_bus/event_bus.h"
-#include "flow/flow_runtime.h"
+#include "event_bus/app_event.h"
+// (task 4.1) flow_runtime.h, trace_event.h, trace_writer.h removed —
+// run lifecycle is now owned by the Rust runtime over GIPS.
 #include "flow/mention_parser.h"
-#include "flow/trace_event.h"
-#include "flow/trace_writer.h"
+#include "sandbox/sandbox_launcher.h"
+#include "workspace/file_broker.h"
 #include "flow/gitignore_helper.h"
 #include "flow/workspace_layout.h"
 #include "include/base/cef_callback.h"
@@ -140,6 +140,43 @@ std::string SpaceToJson(const Space& sp) {
   return "{\"id\":" + JsonString(sp.id) +
          ",\"name\":" + JsonString(sp.name) +
          ",\"root_path\":" + JsonString(sp.workspace_root.string()) + "}";
+}
+
+// Extract a string field from a JSON payload using nlohmann::json (no-throw).
+std::string ExtractJsonString(std::string_view payload, std::string_view key) {
+  auto j = nlohmann::json::parse(payload, nullptr, /*allow_exceptions=*/false);
+  if (j.is_discarded() || !j.is_object()) return {};
+  auto it = j.find(std::string(key));
+  if (it == j.end() || !it->is_string()) return {};
+  return it->get<std::string>();
+}
+
+// Extract an integer field from a JSON payload using nlohmann::json (no-throw).
+long long ExtractJsonInt(std::string_view payload, std::string_view key) {
+  auto j = nlohmann::json::parse(payload, nullptr, /*allow_exceptions=*/false);
+  if (j.is_discarded() || !j.is_object()) return 0;
+  auto it = j.find(std::string(key));
+  if (it == j.end() || !it->is_number_integer()) return 0;
+  return it->get<long long>();
+}
+
+// Render an AppEvent as compact JSON for bridge serialisation.
+std::string AppEventToJson(const event_bus::AppEvent& e) {
+  return e.ToJson();
+}
+
+// Render an InboxRow as compact JSON for bridge serialisation.
+std::string InboxRowToJson(const event_bus::InboxRow& r) {
+  std::string out = "{\"event_id\":" + JsonString(r.event_id) +
+                    ",\"state\":" +
+                    JsonString(event_bus::InboxStateToString(r.state)) +
+                    ",\"flow_id\":" + JsonString(r.flow_id) +
+                    ",\"kind\":" + JsonString(r.kind);
+  if (r.snooze_until.has_value()) {
+    out += ",\"snooze_until\":" + std::to_string(*r.snooze_until);
+  }
+  out += "}";
+  return out;
 }
 
 }  // namespace
@@ -436,13 +473,95 @@ bool BridgeHandler::HandleAgent(CefRefPtr<CefBrowser> browser,
 
   if (channel == "agent.run") {
     if (!sp) { callback->Failure(503, "no active space"); return true; }
-    const auto result = sp->agent_runtime->RunPrototypeTask(std::string(payload));
-    std::ostringstream out;
-    out << result.final_message << "\n\nTrace:";
-    for (const auto& ev : result.trace)
-      out << "\n[" << ev.type << "] " << ev.message;
-    if (result.ok) callback->Success(out.str());
-    else           callback->Failure(500, out.str());
+    // MIGRATION (rust-runtime-cpp-cutover, task 3.1): forward to Rust
+    // runtime via RuntimeProxy::SendControl(StartRun{...}).
+    if (runtime_proxy_) {
+      // Read LLM config from the active provider in llm.providers (new-style)
+      // with fallback to the old-style individual keys (llm.base_url, llm.api_key).
+      const auto llm_cfg = space_manager_->store().GetLlmConfig();
+      std::string base_url = llm_cfg.base_url;
+      std::string api_key  = llm_cfg.api_key;
+      std::string model    = "gpt-4o-mini";
+      const std::string providers_raw =
+          space_manager_->store().GetKv("llm.providers");
+      const std::string active_id =
+          space_manager_->store().GetKv("llm.active_provider_id");
+      if (!providers_raw.empty() && !active_id.empty()) {
+        auto pj = nlohmann::json::parse(providers_raw, nullptr, false);
+        if (!pj.is_discarded() && pj.is_array()) {
+          for (const auto& p : pj) {
+            if (p.value("id", std::string{}) == active_id) {
+              // "base_url" and "api_key" from provider override old-style keys.
+              const std::string purl = p.value("base_url", std::string{});
+              if (!purl.empty()) base_url = purl;
+              // api_key may be JSON null (optional for local providers) —
+              // p.value() throws type_error.302 on null, so check is_string first.
+              if (const auto it = p.find("api_key"); it != p.end() && it->is_string()) {
+                const std::string pkey = it->get<std::string>();
+                if (!pkey.empty()) api_key = pkey;
+              }
+              // Provider stores the model as "default_model".
+              const std::string pm = p.value("default_model", std::string{});
+              if (!pm.empty()) model = pm;
+              break;
+            }
+          }
+        }
+      }
+      if (base_url.empty()) base_url = "https://api.openai.com/v1";
+      nlohmann::json req = {
+          {"kind", "start_run"},
+          {"space_id", sp->id},
+          {"payload", {
+              {"task", std::string(payload)},
+              {"llm", {
+                  {"base_url", base_url},
+                  {"api_key", api_key},
+                  {"model", model}
+              }}
+          }}
+      };
+      runtime_proxy_->SendControl(std::move(req),
+          [this, browser, callback](nlohmann::json resp, bool is_error) {
+            if (is_error) {
+              const std::string msg =
+                  resp.value("error", nlohmann::json{})
+                      .value("message", "runtime error");
+              callback->Failure(500, msg);
+              return;
+            }
+            const std::string run_id = resp.value("run_id", std::string{});
+            // RunStarted carries a pre-created subscription so we can
+            // register our event listener HERE — synchronously, before
+            // any ReactLoop events can arrive — avoiding the race where
+            // tokens/status events are emitted before events.subscribe
+            // completes its own IPC round-trip.
+            const std::string sub_id = resp.value("subscription", std::string{});
+            // Register cleanup for start_run's Rust subscription so the
+            // runtime knows the run is done when the browser closes.
+            // We do NOT add a C++ event_subs_ entry here; the space-level
+            // subscription from OnSpaceSwitch (Lambda S) fans out all events
+            // to all panels — adding a per-run entry causes N-fold duplication
+            // after N runs.
+            if (!sub_id.empty()) {
+              const int bid = browser ? browser->GetIdentifier() : 0;
+              std::lock_guard<std::mutex> g(browser_subs_mutex_);
+              browser_subs_[bid].push_back([this, sub_id]() {
+                if (runtime_proxy_) {
+                  nlohmann::json unsub = {
+                      {"kind", "unsubscribe"}, {"subscription", sub_id}};
+                  runtime_proxy_->SendControl(std::move(unsub),
+                                              [](nlohmann::json, bool) {});
+                }
+              });
+            }
+            // Return the run_id as a bare JSON string so the frontend
+            // receives it directly as a string (bridge_channels: res z.string()).
+            callback->Success(nlohmann::json(run_id).dump());
+          });
+      return true;
+    }
+    callback->Failure(503, "runtime not available");
     return true;
   }
 
@@ -549,7 +668,7 @@ bool BridgeHandler::HandleTool(std::string_view channel,
   call.input = JsonGet(p, "input");
   if (call.name.empty()) { callback->Failure(400, "tool name required"); return true; }
 
-  const auto result = sp->agent_runtime->tools().Invoke(call);
+  const auto result = sp->runtime_binding.tool_registry.Invoke(call);
   if (result.ok) {
     callback->Success("{\"ok\":true,\"output\":" + JsonString(result.output) + "}");
   } else {
@@ -569,8 +688,38 @@ bool BridgeHandler::HandlePermission(std::string_view channel,
     const std::string p(payload);
     const std::string rid = JsonGet(p, "request_id");
     const std::string dec = JsonGet(p, "decision");
-    DeliverPermissionResponse(rid, dec == "allow");
-    callback->Success("ok");
+    const bool allow = (dec == "allow");
+
+    // (task 3.3) Check for a pending runtime capability reply first.
+    // The runtime's user_approval capability calls are stored here with the
+    // capability correlation_id as the key (set by SetupCapabilityHandler).
+    {
+      RuntimeProxy::CapabilityReplyFn reply_fn;
+      {
+        std::lock_guard<std::mutex> g(cap_reply_mu_);
+        auto it = pending_cap_replies_.find(rid);
+        if (it != pending_cap_replies_.end()) {
+          reply_fn = std::move(it->second);
+          pending_cap_replies_.erase(it);
+        }
+      }
+      if (reply_fn) {
+        nlohmann::json resp;
+        if (allow) {
+          resp = {{"outcome", "ok"}};
+        } else {
+          resp = {{"outcome", "err"}, {"error",
+              {{"code", "denied"}, {"message", "user denied permission"}}}};
+        }
+        reply_fn(std::move(resp));
+        callback->Success("{\"ok\":true}");
+        return true;
+      }
+    }
+
+    // Fallback: legacy in-process permission delivery.
+    DeliverPermissionResponse(rid, allow);
+    callback->Success("{\"ok\":true}");
     return true;
   }
   callback->Failure(404, "unknown permission channel");
@@ -585,6 +734,188 @@ void BridgeHandler::DeliverPermissionResponse(const std::string& request_id,
     it->second(allow);
     pending_permissions_.erase(it);
   }
+}
+
+// (task 3.3 + 4.3) Install the capability handler on the RuntimeProxy.
+// Handles all capability types that require host participation:
+//   user_approval — shows a permission dialog to the user
+//   shell         — executes a sandboxed shell command (scope-enforced)
+//   filesystem    — reads or writes files (scope-enforced to workspace_root)
+//   notify        — posts a native OS notification
+//   browser       — 501 (not yet implemented)
+//   secret        — 501 (not yet implemented)
+void BridgeHandler::SetupCapabilityHandler() {
+  if (!runtime_proxy_) return;
+  runtime_proxy_->SetCapabilityHandler(
+      [this](const std::string& corr_id, const nlohmann::json& request,
+             RuntimeProxy::CapabilityReplyFn reply) {
+        const std::string cap = request.value("capability", std::string{});
+        const std::string space_id = request.value("space_id", std::string{});
+
+        // Resolve the owning Space for scope enforcement.
+        // FindSpace is private; iterate the public spaces() list instead.
+        Space* sp = nullptr;
+        if (space_id.empty()) {
+          sp = space_manager_->ActiveSpace();
+        } else {
+          for (const auto& s : space_manager_->spaces()) {
+            if (s->id == space_id) { sp = s.get(); break; }
+          }
+        }
+        const std::filesystem::path workspace_root =
+            sp ? sp->workspace_root : std::filesystem::path{};
+
+        // ── user_approval ────────────────────────────────────────────────
+        if (cap == "user_approval") {
+          {
+            std::lock_guard<std::mutex> g(cap_reply_mu_);
+            pending_cap_replies_[corr_id] = std::move(reply);
+          }
+          if (shell_cbs_.broadcast_event) {
+            nlohmann::json evt = {
+                {"request_id", corr_id},
+                {"run_id",     request.value("run_id",    std::string{})},
+                {"review_id",  request.value("review_id", std::string{})},
+                {"prompt",     request.value("prompt",    std::string{})},
+            };
+            shell_cbs_.broadcast_event("permission_request", evt.dump());
+          }
+          return;
+        }
+
+        // ── shell ────────────────────────────────────────────────────────
+        if (cap == "shell") {
+          if (workspace_root.empty()) {
+            reply({{"outcome","err"},{"error",{{"code","no_space"},{"message","no active space for shell capability"}}}});
+            return;
+          }
+          // Extract cwd; default to workspace_root if absent.
+          std::filesystem::path cwd = workspace_root;
+          const std::string cwd_str = request.value("cwd", std::string{});
+          if (!cwd_str.empty()) {
+            std::filesystem::path candidate(cwd_str);
+            // (task 4.3) Scope enforcement: cwd must be within workspace_root.
+            std::error_code ec;
+            auto rel = std::filesystem::relative(candidate, workspace_root, ec);
+            if (ec || rel.empty() || rel.native().substr(0,2) == "..") {
+              reply({{"outcome","err"},{"error",{{"code","scope_violation"},
+                  {"message","cwd is outside workspace root"}}}});
+              return;
+            }
+            cwd = candidate;
+          }
+          // argv → single command string (join with spaces).
+          std::string cmd;
+          if (request.contains("argv") && request["argv"].is_array()) {
+            for (const auto& a : request["argv"]) {
+              if (!cmd.empty()) cmd += ' ';
+              if (a.is_string()) cmd += a.get<std::string>();
+            }
+          }
+          if (cmd.empty()) {
+            reply({{"outcome","err"},{"error",{{"code","bad_request"},{"message","empty argv"}}}});
+            return;
+          }
+          SandboxLauncher launcher;
+          FileBroker file_broker(workspace_root);
+          const auto result = launcher.ExecuteShellCommand(
+              Actor::kAgent, file_broker.policy(), cwd, cmd,
+              /*confirmation_granted=*/true);
+          if (result.exit_code == 0) {
+            reply({{"outcome","ok"},{"stdout",result.stdout_data},
+                   {"stderr",result.stderr_data},{"exit_code",result.exit_code}});
+          } else {
+            reply({{"outcome","err"},{"error",{{"code","exec_failed"},
+                {"message","command exited with code " + std::to_string(result.exit_code)},
+                {"stdout",result.stdout_data},{"stderr",result.stderr_data},
+                {"exit_code",result.exit_code}}}});
+          }
+          return;
+        }
+
+        // ── filesystem ───────────────────────────────────────────────────
+        if (cap == "filesystem") {
+          if (workspace_root.empty()) {
+            reply({{"outcome","err"},{"error",{{"code","no_space"},{"message","no active space for filesystem capability"}}}});
+            return;
+          }
+          FileBroker file_broker(workspace_root);
+          const auto& op = request.value("op", nlohmann::json{});
+          const std::string op_kind = op.value("kind", std::string{});
+          if (op_kind == "read") {
+            const std::string path_str = op.value("path", std::string{});
+            if (path_str.empty()) {
+              reply({{"outcome","err"},{"error",{{"code","bad_request"},{"message","path required"}}}});
+              return;
+            }
+            // (task 4.3) Scope enforcement: path must be within workspace_root.
+            std::filesystem::path p(path_str);
+            std::error_code ec;
+            auto rel = std::filesystem::relative(p, workspace_root, ec);
+            if (ec || rel.empty() || rel.native().substr(0,2) == "..") {
+              reply({{"outcome","err"},{"error",{{"code","scope_violation"},
+                  {"message","path is outside workspace root"}}}});
+              return;
+            }
+            auto res = file_broker.ReadText(Actor::kAgent, p);
+            if (res.ok) {
+              reply({{"outcome","ok"},{"content",res.data}});
+            } else {
+              reply({{"outcome","err"},{"error",{{"code","read_failed"},{"message",res.error}}}});
+            }
+            return;
+          }
+          if (op_kind == "write") {
+            const std::string path_str = op.value("path", std::string{});
+            const std::string content  = op.value("content", std::string{});
+            if (path_str.empty()) {
+              reply({{"outcome","err"},{"error",{{"code","bad_request"},{"message","path required"}}}});
+              return;
+            }
+            // (task 4.3) Scope enforcement.
+            std::filesystem::path p(path_str);
+            std::error_code ec;
+            auto rel = std::filesystem::relative(p, workspace_root, ec);
+            if (ec || rel.empty() || rel.native().substr(0,2) == "..") {
+              reply({{"outcome","err"},{"error",{{"code","scope_violation"},
+                  {"message","path is outside workspace root"}}}});
+              return;
+            }
+            auto res = file_broker.WriteText(Actor::kAgent, p, content);
+            if (res.ok) {
+              reply({{"outcome","ok"}});
+            } else {
+              reply({{"outcome","err"},{"error",{{"code","write_failed"},{"message",res.error}}}});
+            }
+            return;
+          }
+          reply({{"outcome","err"},{"error",{{"code","unsupported"},
+              {"message","unknown filesystem op"},{"op_kind",op_kind}}}});
+          return;
+        }
+
+        // ── notify ───────────────────────────────────────────────────────
+        if (cap == "notify") {
+          const std::string title = request.value("title", std::string{});
+          const std::string body  = request.value("body",  std::string{});
+          if (shell_cbs_.broadcast_event) {
+            nlohmann::json evt = {{"title",title},{"body",body},
+                {"level",request.value("level","info")}};
+            shell_cbs_.broadcast_event("notification", evt.dump());
+          }
+          reply({{"outcome","ok"}});
+          return;
+        }
+
+        // ── unhandled capability ─────────────────────────────────────────
+        nlohmann::json err_resp = {
+            {"outcome", "err"},
+            {"error", {{"code", "unsupported"},
+                       {"message", "capability not supported by host"},
+                       {"capability", cap}}},
+        };
+        reply(std::move(err_resp));
+      });
 }
 
 // ---------------------------------------------------------------------------
@@ -1542,23 +1873,22 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   }
 
   // -------------------------------------------------------------------------
-  // FlowRuntime channels (Phase B Group 8). Owned by Space->flow_runtime.
-  //   flow.run.start   payload {flow_id, initial_input?} \u2192 {run_id}
-  //   flow.run.cancel  payload {run_id}                  \u2192 {ok:true}
-  //   flow.run.status  payload {run_id}                  \u2192 FlowRunState JSON
-  //   flow.run.list    no payload                        \u2192 {runs:[FlowRunState]}
-  // Emits broadcast event `flow.run.changed` on every state transition.
+  // -------------------------------------------------------------------------
+  // FlowRuntime channels — rewired to RuntimeProxy (task 3.1).
+  //   flow.run.start      payload {flow_id, initial_input?} → {run_id}
+  //   flow.run.cancel     payload {run_id}                  → {ok:true}
+  //   flow.run.pause      payload {run_id}                  → {ok:true}
+  //   flow.run.resume     payload {run_id}                  → {ok:true}
+  //   flow.run.post_input payload {run_id, input}           → {ok:true}
+  //   flow.run.status     not available via direct query; use events.subscribe
+  //   flow.run.list       not available via direct query; use events.subscribe
   // -------------------------------------------------------------------------
   if (channel.rfind("flow.run.", 0) == 0) {
-    if (!sp->flow_runtime) {
-      callback->Failure(503, "flow runtime not ready");
+    if (!runtime_proxy_) {
+      callback->Failure(503, "runtime not available");
       return true;
     }
-    // Wire emitter once (idempotent: SetEventEmitter overwrites).
-    sp->flow_runtime->SetEventEmitter(
-        [this](const std::string& evt, const std::string& json) {
-          shell_cbs_.broadcast_event(evt, json);
-        });
+    if (!sp) { callback->Failure(503, "no active space"); return true; }
 
     if (channel == "flow.run.start") {
       auto flow_id = extract_field(payload, "flow_id");
@@ -1567,80 +1897,91 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
         return true;
       }
       auto initial_input = extract_field(payload, "initial_input");
-      std::string err;
-      const std::string run_id =
-          sp->flow_runtime->StartRun(flow_id, initial_input, &err);
-      if (run_id.empty()) {
-        callback->Failure(400, err);
-        return true;
-      }
-      // Persist active-run pointer for this Space (task 8.8).
-      space_manager_->store().SetKv(
-          "space:" + sp->id + ":active_run",
-          flow_id + ":" + run_id);
-      callback->Success("{\"run_id\":" + JsonString(run_id) + "}");
+      nlohmann::json run_payload = {{"flow_id", flow_id}};
+      if (!initial_input.empty()) run_payload["initial_input"] = initial_input;
+      nlohmann::json req = {
+          {"kind", "start_run"},
+          {"space_id", sp->id},
+          {"payload", std::move(run_payload)}
+      };
+      runtime_proxy_->SendControl(std::move(req),
+          [callback](nlohmann::json resp, bool is_error) {
+            if (is_error) {
+              callback->Failure(500,
+                  resp.value("error", nlohmann::json{})
+                      .value("message", "start_run failed"));
+              return;
+            }
+            const std::string run_id = resp.value("run_id", std::string{});
+            callback->Success("{\"run_id\":" +
+                              nlohmann::json(run_id).dump() + "}");
+          });
       return true;
     }
+
     if (channel == "flow.run.cancel") {
       auto run_id = extract_field(payload, "run_id");
-      if (run_id.empty()) {
-        callback->Failure(400, "run_id required");
-        return true;
-      }
-      std::string err;
-      if (!sp->flow_runtime->CancelRun(run_id, &err)) {
-        callback->Failure(400, err);
-        return true;
-      }
-      callback->Success("{\"ok\":true}");
+      if (run_id.empty()) { callback->Failure(400, "run_id required"); return true; }
+      nlohmann::json req = {{"kind", "cancel_run"}, {"run_id", run_id}};
+      runtime_proxy_->SendControl(std::move(req),
+          [callback](nlohmann::json resp, bool is_error) {
+            callback->Success(is_error ? "{\"ok\":false}" : "{\"ok\":true}");
+          });
       return true;
     }
-    if (channel == "flow.run.status") {
-      auto run_id = extract_field(payload, "run_id");
-      auto state = sp->flow_runtime->GetRun(run_id);
-      if (!state) {
-        callback->Failure(404, "run not found");
-        return true;
-      }
-      callback->Success(state->ToJson());
-      return true;
-    }
-    if (channel == "flow.run.list") {
-      std::string json = "{\"runs\":[";
-      bool first = true;
-      for (const auto& s : sp->flow_runtime->ListRuns()) {
-        if (!first) json += ",";
-        first = false;
-        json += s->ToJson();
-      }
-      json += "]}";
-      callback->Success(json);
-      return true;
-    }
-  }
 
-  // -------------------------------------------------------------------------
-  // Trace event subscription. `event.subscribe` payload {run_id} attaches
-  // the renderer to a Run's trace stream with replay-then-live semantics:
-  // every line already in trace.jsonl is delivered before any live event,
-  // and ordering across replay/live is preserved by the TraceWriter lock.
-  // Each delivered event is broadcast on `flow.event` (the renderer
-  // listens on a single global channel and filters by run_id locally).
-  // -------------------------------------------------------------------------
-  if (channel == "event.subscribe") {
-    // DEPRECATED + DISABLED: the legacy TraceWriter→flow.event pipeline
-    // was retired by the agent-event-bus change. New code must call
-    // `events.subscribe` and listen on the `event` broadcast channel.
-    static std::once_flag s_once;
-    std::call_once(s_once, []() {
-      fprintf(stderr,
-              "[bridge_handler] deprecated channel 'event.subscribe' used; "
-              "migrate to events.subscribe (returning 410)\n");
-    });
-    callback->Failure(410, "event.subscribe is deprecated; use events.subscribe");
+    if (channel == "flow.run.pause") {
+      auto run_id = extract_field(payload, "run_id");
+      if (run_id.empty()) { callback->Failure(400, "run_id required"); return true; }
+      nlohmann::json req = {{"kind", "pause_run"}, {"run_id", run_id}};
+      runtime_proxy_->SendControl(std::move(req),
+          [callback](nlohmann::json resp, bool is_error) {
+            callback->Success(is_error ? "{\"ok\":false}" : "{\"ok\":true}");
+          });
+      return true;
+    }
+
+    if (channel == "flow.run.resume") {
+      auto run_id = extract_field(payload, "run_id");
+      if (run_id.empty()) { callback->Failure(400, "run_id required"); return true; }
+      nlohmann::json req = {{"kind", "resume_run"}, {"run_id", run_id}};
+      runtime_proxy_->SendControl(std::move(req),
+          [callback](nlohmann::json resp, bool is_error) {
+            callback->Success(is_error ? "{\"ok\":false}" : "{\"ok\":true}");
+          });
+      return true;
+    }
+
+    if (channel == "flow.run.post_input") {
+      auto run_id = extract_field(payload, "run_id");
+      if (run_id.empty()) { callback->Failure(400, "run_id required"); return true; }
+      nlohmann::json input_payload;
+      {
+        auto p = nlohmann::json::parse(std::string(payload), nullptr,
+                                       /*allow_exceptions=*/false);
+        if (!p.is_discarded() && p.is_object())
+          input_payload = p.value("input", nlohmann::json{});
+      }
+      nlohmann::json req = {
+          {"kind", "post_input"},
+          {"run_id", run_id},
+          {"payload", std::move(input_payload)}
+      };
+      runtime_proxy_->SendControl(std::move(req),
+          [callback](nlohmann::json resp, bool is_error) {
+            callback->Success(is_error ? "{\"ok\":false}" : "{\"ok\":true}");
+          });
+      return true;
+    }
+
+    // flow.run.status / flow.run.list: query operations are served via
+    // runtime event subscriptions once task 4.x lands.
+    // TODO(4.2): implement once RuntimeToClient carries run state queries.
+    callback->Failure(501,
+        "flow.run.status and flow.run.list are not available via direct query; "
+        "subscribe to runtime events instead");
     return true;
   }
-
   // -------------------------------------------------------------------------
   // mention.user_input — server-side @mention parser. Renderer sends the raw
   // user-typed text and the active flow id; we return the matched agent
@@ -1798,6 +2139,31 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
   }
 
   if (channel == "document.subscribe") {
+    // (task 3.3) Also subscribe to runtime events so that runtime-emitted
+    // document-changed events are fanned out on "document.changed".
+    if (runtime_proxy_) {
+      auto* sp = space_manager_->ActiveSpace();
+      const std::string topic = sp
+          ? ("space/" + sp->id + "/document_events")
+          : "document_events";
+      nlohmann::json req = {{"kind", "subscribe"}, {"topic", topic}};
+      runtime_proxy_->SendControl(std::move(req),
+          [this](nlohmann::json resp, bool is_error) {
+            if (is_error) return;
+            const std::string sub_id = resp.value("subscription", std::string{});
+            auto ev_token = runtime_proxy_->SubscribeEvents(
+                [this](const nlohmann::json& event) {
+                  // Forward runtime document events as document.changed
+                  // broadcasts so existing renderer listeners pick them up.
+                  if (shell_cbs_.broadcast_event)
+                    shell_cbs_.broadcast_event("document.changed", event.dump());
+                });
+            // Note: cleanup on browser close is handled by the general
+            // events.subscribe cleanup path; these are supplemental.
+            (void)sub_id;
+            (void)ev_token;
+          });
+    }
     // Subscription is implicit: the renderer listens for the
     // "document.changed" broadcast event. This call exists so the
     // renderer can confirm the channel/flow are valid before installing
@@ -1860,90 +2226,31 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
     return true;
   }
 
-  // document.suggestion.apply { flow, run_id, name, comment_id }
+  // document.suggestion.apply { flow, run_id, name, block_id, suggestion }
   //
-  // Looks up the comment in `runs/<run_id>/reviews.json`, validates that
-  // it carries both a non-empty `block_id` and `suggestion`, finds the
-  // matching `<!-- block: <uuid> -->` marker in the current revision,
-  // replaces the block's body with the suggestion text, and submits a
-  // new revision via DocumentStore. On success the comment's
-  // `resolved_in_rev` is updated. Stale-revision detection: the comment
-  // is rejected if its anchor's revision is older than `current_revision`.
+  // Finds the matching `<!-- block: <uuid> -->` marker in the current revision,
+  // replaces the block's body with the suggestion text, and submits a new
+  // revision via DocumentStore. `block_id` and `suggestion` are provided
+  // directly by the caller (sourced from the runtime review event).
   if (channel == "document.suggestion.apply") {
-    const std::string run_id = extract(payload, "run_id");
-    const std::string name = extract(payload, "name");
-    const std::string comment_id = extract(payload, "comment_id");
-    if (run_id.empty() || name.empty() || comment_id.empty()) {
-      callback->Failure(400, "missing 'run_id' / 'name' / 'comment_id'");
+    const std::string run_id    = extract(payload, "run_id");
+    const std::string name      = extract(payload, "name");
+    const std::string block_id  = extract(payload, "block_id");
+    const std::string suggestion = extract(payload, "suggestion");
+    if (run_id.empty() || name.empty() || block_id.empty() || suggestion.empty()) {
+      callback->Failure(400, "missing 'run_id', 'name', 'block_id', or 'suggestion'");
       return true;
     }
-    for (char c : run_id) {
-      if (!(std::isalnum(static_cast<unsigned char>(c)) ||
-            c == '-' || c == '_')) {
-        callback->Failure(400, "bad 'run_id' value");
-        return true;
-      }
-    }
-    auto run_dir = layout.FlowDir(flow_id) / "runs" / run_id;
-    ReviewStore reviews(run_dir);
-    ReviewsState rstate;
-    std::string err;
-    if (!reviews.Load(&rstate, &err)) {
-      callback->Failure(500, err.empty() ? "load reviews failed" : err);
-      return true;
-    }
-    auto doc_it = rstate.docs.find(name);
-    if (doc_it == rstate.docs.end()) {
-      callback->Failure(404, "document not in reviews.json");
-      return true;
-    }
-    const DocComment* found = nullptr;
-    for (const auto& c : doc_it->second.comments) {
-      if (c.id == comment_id) { found = &c; break; }
-    }
-    if (!found) {
-      callback->Failure(404, "comment not found");
-      return true;
-    }
-    if (found->block_id.empty()) {
-      callback->Failure(400, "comment_not_block_anchored");
-      return true;
-    }
-    if (found->suggestion.empty()) {
-      callback->Failure(400, "comment_has_no_suggestion");
-      return true;
-    }
-    const std::string block_id = found->block_id;
-    const std::string suggestion = found->suggestion;
 
     // Read the current document revision and locate the block marker.
+    std::string err;
     auto current = store.Read(name, &err);
     if (!current) {
       callback->Failure(404, err.empty() ? "document not found" : err);
       return true;
     }
-    const int latest = store.LatestRevision(name);
-    // Stale-revision guard: if the comment was created against an older
-    // revision (its anchor encodes the rev at creation time as
-    // "block=<uuid>"; the older form "rev=N ..." is the legacy fallback)
-    // and the document has moved on with edits to the same block, we
-    // can't safely apply blindly. We detect "stale" only via the legacy
-    // anchor; pure block-id anchors are considered stable across edits
-    // to other blocks.
-    if (!found->legacy_anchor.empty()) {
-      // Best-effort parse of "rev=<n> ..." from the legacy anchor.
-      auto pos = found->legacy_anchor.find("rev=");
-      if (pos != std::string::npos) {
-        int legacy_rev = std::atoi(found->legacy_anchor.c_str() + pos + 4);
-        if (legacy_rev > 0 && legacy_rev < latest) {
-          callback->Failure(409, "stale_revision");
-          return true;
-        }
-      }
-    }
 
-    // Locate `<!-- block: <uuid> -->` in current content. Same shape as
-    // `web/src/workbench/blockIds.ts`.
+    // Locate `<!-- block: <uuid> -->` in current content.
     const std::string& md = *current;
     std::vector<std::string> lines;
     {
@@ -1991,9 +2298,7 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
         break;
       }
     }
-    // Build the new content: keep lines [0..marker_idx], then suggestion
-    // (trimmed of trailing newlines, plus a single blank separator), then
-    // lines [block_end..end].
+    // Build the new content.
     std::string trimmed_suggestion = suggestion;
     while (!trimmed_suggestion.empty() &&
            trimmed_suggestion.back() == '\n') {
@@ -2019,35 +2324,8 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
       return true;
     }
 
-    // Mark the original comment resolved.
-    bool ok = reviews.Update(
-        [&](ReviewsState& s) {
-          auto it = s.docs.find(name);
-          if (it == s.docs.end()) return false;
-          for (auto& c : it->second.comments) {
-            if (c.id == comment_id) {
-              c.resolved_in_rev = wr.revision;
-              break;
-            }
-          }
-          it->second.current_revision = wr.revision;
-          return true;
-        },
-        std::chrono::milliseconds(2000), &err);
-    if (!ok) {
-      // The new revision is on disk but the comment wasn't marked
-      // resolved. Surface this as a soft 200 with a warning so the UI
-      // can still refresh; the user can manually mark the comment.
-      fprintf(stderr,
-              "[bridge_handler] document.suggestion.apply: revision %d "
-              "written but resolved_in_rev update failed: %s\n",
-              wr.revision, err.c_str());
-    }
-
-    // Emit a `document_event` AppEvent so the channel view picks up the
-    // new revision without polling. We synthesize it directly here
-    // (FlowRuntime would normally do this when an agent submits; this
-    // is the human-acted-on-suggestion equivalent).
+    // Emit a `document_event` AppEvent so the channel view picks up the new
+    // revision without polling.
     if (sp->event_bus) {
       event_bus::AppEvent e;
       e.kind = event_bus::AppEventKind::kDocumentEvent;
@@ -2055,7 +2333,6 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
       e.flow_id = flow_id;
       e.run_id = run_id;
       e.agent_id = "user";
-      // doc payload mirrors the FlowRuntime emission shape.
       nlohmann::json payload_obj = {
         {"doc_id",   name},
         {"doc_path", name + ".md"},
@@ -2065,7 +2342,6 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
         {"source",   "suggestion_apply"},
       };
       e.payload = std::move(payload_obj);
-      // EventBus::Append fills in id + ts_ms for us.
       sp->event_bus->Append(std::move(e));
     }
 
@@ -2109,201 +2385,111 @@ bool BridgeHandler::HandleReview(std::string_view channel,
     return std::string(body.substr(pos + 1, end - pos - 1));
   };
 
-  const std::string flow_id = extract(payload, "flow");
-  const std::string run_id  = extract(payload, "run_id");
-  if (flow_id.empty() || run_id.empty()) {
-    callback->Failure(400, "missing 'flow' or 'run_id' in payload");
-    return true;
-  }
-  if (!sp->flow_registry || !sp->flow_registry->Get(flow_id)) {
-    callback->Failure(404, "unknown flow");
-    return true;
-  }
-  // Defense in depth on run_id (used as a directory component).
-  for (char c : run_id) {
-    if (!(std::isalnum(static_cast<unsigned char>(c)) ||
-          c == '-' || c == '_')) {
-      callback->Failure(400, "bad 'run_id' value");
-      return true;
-    }
-  }
-
-  WorkspaceLayout layout(sp->workspace_root);
-  auto run_dir = layout.FlowDir(flow_id) / "runs" / run_id;
-  ReviewStore reviews(run_dir);
-
+  // review.list — forwarded to runtime via RuntimeProxy.
   if (channel == "review.list") {
-    ReviewsState state;
-    std::string err;
-    if (!reviews.Load(&state, &err)) {
-      callback->Failure(500, err.empty() ? "load failed" : err);
+    if (!runtime_proxy_) {
+      callback->Failure(503, "runtime not connected");
       return true;
     }
-    callback->Success(state.ToJson());
+    const std::string run_id_l = extract(payload, "run_id");
+    if (run_id_l.empty()) {
+      callback->Failure(400, "missing 'run_id' in payload");
+      return true;
+    }
+    nlohmann::json req = {{"kind", "list_reviews"}, {"run_id", run_id_l}};
+    runtime_proxy_->SendControl(std::move(req),
+        [callback](nlohmann::json resp, bool is_error) {
+          if (is_error) {
+            callback->Failure(500,
+                resp.value("error", nlohmann::json{})
+                    .value("message", "list_reviews failed"));
+            return;
+          }
+          callback->Success(resp.dump());
+        });
     return true;
   }
 
-  // Mutating channels require name + body.
-  const std::string name = extract(payload, "name");
-  if (name.empty()) {
-    callback->Failure(400, "missing 'name' in payload");
+  // Mutating review channels — forwarded to the runtime via RuntimeProxy.
+  const std::string run_id    = extract(payload, "run_id");
+  const std::string review_id = extract(payload, "review_id");
+  const std::string body      = extract(payload, "body");
+
+  if (channel == "review.approve") {
+    if (!runtime_proxy_ || review_id.empty()) {
+      callback->Failure(503, runtime_proxy_ ? "missing review_id" : "runtime not connected");
+      return true;
+    }
+    nlohmann::json req = {
+        {"kind",      "resolve_review"},
+        {"run_id",    run_id},
+        {"review_id", review_id},
+        {"decision",  "approve"},
+    };
+    if (!body.empty()) req["notes"] = body;
+    runtime_proxy_->SendControl(std::move(req),
+        [callback](nlohmann::json resp, bool is_error) {
+          if (is_error) {
+            callback->Failure(500,
+                resp.value("error", nlohmann::json{})
+                    .value("message", "approve failed"));
+            return;
+          }
+          callback->Success("{\"ok\":true}");
+        });
     return true;
   }
-  std::string body = extract(payload, "body");
-  // Optional block-anchored fields (added by `change: document-wysiwyg`).
-  // When `block_id` is present the comment is anchored to a specific
-  // top-level block rather than a line range, and `anchor` is written
-  // in the new `block=<uuid>` form. When `suggestion` is present the
-  // comment carries a proposed replacement body the user can accept via
-  // `document.suggestion.apply`.
-  const std::string block_id = extract(payload, "block_id");
-  const std::string suggestion = extract(payload, "suggestion");
 
-  std::string kind;
-  DocStatus next_status = DocStatus::kInReview;
+  if (channel == "review.request_changes") {
+    if (!runtime_proxy_ || review_id.empty()) {
+      callback->Failure(503, runtime_proxy_ ? "missing review_id" : "runtime not connected");
+      return true;
+    }
+    nlohmann::json req = {
+        {"kind",      "resolve_review"},
+        {"run_id",    run_id},
+        {"review_id", review_id},
+        {"decision",  "reject"},
+    };
+    if (!body.empty()) req["notes"] = body;
+    runtime_proxy_->SendControl(std::move(req),
+        [callback](nlohmann::json resp, bool is_error) {
+          if (is_error) {
+            callback->Failure(500,
+                resp.value("error", nlohmann::json{})
+                    .value("message", "request_changes failed"));
+            return;
+          }
+          callback->Success("{\"ok\":true}");
+        });
+    return true;
+  }
+
   if (channel == "review.comment") {
-    kind = "comment";
-    if (body.empty()) {
-      callback->Failure(400, "missing 'body' in payload");
+    if (!runtime_proxy_ || run_id.empty()) {
+      callback->Failure(503, runtime_proxy_ ? "missing run_id" : "runtime not connected");
       return true;
     }
-  } else if (channel == "review.approve") {
-    kind = "approve";
-    next_status = DocStatus::kApproved;
-    if (body.empty()) body = "approved";
-  } else if (channel == "review.request_changes") {
-    kind = "changes_requested";
-    next_status = DocStatus::kChangesRequested;
-    if (body.empty()) body = "changes requested";
-  } else {
-    callback->Failure(404, "unknown review channel");
+    nlohmann::json comment_payload = {{"comment", body}};
+    if (!review_id.empty()) comment_payload["review_id"] = review_id;
+    const std::string name = extract(payload, "name");
+    if (!name.empty()) comment_payload["doc"] = name;
+    nlohmann::json req = {
+        {"kind",    "post_input"},
+        {"run_id",  run_id},
+        {"payload", std::move(comment_payload)},
+    };
+    runtime_proxy_->SendControl(std::move(req),
+        [callback](nlohmann::json resp, bool is_error) {
+          callback->Success("{\"ok\":true}");
+        });
     return true;
   }
 
-  std::string err;
-  // Generate a stable comment id from millisecond timestamp.
-  auto now_ms =
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch()).count();
-  bool ok = reviews.Update(
-      [&](ReviewsState& s) {
-        auto& doc = s.docs[name];
-        DocComment c;
-        c.id = "c-" + std::to_string(now_ms);
-        c.author = "user";
-        c.kind = kind;
-        // Block-anchored comments use the new `block=<uuid>` anchor; pure
-        // line/revision comments retain the legacy `rev=N` form so that
-        // existing renderers and reviewer pipelines keep working.
-        if (!block_id.empty()) {
-          c.anchor = "block=" + block_id;
-          c.block_id = block_id;
-        } else {
-          c.anchor = "rev=" + std::to_string(doc.current_revision);
-        }
-        if (!suggestion.empty()) c.suggestion = suggestion;
-        c.body = body;
-        c.created_at_ms = now_ms;
-        doc.comments.push_back(std::move(c));
-        if (kind != "comment") doc.status = next_status;
-        return true;
-      },
-      std::chrono::milliseconds(2000), &err);
-  if (!ok) {
-    callback->Failure(500, err.empty() ? "update failed" : err);
-    return true;
-  }
-
-  // Notify renderers that a document's review state changed. Future
-  // FlowRuntime work will emit richer trace events; this lightweight
-  // broadcast is enough for the chat panel to refresh.
-  if (shell_cbs_.broadcast_event) {
-    std::string evt = "{\"flow\":" + JsonString(flow_id) +
-                      ",\"run_id\":" + JsonString(run_id) +
-                      ",\"doc\":" + JsonString(name) +
-                      ",\"kind\":" + JsonString(kind) + "}";
-    shell_cbs_.broadcast_event("review.changed", evt);
-  }
-  callback->Success("{\"ok\":true}");
+  callback->Failure(404, "unknown review channel");
   return true;
 }
 
-// ===========================================================================
-// agent-event-bus channels (events.*, inbox.*, notifications.*)
-//
-// All three handlers funnel through the same per-Space `event_bus::EventBus`
-// owned by `Space::event_bus`. Live events are pushed to renderers as
-// "event" broadcasts (see HandleEvents `events.subscribe`); each renderer
-// filters by scope locally.
-// ===========================================================================
-
-namespace {
-
-// Lightweight JSON-string field extraction used by these handlers (mirrors
-// the lambda inside HandleRegistry; duplicated to avoid plumbing it
-// through). For numeric fields, callers must parse separately.
-std::string ExtractJsonString(std::string_view body, std::string_view key) {
-  std::string needle = "\"" + std::string(key) + "\"";
-  auto pos = body.find(needle);
-  if (pos == std::string_view::npos) return {};
-  pos = body.find(':', pos);
-  if (pos == std::string_view::npos) return {};
-  pos = body.find('"', pos);
-  if (pos == std::string_view::npos) return {};
-  auto end = body.find('"', pos + 1);
-  if (end == std::string_view::npos) return {};
-  return std::string(body.substr(pos + 1, end - pos - 1));
-}
-
-// Extract a non-negative integer field. Returns -1 when the field is
-// missing or unparseable so callers can substitute defaults.
-long long ExtractJsonInt(std::string_view body, std::string_view key) {
-  std::string needle = "\"" + std::string(key) + "\"";
-  auto pos = body.find(needle);
-  if (pos == std::string_view::npos) return -1;
-  pos = body.find(':', pos);
-  if (pos == std::string_view::npos) return -1;
-  ++pos;
-  while (pos < body.size() && (body[pos] == ' ' || body[pos] == '\t')) ++pos;
-  // We accept either bare number or quoted number (renderer convenience).
-  if (pos < body.size() && body[pos] == '"') ++pos;
-  size_t start = pos;
-  while (pos < body.size() && body[pos] >= '0' && body[pos] <= '9') ++pos;
-  if (pos == start) return -1;
-  std::string n(body.substr(start, pos - start));
-  return std::atoll(n.c_str());
-}
-
-std::string AppEventToJson(const event_bus::AppEvent& e) { return e.ToJson(); }
-
-std::string InboxRowToJson(const event_bus::InboxRow& r) {
-  std::string out =
-      "{\"event_id\":" + JsonString(r.event_id) +
-      ",\"state\":" + JsonString(event_bus::InboxStateToString(r.state)) +
-      ",\"flow_id\":" + JsonString(r.flow_id) +
-      ",\"kind\":" + JsonString(r.kind);
-  if (r.snooze_until.has_value()) {
-    out += ",\"snooze_until\":" + std::to_string(*r.snooze_until);
-  }
-  out += "}";
-  return out;
-}
-
-// Track first-use deprecation warnings (one per process per channel).
-std::mutex g_deprecation_mu;
-std::set<std::string> g_deprecation_seen;
-
-[[maybe_unused]] void LogDeprecationOnce(const std::string& tag) {
-  std::lock_guard<std::mutex> g(g_deprecation_mu);
-  if (g_deprecation_seen.insert(tag).second) {
-    fprintf(stderr,
-            "[bridge_handler] deprecated channel '%s' used; migrate to "
-            "events.subscribe\n",
-            tag.c_str());
-  }
-}
-
-}  // namespace
 
 bool BridgeHandler::HandleEvents(CefRefPtr<CefBrowser> browser,
                                  std::string_view channel,
@@ -2338,23 +2524,32 @@ bool BridgeHandler::HandleEvents(CefRefPtr<CefBrowser> browser,
     return true;
   }
 
-  // events.subscribe { flow_id?, run_id? } — replay-then-live; broadcasts
-  // every matching event on the global "event" channel (renderers filter
-  // by scope locally). The token is captured in `browser_subs_` so it can
-  // be released when the renderer closes.
+  // events.subscribe { flow_id?, run_id? } — replay-then-live.
+  //
+  // (task 3.2) If RuntimeProxy is connected, also subscribe to runtime events
+  // so that runtime-emitted payloads are fanned out on the "event" broadcast
+  // channel alongside local event_bus events.  Both subscriptions are cleaned
+  // up when the browser closes.
   if (channel == "events.subscribe") {
     event_bus::Scope scope;
     scope.flow_id = ExtractJsonString(payload, "flow_id");
     scope.run_id = ExtractJsonString(payload, "run_id");
     auto cbs = shell_cbs_;
+    // Local event_bus subscription (events from events.append, legacy paths).
     auto token = bus->Subscribe(scope, [cbs](const event_bus::AppEvent& e) {
       if (cbs.broadcast_event) cbs.broadcast_event("event", e.ToJson());
     });
-    if (browser) {
-      const int bid = browser->GetIdentifier();
+    const int bid = browser ? browser->GetIdentifier() : 0;
+    {
       std::lock_guard<std::mutex> g(browser_subs_mutex_);
       browser_subs_[bid].push_back([bus, token]() { bus->Unsubscribe(token); });
     }
+    // NOTE: we intentionally do NOT add a runtime_proxy_ SubscribeEvents entry
+    // here.  The start_run response already creates one Rust subscription;
+    // creating a second subscription for the same run topic causes each event
+    // to arrive twice on the Mach transport and be broadcast N×2 times.
+    // The space-level subscription in OnSpaceSwitch (Lambda S) is the single
+    // fan-out path for runtime events.
     callback->Success("{\"ok\":true}");
     return true;
   }
@@ -2395,6 +2590,7 @@ bool BridgeHandler::HandleEvents(CefRefPtr<CefBrowser> browser,
   callback->Failure(404, "unknown events.* channel");
   return true;
 }
+
 
 bool BridgeHandler::HandleInbox(std::string_view channel,
                                 std::string_view payload,
@@ -2516,6 +2712,60 @@ void BridgeHandler::OnBrowserClosed(int browser_id) {
     browser_subs_.erase(it);
   }
   for (auto& f : cbs) f();
+}
+
+// (task 4.2) Called by MainWindow when the active Space changes.
+// Tears down the outgoing space's runtime event subscription so stale
+// events from the old space are not forwarded to the new space's renderers.
+// Then auto-subscribes to the new space's runtime event stream so events
+// arrive even before the renderer calls `events.subscribe`.
+void BridgeHandler::OnSpaceSwitch(const std::string& old_space_id,
+                                  const std::string& new_space_id) {
+  if (!runtime_proxy_) return;
+
+  // Tear down old space subscription.
+  if (!old_space_id.empty()) {
+    SpaceRuntimeSub old_sub;
+    {
+      std::lock_guard<std::mutex> g(space_subs_mu_);
+      auto it = space_runtime_subs_.find(old_space_id);
+      if (it != space_runtime_subs_.end()) {
+        old_sub = it->second;
+        space_runtime_subs_.erase(it);
+      }
+    }
+    if (old_sub.ev_token >= 0)
+      runtime_proxy_->UnsubscribeEvents(old_sub.ev_token);
+    if (!old_sub.runtime_sub_id.empty()) {
+      nlohmann::json req = {
+          {"kind", "unsubscribe"},
+          {"subscription", old_sub.runtime_sub_id},
+      };
+      runtime_proxy_->SendControl(std::move(req),
+          [](nlohmann::json, bool) {});
+    }
+  }
+
+  // Auto-subscribe to new space's event stream.
+  if (!new_space_id.empty()) {
+    nlohmann::json req = {
+        {"kind",  "subscribe"},
+        {"topic", "space/" + new_space_id + "/events"},
+    };
+    runtime_proxy_->SendControl(std::move(req),
+        [this, new_space_id](nlohmann::json resp, bool is_error) {
+          if (is_error) return;
+          SpaceRuntimeSub sub;
+          sub.runtime_sub_id = resp.value("subscription", std::string{});
+          sub.ev_token = runtime_proxy_->SubscribeEvents(
+              [this](const nlohmann::json& event) {
+                if (shell_cbs_.broadcast_event)
+                  shell_cbs_.broadcast_event("event", event.dump());
+              });
+          std::lock_guard<std::mutex> g(space_subs_mu_);
+          space_runtime_subs_[new_space_id] = std::move(sub);
+        });
+  }
 }
 
 }  // namespace cronymax

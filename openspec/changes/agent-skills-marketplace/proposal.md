@@ -1,3 +1,18 @@
+> **Superseded authority model — see `rust-runtime-migration`.** This
+> proposal originally placed Skills in a Node.js sidecar that the C++
+> host would talk to directly. After `rust-runtime-migration`, the
+> Rust runtime (`crates/cronymax`) is the **only** orchestration
+> authority. Any future skill execution model — Node sidecar, WASM,
+> in-process, or otherwise — MUST be subordinate to Rust runtime
+> authority: skills run as runtime-mediated capability adapters or as
+> child processes the runtime spawns and supervises, and they
+> participate in the runtime's permission, review, and event surfaces.
+> Skills MUST NOT have an independent control plane that bypasses
+> `cronymax`. Sections below that imply the C++ host directly invokes
+> a Node sidecar are kept for historical context but should be read
+> through this lens; concrete redesign lands when this change is
+> next worked on.
+
 ## Why
 
 After `agent-document-orchestration` and `agent-orchestration-ui`, agents have first-class identity and a great UI but a hard-coded skill set baked into the C++ tool registry. That ceiling kills the long-tail value: domain-specific reviewers (security, accessibility, performance), language-specific coders, niche tool integrations. This change makes Skills installable, discoverable, and runnable in a permissioned Node.js sidecar — turning the product into an extensible platform.

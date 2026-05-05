@@ -10,6 +10,8 @@
 #include "event_bus/event_bus.h"
 #include "flow/workspace_layout.h"
 #include "platform/macos/notifications.h"
+// (task 4.1) agent_runtime.h and flow_runtime.h removed — run lifecycle
+// now owned by the Rust runtime via GIPS / RuntimeProxy.
 
 namespace cronymax {
 
@@ -185,21 +187,13 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
                                 dr->Refresh();
                               });
 
-        // FlowRuntime: rehydrate any prior runs from disk so the renderer
-        // can list/resume them. The event emitter is wired by the caller
-        // (BridgeHandler) once it has a renderer broadcast channel.
-        sp->flow_runtime = std::make_unique<FlowRuntime>(
-            sp->workspace_root, sp->flow_registry.get(),
-            sp->agent_registry.get(), sp->doc_type_registry.get());
-        sp->flow_runtime->SetSpaceId(sp->id);
-        sp->flow_runtime->RehydrateFromDisk();
-
         // EventBus: typed event store for the channel view, inbox, and
         // status dot. Borrows the SpaceStore's sqlite3 handle.
+        // (task 4.1) FlowRuntime initialization removed; run lifecycle is
+        // now owned by the Rust runtime over GIPS. EventBus is retained for
+        // local events (events.append), inbox, and notification paths.
         sp->event_bus = std::make_unique<event_bus::EventBus>(
             &store_, sp->id, sp->workspace_root);
-        // Wire FlowRuntime to push lifecycle events through the bus.
-        sp->flow_runtime->SetEventBus(sp->event_bus.get());
 
         // Migration marker: existing trace.jsonl files are TraceEvent-shaped
         // (legacy), not AppEvent-shaped, so a faithful replay is not
@@ -334,7 +328,8 @@ std::unique_ptr<Space> SpaceManager::InstantiateSpace(
   sp->id = row.id;
   sp->name = row.name;
   sp->workspace_root = row.root_path;
-  sp->agent_runtime = std::make_unique<AgentRuntime>(sp->workspace_root);
+  // (task 4.1) agent_runtime removed; run lifecycle is now owned by the
+  // Rust runtime over GIPS. RuntimeBindingState is value-initialized.
   sp->CreateTerminal();  // start with one terminal
   return sp;
 }

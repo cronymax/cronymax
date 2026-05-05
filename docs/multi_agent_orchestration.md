@@ -99,6 +99,19 @@ The current `space-agent-integration` change models multi-agent as a **workflow 
 
 The existing `AgentRuntime` + ReAct loop becomes one Agent's _internal_ loop. `AgentGraph` node-kinds (LLM/Tool/Condition/Human/Subgraph) demote from public concepts to internal implementation details.
 
+> **rust-runtime-migration update.** The "internal Agent loop"
+> referenced above is being moved out of the C++ host and out of the
+> renderer into `crates/cronymax`. Once the migration completes, the
+> Rust runtime is the sole authority for run lifecycle, tool dispatch,
+> reviewer-in-the-loop pauses, and persistence; UI panels here describe
+> projections of runtime-emitted events rather than renderer-owned
+> state. Any future skill or plugin runtime described in this document
+> (including the Skills Marketplace) is **subordinate** to the Rust
+> runtime: skills run as capability adapters or as runtime-launched
+> child processes that participate in the runtime's permission and
+> review flow. There is no peer Node skill sidecar with independent
+> orchestration authority.
+
 ## 5. Document lifecycle
 
 ```

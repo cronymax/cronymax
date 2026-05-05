@@ -49,6 +49,14 @@ set(JSON_Install    OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/nlohmann/json)
 
 # ---------------------------------------------------------------------------
+# Rust runtime workspace (crony / cronymax / cronygraph).
+# Defines the IMPORTED target `Cronymax::Crony` for downstream linking.
+# Skip with -DCRONYMAX_BUILD_RUST=OFF.
+# ---------------------------------------------------------------------------
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(RustRuntime)
+
+# ---------------------------------------------------------------------------
 # Module libraries (flat layout — one static lib per app/<module>).
 # ---------------------------------------------------------------------------
 
@@ -123,7 +131,6 @@ endif()
 
 # agent: planner + tool registry + LLM router (depends on sandbox + workspace).
 add_library(cronymax_agent STATIC
-  app/agent/agent_runtime.cc
   app/agent/graph_engine.cc
   app/agent/model_router.cc
   app/agent/tool_registry.cc
@@ -132,17 +139,15 @@ target_link_libraries(cronymax_agent
   PUBLIC cronymax_sandbox cronymax_workspace cronymax_common cronymax_document
 )
 
-# document: doc-type schemas, agent definitions, document store, reviews,
-# reviewer pipeline. Hand-edited YAML in the workspace's .cronymax/ tree is
-# the source of truth.
+# document: doc-type schemas, agent definitions, document store,
+# reviews state. ReviewStore and ReviewerPipeline removed (cutover to
+# Rust runtime).
 add_library(cronymax_document STATIC
   app/document/agent_definition.cc
   app/document/agent_registry.cc
   app/document/doc_type_registry.cc
   app/document/doc_type_schema.cc
   app/document/document_store.cc
-  app/document/review_store.cc
-  app/document/reviewer_pipeline.cc
   app/document/reviews_state.cc
   app/document/schema_reviewer.cc
 )
@@ -151,19 +156,16 @@ target_link_libraries(cronymax_document
 )
 target_include_directories(cronymax_document PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
-# flow: workspace layout helpers, flow/agent registries, FlowRuntime, router,
-# mention parser, trace writer. Layers on top of cronymax_agent and
-# cronymax_document.
+# flow: workspace layout helpers, flow/agent registries, router, mention
+# parser. FlowRuntime and TraceWriter removed (cutover to Rust runtime).
 add_library(cronymax_flow STATIC
   app/flow/flow_definition.cc
   app/flow/flow_registry.cc
-  app/flow/flow_runtime.cc
   app/flow/fs_watcher.cc
   app/flow/gitignore_helper.cc
   app/flow/mention_parser.cc
   app/flow/router.cc
   app/flow/trace_event.cc
-  app/flow/trace_writer.cc
   app/flow/workspace_layout.cc
 )
 target_link_libraries(cronymax_flow
@@ -171,6 +173,26 @@ target_link_libraries(cronymax_flow
   PRIVATE "-framework CoreServices"
 )
 target_include_directories(cronymax_flow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
+
+# runtime_bridge: C++ side of the Rust runtime GIPS client.
+# Depends on Cronymax::Crony (static lib + crony.h header) for the C ABI.
+# Only available when CRONYMAX_BUILD_RUST is ON (the default).
+if(CRONYMAX_BUILD_RUST)
+  add_library(cronymax_runtime_bridge STATIC
+    app/runtime_bridge/runtime_bridge.cc
+    app/runtime_bridge/runtime_proxy.cc
+    app/runtime_bridge/legacy_importer.cc
+  )
+  target_link_libraries(cronymax_runtime_bridge
+    PUBLIC cronymax_common Cronymax::Crony nlohmann_json
+  )
+  target_include_directories(cronymax_runtime_bridge
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app
+  )
+else()
+  # Stub so the build doesn't fail when Rust is disabled.
+  add_library(cronymax_runtime_bridge INTERFACE)
+endif()
 
 # Convenience aggregate library that pulls in every native module.
 add_library(cronymax_native INTERFACE)
@@ -183,6 +205,7 @@ target_link_libraries(cronymax_native INTERFACE
   cronymax_document
   cronymax_flow
   cronymax_event_bus
+  cronymax_runtime_bridge
 )
 
 # space_manager: CEF-free Space lifecycle library so native_probe can

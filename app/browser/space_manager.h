@@ -6,12 +6,11 @@
 #include <string>
 #include <vector>
 
-#include "agent/agent_runtime.h"
+#include "agent/tool_registry.h"
 #include "document/agent_registry.h"
 #include "document/doc_type_registry.h"
 #include "event_bus/event_bus.h"
 #include "flow/flow_registry.h"
-#include "flow/flow_runtime.h"
 #include "flow/fs_watcher.h"
 #include "terminal/pty_session.h"
 #include "workspace/space_store.h"
@@ -41,7 +40,6 @@ struct Space {
   std::string active_terminal_id;
   int next_terminal_seq = 1;
 
-  std::unique_ptr<AgentRuntime> agent_runtime;
   SpaceBrowserState browser_state;
 
   // Per-Space orchestration registries (Phase A: read-only). Lazily
@@ -50,13 +48,27 @@ struct Space {
   std::unique_ptr<FlowRegistry> flow_registry;
   std::unique_ptr<DocTypeRegistry> doc_type_registry;
   std::unique_ptr<FsWatcher> fs_watcher;
-  // FlowRuntime owns Run lifecycle + per-Run AgentRuntime instances.
-  // Lazily initialised by SpaceManager when the Space is activated.
-  std::unique_ptr<FlowRuntime> flow_runtime;
 
   // Per-Space typed event store (agent-event-bus). Lazily initialised on
   // first activation. Borrows SpaceStore's sqlite3 handle.
+  // Retained for local events (events.append) and inbox/notification paths.
   std::unique_ptr<event_bus::EventBus> event_bus;
+
+  // (task 4.1) Runtime binding state — replaces the removed agent_runtime
+  // and flow_runtime unique_ptrs. Holds runtime-side subscription handles
+  // and the tool registry used for direct tool invocations from the renderer.
+  // Once task 6.1 lands (agent_runtime.* deleted) this section is the
+  // sole source of Space-level orchestration identity.
+  struct RuntimeBindingState {
+    // RuntimeProxy event subscription token (set by events.subscribe)
+    int64_t event_sub_token = -1;
+    // Runtime-side subscription IDs for active event streams.
+    std::vector<std::string> runtime_sub_ids;
+    // Tool registry for direct tool.exec invocations (renderer debug path).
+    // Empty until populated by tool-scope enforcement (task 4.3).
+    ToolRegistry tool_registry;
+  };
+  RuntimeBindingState runtime_binding;
 
   TerminalSession* FindTerminal(const std::string& tid);
   TerminalSession* ActiveTerminal();

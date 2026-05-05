@@ -20,11 +20,7 @@ import { bridge } from "@/bridge";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { useTheme } from "@/hooks/useTheme";
 import type { ThemeMode } from "@/types";
-import type {
-  AgentGraphInstance,
-  AgentTraceDetail,
-  AgentRunSnapshot,
-} from "@/agent_runtime";
+
 import { Flows } from "@/components/FlowEditor";
 import { Icon } from "@/shared/components/Icon";
 import { useStore, type PermissionRequest } from "./store";
@@ -40,23 +36,6 @@ type SettingsTab =
   | "runner";
 
 // ── ReAct graph builder ───────────────────────────────────────────────────
-
-function buildReActGraph(maxIters: number): AgentGraphInstance {
-  const g = new window.AgentGraph();
-  g.addLLMNode("llm", {
-    system:
-      "You are a helpful agent. Use tools when necessary. Reply with clear, concise text.",
-  });
-  g.addToolNode("tool", {});
-  g.addConditionNode("cond", (run: AgentRunSnapshot) => {
-    const has =
-      (Array.isArray(run.tool_calls) && run.tool_calls.length > 0) ||
-      run.finish_reason === "tool_calls";
-    return has ? "llm" : null;
-  });
-  void maxIters;
-  return g;
-}
 
 // ── shared input styles ───────────────────────────────────────────────────
 
@@ -594,11 +573,6 @@ function ProvidersTab() {
           base_url: p.base_url,
           api_key: p.api_key,
         });
-        if (window.llmClient) {
-          window.llmClient.baseUrl = p.base_url;
-          window.llmClient.apiKey = p.api_key;
-          if (p.default_model) window.llmClient.model = p.default_model;
-        }
         dispatch({
           type: "setLlmConfig",
           baseUrl: p.base_url,
@@ -1463,33 +1437,49 @@ function RunnerTab() {
     }
     dispatch({ type: "setStatus", status: "running" });
     dispatch({ type: "resetResult" });
-    const graph = buildReActGraph(10);
-    graph.addEventListener("trace", (e) => {
-      const d: AgentTraceDetail = e.detail;
-      if (d.type === "llm_delta" && d.content) {
-        dispatch({ type: "appendResult", chunk: d.content });
-      } else if (d.type === "tool_start") {
-        dispatch({ type: "appendResult", chunk: `\n[tool: ${d.tool}]\n` });
-      } else if (d.type === "tool_done" && d.output) {
-        dispatch({ type: "appendResult", chunk: d.output + "\n" });
-      } else if (d.type === "error") {
-        dispatch({
-          type: "appendResult",
-          chunk: `\n[error] ${d.message ?? ""}\n`,
-        });
-        dispatch({ type: "setStatus", status: "failed" });
-      } else if (d.type === "human_request" && d.prompt) {
-        void window.__getPermission?.(d.prompt, d.request_id ?? "");
-      } else if (d.type === "done") {
-        dispatch({ type: "setStatus", status: "done" });
-      }
-    });
+
+    let runId = "";
     try {
-      await graph.run({ task: text, getPermission: window.__getPermission });
+      runId = await bridge.send("agent.run", { task: text });
+      if (!runId) throw new Error("runtime did not return run_id");
+      await bridge.send("events.subscribe", { run_id: runId }).catch(() => {});
     } catch (err) {
       dispatch({ type: "appendResult", chunk: "\n" + (err as Error).message });
       dispatch({ type: "setStatus", status: "failed" });
+      return;
     }
+
+    const off = bridge.on("event", (raw: unknown) => {
+      const ev = raw as Record<string, unknown> | null;
+      if (!ev) return;
+      if (ev.tag === "event") {
+        const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
+        const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
+        const pRunId = (inner as Record<string, unknown>).run_id as
+          | string
+          | undefined;
+        if (pRunId && pRunId !== runId) return;
+        const kind = pl.kind as string | undefined;
+        if (kind === "token" && pl.content) {
+          dispatch({ type: "appendResult", chunk: pl.content as string });
+        } else if (kind === "run_status") {
+          const status = pl.status as string | undefined;
+          if (status === "succeeded") {
+            dispatch({ type: "setStatus", status: "done" });
+            off();
+          } else if (status === "failed" || status === "cancelled") {
+            dispatch({ type: "appendResult", chunk: `\n[${status}]` });
+            dispatch({ type: "setStatus", status: "failed" });
+            off();
+          }
+        } else if (kind === "log") {
+          dispatch({
+            type: "appendResult",
+            chunk: `\n[log] ${pl.message ?? ""}`,
+          });
+        }
+      }
+    });
   }, [state.task, dispatch]);
 
   useBridgeEvent("agent.task_from_command", (data) => {
@@ -1642,36 +1632,38 @@ export function App() {
   const [tab, setTab] = useState<SettingsTab>("appearance");
   const [state, dispatch] = useStore();
 
-  // Load LLM config on mount so the runner/providers have initial values.
+  // Load LLM config on mount so providers panel has initial values.
   useEffect(() => {
     void (async () => {
       try {
-        await window.llmClient.loadConfig();
-        dispatch({
-          type: "setLlmConfig",
-          baseUrl: window.llmClient.baseUrl,
-          apiKey: window.llmClient.apiKey,
-          model: window.llmClient.model,
-        });
+        const provRes = await bridge.send("llm.providers.get");
+        const providers = JSON.parse(provRes.raw || "[]") as Array<{
+          id: string;
+          base_url?: string;
+          api_key?: string;
+          default_model?: string;
+        }>;
+        const active =
+          providers.find((p) => p.id === provRes.active_id) || providers[0];
+        if (active) {
+          dispatch({
+            type: "setLlmConfig",
+            baseUrl: active.base_url ?? "",
+            apiKey: active.api_key ?? "",
+            model: active.default_model ?? "",
+          });
+        }
       } catch {
         /* ignore */
       }
     })();
   }, [dispatch]);
 
-  // Permission gate wired to the runner tab.
-  useEffect(() => {
-    window.__getPermission = (prompt: string, requestId: string) =>
-      new Promise<boolean>((resolve) => {
-        dispatch({
-          type: "requestPermission",
-          req: { prompt, requestId, resolve },
-        });
-      });
-    return () => {
-      window.__getPermission = undefined;
-    };
-  }, [dispatch]);
+  // Permission gate — resolves runtime permission_request events via the
+  // permission.respond bridge channel.
+  // (The legacy window.__getPermission hook for the in-process ReAct runtime
+  // has been removed; permission requests now arrive as capability_call events
+  // and are handled by the host capability adapter.)
 
   const onResolvePermission = useCallback(
     (allow: boolean) => {

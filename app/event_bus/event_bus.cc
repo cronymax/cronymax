@@ -10,6 +10,15 @@
 #include "common/uuid_v7.h"
 #include "workspace/space_store.h"
 
+// MIGRATION (rust-runtime-migration, group 10): the host-owned event
+// bus and the SQLite events table are being removed. Semantic events
+// (run.*, agent.*, tool.*, review.*, document.*) become Rust runtime
+// emissions consumed via `cronymax::RuntimeAuthority::run_history`
+// and the runtime event subscription topology over GIPS. After
+// cutover, this file persists only shell/UI metadata events (or is
+// deleted entirely) — no new semantic event kinds may be added here.
+// See `openspec/changes/rust-runtime-migration/tasks.md` 10.2.
+
 namespace cronymax::event_bus {
 
 namespace {

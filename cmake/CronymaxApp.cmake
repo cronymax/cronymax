@@ -200,6 +200,33 @@ if(APPLE)
 endif()
 
 # ---------------------------------------------------------------------------
+# Standalone runtime binary packaging.
+#
+# `cronymax-runtime` is a separate Rust binary the CEF host spawns
+# during startup (see app/runtime_bridge/). On macOS it lives next to
+# the helper apps under Contents/Frameworks/; on other platforms it
+# lives next to the host executable. The binary path is exposed by
+# RustRuntime.cmake as ${CRONYMAX_RUNTIME_BINARY}.
+# ---------------------------------------------------------------------------
+if(CRONYMAX_RUNTIME_BINARY)
+  add_dependencies(cronymax_app cronymax_rust)
+  if(APPLE)
+    set(_cronymax_runtime_dest
+      "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Frameworks/cronymax-runtime")
+  else()
+    set(_cronymax_runtime_dest
+      "$<TARGET_FILE_DIR:cronymax_app>/cronymax-runtime${CMAKE_EXECUTABLE_SUFFIX}")
+  endif()
+  add_custom_command(TARGET cronymax_app POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CRONYMAX_RUNTIME_BINARY}"
+      "${_cronymax_runtime_dest}"
+    COMMENT "Bundling cronymax-runtime binary"
+    VERBATIM
+  )
+endif()
+
+# ---------------------------------------------------------------------------
 # Web resources: build with Vite (gated by CRONYMAX_BUILD_WEB) then copy
 # web/dist/ into the bundle so the CEF shell can load it from file://.
 # ---------------------------------------------------------------------------

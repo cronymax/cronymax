@@ -7,6 +7,7 @@
  */
 @source "../../../src/**/*.{ts,tsx,html}";
 @source "../../../public/**/*.html";
+@source "../../../node_modules/streamdown/dist/*.js";
 
 /*
  * Unified semantic design tokens. Tailwind v4 picks these up via @theme
@@ -104,6 +105,14 @@
   --shadow-cronymax-popover: 0 -8px 28px rgba(15, 17, 22, 0.1);
   --shadow-cronymax-elev-1: 0 1px 2px rgba(15, 17, 22, 0.08);
   --shadow-cronymax-elev-2: 0 4px 16px rgba(15, 17, 22, 0.1);
+
+  /* Streamdown markdown renderer variables (light) */
+  --sdm-bg: #ffffff;
+  --sdm-fg: #13201e;
+  --sdm-c: #e5eeeb;
+  --sdm-tbg: #f3f7f6;
+  --shiki-dark-bg: #f3f7f6;
+  --streamdown-caret: #0f8f83;
 }
 
 /* ── Dark palette (explicit override) ──────────────────────────────── */
@@ -147,6 +156,14 @@
   --shadow-cronymax-popover: 0 -10px 28px rgba(0, 0, 0, 0.35);
   --shadow-cronymax-elev-1: 0 1px 2px rgba(0, 0, 0, 0.2);
   --shadow-cronymax-elev-2: 0 4px 16px rgba(0, 0, 0, 0.3);
+
+  /* Streamdown markdown renderer variables */
+  --sdm-bg: #182625;
+  --sdm-fg: #e8f2f0;
+  --sdm-c: #1f302e;
+  --sdm-tbg: #182625;
+  --shiki-dark-bg: #182625;
+  --streamdown-caret: #22b8a7;
 }
 
 /* ── System-follow: when data-theme is absent, follow the OS ───────── */

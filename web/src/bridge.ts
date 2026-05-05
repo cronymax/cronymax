@@ -42,6 +42,14 @@ const subscribers = new Map<string, Set<AnyEventHandler>>();
 
 function dispatch(event: string, rawPayload: unknown) {
   const handlers = subscribers.get(event);
+  // eslint-disable-next-line no-console
+  if (event === "event")
+    console.log(
+      "[bridge] dispatch 'event'",
+      handlers?.size ?? 0,
+      "handlers",
+      rawPayload,
+    );
   if (!handlers) return;
   let payload = rawPayload;
   if (typeof payload === "string") {

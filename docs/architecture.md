@@ -1,5 +1,19 @@
 # Architecture
 
+> **rust-runtime-migration (in progress).** Runtime authority is being
+> moved out of the renderer and out of the C++ host into a Rust
+> workspace split into three crates: `crates/cronygraph` (orchestration
+> primitives), `crates/cronymax` (runtime authority — runs, agents,
+> memory, permissions, capabilities, persistence), and `crony` (the
+> CEF/FFI integration shell). The C++ host and the renderer talk to the
+> runtime over a single GIPS protocol with three surfaces: `control`
+> (request/response), `events` (subscribe/replay), and `capabilities`
+> (host-mediated tools). All semantic state — runs, history, memory,
+> reviews — is owned by the Rust runtime; the C++ host only stores
+> shell or UI metadata (window/tab layout, panel state). See
+> `openspec/changes/rust-runtime-migration/` for the migration plan and
+> per-task tracking.
+>
 > **refine-ui-theme-layout.** Chrome paints a single shared `window_bg` colour across `titlebar_panel_` + `body_panel_` (sidebar inherits it via `bg-cronymax`). The active tab's content card is wrapped in a `content_frame_` `CefPanel` inset 8 px on every side; per-tab `BrowserView` clipping (corner radius 12 px + 1 px border, see `mac_view_style::StyleContentBrowserView`) gives the floating-card silhouette. Theme is read from `space.kv["ui.theme"]` (`system|light|dark`); `system` resolves via `[NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:]` and refreshes when macOS posts `AppleInterfaceThemeChangedNotification`. The title-bar gear button now opens a dedicated `panels/settings` popover (LLM provider + theme picker) instead of activating the agent tab; the legacy `SettingsOverlay` slice on the agent reducer was removed.
 >
 > **native-title-bar (in progress).** Root layout is now `window VBOX → [titlebar_panel_ | body_panel_ HBOX → [sidebar | content_panel]]`. The native CEF Views title bar carries the `+ Web / + Terminal / + Chat` actions (channel `shell.tab_new_kind`) and reserves slots for the macOS traffic lights and a future Windows-controls widget. Window dragging from the title-bar spacer is provided by an AppKit `mouseDownCanMoveWindow=YES` overlay attached to the contentView. Terminal and chat are now multi-instance — each click creates `Terminal N` / `Chat N`.
@@ -28,6 +42,27 @@ Agent Runtime
   - trace events
   - graph-shaped interfaces
 ```
+
+> **Migration target (rust-runtime-migration).** The "Agent Runtime"
+> layer above is being moved into a standalone Rust process supervised
+> by `crony`. After the migration:
+>
+> ```txt
+> CEF Views Shell (C++)
+>   - native window/tab layout
+>   - shell/UI metadata persistence (no semantic state)
+>   - bridge handlers proxy to runtime over GIPS
+>
+> Capability adapters (C++)
+>   - shell/PTY, browser inspect, filesystem, notify, approvals
+>   - invoked by the runtime, never the source of orchestration
+>
+> Rust runtime (cronymax + cronygraph + crony)
+>   - run lifecycle, ReAct loop, LLM streaming, memory, reviews
+>   - persistence: <app_data_dir>/runtime-state.json (versioned snapshot)
+>   - events emitted to subscribers; UI panels rehydrate via
+>     RuntimeAuthority::run_history rather than host trace tables
+> ```
 
 ## Runtime Flow
 

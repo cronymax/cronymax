@@ -15,6 +15,8 @@
 #include "include/views/cef_panel.h"
 #include "include/views/cef_textfield.h"
 #include "include/views/cef_window.h"
+#include "runtime_bridge/runtime_bridge.h"
+#include "runtime_bridge/runtime_proxy.h"
 
 namespace cronymax {
 
@@ -99,6 +101,13 @@ class MainWindow : public CefWindowDelegate,
 
   SpaceManager space_manager_;
   CefRefPtr<ClientHandler> client_handler_;
+
+  // (task 4.2) Runtime bridge and proxy — owned at MainWindow scope since
+  // they span the full application lifetime (one per process, shared by
+  // all Spaces). Initialized in BuildChrome; nullptr until the runtime
+  // binary is located and the handshake succeeds.
+  std::unique_ptr<RuntimeBridge> runtime_bridge_;
+  std::unique_ptr<RuntimeProxy>  runtime_proxy_;
   // arc-style-tab-cards (Phase 4+): TabManager owns the entire tab
   // universe. BrowserManager has been removed; per-kind *_view_ members
   // and SwitchToPanel have been removed (Phase 9).

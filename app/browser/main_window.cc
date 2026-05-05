@@ -4,11 +4,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "include/base/cef_callback.h"
 #include "include/cef_app.h"
+#include "runtime_bridge/legacy_importer.h"
 #include "include/cef_path_util.h"
 #include "include/views/cef_browser_view_delegate.h"
 #include "include/views/cef_fill_layout.h"
@@ -286,7 +288,9 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
 #endif
 
   space_manager_.SetSwitchCallback(
-      [this](const std::string& /*old_id*/, const std::string& new_id) {
+      [this](const std::string& old_id, const std::string& new_id) {
+        // (task 4.2) Reconnect runtime event subscriptions for the new space.
+        client_handler_->OnSpaceSwitch(old_id, new_id);
         // 4.2: hide every currently-mounted tab card so the previous
         // Space's surface disappears atomically, then re-mount the active
         // tab. CEF `SetVisible(false)` keeps the renderer alive so there
@@ -765,6 +769,69 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
         CefRefPtr<MainWindow>(this), mode));
   };
   client_handler_->SetThemeCallbacks(std::move(theme_cbs));
+
+  // (task 4.2) Initialize the Rust runtime bridge and proxy. Start() finds
+  // the cronymax-runtime binary in the app bundle, spawns it, and completes
+  // the Hello/Welcome handshake. This is a best-effort async startup: if the
+  // binary is missing or the handshake fails the app continues without the
+  // runtime (degraded mode — all runtime-backed channels return 503).
+  runtime_bridge_ = std::make_unique<RuntimeBridge>();
+  runtime_proxy_  = std::make_unique<RuntimeProxy>();
+  // (task 5.1 / 5.2) Run the one-shot legacy state importer before starting
+  // the runtime so it sees the imported runs on its first load.
+  // app_data_dir is declared here (outside the importer block) so the
+  // runtime bridge start thread can capture it by value.
+  std::filesystem::path app_data_dir;
+  {
+    CefString _ud;
+    if (CefGetPath(PK_USER_DATA, _ud) && !_ud.empty()) {
+      app_data_dir = std::filesystem::path(_ud.ToString()) / "runtime";
+    } else {
+      CefString _res;
+      CefGetPath(PK_DIR_RESOURCES, _res);
+      app_data_dir = (_res.empty() ? std::filesystem::current_path()
+                                   : std::filesystem::path(_res.ToString())) /
+                     "runtime";
+    }
+  }
+  {
+    LegacyImporter importer(app_data_dir);
+    if (!importer.AlreadyDone()) {
+      std::vector<ImportSpaceInfo> space_infos;
+      for (const auto& sp_ptr : space_manager_.spaces()) {
+        ImportSpaceInfo info;
+        info.space_id      = sp_ptr->id;
+        info.space_name    = sp_ptr->name;
+        info.workspace_root = sp_ptr->workspace_root;
+        space_infos.push_back(std::move(info));
+      }
+      const auto res = importer.Run(space_infos);
+      LOG(INFO) << "[LegacyImporter] import done: "
+                << res.spaces_seeded << " spaces, "
+                << res.runs_imported  << " runs imported, "
+                << res.runs_skipped   << " already present, "
+                << res.parse_errors   << " parse errors";
+    }
+  }
+  // Start the bridge on a background thread to avoid blocking the UI.
+  std::thread([this, app_data_dir]() {
+    if (runtime_bridge_->Start({}, app_data_dir)) {
+      runtime_proxy_->Attach(runtime_bridge_.get());
+      // Wire the proxy to the bridge handler on the UI thread.
+      CefPostTask(TID_UI, base::BindOnce(
+          [](CefRefPtr<MainWindow> self) {
+            self->client_handler_->SetRuntimeProxy(self->runtime_proxy_.get());
+            // Auto-subscribe to the initial active space's events.
+            if (auto* sp = self->space_manager_.ActiveSpace()) {
+              self->client_handler_->OnSpaceSwitch("", sp->id);
+            }
+          },
+          CefRefPtr<MainWindow>(this)));
+    } else {
+      fprintf(stderr, "[MainWindow] RuntimeBridge failed to start: %s\n",
+              runtime_bridge_->LastError().c_str());
+    }
+  }).detach();
 
   // ── Browser event callbacks (Phase 4: TabManager-routed) ──────────────
   // WebTabBehavior already registers per-browser listeners with
@@ -1376,12 +1443,23 @@ void PushToView(CefRefPtr<CefBrowserView> view,
     return;
   }
   auto browser = view->GetBrowser();
-  if (!browser) return;
+  if (!browser) {
+    fprintf(stderr, "[PushToView] ev=%s GetBrowser()=NULL\n", event_name.c_str());
+    fflush(stderr);
+    return;
+  }
   auto frame = browser->GetMainFrame();
-  if (!frame) return;
+  if (!frame) {
+    fprintf(stderr, "[PushToView] ev=%s GetMainFrame()=NULL\n", event_name.c_str());
+    fflush(stderr);
+    return;
+  }
   const std::string js =
       "window.__aiDesktopDispatch && window.__aiDesktopDispatch('" +
       event_name + "'," + json_payload + ");";
+  fprintf(stderr, "[PushToView] ev=%s bid=%d ExecuteJavaScript\n",
+          event_name.c_str(), browser->GetIdentifier());
+  fflush(stderr);
   frame->ExecuteJavaScript(js, frame->GetURL(), 0);
 }
 
@@ -1394,18 +1472,38 @@ void MainWindow::PushToSidebar(const std::string& event_name,
 
 void MainWindow::BroadcastToAllPanels(const std::string& event_name,
                                       const std::string& json_payload) {
+  // BroadcastToAllPanels may be called from the RuntimeBridge pump thread.
+  // CefBrowserView::GetBrowser() and TabManager are only safe on TID_UI, so
+  // if we are not already on the UI thread, re-schedule the call there.
+  if (!CefCurrentlyOn(TID_UI)) {
+    CefPostTask(TID_UI, base::BindOnce(
+        [](CefRefPtr<MainWindow> self, std::string ev, std::string body) {
+          self->BroadcastToAllPanels(ev, body);
+        },
+        CefRefPtr<MainWindow>(this), event_name, json_payload));
+    return;
+  }
+
   PushToView(sidebar_view_, event_name, json_payload);
   // Phase 9: per-kind *_view_ singletons are gone. Broadcast to every
   // tab's content browser via the TabManager.
   if (!tabs_) return;
-  for (const auto& s : tabs_->Snapshot()) {
+  const auto snap = tabs_->Snapshot();
+  fprintf(stderr, "[BroadcastToAllPanels] ev=%s tabs=%zu\n",
+          event_name.c_str(), snap.size());
+  fflush(stderr);
+  for (const auto& s : snap) {
     Tab* t = tabs_->Get(s.id);
-    if (!t || !t->behavior()) continue;
-    const int bid = t->browser_id();
-    if (bid == 0) continue;
+    if (!t || !t->behavior()) {
+      fprintf(stderr, "[BroadcastToAllPanels] tab=%s behavior=NULL skip\n",
+              s.id.c_str());
+      fflush(stderr);
+      continue;
+    }
     // Find the corresponding CefBrowserView through whichever behavior
     // exposes one. Both WebTabBehavior and SimpleTabBehavior expose
-    // browser_view().
+    // browser_view(). We are on TID_UI here so GetBrowser() is safe;
+    // PushToView handles a null bv gracefully.
     CefRefPtr<CefBrowserView> bv;
     if (t->kind() == TabKind::kWeb) {
       if (auto* wb = static_cast<WebTabBehavior*>(t->behavior())) {
@@ -1416,6 +1514,10 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
         bv = sb->browser_view();
       }
     }
+    fprintf(stderr, "[BroadcastToAllPanels] tab=%s kind=%s bv=%s\n",
+            s.id.c_str(), TabKindToString(s.kind),
+            bv ? "ok" : "NULL");
+    fflush(stderr);
     PushToView(bv, event_name, json_payload);
   }
 }
