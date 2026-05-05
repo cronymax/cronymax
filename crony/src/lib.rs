@@ -11,6 +11,10 @@
 //!   * Bridge GIPS messages between the C++ host and `cronymax` (wired
 //!     in tasks 2.x).
 //!
+//! Concrete capability implementations (`LocalFilesystem`, `LocalShell`,
+//! `classify_command`, `RiskLevel`) live in `cronymax::capability` so
+//! they are available from any Rust host without a CEF dependency.
+//!
 //! Tasks 1.3 / 1.4 only require the lifecycle scaffold and config
 //! contract; richer surfaces land in later task groups.
 
