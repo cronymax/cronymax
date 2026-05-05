@@ -41,6 +41,7 @@ constexpr std::array<IconSpec, static_cast<size_t>(IconId::kCount)> kSpecs = {{
     {IconId::kTabGraph,    "type-hierarchy.svg"},
     {IconId::kTabWeb,      "globe.svg"},
     {IconId::kRestart,     "refresh.svg"},
+    {IconId::kSidebarToggle, "layout-sidebar-left-off.svg"},
 }};
 
 // Logical sizes to pre-rasterise.  Toolbars use 16; larger affordances 20.

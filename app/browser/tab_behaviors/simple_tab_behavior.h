@@ -33,6 +33,8 @@ class SimpleTabBehavior : public TabBehavior {
   ~SimpleTabBehavior() override = default;
 
   TabKind Kind() const override { return kind_; }
+  // Builtin panels (chat/terminal/settings) have no native toolbar.
+  bool HasToolbar() const override { return false; }
   void BuildToolbar(TabToolbar* toolbar, TabContext* context) override;
   CefRefPtr<CefView> BuildContent(TabContext* context) override;
   void ApplyToolbarState(const ToolbarState& state) override;

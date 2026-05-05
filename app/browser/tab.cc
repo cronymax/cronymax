@@ -77,13 +77,15 @@ void Tab::Build() {
   card_box.horizontal = false;
   card_layout_ = card_->SetToBoxLayout(card_box);
 
-  // Toolbar.
-  toolbar_ = std::make_unique<TabToolbar>();
-  toolbar_->SetDefaultChromeArgb(default_chrome_argb_);
-  CefRefPtr<CefPanel> toolbar_root = toolbar_->Build();
-  card_->AddChildView(toolbar_root);
-  card_layout_->SetFlexForView(toolbar_root, 0);
-  behavior_->BuildToolbar(toolbar_.get(), this);
+  // Toolbar (web tabs only — builtin panels have no native toolbar).
+  if (behavior_->HasToolbar()) {
+    toolbar_ = std::make_unique<TabToolbar>();
+    toolbar_->SetDefaultChromeArgb(default_chrome_argb_);
+    CefRefPtr<CefPanel> toolbar_root = toolbar_->Build();
+    card_->AddChildView(toolbar_root);
+    card_layout_->SetFlexForView(toolbar_root, 0);
+    behavior_->BuildToolbar(toolbar_.get(), this);
+  }
 
   // Content host (FillLayout, behavior populates exactly one child).
   content_host_ = CefPanel::CreatePanel(nullptr);

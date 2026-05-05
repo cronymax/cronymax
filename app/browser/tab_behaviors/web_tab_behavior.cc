@@ -174,7 +174,8 @@ void WebTabBehavior::BuildToolbar(TabToolbar* toolbar, TabContext* /*context*/) 
   toolbar->trailing()->AddChildView(new_btn_);
 }
 
-CefRefPtr<CefView> WebTabBehavior::BuildContent(TabContext* /*context*/) {
+CefRefPtr<CefView> WebTabBehavior::BuildContent(TabContext* context) {
+  context_ = context;
   CefBrowserSettings settings;
   browser_view_ = CefBrowserView::CreateBrowserView(
       client_handler_, initial_url_, settings, nullptr, nullptr,
@@ -202,6 +203,9 @@ CefRefPtr<CefView> WebTabBehavior::BuildContent(TabContext* /*context*/) {
                     [self](bool il, bool cb, bool cf) {
                       self->OnLoadingStateChange(il, cb, cf);
                     };
+                listener.on_load_end = [self](const std::string& url) {
+                  self->OnLoadEnd(url);
+                };
                 self->client_handler_->RegisterBrowserListener(
                     self->browser_id_, std::move(listener));
               }, this));
@@ -304,6 +308,59 @@ void WebTabBehavior::OnLoadingStateChange(bool is_loading,
   if (back_btn_) back_btn_->SetEnabled(can_go_back);
   if (fwd_btn_) fwd_btn_->SetEnabled(can_go_forward);
   UpdateRefreshStopGlyph();
+}
+
+void WebTabBehavior::OnLoadEnd(const std::string& url) {
+  // Skip in-app panels (file:// URLs) and blank pages — they set their own
+  // chrome theme via the tab.set_chrome_theme bridge.
+  if (url.rfind("file://", 0) == 0) return;
+  if (url.rfind("about:", 0) == 0) return;
+  if (!browser_view_) return;
+  auto br = browser_view_->GetBrowser();
+  if (!br) return;
+  auto frame = br->GetMainFrame();
+  if (!frame) return;
+  const std::string tab_id = context_ ? context_->tab_id() : std::string();
+  if (tab_id.empty()) return;
+
+  // Inject JS that detects the page's background color from either the
+  // <meta name="theme-color"> tag or the computed body background, then
+  // reports it back via cefQuery → tab.set_chrome_theme so the toolbar tint
+  // automatically matches the loaded page.
+  // Using a raw string literal to keep the JS readable.
+  const std::string js_template = R"JS(
+(function(){
+  var c='';
+  try{
+    var m=document.querySelector('meta[name="theme-color"]');
+    if(m&&m.content)c=m.content.trim();
+  }catch(e){}
+  if(!c){
+    try{
+      var b=window.getComputedStyle(document.documentElement).backgroundColor;
+      if(!b||b==='rgba(0, 0, 0, 0)'||b==='transparent')
+        b=window.getComputedStyle(document.body).backgroundColor;
+      var r=b.match(/rgb[a]?\((\d+),\s*(\d+),\s*(\d+)/);
+      if(r)c='#'+('0'+parseInt(r[1]).toString(16)).slice(-2)
+                +('0'+parseInt(r[2]).toString(16)).slice(-2)
+                +('0'+parseInt(r[3]).toString(16)).slice(-2);
+    }catch(e){}
+  }
+  if(c&&c.charCodeAt(0)===35&&window.cefQuery){
+    window.cefQuery({
+      request:'tab.set_chrome_theme\n{"tabId":"__TAB_ID__","color":"'+c+'"}',
+      onSuccess:function(){},
+      onFailure:function(){}
+    });
+  }
+})();
+)JS";
+
+  std::string js = js_template;
+  const std::string kPh = "__TAB_ID__";
+  const auto pos = js.find(kPh);
+  if (pos != std::string::npos) js.replace(pos, kPh.size(), tab_id);
+  frame->ExecuteJavaScript(js, frame->GetURL(), 0);
 }
 
 void WebTabBehavior::OnUrlFieldKeyEvent(int windows_key_code) {

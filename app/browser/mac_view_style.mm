@@ -2,8 +2,30 @@
 
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
+#import <objc/runtime.h>
 
 #include "browser/mac_view_style.h"
+
+// ---------------------------------------------------------------------------
+// Shadow layer lifetime management
+// ---------------------------------------------------------------------------
+// Core Animation has a known limitation: when a layer has BOTH a mask AND a
+// shadow, the shadow is suppressed (even with an explicit shadowPath).  To
+// work around this, we add a SIBLING shadow-only CALayer positioned behind
+// the overlay's root layer in the window's content view layer.  This helper
+// object owns the shadow layer and removes it from its superlayer when
+// deallocated — it is stored as an associated object on the overlay root
+// NSView so its lifetime is tied to the view.
+@interface CronymaxShadowLayerOwner : NSObject
+@property(nonatomic, strong) CALayer* layer;
+@end
+@implementation CronymaxShadowLayerOwner
+- (void)dealloc {
+  [_layer removeFromSuperlayer];
+}
+@end
+
+static char kPopoverShadowOwnerKey;
 
 namespace cronymax {
 
@@ -126,32 +148,54 @@ void StyleOverlayBrowserView(void* nsview_ptr,
   // (including all IOSurface sublayers), so it works correctly.
   //
   // WHY masksToBounds = NO:
-  // The drop shadow must render outside the layer's bounds rectangle, so
-  // masksToBounds must stay off.  The mask clips the visual content while
-  // leaving the shadow free to bleed outside.
+  // The content must be clipped to rounded corners (via the CAShapeLayer
+  // mask below), but the layer's shadow must still bleed outside its bounds.
+  // NOTE: CA has a known limitation — when a layer has both a `mask` AND a
+  // `shadow`, the shadow is suppressed even with an explicit shadowPath.
+  // We therefore apply the shadow on a SIBLING CALayer inserted behind
+  // overlayRoot in the parent (windowContent.layer), so the mask and shadow
+  // live on separate layers and both render correctly.
   overlayRoot.wantsLayer = YES;
   if (CALayer* rl = overlayRoot.layer) {
     rl.masksToBounds = NO;
+    rl.shadowOpacity = 0.0f;  // shadow lives on the sibling layer, not here
 
     CAShapeLayer* shapeMask = [CAShapeLayer layer];
     CGPathRef maskPath = RoundedRectPathForLayer(rl.bounds, r, cm);
     shapeMask.path = maskPath;
     CGPathRelease(maskPath);
     rl.mask = shapeMask;
+  }
 
-    if (with_shadow) {
-      rl.shadowColor   = [NSColor blackColor].CGColor;
-      rl.shadowOpacity = 0.55f;
-      rl.shadowRadius  = 44.0f;
-      rl.shadowOffset  = CGSizeMake(0, -18);
-      // Explicit shadow path so the shadow follows the rounded corners
-      // regardless of how CA computes the silhouette with a mask present.
-      CGPathRef sp = RoundedRectPathForLayer(rl.bounds, r, cm);
-      rl.shadowPath = sp;
-      CGPathRelease(sp);
-    } else {
-      rl.shadowOpacity = 0.0f;
+  // Sibling shadow layer: reuse existing one (created on a previous
+  // LayoutPopover call) or create a new one.
+  if (with_shadow && windowContent.layer) {
+    CronymaxShadowLayerOwner* owner =
+        objc_getAssociatedObject(overlayRoot, &kPopoverShadowOwnerKey);
+    CALayer* shadowLayer = owner ? owner.layer : nil;
+
+    if (!shadowLayer) {
+      shadowLayer = [CALayer layer];
+      shadowLayer.masksToBounds = NO;
+      [windowContent.layer insertSublayer:shadowLayer
+                                    below:overlayRoot.layer];
+      CronymaxShadowLayerOwner* newOwner =
+          [[CronymaxShadowLayerOwner alloc] init];
+      newOwner.layer = shadowLayer;
+      objc_setAssociatedObject(overlayRoot, &kPopoverShadowOwnerKey,
+                               newOwner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+
+    // Sync frame to match the overlay (called on every LayoutPopover).
+    shadowLayer.frame = overlayRoot.layer.frame;
+    shadowLayer.backgroundColor = [NSColor clearColor].CGColor;
+    shadowLayer.shadowColor = [NSColor blackColor].CGColor;
+    shadowLayer.shadowOpacity = 0.90f;
+    shadowLayer.shadowRadius = 22.0f;
+    shadowLayer.shadowOffset = CGSizeMake(0, -8);
+    CGPathRef sp = RoundedRectPathForLayer(shadowLayer.bounds, r, cm);
+    shadowLayer.shadowPath = sp;
+    CGPathRelease(sp);
   }
 }
 
@@ -227,26 +271,20 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
   // above trigger an AppKit layout pass that repositions the buttons to their
   // natural positions; if we set frames synchronously here, that layout pass
   // runs afterwards and overwrites us.
-  // We use contentLayoutRect to measure the actual native titlebar height
-  // (avoids any hardcoded assumption about the OS default) and shift each
-  // button down by (kTitleBarH - nativeH) / 2.  If the button's superview
-  // (_NSTitlebarContainerView) is shorter than kTitleBarH we expand it first
-  // so the button can actually land at the computed y.
+  //
+  // We use ABSOLUTE positioning rather than a shift relative to the native
+  // titlebar height.  The shift-based approach breaks when
+  // titlebarAppearsTransparent=YES causes contentLayoutRect to span the full
+  // window (natH≈0 → early return), and the shift sign is wrong for the
+  // non-flipped container coordinate system used by _NSTitlebarContainerView.
+  // Absolute centering: origin.y = (kTitleBarH − buttonH) / 2 sets the
+  // button in the exact visual centre of the 38 pt area regardless of whether
+  // the container is flipped or non-flipped.
   dispatch_async(dispatch_get_main_queue(), ^{
     // Block retains |window| in MRC — safe since the window outlives this tick.
     NSWindow* w = window;
     if (!w) return;
     const CGFloat kTitleBarH = 38.0;
-
-    // Actual native titlebar height = window height − "safe" content height.
-    NSRect clr  = w.contentLayoutRect;
-    CGFloat winH = NSHeight(w.contentView.bounds);
-    CGFloat natH = winH - NSHeight(clr);
-    if (natH < 4.0) return;  // window not yet laid out, skip
-
-    // How far to move each button DOWN so it centres in kTitleBarH.
-    CGFloat shift = (kTitleBarH - natH) * 0.5;
-    if (shift < 0.5) return;  // already centred
 
     NSButton* btns[3] = {
         [w standardWindowButton:NSWindowCloseButton],
@@ -254,10 +292,9 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
         [w standardWindowButton:NSWindowZoomButton],
     };
 
-    // The container (_NSTitlebarContainerView) is the direct child of
-    // _NSThemeFrame that owns the buttons.  Walk up from the first button
-    // to find it; if its height < kTitleBarH the desired origin.y would be
-    // negative, so we expand it downward first.
+    // Find _NSTitlebarContainerView (direct child of _NSThemeFrame that
+    // owns the traffic-light buttons).  Expand it to kTitleBarH if needed
+    // so the buttons have room to be centred.
     NSView* themeFrame = w.contentView.superview;
     NSView* container  = nil;
     if (btns[0]) {
@@ -280,8 +317,10 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
       if (!btn) continue;
       [btn setTranslatesAutoresizingMaskIntoConstraints:YES];
       NSRect f = btn.frame;
-      f.origin.y -= shift;
-      if (f.origin.y < 0) f.origin.y = 0;
+      // Centre the button vertically in the kTitleBarH container.
+      // This formula is correct for both flipped and non-flipped containers:
+      // it positions origin.y so that the button's centre lands at kTitleBarH/2.
+      f.origin.y = (kTitleBarH - NSHeight(f)) / 2.0;
       btn.frame = f;
     }
   });

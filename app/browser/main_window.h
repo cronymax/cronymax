@@ -130,10 +130,14 @@ class MainWindow : public CefWindowDelegate,
   CefRefPtr<CefPanel>        lights_pad_;
   CefRefPtr<CefPanel>        spacer_;
   CefRefPtr<CefPanel>        win_pad_;
+  CefRefPtr<CefLabelButton>  btn_sidebar_toggle_;  // hides/shows sidebar
   CefRefPtr<CefLabelButton>  btn_web_;
   CefRefPtr<CefLabelButton>  btn_term_;
   CefRefPtr<CefLabelButton>  btn_chat_;
   CefRefPtr<CefLabelButton>  btn_settings_;
+  bool sidebar_visible_ = true;  // tracks current sidebar visibility
+  // Toggle sidebar visibility (called by btn_sidebar_toggle_ press).
+  void ToggleSidebar();
   // Track which tab cards are mounted in `content_panel_` so we never
   // re-add the same CefView (which CEF rejects).
   std::map<std::string, bool> mounted_cards_;

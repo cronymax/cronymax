@@ -36,6 +36,7 @@ enum class IconId {
   kTabGraph,
   kTabWeb,
   kRestart,
+  kSidebarToggle,  // layout-sidebar-left — hide/show sidebar
   kCount,  // sentinel
 };
 

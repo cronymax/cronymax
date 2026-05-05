@@ -19,8 +19,15 @@ class TabBehavior {
 
   virtual TabKind Kind() const = 0;
 
+  // Return false to suppress the toolbar panel entirely. When false,
+  // BuildToolbar is not called and no toolbar height is reserved so the
+  // content view fills the full card. Defaults to true (web tabs have a
+  // toolbar; builtin panels such as Chat/Terminal/Settings do not).
+  virtual bool HasToolbar() const { return true; }
+
   // Called once during Tab::Build with the freshly-constructed (empty)
   // toolbar. Implementations populate `leading`, `middle`, `trailing` slots.
+  // Only called when HasToolbar() returns true.
   // `context` outlives the behavior.
   virtual void BuildToolbar(TabToolbar* toolbar, TabContext* context) = 0;
 

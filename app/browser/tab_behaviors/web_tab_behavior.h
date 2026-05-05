@@ -61,6 +61,9 @@ class WebTabBehavior : public TabBehavior {
   void OnLoadingStateChange(bool is_loading,
                              bool can_go_back,
                              bool can_go_forward);
+  // Injects JS to detect the page's background/theme color and propagate it
+  // back via the tab.set_chrome_theme bridge so the toolbar matches the page.
+  void OnLoadEnd(const std::string& url);
   void OnUrlFieldKeyEvent(int windows_key_code);
   void OnUrlFieldFocused();
 
@@ -68,6 +71,7 @@ class WebTabBehavior : public TabBehavior {
   void UpdateRefreshStopGlyph();
 
   ClientHandler* client_handler_;
+  TabContext* context_ = nullptr;  // back-pointer to owning Tab (safe: Tab outlives behavior)
   std::string initial_url_;
   std::string current_url_;
   std::string current_title_;

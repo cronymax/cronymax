@@ -9,6 +9,7 @@
 #include "browser/space_manager.h"
 #include "include/cef_client.h"
 #include "include/cef_drag_handler.h"
+#include "include/cef_keyboard_handler.h"
 #include "include/wrapper/cef_message_router.h"
 
 namespace cronymax {
@@ -16,6 +17,7 @@ namespace cronymax {
 class ClientHandler : public CefClient,
                       public CefDisplayHandler,
                       public CefDragHandler,
+                      public CefKeyboardHandler,
                       public CefLifeSpanHandler,
                       public CefLoadHandler,
                       public CefRequestHandler {
@@ -25,6 +27,7 @@ class ClientHandler : public CefClient,
 
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
   CefRefPtr<CefDragHandler> GetDragHandler() override { return this; }
+  CefRefPtr<CefKeyboardHandler> GetKeyboardHandler() override { return this; }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
@@ -65,11 +68,21 @@ class ClientHandler : public CefClient,
                             bool canGoBack,
                             bool canGoForward) override;
 
+  void OnLoadEnd(CefRefPtr<CefBrowser> browser,
+                 CefRefPtr<CefFrame> frame,
+                 int http_status_code) override;
+
   // CefDragHandler
   void OnDraggableRegionsChanged(
       CefRefPtr<CefBrowser> browser,
       CefRefPtr<CefFrame> frame,
       const std::vector<CefDraggableRegion>& regions) override;
+
+  // CefKeyboardHandler — intercept DevTools shortcut (F12 / Cmd+Opt+I).
+  bool OnPreKeyEvent(CefRefPtr<CefBrowser> browser,
+                     const CefKeyEvent& event,
+                     CefEventHandle os_event,
+                     bool* is_keyboard_shortcut) override;
 
   // CefRequestHandler
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
@@ -112,6 +125,9 @@ class ClientHandler : public CefClient,
   std::function<void(int browser_id,
                      const std::vector<CefDraggableRegion>& regions)>
       on_draggable_regions_changed;
+  // Fired when the user hits the DevTools shortcut (F12 / Cmd+Opt+I).
+  // `browser_id` is the originating browser; 0 means no browser context.
+  std::function<void(int browser_id)> on_devtools_requested;
 
   // ── arc-style-tab-cards (Phase 3): per-browser listener registry ──────
   // Behaviors (e.g. WebTabBehavior) register one listener per browser_id
@@ -122,6 +138,8 @@ class ClientHandler : public CefClient,
     std::function<void(bool is_loading,
                        bool can_go_back,
                        bool can_go_forward)> on_loading_state_change;
+    // Fired when the main frame finishes loading (http_status_code >= 0).
+    std::function<void(const std::string& url)> on_load_end;
   };
   void RegisterBrowserListener(int browser_id, BrowserListener listener);
   void UnregisterBrowserListener(int browser_id);

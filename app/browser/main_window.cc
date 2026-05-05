@@ -255,8 +255,15 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
 
   BuildChrome(window);
 
-  // Open a default web tab so the window has visible content on startup.
-  OpenWebTab("https://www.google.com");
+  // Open the Chat tab as the default landing surface (visible on first launch).
+  {
+    TabId id = tabs_->Open(TabKind::kChat, OpenParams{});
+    if (Tab* tab = tabs_->Get(id)) {
+      tab->ApplyTheme(current_chrome_.bg_base, current_chrome_.bg_float,
+                      current_chrome_.text_title);
+    }
+    if (!id.empty()) tabs_->Activate(id);
+  }
 
 #if defined(__APPLE__)
   // Arc-style: translucent NSWindow with hidden title bar. Posted onto the
@@ -395,10 +402,10 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   content_outer_ = CefPanel::CreatePanel(nullptr);
   CefBoxLayoutSettings content_box;
   content_box.horizontal = false;
-  // refine-ui-theme-layout: 8 px breathing room around the rounded card on
-  // all sides (including top) so the card floats inside the window chrome
-  // and the titlebar/content boundary is visually distinct.
-  content_box.inside_border_insets = {8, 8, 8, 8};
+  // refine-ui-theme-layout: breathing room around the rounded card on the
+  // sides and bottom so the card floats. Top is 0 so the toolbar sits flush
+  // against the titlebar row without a dark gap.
+  content_box.inside_border_insets = {0, 8, 8, 8};
   auto content_outer_layout = content_outer_->SetToBoxLayout(content_box);
   body_panel_->AddChildView(content_outer_);
   body_layout->SetFlexForView(content_outer_, 1);
@@ -897,6 +904,22 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     return true;  // suppress native popup
   };
 
+  // DevTools: F12 or Cmd+Option+I shows the DevTools inspector for the
+  // active web tab's browser. A new detached DevTools window opens.
+  client_handler_->on_devtools_requested = [this](int /*browser_id*/) {
+    CefRefPtr<CefBrowser> target;
+    Tab* active = tabs_ ? tabs_->Active() : nullptr;
+    if (active && active->kind() == TabKind::kWeb) {
+      if (auto* wb = static_cast<WebTabBehavior*>(active->behavior())) {
+        if (auto bv = wb->browser_view()) target = bv->GetBrowser();
+      }
+    }
+    if (!target) return;
+    CefWindowInfo wi;
+    CefBrowserSettings bs;
+    target->GetHost()->ShowDevTools(wi, nullptr, bs, CefPoint());
+  };
+
 #if defined(__APPLE__)
   // Forward CSS draggable-region updates from the sidebar to the native
   // overlay. The topbar pump is gone (Phase 9); sidebar still uses
@@ -1138,7 +1161,7 @@ void MainWindow::ClosePopover() {
   popover_chrome_browser_id_ = 0;
   popover_is_builtin_ = false;
   // Restore the normal content-panel insets now that the popover is gone.
-  SetContentOuterVInsets(8, 8);
+  SetContentOuterVInsets(0, 8);
 }
 
 void MainWindow::UpdatePopoverVisibility() {
@@ -1176,9 +1199,10 @@ void MainWindow::LayoutPopover() {
   const int content_h = std::max(360, bounds.height - kTitleBarH);
   // Arc-style popover sizing: match the full content-panel height so the
   // popup feels like it replaces the card rather than floating as a tiny
-  // modal. Width stays at 80% centered. Leave an 8 px gap at the bottom
-  // so the popover edge doesn't sit flush against the window frame.
-  const int w = std::min(1280, std::max(560, content_w * 80 / 100));
+  // modal. Width is 95% of the content pane — leave only a sliver visible
+  // behind the popover to hint that the card is still there. Leave an 8 px
+  // gap at the bottom so the popover edge doesn't sit flush against the frame.
+  const int w = std::min(1280, std::max(560, content_w * 85 / 100));
   const int h = std::max(80, content_h - 8);
   const int x = content_x + (content_w - w) / 2;
   const int y = content_y;
@@ -1276,6 +1300,24 @@ CefRefPtr<CefPanel> MainWindow::BuildTitleBar() {
   panel->AddChildView(lights_pad_);
   layout->SetFlexForView(lights_pad_, 0);
 
+  // 1b. Sidebar toggle button — sits immediately right of the traffic lights.
+  {
+    btn_sidebar_toggle_ = MakeIconLabelButton(
+        new FnButtonDelegate([this]() {
+          CefPostTask(TID_UI, base::BindOnce(
+              [](CefRefPtr<MainWindow> self) { self->ToggleSidebar(); },
+              CefRefPtr<MainWindow>(this)));
+        }),
+        IconId::kSidebarToggle, "", "Toggle sidebar");
+    btn_sidebar_toggle_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kTitleBarBtnFg);
+    btn_sidebar_toggle_->SetTextColor(CEF_BUTTON_STATE_HOVERED, 0xFFFFFFFF);
+    btn_sidebar_toggle_->SetBackgroundColor(
+        current_chrome_.bg_body == 0 ? kTitleBarBgFallback
+                                     : current_chrome_.bg_body);
+    panel->AddChildView(btn_sidebar_toggle_);
+    layout->SetFlexForView(btn_sidebar_toggle_, 0);
+  }
+
   // 2. Drag spacer (drag overlay attaches here on macOS).
   spacer_ = CefPanel::CreatePanel(nullptr);
   spacer_->SetBackgroundColor(
@@ -1351,6 +1393,20 @@ CefRefPtr<CefPanel> MainWindow::BuildTitleBar() {
   return panel;
 }
 
+void MainWindow::ToggleSidebar() {
+  if (!sidebar_view_) return;
+  sidebar_visible_ = !sidebar_visible_;
+  sidebar_view_->SetVisible(sidebar_visible_);
+  // Force a layout pass so the content area expands/contracts immediately.
+  if (body_panel_) body_panel_->Layout();
+#if defined(__APPLE__)
+  // Re-raise the drag overlay; layout may have repositioned views.
+  CefPostTask(TID_UI, base::BindOnce(
+      [](CefRefPtr<MainWindow> self) { self->RefreshTitleBarDragRegion(); },
+      CefRefPtr<MainWindow>(this)));
+#endif
+}
+
 void MainWindow::OpenNewTabKind(const std::string& kind) {
   TabKind k;
   if      (kind == "web")      k = TabKind::kWeb;
@@ -1416,6 +1472,7 @@ void MainWindow::RefreshTitleBarDragRegion() {
     if (r.width <= 0 || r.height <= 0) return;
     nodrag.emplace_back(r.x - win.x, r.y - win.y, r.width, r.height);
   };
+  add(btn_sidebar_toggle_);
   add(btn_web_);
   add(btn_term_);
   add(btn_chat_);
@@ -1751,10 +1808,11 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
   // dark_mode = true when text is light (dark background), false otherwise.
   const bool title_dark = ((chrome.text_title >> 8) & 0xFF) > 0x80;
   constexpr IconId kTitleBtnIcons[] = {
-      IconId::kTabWeb, IconId::kTabTerminal, IconId::kTabChat, IconId::kSettings};
+      IconId::kSidebarToggle, IconId::kTabWeb, IconId::kTabTerminal,
+      IconId::kTabChat, IconId::kSettings};
   CefRefPtr<CefLabelButton>* kTitleBtns[] = {
-      &btn_web_, &btn_term_, &btn_chat_, &btn_settings_};
-  for (int i = 0; i < 4; ++i) {
+      &btn_sidebar_toggle_, &btn_web_, &btn_term_, &btn_chat_, &btn_settings_};
+  for (int i = 0; i < 5; ++i) {
     auto* b = kTitleBtns[i]->get();
     if (!b) continue;
     b->SetTextColor(CEF_BUTTON_STATE_NORMAL,  chrome.text_title);

@@ -118,6 +118,20 @@ void ClientHandler::OnLoadingStateChange(CefRefPtr<CefBrowser> browser,
   }
 }
 
+void ClientHandler::OnLoadEnd(CefRefPtr<CefBrowser> browser,
+                               CefRefPtr<CefFrame> frame,
+                               int http_status_code) {
+  CEF_REQUIRE_UI_THREAD();
+  (void)http_status_code;
+  if (!frame || !frame->IsMain()) return;
+  const int bid = browser->GetIdentifier();
+  const std::string url = frame->GetURL().ToString();
+  auto it = browser_listeners_.find(bid);
+  if (it != browser_listeners_.end() && it->second.on_load_end) {
+    it->second.on_load_end(url);
+  }
+}
+
 void ClientHandler::RegisterBrowserListener(int browser_id,
                                               BrowserListener listener) {
   browser_listeners_[browser_id] = std::move(listener);
@@ -135,6 +149,31 @@ void ClientHandler::OnDraggableRegionsChanged(
   (void)frame;
   if (on_draggable_regions_changed)
     on_draggable_regions_changed(browser->GetIdentifier(), regions);
+}
+
+bool ClientHandler::OnPreKeyEvent(CefRefPtr<CefBrowser> browser,
+                                   const CefKeyEvent& event,
+                                   CefEventHandle os_event,
+                                   bool* is_keyboard_shortcut) {
+  CEF_REQUIRE_UI_THREAD();
+  (void)os_event; (void)is_keyboard_shortcut;
+  if (event.type != KEYEVENT_RAWKEYDOWN) return false;
+  // F12 (all platforms) or Cmd+Option+I (macOS) opens DevTools.
+  constexpr int kVkF12 = 123;
+  constexpr int kVkI   = 73;
+  const bool is_f12 = (event.windows_key_code == kVkF12);
+  const bool is_cmd_opt_i =
+      (event.windows_key_code == kVkI) &&
+      (event.modifiers & EVENTFLAG_COMMAND_DOWN) &&
+      (event.modifiers & EVENTFLAG_ALT_DOWN);
+  if (is_f12 || is_cmd_opt_i) {
+    if (on_devtools_requested) {
+      const int bid = browser ? browser->GetIdentifier() : 0;
+      on_devtools_requested(bid);
+    }
+    return true;  // consume the key event
+  }
+  return false;
 }
 
 void ClientHandler::OnLoadError(CefRefPtr<CefBrowser> browser,
@@ -166,14 +205,26 @@ bool ClientHandler::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
   const std::string current_url = frame->GetURL().ToString();
   // Skip in-app chrome panels (file:// resources).
   if (current_url.rfind("file://", 0) == 0) return false;
-  // Only intercept user-initiated link clicks; let URL-bar typed loads,
-  // form submissions, reloads etc. proceed normally.
+  // Only intercept user-initiated link-type navigations. Skip back/forward,
+  // form submissions, typed navigations, etc. by checking the source bits
+  // and the forward/back qualifier.
+  // NOTE: user_gesture is NOT checked here because on some sites (e.g.
+  // Google) shift+click is handled by JavaScript which navigates
+  // programmatically (user_gesture=false) — that still deserves the popover.
   const auto tt = request->GetTransitionType();
-  const auto src = static_cast<unsigned>(tt) & 0xFFu;  // TT_SOURCE_MASK
+  const auto tt_raw = static_cast<unsigned>(tt);
+  const auto src = tt_raw & 0xFFu;  // TT_SOURCE_MASK
   constexpr unsigned kTtLink = 0u;
-  if (!user_gesture || src != kTtLink) return false;
+  constexpr unsigned kForwardBackFlag = 0x01000000u;  // CEF_TT_FORWARD_BACK
+  if (src != kTtLink || (tt_raw & kForwardBackFlag)) return false;
   const std::string target = request->GetURL().ToString();
   if (target.empty() || target == current_url) return false;
+  // Intercept external link navigations (Arc-style: opens in an in-app
+  // popover instead of navigating in the current tab). This handles both
+  // regular link clicks AND shift+click, which in CEF Alloy runtime routes
+  // through OnBeforeBrowse rather than OnBeforePopup.
+  // Skip file:// navigations (in-app chrome panels navigate themselves).
+  if (target.rfind("file://", 0) == 0) return false;
   const int bid = browser ? browser->GetIdentifier() : 0;
   if (on_popup_request && on_popup_request(bid, target)) {
     return true;  // cancel in-tab navigation; popover took ownership.
