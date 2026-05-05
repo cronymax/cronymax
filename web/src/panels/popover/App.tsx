@@ -16,7 +16,6 @@ export function App() {
   function navigate() {
     let target = url.trim();
     if (!target) return;
-    // Prepend https:// if no scheme present.
     if (!/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//.test(target)) {
       target = "https://" + target;
     }
@@ -29,11 +28,13 @@ export function App() {
   }
 
   return (
+    // Toolbar background uses the theme float surface so it matches the
+    // rounded card below it regardless of light/dark mode.
     <div
-      className="flex h-full w-full items-center gap-2 px-3"
-      style={{ background: "#1C1E23" }}
+      className="flex h-full w-full items-center gap-1 px-2"
+      style={{ background: "var(--color-cronymax-float)" }}
     >
-      {/* URL input — flex fill */}
+      {/* URL input — no standalone background; blends into the toolbar */}
       <input
         ref={inputRef}
         type="text"
@@ -42,61 +43,47 @@ export function App() {
         onKeyDown={handleKeyDown}
         onFocus={(e) => e.currentTarget.select()}
         spellCheck={false}
-        className="min-w-0 flex-1 rounded px-3 py-1 text-xs outline-none"
+        className="min-w-0 flex-1 rounded px-2 py-1 text-xs outline-none"
         style={{
-          background: "#15171B",
-          color: "#E8E8EA",
+          background: "transparent",
+          color: "var(--color-cronymax-title)",
           border: "none",
         }}
       />
 
-      {/* Reload */}
-      <button
-        onClick={() => bridge.send("shell.popover_refresh", {})}
-        title="Reload"
-        aria-label="Reload"
-        className="shrink-0 inline-flex items-center justify-center"
-        style={{
-          color: "#9AA0A8",
-          background: "transparent",
-          border: "none",
-          cursor: "pointer",
-        }}
-      >
-        <Icon name="refresh" />
-      </button>
-
-      {/* Open as tab */}
-      <button
-        onClick={() => bridge.send("shell.popover_open_as_tab", {})}
-        title="Open as tab"
-        aria-label="Open as tab"
-        className="shrink-0 inline-flex items-center justify-center"
-        style={{
-          color: "#9AA0A8",
-          background: "transparent",
-          border: "none",
-          cursor: "pointer",
-        }}
-      >
-        <Icon name="link-external" />
-      </button>
-
-      {/* Close popover */}
-      <button
-        onClick={() => bridge.send("shell.popover_close", {})}
-        title="Close"
-        aria-label="Close"
-        className="shrink-0 inline-flex items-center justify-center"
-        style={{
-          color: "#9AA0A8",
-          background: "transparent",
-          border: "none",
-          cursor: "pointer",
-        }}
-      >
-        <Icon name="close" />
-      </button>
+      {/* Action buttons — 32×32 hit area, rounded hover highlight */}
+      {(
+        [
+          { icon: "refresh", event: "shell.popover_refresh", title: "Reload" },
+          {
+            icon: "link-external",
+            event: "shell.popover_open_as_tab",
+            title: "Open as tab",
+          },
+          { icon: "close", event: "shell.popover_close", title: "Close" },
+        ] as const
+      ).map(({ icon, event, title }) => (
+        <button
+          key={event}
+          onClick={() => bridge.send(event, {})}
+          title={title}
+          aria-label={title}
+          className="
+            shrink-0 flex h-8 w-8 items-center justify-center rounded
+            transition-colors duration-100
+            hover:bg-[color:var(--color-cronymax-hover)]
+            active:bg-[color:var(--color-cronymax-pressed)]
+          "
+          style={{
+            color: "var(--color-cronymax-caption)",
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+          }}
+        >
+          <Icon name={icon} />
+        </button>
+      ))}
     </div>
   );
 }

@@ -1318,10 +1318,12 @@ void MainWindow::OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
 CefRefPtr<CefBrowserView> MainWindow::BuildPopoverChromeView(
     const std::string& initial_url) {
   CefBrowserSettings bs;
-  // Send the initial URL to the HTML page once it finishes loading via the
-  // popover_chrome.url_changed event (pushed from on_address_change when
-  // the content browser fires its first OnAddressChange). We'll also push
-  // it directly once the chrome browser is created.
+  // Use the theme's float surface color as the initial background so the
+  // toolbar matches the content card on first paint, before installThemeMirror
+  // fires. Falls back to the dark default before ApplyThemeChrome has run.
+  bs.background_color = current_chrome_.bg_float != 0
+                            ? current_chrome_.bg_float
+                            : static_cast<cef_color_t>(0xFF182625);
   (void)initial_url;
   auto view = CefBrowserView::CreateBrowserView(
       client_handler_,
