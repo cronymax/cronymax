@@ -15,10 +15,13 @@
 //! [`provider::LlmEvent`] streams; nothing else in the crate touches
 //! the wire format.
 
+pub mod copilot_auth;
 pub mod messages;
+pub mod migration;
 pub mod mock;
 pub mod openai;
 pub mod provider;
+pub mod registry;
 mod stream;
 
 pub use messages::{
@@ -27,3 +30,4 @@ pub use messages::{
 pub use mock::{MockLlmProvider, MockScript, ScriptStep};
 pub use openai::{OpenAiConfig, OpenAiProvider};
 pub use provider::{LlmEvent, LlmProvider, LlmStream};
+pub use registry::{LlmProviderEntry, LlmProviderKind, LlmProviderRegistry};

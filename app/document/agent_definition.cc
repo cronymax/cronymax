@@ -87,11 +87,37 @@ LoadResult<AgentDefinition> AgentDefinition::LoadFromString(
   }
   // llm is optional — an empty or absent value means "use the workspace
   // default model" (resolved at runtime by the LLM router).
+  // Supports two forms:
+  //   scalar:  llm: gpt-4o            (legacy; treated as model only)
+  //   map:     llm: {provider: copilot, model: gpt-4o}
   if (auto llm_node = root["llm"]; llm_node) {
-    try {
-      def.llm_ = llm_node.as<std::string>();
-    } catch (const YAML::Exception& ex) {
-      return MakeYamlError(path, ex);
+    if (llm_node.IsMap()) {
+      // Structured form: extract provider and model separately.
+      if (auto p = llm_node["provider"]; p) {
+        try {
+          def.llm_provider_ = p.as<std::string>();
+        } catch (const YAML::Exception& ex) {
+          return MakeYamlError(path, ex);
+        }
+      }
+      if (auto m = llm_node["model"]; m) {
+        try {
+          def.llm_model_ = m.as<std::string>();
+        } catch (const YAML::Exception& ex) {
+          return MakeYamlError(path, ex);
+        }
+      }
+      // Also populate the legacy llm_ field with the model name for
+      // backwards-compatible callers that only use llm().
+      def.llm_ = def.llm_model_;
+    } else {
+      // Legacy scalar form: the value is the model name.
+      try {
+        def.llm_ = llm_node.as<std::string>();
+        def.llm_model_ = def.llm_;
+      } catch (const YAML::Exception& ex) {
+        return MakeYamlError(path, ex);
+      }
     }
   }
   if (auto r = RequireString(root, path, "system_prompt"); r.ok()) {

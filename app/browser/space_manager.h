@@ -97,6 +97,17 @@ class SpaceManager {
     builtin_doc_types_dir_ = std::move(dir);
   }
 
+  // Path to bundled built-in flow YAMLs. Must be set before any Space is
+  // activated. Caller passes (typically)
+  // `<bundle>/Contents/Resources/builtin-flows/`.
+  void SetBuiltinFlowsDir(std::filesystem::path dir) {
+    builtin_flows_dir_ = std::move(dir);
+  }
+
+  const std::filesystem::path& builtin_flows_dir() const {
+    return builtin_flows_dir_;
+  }
+
   // Create a new Space. Returns the new space_id on success, empty on error.
   std::string CreateSpace(const std::string& name,
                           const std::filesystem::path& root_path);
@@ -132,6 +143,7 @@ class SpaceManager {
   int active_index_ = -1;
   SpaceSwitchCallback switch_callback_;
   std::filesystem::path builtin_doc_types_dir_;
+  std::filesystem::path builtin_flows_dir_;
 };
 
 }  // namespace cronymax

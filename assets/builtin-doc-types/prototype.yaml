@@ -1,0 +1,19 @@
+name: prototype
+display_name: UI/UX Prototype
+description: |
+  A lightweight design artefact that captures the intended user experience
+  before engineering begins. Describes screens, user flows, and key
+  interactions. Used as the PM's first deliverable; feeds directly into
+  PRD writing and early QA test-case planning.
+required_sections:
+  - { heading: "Screens", min_words: 20 }
+  - { heading: "User Flows", min_words: 20 }
+  - { heading: "Interactions", min_words: 10 }
+optional_sections:
+  - { heading: "Design Tokens" }
+  - { heading: "Open UX Questions" }
+  - { heading: "Mockups" }
+front_matter_required:
+  - author
+  - owner_agent
+  - source_prd

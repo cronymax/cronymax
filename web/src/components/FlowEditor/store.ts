@@ -23,6 +23,16 @@ import { createPanelStore } from "@/hooks/usePanelStore";
  */
 export type NodeType = "agent";
 
+/**
+ * One document type that this agent can emit, together with the reviewer
+ * agents that must approve it before it can flow downstream.
+ */
+export interface ProducesEntry {
+  doc_type: string;
+  /** Comma-separated reviewer agent names. */
+  reviewers: string;
+}
+
 export interface GraphNode {
   id: number;
   type: NodeType;
@@ -31,13 +41,13 @@ export interface GraphNode {
   x: number;
   y: number;
   /**
+   * Documents this agent can emit. Each entry carries a doc-type and the
+   * reviewer agents that must approve it before it flows downstream.
+   */
+  produces: ProducesEntry[];
+  /**
    * Agent placement config. Keys:
    *   - `agent_name`: FK into AgentRegistry.
-   *   - `agent_kind`: cached kind ("worker" | "reviewer") for rendering.
-   *   - `produces`: doc-type name this agent emits (worker only).
-   *   - `reviewers`: comma-separated reviewer agent names attached to
-   *     this worker. The save serializer would expand these into explicit
-   *     worker→reviewer edges with `port = produces`.
    */
   config: Record<string, string>;
 }
@@ -60,7 +70,6 @@ export interface FlowSpec {
 
 export interface AgentRegistryEntry {
   name: string;
-  kind: string;
   llm: string;
 }
 
@@ -109,6 +118,7 @@ export type Action =
     }
   | { type: "deleteEdge"; index: number }
   | { type: "addEdge"; edge: GraphEdge }
+  | { type: "updateNodeProduces"; id: number; produces: ProducesEntry[] }
   | { type: "setFlowNames"; names: string[]; active: string }
   | { type: "setActiveFlow"; name: string }
   | { type: "setFlowNameInput"; value: string }
@@ -138,6 +148,69 @@ const initial: State = {
 };
 
 /**
+ * Migrate a persisted FlowSpec to the current schema.
+ * Handles two legacy shapes:
+ *  1. `node.config.produces` (single string) → `node.produces[0]`
+ *  2. `edge.reviewers` (comma string)        → merged into source node's
+ *     matching `ProducesEntry.reviewers`.
+ */
+function migrateFlowSpec(raw: FlowSpec): FlowSpec {
+  // Step 1: lift config.produces → produces array per node.
+  const nodes: GraphNode[] = (raw.nodes ?? [])
+    .filter((n) => n && n.type === "agent")
+    .map((n) => {
+      const config = { ...(n.config ?? {}) } as Record<string, string>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let produces: ProducesEntry[] = Array.isArray((n as any).produces)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ? [...((n as any).produces as ProducesEntry[])]
+        : [];
+      if (produces.length === 0 && config["produces"]) {
+        produces = [{ doc_type: config["produces"]!, reviewers: "" }];
+      }
+      // Strip old config keys.
+      delete config["produces"];
+      delete config["reviewers"];
+      return { ...n, config, produces };
+    });
+
+  // Step 2: drain edge.reviewers → source node's matching ProducesEntry.
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const edges: GraphEdge[] = (raw.edges ?? []).map((e) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const edgeRevs = (e as any).reviewers as string | undefined;
+    if (!edgeRevs || !e.port) return e;
+    const src = nodeMap.get(e.from_id);
+    if (!src) return e;
+    const entryIdx = src.produces.findIndex((p) => p.doc_type === e.port);
+    const incoming = edgeRevs
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (entryIdx >= 0) {
+      const existing = new Set(
+        src.produces[entryIdx]!.reviewers
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      );
+      incoming.forEach((r) => existing.add(r));
+      src.produces[entryIdx] = {
+        ...src.produces[entryIdx]!,
+        reviewers: Array.from(existing).join(","),
+      };
+    } else {
+      src.produces.push({ doc_type: e.port, reviewers: edgeRevs });
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { reviewers: _r, ...rest } = e as any;
+    return rest as GraphEdge;
+  });
+
+  return { nodes, edges };
+}
+
+/**
  * Drop nodes that the editor no longer knows how to render. Persisted
  * legacy flows (LLM / Tool / Branch / Human / Start) are stripped
  * silently so opening an old flow shows an empty canvas instead of
@@ -146,7 +219,11 @@ const initial: State = {
 function sanitizeNodes(nodes: GraphNode[]): GraphNode[] {
   return (nodes ?? [])
     .filter((n) => n && n.type === "agent")
-    .map((n) => ({ ...n, config: { ...(n.config ?? {}) } }));
+    .map((n) => ({
+      ...n,
+      config: { ...(n.config ?? {}) },
+      produces: Array.isArray(n.produces) ? n.produces : [],
+    }));
 }
 
 function sanitizeEdges(edges: GraphEdge[], nodeIds: Set<number>): GraphEdge[] {
@@ -158,9 +235,10 @@ function sanitizeEdges(edges: GraphEdge[], nodeIds: Set<number>): GraphEdge[] {
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case "setFlow": {
-      const ns = sanitizeNodes(action.spec.nodes ?? []);
+      const migrated = migrateFlowSpec(action.spec);
+      const ns = sanitizeNodes(migrated.nodes ?? []);
       const ids = new Set(ns.map((n) => n.id));
-      const es = sanitizeEdges(action.spec.edges ?? [], ids);
+      const es = sanitizeEdges(migrated.edges ?? [], ids);
       const nextId = ns.reduce((m, n) => Math.max(m, Number(n.id) || 0), 0) + 1;
       return {
         ...state,
@@ -212,6 +290,13 @@ function reducer(state: State, action: Action): State {
           n.id === action.id
             ? { ...n, config: { ...n.config, [action.key]: action.value } }
             : n,
+        ),
+      };
+    case "updateNodeProduces":
+      return {
+        ...state,
+        nodes: state.nodes.map((n) =>
+          n.id === action.id ? { ...n, produces: action.produces } : n,
         ),
       };
     case "updateNodePosition":
@@ -356,18 +441,79 @@ export const SEED_CHAT_FLOW: FlowSpec = {
       name: "Chat",
       x: 80,
       y: 60,
+      produces: [],
       // agent_name left blank so the user picks from the inspector once
       // the agent registry is populated. tools defaults to all skills.
       config: {
         agent_name: "Chat",
-        agent_kind: "worker",
-        produces: "",
-        reviewers: "",
       },
     },
   ],
   edges: [],
 };
+// ── Built-in "software-dev-cycle" seed flow ──────────────────────────────
+//
+// Full PM → RD → QA preset. Seeded into localStorage whenever it is
+// absent (including for users who already have other flows). Users can
+// freely edit or delete it.
+export const SEED_SOFTWARE_DEV_CYCLE_FLOW: FlowSpec = {
+  nodes: [
+    {
+      id: 1,
+      type: "agent",
+      name: "pm",
+      x: 80,
+      y: 120,
+      produces: [
+        { doc_type: "prd", reviewers: "critic" },
+      ],
+      config: {
+        agent_name: "pm",
+      },
+    },
+    {
+      id: 2,
+      type: "agent",
+      name: "rd",
+      x: 380,
+      y: 120,
+      produces: [
+        { doc_type: "tech-spec", reviewers: "critic,qa-critic" },
+        { doc_type: "patch-note", reviewers: "critic" },
+      ],
+      config: {
+        agent_name: "rd",
+      },
+    },
+    {
+      id: 3,
+      type: "agent",
+      name: "qa",
+      x: 680,
+      y: 120,
+      produces: [
+        { doc_type: "test-report", reviewers: "critic" },
+        { doc_type: "bug-report", reviewers: "" },
+      ],
+      config: {
+        agent_name: "qa",
+      },
+    },
+  ],
+  edges: [
+    // PM → RD: PRD after human + critic approval
+    { from_id: 1, to_id: 2, port: "prd", requires_human_approval: true },
+    // RD → QA: tech-spec after human + critic + qa-critic approval
+    { from_id: 2, to_id: 3, port: "tech-spec", requires_human_approval: true },
+    // RD → QA: submit-for-testing handoff (no gate)
+    { from_id: 2, to_id: 3, port: "submit-for-testing" },
+    // QA → RD: bug reports (max 5 fix cycles)
+    { from_id: 3, to_id: 2, port: "bug-report" },
+    // RD → QA: patch notes after each fix
+    { from_id: 2, to_id: 3, port: "patch-note" },
+  ],
+};
+
 // Lead-agent convention: the node with the smallest id in a flow is the
 // "lead" — it cannot be deleted, and it receives messages in flow chat
 // mode that don't address a specific agent via @mention.

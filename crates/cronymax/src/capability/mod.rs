@@ -19,6 +19,7 @@ pub mod dispatcher;
 pub mod filesystem;
 pub mod notify;
 pub mod shell;
+pub mod test_runner;
 
 pub use browser::{BrowserCapability, PageContent, PageInspectRequest};
 pub use dispatcher::HostCapabilityDispatcher;
@@ -29,3 +30,7 @@ pub use filesystem::{
 pub use notify::{ApprovalRequest, ApprovalResponse, NotifyCapability};
 pub use shell::{classify_command, ExitStatus, LocalShell, RiskLevel, ShellCapability,
     ShellRequest, ShellResult};
+pub use test_runner::{
+    discover_tool_def, get_last_report_tool_def, run_suite_tool_def,
+    DiscoveredSuite, LastReportStore, RunnerKind, TestFailure, TestRunnerResult,
+};

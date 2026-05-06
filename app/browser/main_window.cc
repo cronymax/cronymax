@@ -277,6 +277,8 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   if (!res_path.empty()) {
     space_manager_.SetBuiltinDocTypesDir(
         std::filesystem::path(res_path.ToString()) / "builtin-doc-types");
+    space_manager_.SetBuiltinFlowsDir(
+        std::filesystem::path(res_path.ToString()) / "builtin-flows");
   }
 
   if (space_manager_.spaces().empty())

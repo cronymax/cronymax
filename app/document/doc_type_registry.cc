@@ -21,7 +21,8 @@ void DocTypeRegistry::ScanDir(
   for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
     if (ec) break;
     if (!entry.is_regular_file()) continue;
-    if (entry.path().extension() != ".yaml") continue;
+    const auto ext = entry.path().extension();
+    if (ext != ".yaml" && ext != ".md") continue;
     auto result = DocTypeSchema::LoadFromFile(entry.path());
     if (!result.ok()) {
       errors->push_back(std::move(result).error());

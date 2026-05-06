@@ -22,6 +22,10 @@ import Tools from "@vscode/codicons/src/icons/tools.svg?react";
 import Save from "@vscode/codicons/src/icons/save.svg?react";
 import Trash from "@vscode/codicons/src/icons/trash.svg?react";
 import LinkExternal from "@vscode/codicons/src/icons/link-external.svg?react";
+import ChevronLeft from "@vscode/codicons/src/icons/chevron-left.svg?react";
+import ChevronRight from "@vscode/codicons/src/icons/chevron-right.svg?react";
+import ChevronUp from "@vscode/codicons/src/icons/chevron-up.svg?react";
+import ChevronDown from "@vscode/codicons/src/icons/chevron-down.svg?react";
 
 export type SvgComponent = FunctionComponent<SVGProps<SVGSVGElement>>;
 
@@ -51,7 +55,11 @@ export type IconName =
   | "tools"
   | "save"
   | "trash"
-  | "link-external";
+  | "link-external"
+  | "chevron-left"
+  | "chevron-right"
+  | "chevron-up"
+  | "chevron-down";
 
 /** SVG React components for each icon, transformed at build time by vite-plugin-svgr. */
 export const codiconComponents: Record<IconName, SvgComponent> = {
@@ -71,4 +79,8 @@ export const codiconComponents: Record<IconName, SvgComponent> = {
   save: Save,
   trash: Trash,
   "link-external": LinkExternal,
+  "chevron-left": ChevronLeft,
+  "chevron-right": ChevronRight,
+  "chevron-up": ChevronUp,
+  "chevron-down": ChevronDown,
 };

@@ -239,3 +239,75 @@ body,
   -webkit-app-region: no-drag;
   app-region: no-drag;
 }
+
+/* ── WYSIWYG markdown editor (Milkdown / ProseMirror) ─────────────── */
+.cronymax-wysiwyg .ProseMirror {
+  outline: none;
+  padding: 0.625rem 0.75rem;
+  min-height: 220px;
+  color: var(--color-cronymax-title);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  font-family: var(--font-family-sans);
+  caret-color: var(--color-cronymax-primary);
+}
+.cronymax-wysiwyg .ProseMirror > * + * { margin-top: 0.5em; }
+.cronymax-wysiwyg .ProseMirror p { margin: 0; }
+.cronymax-wysiwyg .ProseMirror h1,
+.cronymax-wysiwyg .ProseMirror h2,
+.cronymax-wysiwyg .ProseMirror h3,
+.cronymax-wysiwyg .ProseMirror h4 {
+  font-weight: 600;
+  color: var(--color-cronymax-title);
+  line-height: 1.35;
+}
+.cronymax-wysiwyg .ProseMirror h1 { font-size: 1.3em; }
+.cronymax-wysiwyg .ProseMirror h2 { font-size: 1.15em; }
+.cronymax-wysiwyg .ProseMirror h3 { font-size: 1em; }
+.cronymax-wysiwyg .ProseMirror ul,
+.cronymax-wysiwyg .ProseMirror ol {
+  padding-left: 1.5em;
+  margin: 0;
+}
+.cronymax-wysiwyg .ProseMirror li + li { margin-top: 0.2em; }
+.cronymax-wysiwyg .ProseMirror code {
+  font-family: var(--font-family-mono);
+  font-size: 0.875em;
+  background: var(--color-cronymax-float);
+  border: 1px solid var(--color-cronymax-border);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+  color: var(--color-cronymax-secondary);
+}
+.cronymax-wysiwyg .ProseMirror pre {
+  background: var(--color-cronymax-float);
+  border: 1px solid var(--color-cronymax-border);
+  border-radius: 4px;
+  padding: 0.6em 0.75em;
+  overflow-x: auto;
+  margin: 0;
+}
+.cronymax-wysiwyg .ProseMirror pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--color-cronymax-title);
+}
+.cronymax-wysiwyg .ProseMirror blockquote {
+  border-left: 2px solid var(--color-cronymax-primary);
+  margin: 0;
+  padding-left: 0.75em;
+  color: var(--color-cronymax-caption);
+}
+.cronymax-wysiwyg .ProseMirror a {
+  color: var(--color-cronymax-primary);
+  text-decoration: underline;
+}
+.cronymax-wysiwyg .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--color-cronymax-divider);
+  margin: 0.75em 0;
+}
+.cronymax-wysiwyg .ProseMirror ::selection {
+  background: var(--color-cronymax-selected);
+}

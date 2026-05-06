@@ -28,6 +28,19 @@ class DocTypeSchema {
   static LoadResult<DocTypeSchema> LoadFromFile(
       const std::filesystem::path& path);
 
+  // Loads from a Markdown file with YAML front matter:
+  //   ---
+  //   name: 'my-type'
+  //   display_name: 'My Type'
+  //   ---
+  //
+  //   Markdown body (becomes description_).
+  //
+  // Only `name` and `display_name` are parsed from the front matter.
+  // Used for user-defined doc types stored as .md files.
+  static LoadResult<DocTypeSchema> LoadFromMarkdown(
+      const std::string& content, const std::filesystem::path& path);
+
   // Loads from a YAML string in memory; `path` is used only for error
   // reporting context. Useful for unit tests.
   static LoadResult<DocTypeSchema> LoadFromString(

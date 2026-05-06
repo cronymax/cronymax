@@ -29,6 +29,7 @@ pub enum TraceKind {
     RunCancelled,
     RunFailed,
     AgentStarted,
+    AgentScheduled,
     AgentEnded,
     ToolCall,
     ToolResult,
@@ -64,6 +65,12 @@ pub struct TraceEvent {
     pub doc_name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub doc_type: String,
+    /// Invocation ID for agent scheduling events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation_id: Option<String>,
+    /// Pending ports list emitted on `agent_scheduled` events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_ports: Vec<String>,
     /// Raw JSON payload (optional). Embedded verbatim into the line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,

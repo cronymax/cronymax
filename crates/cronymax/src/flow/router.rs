@@ -71,12 +71,12 @@ impl Router {
         port: &str,
         body: &str,
     ) -> RouteDecision {
-        // 1. Typed-port targets.
+        // 1. Typed-port targets (edges with an explicit `to` agent only).
         let port_targets: std::collections::HashSet<String> = flow
             .edges
             .iter()
             .filter(|e| e.from_agent == producing_agent && e.port == port)
-            .map(|e| e.to_agent.clone())
+            .filter_map(|e| e.to_agent.clone())
             .collect();
 
         // 2. @mention targets.

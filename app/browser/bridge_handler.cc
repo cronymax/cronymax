@@ -1400,7 +1400,7 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   }
 
   // -------------------------------------------------------------------------
-  // agent.registry.save  payload {name, kind, llm, system_prompt,
+  // agent.registry.save  payload {name, llm, system_prompt,
   //                                memory_namespace, tools_csv}
   //   Writes a minimal `<name>.agent.yaml` to <workspace>/.cronymax/agents/
   //   then refreshes the registry. Idempotent — overwrites any existing
@@ -1410,7 +1410,6 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   // -------------------------------------------------------------------------
   if (channel == "agent.registry.save") {
     const std::string name          = jp.is_object() ? jp.value("name",             std::string{}) : std::string{};
-    const std::string kind          = jp.is_object() ? jp.value("kind",             std::string{}) : std::string{};
     const std::string llm           = jp.is_object() ? jp.value("llm",              std::string{}) : std::string{};
     const std::string system_prompt = jp.is_object() ? jp.value("system_prompt",    std::string{}) : std::string{};
     const std::string memory_ns     = jp.is_object() ? jp.value("memory_namespace", std::string{}) : std::string{};
@@ -1433,8 +1432,6 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
       callback->Failure(400, "invalid agent name");
       return true;
     }
-    const std::string normalized_kind =
-        (kind == "reviewer") ? "reviewer" : "worker";
 
     WorkspaceLayout layout(sp->workspace_root);
     std::error_code ec;
@@ -1482,7 +1479,6 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
 
     std::string yaml;
     yaml += "name: " + sq(name) + "\n";
-    yaml += "kind: " + sq(normalized_kind) + "\n";
     yaml += "llm: " + sq(llm) + "\n";
     if (!memory_ns.empty()) {
       yaml += "memory_namespace: " + sq(memory_ns) + "\n";
@@ -1722,13 +1718,18 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   if (channel == "flow.list") {
     WorkspaceLayout layout(sp->workspace_root);
     nlohmann::json flows = nlohmann::json::array();
-    std::error_code scan_ec;
-    if (std::filesystem::is_directory(layout.FlowsDir(), scan_ec)) {
+
+    // Helper: scan a directory for flow subdirs and append to `flows`.
+    // `is_builtin` marks bundled preset flows so the UI can distinguish them.
+    auto scan_flows_dir = [&](const std::filesystem::path& dir,
+                               bool is_builtin) {
+      std::error_code scan_ec;
+      if (!std::filesystem::is_directory(dir, scan_ec)) return;
       for (const auto& entry :
-           std::filesystem::directory_iterator(layout.FlowsDir(), scan_ec)) {
+           std::filesystem::directory_iterator(dir, scan_ec)) {
         if (!entry.is_directory()) continue;
         const std::string id = entry.path().filename().string();
-        const auto flow_yaml = layout.FlowFile(id);
+        const auto flow_yaml = entry.path() / "flow.yaml";
         std::error_code exist_ec;
         if (!std::filesystem::exists(flow_yaml, exist_ec)) continue;
         const auto doc = LoadFlowYaml(flow_yaml, id);
@@ -1736,9 +1737,47 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
         nlohmann::json agents_arr = nlohmann::json::array();
         for (const auto& a : doc.agents) agents_arr.push_back(a.id);
         flows.push_back({{"id", id}, {"name", doc.name},
-                         {"edge_count", doc.edges.size()}, {"agents", agents_arr}});
+                         {"edge_count", doc.edges.size()},
+                         {"agents", agents_arr},
+                         {"builtin", is_builtin}});
+      }
+    };
+
+    // Workspace-local flows take priority; scan them first.
+    scan_flows_dir(layout.FlowsDir(), false);
+
+    // Bundled preset flows — only include those not already present in the
+    // workspace (de-duplicate by id so workspace overrides win).
+    const auto& builtin_dir = space_manager_->builtin_flows_dir();
+    if (!builtin_dir.empty()) {
+      // Build a set of workspace-local ids to skip duplicates.
+      std::set<std::string> local_ids;
+      for (const auto& f : flows) {
+        if (f.contains("id") && f["id"].is_string())
+          local_ids.insert(f["id"].get<std::string>());
+      }
+      std::error_code scan_ec;
+      if (std::filesystem::is_directory(builtin_dir, scan_ec)) {
+        for (const auto& entry :
+             std::filesystem::directory_iterator(builtin_dir, scan_ec)) {
+          if (!entry.is_directory()) continue;
+          const std::string id = entry.path().filename().string();
+          if (local_ids.count(id)) continue;  // workspace copy takes priority
+          const auto flow_yaml = entry.path() / "flow.yaml";
+          std::error_code exist_ec;
+          if (!std::filesystem::exists(flow_yaml, exist_ec)) continue;
+          const auto doc = LoadFlowYaml(flow_yaml, id);
+          if (!doc.ok) continue;
+          nlohmann::json agents_arr = nlohmann::json::array();
+          for (const auto& a : doc.agents) agents_arr.push_back(a.id);
+          flows.push_back({{"id", id}, {"name", doc.name},
+                           {"edge_count", doc.edges.size()},
+                           {"agents", agents_arr},
+                           {"builtin", true}});
+        }
       }
     }
+
     callback->Success(nlohmann::json{{"flows", flows}}.dump());
     return true;
   }
@@ -1796,6 +1835,132 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
       });
     }
     callback->Success(nlohmann::json{{"doc_types", types}}.dump());
+    return true;
+  }
+
+  // doc_type.load  payload {name}
+  //   Returns the full schema details for a single doc type.
+  if (channel == "doc_type.load") {
+    const std::string name = jp.is_object() ? jp.value("name", std::string{}) : std::string{};
+    const auto* schema = sp->doc_type_registry->Get(name);
+    if (!schema) {
+      callback->Failure(404, "doc type not found: " + name);
+      return true;
+    }
+    callback->Success(nlohmann::json{
+        {"name",         schema->name()},
+        {"display_name", schema->display_name()},
+        {"description",  schema->description()},
+        {"user_defined", sp->doc_type_registry->IsUserDefined(name)},
+    }.dump());
+    return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // doc_type.save   payload {name, display_name, description?}
+  //   Writes a <name>.md to <workspace>/.cronymax/doc-types/ then refreshes
+  //   the registry.  The file uses YAML front matter (name, display_name)
+  //   followed by Markdown body (description).
+  // doc_type.delete payload {name}
+  //   Removes <workspace>/.cronymax/doc-types/<name>.md (or .yaml for legacy)
+  //   and refreshes.
+  // -------------------------------------------------------------------------
+  if (channel == "doc_type.save") {
+    const std::string name         = jp.is_object() ? jp.value("name",         std::string{}) : std::string{};
+    const std::string display_name = jp.is_object() ? jp.value("display_name", std::string{}) : std::string{};
+    const std::string description  = jp.is_object() ? jp.value("description",  std::string{}) : std::string{};
+
+    auto valid_name = [](const std::string& s) {
+      if (s.empty() || s.size() > 64) return false;
+      for (char c : s) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+        if (!ok) return false;
+      }
+      return s.front() != '.' && s.find("..") == std::string::npos;
+    };
+    if (!valid_name(name)) {
+      callback->Failure(400, "invalid doc-type name");
+      return true;
+    }
+
+    WorkspaceLayout layout(sp->workspace_root);
+    std::error_code ec;
+    std::filesystem::create_directories(layout.DocTypesDir(), ec);
+    if (ec) {
+      callback->Failure(500, "create doc-types dir failed: " + ec.message());
+      return true;
+    }
+
+    // Single-quoted scalar — escapes embedded single quotes by doubling them.
+    auto sq = [](const std::string& s) {
+      std::string out;
+      out.reserve(s.size() + 2);
+      out += '\'';
+      for (char c : s) { if (c == '\'') out += "''"; else out += c; }
+      out += '\'';
+      return out;
+    };
+
+    // Build Markdown file: YAML front matter + blank line + Markdown body.
+    std::string md;
+    md += "---\n";
+    md += "name: " + sq(name) + "\n";
+    md += "display_name: " + sq(display_name.empty() ? name : display_name) + "\n";
+    md += "---\n";
+    if (!description.empty()) {
+      md += "\n";
+      md += description;
+      if (description.back() != '\n') md += "\n";
+    }
+
+    const auto target = layout.DocTypesDir() / (name + ".md");
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      callback->Failure(500, "open for write failed: " + target.string());
+      return true;
+    }
+    out.write(md.data(), static_cast<std::streamsize>(md.size()));
+    out.close();
+    if (!out) {
+      callback->Failure(500, "write failed: " + target.string());
+      return true;
+    }
+    sp->doc_type_registry->Refresh();
+    callback->Success("{\"ok\":true}");
+    return true;
+  }
+
+  if (channel == "doc_type.delete") {
+    const std::string name = jp.is_object() ? jp.value("name", std::string{}) : std::string{};
+    auto valid_name = [](const std::string& s) {
+      if (s.empty() || s.size() > 64) return false;
+      for (char c : s) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+        if (!ok) return false;
+      }
+      return s.front() != '.' && s.find("..") == std::string::npos;
+    };
+    if (!valid_name(name)) {
+      callback->Failure(400, "invalid doc-type name");
+      return true;
+    }
+    WorkspaceLayout layout(sp->workspace_root);
+    // Try .md first (new format), then .yaml for backward compatibility.
+    std::error_code ec;
+    auto target = layout.DocTypesDir() / (name + ".md");
+    if (!std::filesystem::exists(target, ec)) {
+      target = layout.DocTypesDir() / (name + ".yaml");
+    }
+    ec = {};
+    std::filesystem::remove(target, ec);
+    if (ec) {
+      callback->Failure(404, "doc-type file not found: " + target.string());
+      return true;
+    }
+    sp->doc_type_registry->Refresh();
+    callback->Success("{\"ok\":true}");
     return true;
   }
 

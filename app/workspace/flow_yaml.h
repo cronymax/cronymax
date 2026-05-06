@@ -12,9 +12,18 @@ struct FlowYamlAgent {
 
 struct FlowYamlEdge {
   std::string from;
+  // Empty string means "no downstream agent" (approval-only gate).
   std::string to;
   std::string port;
   bool requires_human_approval = false;
+  // Re-invoke the producing agent after this port is approved.
+  bool on_approved_reschedule = false;
+  // Override the flow-level reviewer set; empty = use flow default.
+  std::vector<std::string> reviewer_agents;
+  // Maximum submissions before on_cycle_exhausted fires; 0 = unlimited.
+  int max_cycles = 0;
+  // "escalate_to_human" | "halt" (default when max_cycles is set).
+  std::string on_cycle_exhausted;
 };
 
 // Lightweight representation of a flow.yaml file.

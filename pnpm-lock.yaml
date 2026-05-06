@@ -34,6 +34,9 @@ importers:
       '@milkdown/core':
         specifier: 7.20.0
         version: 7.20.0
+      '@milkdown/plugin-listener':
+        specifier: 7.20.0
+        version: 7.20.0
       '@milkdown/plugin-tooltip':
         specifier: 7.20.0
         version: 7.20.0

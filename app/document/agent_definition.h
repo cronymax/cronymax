@@ -25,8 +25,15 @@ class AgentDefinition {
   // one of those two values; defaults to "worker" if absent.
   const std::string& kind() const { return kind_; }
   // OpenAI-compatible model identifier. Free-form string; routed via the
-  // existing model_router.
+  // existing model_router. May be empty if the structured llm map form is
+  // used — consumers should prefer llm_model() and llm_provider() instead.
   const std::string& llm() const { return llm_; }
+  // Structured llm field: provider name (e.g. "copilot", "openai").
+  // Empty string means "use workspace default provider".
+  const std::string& llm_provider() const { return llm_provider_; }
+  // Structured llm field: model name (e.g. "gpt-4o").
+  // Empty string means "use workspace default model".
+  const std::string& llm_model() const { return llm_model_; }
   const std::string& system_prompt() const { return system_prompt_; }
   // Optional. Defaults to name() if empty.
   const std::string& memory_namespace() const { return memory_namespace_; }
@@ -40,6 +47,8 @@ class AgentDefinition {
   std::string name_;
   std::string kind_;
   std::string llm_;
+  std::string llm_provider_;
+  std::string llm_model_;
   std::string system_prompt_;
   std::string memory_namespace_;
   std::vector<std::string> tools_;

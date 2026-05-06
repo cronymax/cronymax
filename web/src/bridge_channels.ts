@@ -411,7 +411,6 @@ export const Channels = {
   "agent.registry.save": chan({
     req: z.object({
       name: z.string(),
-      kind: z.string(),
       llm: z.string(),
       system_prompt: z.string(),
       memory_namespace: z.string().optional().default(""),
@@ -471,6 +470,75 @@ export const Channels = {
     res: z.object({ ok: z.boolean() }),
   }),
 
+  // ── LLM provider registry (Rust-backed, typed CRUD + OAuth) ───────────
+  // These channels use the new LlmProviderRegistry (Rust) via the runtime
+  // bridge. Secrets are stored in the macOS Keychain — never in the JSON.
+
+  /** List all configured providers. */
+  "llm.provider.list": chan({
+    req: EmptySchema,
+    res: z.object({
+      providers: z.array(
+        z.object({
+          id: z.string(),
+          kind: z.enum(["openai_compat", "github_copilot", "none"]),
+          base_url: z.string(),
+          model_override: z.string().nullable().optional(),
+          /** "authenticated" | "configured" | "unconfigured" */
+          status: z.enum(["authenticated", "configured", "unconfigured"]),
+        }),
+      ),
+      default_provider: z.string().nullable(),
+    }),
+  }),
+
+  /** Add or replace a provider entry. API key stored in Keychain. */
+  "llm.provider.add": chan({
+    req: z.object({
+      id: z.string(),
+      kind: z.enum(["openai_compat", "github_copilot", "none"]),
+      base_url: z.string(),
+      model_override: z.string().nullable().optional(),
+      api_key: z.string().optional(),
+      set_as_default: z.boolean().optional(),
+    }),
+    res: z.object({ ok: z.boolean(), error: z.string().optional() }),
+  }),
+
+  /** Remove a provider by id. Also deletes its Keychain item. */
+  "llm.provider.remove": chan({
+    req: z.object({ id: z.string() }),
+    res: z.object({ ok: z.boolean(), error: z.string().optional() }),
+  }),
+
+  /**
+   * Start a GitHub Copilot device flow.
+   * Returns user_code + verification_uri for display; C++ begins polling
+   * in the background and emits `llm.provider.auth_status` events.
+   */
+  "llm.provider.auth_start": chan({
+    req: z.object({ provider_id: z.string() }),
+    res: z.object({
+      ok: z.boolean(),
+      user_code: z.string().optional(),
+      verification_uri: z.string().optional(),
+      error: z.string().optional(),
+    }),
+  }),
+
+  /**
+   * Server-push event emitted by C++ as a device flow progresses.
+   * phase: "polling" | "success" | "error" | "expired"
+   */
+  "llm.provider.auth_status": chan({
+    req: EmptySchema,
+    res: z.object({
+      provider_id: z.string(),
+      phase: z.enum(["polling", "success", "error", "expired"]),
+      error: z.string().optional(),
+    }),
+  }),
+
   "doc_type.list": chan({
     req: EmptySchema,
     res: z.object({
@@ -482,6 +550,27 @@ export const Channels = {
         }),
       ),
     }),
+  }),
+  "doc_type.load": chan({
+    req: z.object({ name: z.string() }),
+    res: z.object({
+      name: z.string(),
+      display_name: z.string(),
+      description: z.string(),
+      user_defined: z.boolean(),
+    }),
+  }),
+  "doc_type.save": chan({
+    req: z.object({
+      name: z.string(),
+      display_name: z.string().optional().default(""),
+      description: z.string().optional().default(""),
+    }),
+    res: z.object({ ok: z.boolean() }),
+  }),
+  "doc_type.delete": chan({
+    req: z.object({ name: z.string() }),
+    res: z.object({ ok: z.boolean() }),
   }),
 
   // ── flow read (legacy FlowRegistry-backed) ────────────────────────

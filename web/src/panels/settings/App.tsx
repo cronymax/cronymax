@@ -25,12 +25,18 @@ import { Flows } from "@/components/FlowEditor";
 import { Icon } from "@/shared/components/Icon";
 import { useStore, type PermissionRequest } from "./store";
 
+import { Editor, rootCtx, defaultValueCtx } from "@milkdown/core";
+import { listener, listenerCtx } from "@milkdown/plugin-listener";
+import { commonmark } from "@milkdown/preset-commonmark";
+import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
+
 // ── types ─────────────────────────────────────────────────────────────────
 
 type SettingsTab =
   | "appearance"
   | "providers"
   | "agents"
+  | "doc-types"
   | "workspace"
   | "flows"
   | "runner";
@@ -868,13 +874,11 @@ function ProvidersTab() {
 
 interface AgentSummary {
   name: string;
-  kind: string;
   llm: string;
 }
 
 interface AgentDetail {
   name: string;
-  kind: string;
   llm: string;
   system_prompt: string;
   memory_namespace: string;
@@ -883,7 +887,6 @@ interface AgentDetail {
 
 const EMPTY_DETAIL: AgentDetail = {
   name: "",
-  kind: "worker",
   llm: "gpt-4o-mini",
   system_prompt: "You are a helpful agent.",
   memory_namespace: "",
@@ -916,15 +919,82 @@ function AgentsTab() {
   const loadList = useCallback(async () => {
     try {
       let res = await bridge.send("agent.registry.list");
-      if ((res.agents ?? []).length === 0) {
-        await bridge.send("agent.registry.save", {
+      const existingNames = new Set((res.agents ?? []).map((a: AgentSummary) => a.name));
+
+      // Seed the built-in agents if they are not yet registered.
+      // "Chat" is always seeded; the software-dev-cycle agents are seeded
+      // alongside so the Flow editor can reference them by name.
+      type AgentSaveReq = {
+        name: string;
+        llm: string;
+        system_prompt: string;
+        memory_namespace: string;
+        tools_csv: string;
+      };
+      const BUILTIN_AGENTS: AgentSaveReq[] = [
+        {
           name: "Chat",
-          kind: "worker",
           llm: "",
           system_prompt: "You are a helpful assistant.",
           memory_namespace: "",
           tools_csv: "",
-        });
+        },
+        {
+          name: "pm",
+          llm: "",
+          system_prompt:
+            "You are a product manager. Gather requirements and produce " +
+            "clear prototypes and PRDs that the engineering team can act on.",
+          memory_namespace: "",
+          tools_csv: "",
+        },
+        {
+          name: "rd",
+          llm: "",
+          system_prompt:
+            "You are a senior software engineer. Translate PRDs into " +
+            "technical specifications, implement the required changes, and " +
+            "address QA feedback with focused patch notes.",
+          memory_namespace: "",
+          tools_csv: "",
+        },
+        {
+          name: "qa",
+          llm: "",
+          system_prompt:
+            "You are a QA engineer. Write test cases from the tech-spec, " +
+            "run the test suite, file detailed bug reports, and produce a " +
+            "final test report once all issues are resolved.",
+          memory_namespace: "",
+          tools_csv: "",
+        },
+        {
+          name: "critic",
+          llm: "",
+          system_prompt:
+            "You are a critical reviewer. Evaluate each document for " +
+            "clarity, completeness, and correctness. Approve only when " +
+            "the document meets the required quality bar.",
+          memory_namespace: "",
+          tools_csv: "",
+        },
+        {
+          name: "qa-critic",
+          llm: "",
+          system_prompt:
+            "You are a QA-focused reviewer. Evaluate technical " +
+            "specifications and test plans for testability, coverage, and " +
+            "alignment with the stated requirements.",
+          memory_namespace: "",
+          tools_csv: "",
+        },
+      ];
+
+      const missing = BUILTIN_AGENTS.filter((a) => a && !existingNames.has(a.name));
+      if (missing.length > 0) {
+        await Promise.all(
+          missing.map((a) => bridge.send("agent.registry.save", a)),
+        );
         res = await bridge.send("agent.registry.list");
       }
       setAgents(res.agents ?? []);
@@ -938,7 +1008,6 @@ function AgentsTab() {
       const res = await bridge.send("agent.registry.load", { name });
       setDraft({
         name: res.name,
-        kind: res.kind,
         llm: res.llm,
         system_prompt: res.system_prompt,
         memory_namespace: res.memory_namespace ?? "",
@@ -983,7 +1052,6 @@ function AgentsTab() {
     try {
       await bridge.send("agent.registry.save", {
         name: draft.name,
-        kind: draft.kind === "reviewer" ? "reviewer" : "worker",
         llm: draft.llm,
         system_prompt: draft.system_prompt,
         memory_namespace: draft.memory_namespace,
@@ -1053,7 +1121,7 @@ function AgentsTab() {
               >
                 <span className="font-medium">{a.name}</span>
                 <span className="text-[10px] opacity-70">
-                  {a.kind} · {a.llm}
+                  {a.llm}
                 </span>
               </button>
             </li>
@@ -1087,16 +1155,6 @@ function AgentsTab() {
                   Rename by deleting and recreating.
                 </p>
               )}
-            </Field>
-            <Field label="Kind">
-              <select
-                className={inputCls}
-                value={draft.kind}
-                onChange={(e) => setDraft({ ...draft, kind: e.target.value })}
-              >
-                <option value="worker">worker</option>
-                <option value="reviewer">reviewer</option>
-              </select>
             </Field>
             <Field label="LLM model">
               {activeProvider ? (
@@ -1330,6 +1388,350 @@ function WorkspaceTab() {
 }
 
 // ── Runner tab ────────────────────────────────────────────────────────────
+
+// ── Doc Types tab ─────────────────────────────────────────────────────────
+
+/**
+ * Inner Milkdown editor — must be rendered inside a MilkdownProvider.
+ * Initialised once with `initialValue`; calls `onEmit` on every change.
+ */
+function WysiwygInner({
+  initialValue,
+  onEmit,
+}: {
+  initialValue: string;
+  onEmit: (v: string) => void;
+}) {
+  const onEmitRef = useRef(onEmit);
+  useEffect(() => {
+    onEmitRef.current = onEmit;
+  });
+
+  useEditor((root) =>
+    Editor.make()
+      .config((ctx) => {
+        ctx.set(rootCtx, root);
+        ctx.set(defaultValueCtx, initialValue);
+        ctx.get(listenerCtx).markdownUpdated((_, markdown) => {
+          onEmitRef.current(markdown);
+        });
+      })
+      .use(commonmark)
+      .use(listener),
+  );
+
+  return <Milkdown />;
+}
+
+/**
+ * WYSIWYG Markdown editor backed by Milkdown/ProseMirror.
+ * Renders Markdown as rich text that the user can edit directly.
+ *
+ * When `value` changes from the outside (e.g. a different doc type is
+ * selected), the editor is remounted to pick up the new initial content.
+ */
+function WysiwygMarkdownField({
+  value,
+  onChange,
+  disabled = false,
+}: {
+  value: string;
+  onChange?: (v: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
+  // Track the last markdown emitted by the editor so we can distinguish
+  // an external value change (user selected a different doc type) from
+  // an internal one (user typed in the editor). Only external changes
+  // trigger a remount.
+  const lastEmitted = useRef<string>(value);
+  const [editorKey, setEditorKey] = useState(0);
+
+  useEffect(() => {
+    if (value !== lastEmitted.current) {
+      lastEmitted.current = value;
+      setEditorKey((k) => k + 1);
+    }
+  }, [value]);
+
+  const handleEmit = useCallback((md: string) => {
+    lastEmitted.current = md;
+    onChange?.(md);
+  }, [onChange]);
+
+  return (
+    <div
+      className={
+        "cronymax-wysiwyg rounded border border-cronymax-border " +
+        "bg-cronymax-base overflow-auto " +
+        (disabled ? "pointer-events-none opacity-60" : "")
+      }
+    >
+      <MilkdownProvider key={editorKey}>
+        <WysiwygInner initialValue={value} onEmit={handleEmit} />
+      </MilkdownProvider>
+    </div>
+  );
+}
+
+interface DocTypeSummary {
+  name: string;
+  display_name: string;
+  user_defined: boolean;
+}
+
+interface DocTypeDraft {
+  name: string;
+  display_name: string;
+  description: string;
+}
+
+const EMPTY_DOC_TYPE: DocTypeDraft = {
+  name: "",
+  display_name: "",
+  description: "",
+};
+
+function DocTypesTab() {
+  const [docTypes, setDocTypes] = useState<DocTypeSummary[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [draft, setDraft] = useState<DocTypeDraft | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadList = useCallback(async () => {
+    try {
+      const res = await bridge.send("doc_type.list");
+      setDocTypes(res.doc_types ?? []);
+    } catch (err) {
+      setError(`doc_type.list: ${(err as Error).message}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadList();
+  }, [loadList]);
+
+  const onSelect = useCallback(async (dt: DocTypeSummary) => {
+    setSelected(dt.name);
+    setCreating(false);
+    setError(null);
+    // Show name/display immediately while description loads
+    setDraft({ name: dt.name, display_name: dt.display_name, description: "" });
+    try {
+      const res = await bridge.send("doc_type.load", { name: dt.name });
+      setDraft({
+        name: res.name,
+        display_name: res.display_name,
+        description: res.description,
+      });
+    } catch (err) {
+      setError(`doc_type.load: ${(err as Error).message}`);
+    }
+  }, []);
+
+  const onNew = useCallback(() => {
+    setSelected(null);
+    setCreating(true);
+    setDraft({ ...EMPTY_DOC_TYPE });
+    setError(null);
+  }, []);
+
+  const onSave = useCallback(async () => {
+    if (!draft) return;
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(draft.name)) {
+      setError(
+        "Name must be 1-64 chars of letters, digits, _, -, or . (no slashes).",
+      );
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await bridge.send("doc_type.save", {
+        name: draft.name,
+        display_name: draft.display_name || draft.name,
+        description: draft.description,
+      });
+      await loadList();
+      setSelected(draft.name);
+      setCreating(false);
+    } catch (err) {
+      setError(`save failed: ${(err as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [draft, loadList]);
+
+  const onDelete = useCallback(async () => {
+    if (!selected) return;
+    // eslint-disable-next-line no-alert
+    if (!confirm(`Delete doc-type "${selected}" YAML file?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await bridge.send("doc_type.delete", { name: selected });
+      await loadList();
+      setSelected(null);
+      setDraft(null);
+    } catch (err) {
+      setError(`delete failed: ${(err as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [selected, loadList]);
+
+  const selectedIsUserDefined =
+    selected != null &&
+    (docTypes.find((d) => d.name === selected)?.user_defined ?? false);
+
+  const editable = creating || selectedIsUserDefined;
+
+  return (
+    <div className="flex h-full">
+      <aside className="flex w-[200px] flex-col border-r border-cronymax-border bg-cronymax-float">
+        <div className="flex items-center justify-between border-b border-cronymax-border px-2 py-1.5">
+          <span className="text-xs font-semibold">Doc Types</span>
+          <button
+            type="button"
+            onClick={onNew}
+            className="rounded bg-cronymax-primary px-1.5 py-0.5 text-xs text-white hover:opacity-90"
+            title="New doc type"
+          >
+            +
+          </button>
+        </div>
+        <ul className="flex-1 overflow-auto py-1">
+          {docTypes.length === 0 && (
+            <li className="px-2 py-1 text-[11px] text-cronymax-caption">
+              No doc types found.
+            </li>
+          )}
+          {docTypes.map((dt) => (
+            <li key={dt.name}>
+              <button
+                type="button"
+                onClick={() => void onSelect(dt)}
+                className={
+                  "flex w-full flex-col items-start px-2 py-1 text-left text-xs " +
+                  (selected === dt.name && !creating
+                    ? "bg-cronymax-primary/15 text-cronymax-title"
+                    : "text-cronymax-caption hover:bg-cronymax-base hover:text-cronymax-title")
+                }
+              >
+                <span className="font-medium">{dt.name}</span>
+                <span className="text-[10px] opacity-70">
+                  {dt.user_defined ? "user" : "built-in"}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </aside>
+
+      <section className="flex-1 overflow-auto p-3">
+        {!draft && (
+          <p className="text-xs text-cronymax-caption">
+            Select a doc type to view its Markdown description, or click{" "}
+            <b>+</b> to create a new one. User-defined doc types are stored
+            in <code>.cronymax/doc-types/&lt;name&gt;.yaml</code> and
+            appear alongside built-ins in the Flow PRODUCES picker.
+          </p>
+        )}
+        {draft && (
+          <div className="max-w-[640px]">
+            <h2 className="mb-3 text-sm font-semibold">
+              {creating
+                ? "New doc type"
+                : `${editable ? "Edit" : "View"}: ${selected}`}
+            </h2>
+            {!creating && !selectedIsUserDefined && (
+              <p className="mb-3 rounded border border-cronymax-border bg-cronymax-float p-2 text-[11px] text-cronymax-caption">
+                Built-in doc types are read-only. Create a user doc type to
+                define your own document structure.
+              </p>
+            )}
+            <Field label="Name (file basename)">
+              <input
+                className={inputCls}
+                value={draft.name}
+                disabled={!creating}
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                placeholder="my-doc-type"
+              />
+              {!creating && (
+                <p className="mt-1 text-[10px] text-cronymax-caption">
+                  Rename by deleting and recreating.
+                </p>
+              )}
+            </Field>
+            <Field label="Display name">
+              <input
+                className={inputCls}
+                value={draft.display_name}
+                disabled={!editable}
+                onChange={(e) =>
+                  setDraft({ ...draft, display_name: e.target.value })
+                }
+                placeholder="My Doc Type"
+              />
+            </Field>
+            <Field label="Description">
+              <WysiwygMarkdownField
+                value={draft.description}
+                onChange={
+                  editable
+                    ? (v) => setDraft({ ...draft, description: v })
+                    : undefined
+                }
+                disabled={!editable}
+                placeholder="Describe what this document type represents (Markdown supported)"
+              />
+            </Field>
+            {error && <p className="mb-3 text-xs text-red-300">{error}</p>}
+            {editable && (
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void onSave()}
+                  disabled={busy}
+                  className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                >
+                  {creating ? "Create" : "Save"}
+                </button>
+                {!creating && selectedIsUserDefined && (
+                  <button
+                    type="button"
+                    onClick={() => void onDelete()}
+                    disabled={busy}
+                    className="rounded border border-red-500/50 bg-red-500/10 px-3 py-1 text-xs text-red-300 hover:bg-red-500/20 disabled:opacity-50"
+                  >
+                    Delete
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraft(null);
+                    setCreating(false);
+                    setSelected(null);
+                    setError(null);
+                  }}
+                  className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs hover:bg-cronymax-float"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ── Runner tab (was here) ──────────────────────────────────────────────────
 
 function SpaceRow({
   space,
@@ -1593,6 +1995,7 @@ const TAB_LABELS: { id: SettingsTab; label: string }[] = [
   { id: "appearance", label: "Appearance" },
   { id: "providers", label: "Providers" },
   { id: "agents", label: "Agents" },
+  { id: "doc-types", label: "Doc Types" },
   { id: "workspace", label: "Workspace" },
   { id: "flows", label: "Flows" },
   { id: "runner", label: "Runner" },
@@ -1708,6 +2111,7 @@ export function App() {
         {tab === "appearance" && <AppearanceTab />}
         {tab === "providers" && <ProvidersTab />}
         {tab === "agents" && <AgentsTab />}
+        {tab === "doc-types" && <DocTypesTab />}
         {tab === "workspace" && <WorkspaceTab />}
         {tab === "flows" && <Flows />}
         {tab === "runner" && <RunnerTab />}

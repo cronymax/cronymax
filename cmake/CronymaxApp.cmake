@@ -300,6 +300,20 @@ add_custom_command(TARGET cronymax_app POST_BUILD
   VERBATIM
 )
 
+# Built-in (preset) flow definitions. Copied into the bundle so the flow
+# registry can surface them in the Settings / Flows dropdown even before the
+# user creates a workspace-local copy. Workspace-local flows with the same
+# id take priority over these bundled presets.
+add_custom_command(TARGET cronymax_app POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+    "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/builtin-flows"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/examples/flows"
+    "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/builtin-flows"
+  COMMENT "Bundling built-in preset flows into cronymax.app"
+  VERBATIM
+)
+
 # Always-run sync of the freshly built web/dist/ into the bundle. cronymax_app
 # may not relink on every build (e.g. when only frontend files change), so its
 # POST_BUILD wouldn't fire. This phony target runs unconditionally.

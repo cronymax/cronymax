@@ -447,7 +447,6 @@ export function App() {
       if (names.length === 0) {
         await bridge.send("agent.registry.save", {
           name: "Chat",
-          kind: "worker",
           llm: "",
           system_prompt: "You are a helpful assistant.",
           memory_namespace: "",

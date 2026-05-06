@@ -1,0 +1,106 @@
+# Full PM → RD → QA software development cycle with review gates.
+#
+# Flow summary:
+#   1. PM produces a prototype (human approval gate).
+#   2. PM is re-invoked to produce a PRD (human + critic approval).
+#   3. RD receives the PRD and produces a tech-spec (human + critic + qa-critic).
+#   4. RD is re-invoked to implement and produce a code-description (human + critic).
+#   5. RD is re-invoked to produce a submit-for-testing handoff to QA.
+#   6. QA receives the tech-spec and produces test-cases (reviewed by rd + critic).
+#   7. QA runs the test suite; files bug-reports back to RD (max 5 cycles).
+#   8. RD patches and sends patch-notes back to QA.
+#   9. QA produces a final test-report (human + critic approval).
+name: software-dev-cycle
+description: |
+  Full PM → RD → QA software development cycle with review gates and
+  automated bug-fix cycling. Demonstrates on_approved_reschedule for
+  multi-phase agents, per-edge reviewer_agents overrides, and max_cycles
+  enforcement on the bug-report → patch-note loop.
+
+agents:
+  - pm
+  - rd
+  - qa
+  - qa-critic
+  - critic
+
+edges:
+  # ── Phase 1: PM design ────────────────────────────────────────────────
+  # PM's first deliverable: a UX prototype. No downstream routing; just
+  # needs human sign-off before PM is re-invoked to write the PRD.
+  - from: pm
+    port: prototype
+    requires_human_approval: true
+
+  # After prototype approval, FlowRuntime re-invokes PM (on_approved_reschedule)
+  # to produce the PRD. PRD is routed to RD when approved.
+  - from: pm
+    to: rd
+    port: prd
+    requires_human_approval: true
+    reviewer_agents:
+      - critic
+    on_approved_reschedule: true
+
+  # ── Phase 2: RD design ────────────────────────────────────────────────
+  # RD receives the PRD and produces a tech-spec. Both the critic and
+  # qa-critic review it for quality and testability. After approval, RD
+  # is re-invoked to begin implementation.
+  - from: rd
+    to: qa
+    port: tech-spec
+    requires_human_approval: true
+    reviewer_agents:
+      - critic
+      - qa-critic
+    on_approved_reschedule: true
+
+  # ── Phase 3: RD implementation ────────────────────────────────────────
+  # After tech-spec approval RD implements and writes a code-description.
+  # Critic reviews; after approval RD is re-invoked to write the handoff.
+  - from: rd
+    port: code-description
+    requires_human_approval: true
+    reviewer_agents:
+      - critic
+    on_approved_reschedule: true
+
+  # RD hands off to QA. No review gate — this is a coordination message.
+  - from: rd
+    to: qa
+    port: submit-for-testing
+
+  # ── Phase 4: QA testing ───────────────────────────────────────────────
+  # QA produces test-cases from the tech-spec. RD + critic review for
+  # completeness and alignment with the spec.
+  - from: qa
+    port: test-cases
+    reviewer_agents:
+      - rd
+      - critic
+
+  # Bug-fix cycle: QA files bug-reports back to RD. Capped at 5 rounds;
+  # escalates to human if the defect persists beyond that.
+  - from: qa
+    to: rd
+    port: bug-report
+    max_cycles: 5
+    on_cycle_exhausted: escalate_to_human
+
+  # RD sends patch-notes back to QA after fixing a bug.
+  - from: rd
+    to: qa
+    port: patch-note
+
+  # QA's final sign-off. Requires human approval; critic reviews the
+  # report for completeness before it reaches the human queue.
+  - from: qa
+    port: test-report
+    requires_human_approval: true
+    reviewer_agents:
+      - critic
+
+max_review_rounds: 3
+on_review_exhausted: halt
+reviewer_timeout_secs: 120
+reviewer_enabled: true

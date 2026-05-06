@@ -465,6 +465,93 @@ impl DispatcherBuilder {
         self
     }
 
+    /// Register the three `test_runner.*` tools.
+    ///
+    /// # Parameters
+    /// * `workspace_root` — absolute path to the workspace root.
+    /// * `store` — shared [`LastReportStore`] for the current flow run.
+    /// * `run_id` — the flow run identifier; stored in the report.
+    /// * `agent_kind` — `"reviewer"` or `"producer"`. If `"reviewer"`, the
+    ///   tools are NOT registered and a warning is logged.
+    pub fn register_test_runner(
+        &mut self,
+        workspace_root: std::path::PathBuf,
+        store: Arc<crate::capability::test_runner::LastReportStore>,
+        run_id: String,
+        agent_kind: &str,
+    ) -> &mut Self {
+        if agent_kind == "reviewer" {
+            tracing::warn!(
+                "test_runner tools skipped for reviewer agent (producer-only restriction)"
+            );
+            return self;
+        }
+
+        // test_runner.discover
+        let wr_discover = workspace_root.clone();
+        self.register(
+            crate::capability::test_runner::discover_tool_def(),
+            false,
+            move |_args| {
+                let wr = wr_discover.clone();
+                async move { crate::capability::test_runner::tool_discover(&wr).await }
+            },
+        );
+
+        // test_runner.run_suite
+        let wr_run = workspace_root.clone();
+        let store_run = store.clone();
+        let run_id_run = run_id.clone();
+        self.register(
+            crate::capability::test_runner::run_suite_tool_def(),
+            false,
+            move |args| {
+                let wr = wr_run.clone();
+                let store = store_run.clone();
+                let run_id = run_id_run.clone();
+                async move {
+                    #[derive(serde::Deserialize)]
+                    struct Args {
+                        suite: String,
+                        #[serde(default)]
+                        filter: Option<String>,
+                    }
+                    let a: Args = match serde_json::from_str(&args) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return ToolOutcome::Error(format!("invalid run_suite args: {e}"))
+                        }
+                    };
+                    crate::capability::test_runner::tool_run_suite(
+                        &wr,
+                        &a.suite,
+                        a.filter.as_deref(),
+                        &store,
+                        &run_id,
+                    )
+                    .await
+                }
+            },
+        );
+
+        // test_runner.get_last_report
+        let store_report = store.clone();
+        let run_id_report = run_id.clone();
+        self.register(
+            crate::capability::test_runner::get_last_report_tool_def(),
+            false,
+            move |_args| {
+                let store = store_report.clone();
+                let run_id = run_id_report.clone();
+                async move {
+                    crate::capability::test_runner::tool_get_last_report(&store, &run_id).await
+                }
+            },
+        );
+
+        self
+    }
+
     pub fn build(self) -> HostCapabilityDispatcher {
         HostCapabilityDispatcher { tools: self.tools }
     }

@@ -38,6 +38,19 @@ FlowYamlDoc LoadFlowYaml(const std::filesystem::path& path,
             e["requires_human_approval"]
                 ? e["requires_human_approval"].as<bool>()
                 : false;
+        edge.on_approved_reschedule =
+            e["on_approved_reschedule"]
+                ? e["on_approved_reschedule"].as<bool>()
+                : false;
+        if (e["reviewer_agents"] && e["reviewer_agents"].IsSequence())
+          for (const auto& ra : e["reviewer_agents"])
+            edge.reviewer_agents.push_back(ra.as<std::string>());
+        edge.max_cycles =
+            e["max_cycles"] ? e["max_cycles"].as<int>() : 0;
+        edge.on_cycle_exhausted =
+            e["on_cycle_exhausted"]
+                ? e["on_cycle_exhausted"].as<std::string>()
+                : "halt";
         result.edges.push_back(edge);
       }
     }
