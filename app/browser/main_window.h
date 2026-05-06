@@ -11,6 +11,7 @@
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_label_button.h"
+#include "include/views/cef_menu_button.h"
 #include "include/views/cef_overlay_controller.h"
 #include "include/views/cef_panel.h"
 #include "include/views/cef_textfield.h"
@@ -130,6 +131,7 @@ class MainWindow : public CefWindowDelegate,
   CefRefPtr<CefPanel>        lights_pad_;
   CefRefPtr<CefPanel>        spacer_;
   CefRefPtr<CefPanel>        win_pad_;
+  CefRefPtr<CefMenuButton>   btn_space_;           // workspace selector dropdown
   CefRefPtr<CefLabelButton>  btn_sidebar_toggle_;  // hides/shows sidebar
   CefRefPtr<CefLabelButton>  btn_web_;
   CefRefPtr<CefLabelButton>  btn_term_;
@@ -167,25 +169,26 @@ class MainWindow : public CefWindowDelegate,
 
   // Popover (overlay inside the main window — Arc "Little Arc" style).
   CefRefPtr<CefBrowserView>      popover_view_;
-  // HTML chrome strip (URL toolbar). Uses a CefBrowserView so the dark
-  // background paints correctly on macOS overlay NSViews (CefPanel
-  // SetBackgroundColor has no effect in overlay mode on macOS).
-  CefRefPtr<CefBrowserView>      popover_chrome_view_;
+  // Native chrome strip (URL toolbar + action buttons) as a CefPanel overlay.
+  CefRefPtr<CefPanel>            popover_chrome_panel_;
+  CefRefPtr<CefLabelButton>      popover_url_label_;  // read-only URL display inside panel
+  CefRefPtr<CefLabelButton>      popover_btn_reload_;
+  CefRefPtr<CefLabelButton>      popover_btn_open_tab_;
+  CefRefPtr<CefLabelButton>      popover_btn_close_;
+  std::string                    popover_current_url_; // last navigated URL for open-as-tab
   CefRefPtr<CefPanel>            popover_root_;
   CefRefPtr<CefOverlayController> popover_overlay_;
   CefRefPtr<CefOverlayController> popover_chrome_overlay_;
   CefRefPtr<CefWindow>           main_window_;
   int popover_owner_browser_id_ = 0;
   int popover_content_browser_id_ = 0;
-  // Browser id of the chrome-strip BrowserView — excluded from URL updates.
-  int popover_chrome_browser_id_ = 0;
   // True when the current popover is one of the bundled `panels/*` pages
   // (e.g. Settings). Those panels provide their own title bar, so the
   // native URL-bar chrome strip is suppressed.
   bool popover_is_builtin_ = false;
   void LayoutPopover();
-  // Build the HTML popover chrome strip BrowserView (URL field + buttons).
-  CefRefPtr<CefBrowserView> BuildPopoverChromeView(const std::string& initial_url);
+  // Build the native popover chrome strip CefPanel (URL field + buttons).
+  CefRefPtr<CefPanel> BuildPopoverChromePanel();
 
   // native-title-bar: build the top title-bar panel
   // (lights pad | spacer | btn_web | btn_term | btn_chat | win pad).

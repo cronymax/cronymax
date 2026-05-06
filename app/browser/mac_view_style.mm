@@ -338,6 +338,71 @@ void HidePopoverScrim(void* window_nsview_ptr) {
   if (scrim) [scrim removeFromSuperview];
 }
 
+void* CaptureLastChildNSView(void* main_nsview_ptr) {
+  if (!main_nsview_ptr) return nullptr;
+  NSView* contentView = (__bridge NSView*)main_nsview_ptr;
+  NSWindow* mainWin = contentView.window;
+  if (!mainWin) return nullptr;
+  NSArray<NSWindow*>* children = mainWin.childWindows;
+  if (children.count == 0) return nullptr;
+  NSWindow* overlay = children.lastObject;
+  NSView* overlayContent = overlay.contentView;
+  if (!overlayContent) return nullptr;
+  NSArray<NSView*>* subs = overlayContent.subviews;
+  // Return the widget root NSView (direct subview of overlay contentView).
+  // StyleOverlayBrowserView walks up from this to find the overlay root.
+  return (__bridge void*)(subs.count > 0 ? subs[0] : overlayContent);
+}
+
+void StyleOverlayPanel(void* nsview_ptr,
+                       double radius,
+                       int corner_mask,
+                       cef_color_t bg_color) {
+  if (!nsview_ptr) return;
+  NSView* view = (__bridge NSView*)nsview_ptr;
+
+  // Walk up to find the overlay root (direct child of the overlay NSWindow's
+  // contentView). This is the same traversal as StyleOverlayBrowserView.
+  NSView* windowContent = view.window ? view.window.contentView : nil;
+  NSView* overlayRoot = view;
+  {
+    NSView* cur = view;
+    while (cur.superview && cur.superview != windowContent) {
+      cur = cur.superview;
+    }
+    overlayRoot = cur;
+  }
+
+  // For AppKit-rendered CefPanel views the layer backgroundColor IS the
+  // background — unlike BrowserView (IOSurface-backed) we must NOT clear it.
+  overlayRoot.wantsLayer = YES;
+  if (CALayer* rl = overlayRoot.layer) {
+    const CGFloat a = ((bg_color >> 24) & 0xFF) / 255.0;
+    const CGFloat r = ((bg_color >> 16) & 0xFF) / 255.0;
+    const CGFloat g = ((bg_color >>  8) & 0xFF) / 255.0;
+    const CGFloat b = ((bg_color      ) & 0xFF) / 255.0;
+    rl.backgroundColor =
+        [NSColor colorWithSRGBRed:r green:g blue:b alpha:a].CGColor;
+    rl.cornerRadius   = (CGFloat)radius;
+    rl.maskedCorners  = ToCACornerMask(corner_mask);
+    rl.masksToBounds  = YES;
+    rl.shadowOpacity  = 0.0f;  // no shadow on the chrome strip
+  }
+}
+
+void SetOverlayWindowBackground(void* nsview_ptr, cef_color_t argb) {
+  if (!nsview_ptr) return;
+  NSView* view = (__bridge NSView*)nsview_ptr;
+  NSWindow* w = view.window;
+  if (!w) return;
+  const CGFloat a = ((argb >> 24) & 0xFF) / 255.0;
+  const CGFloat r = ((argb >> 16) & 0xFF) / 255.0;
+  const CGFloat g = ((argb >>  8) & 0xFF) / 255.0;
+  const CGFloat b = ((argb      ) & 0xFF) / 255.0;
+  w.backgroundColor = [NSColor colorWithSRGBRed:r green:g blue:b alpha:a];
+  w.opaque = (a >= 0.999);
+}
+
 void ApplyCardStyle(void* nsview_ptr) {
   if (!nsview_ptr) return;
   NSView* view = (__bridge NSView*)nsview_ptr;

@@ -1,5 +1,5 @@
 import { createPanelStore } from "@/hooks/usePanelStore";
-import type { Space, TabSummary } from "@/types";
+import type { TabSummary } from "@/types";
 
 /**
  * Sidebar state.
@@ -12,30 +12,23 @@ import type { Space, TabSummary } from "@/types";
  * sidebar just mirrors that into a flat list and asks the shell to
  * activate/close by id; clicks no longer drive a local "panel" mode at
  * all.
+ *
+ * Space management has moved to the native title-bar workspace selector
+ * (CefMenuButton in MainWindow::BuildTitleBar). The sidebar no longer owns
+ * the space dropdown.
  */
 export interface State {
   tabs: TabSummary[];
   activeTabId: string | null;
-  spaces: Space[];
-  activeSpaceId: string | null;
-  activeSpaceName: string;
-  spacesOpen: boolean;
 }
 
 export type Action =
   | { type: "setTabs"; tabs: TabSummary[]; activeId: string | null }
-  | { type: "setActiveTab"; id: string | null }
-  | { type: "setSpaces"; spaces: Space[] }
-  | { type: "setActiveSpace"; id: string; name: string }
-  | { type: "toggleSpaces"; open?: boolean };
+  | { type: "setActiveTab"; id: string | null };
 
 const initial: State = {
   tabs: [],
   activeTabId: null,
-  spaces: [],
-  activeSpaceId: null,
-  activeSpaceName: "Default",
-  spacesOpen: false,
 };
 
 function reducer(s: State, a: Action): State {
@@ -44,12 +37,6 @@ function reducer(s: State, a: Action): State {
       return { ...s, tabs: a.tabs, activeTabId: a.activeId };
     case "setActiveTab":
       return { ...s, activeTabId: a.id };
-    case "setSpaces":
-      return { ...s, spaces: a.spaces };
-    case "setActiveSpace":
-      return { ...s, activeSpaceId: a.id, activeSpaceName: a.name };
-    case "toggleSpaces":
-      return { ...s, spacesOpen: a.open ?? !s.spacesOpen };
   }
 }
 

@@ -107,14 +107,7 @@ function Row({
 export function App() {
   const dragRef = useDragRegions("sidebar");
   const [state, dispatch] = useStore();
-  const {
-    tabs,
-    activeTabId,
-    spaces,
-    activeSpaceId,
-    activeSpaceName,
-    spacesOpen,
-  } = state;
+  const { tabs, activeTabId } = state;
 
   // ── Initial load ───────────────────────────────────────────────────
   useEffect(() => {
@@ -126,19 +119,6 @@ export function App() {
           tabs: snap.tabs ?? [],
           activeId: snap.activeTabId ?? null,
         });
-      } catch {
-        // ignore
-      }
-      try {
-        const sp = await bridge.send("space.list");
-        dispatch({ type: "setSpaces", spaces: sp });
-        if (sp.length > 0) {
-          dispatch({
-            type: "setActiveSpace",
-            id: sp[0]!.id,
-            name: sp[0]!.name,
-          });
-        }
       } catch {
         // ignore
       }
@@ -156,17 +136,6 @@ export function App() {
   useBridgeEvent("shell.tab_activated", (p) =>
     dispatch({ type: "setActiveTab", id: p.tabId }),
   );
-  useBridgeEvent("shell.space_changed", (p) =>
-    dispatch({ type: "setActiveSpace", id: p.id, name: p.name }),
-  );
-
-  // Close spaces dropdown on outside click.
-  useEffect(() => {
-    if (!spacesOpen) return;
-    const close = () => dispatch({ type: "toggleSpaces", open: false });
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [spacesOpen, dispatch]);
 
   // ── Actions ────────────────────────────────────────────────────────
   const activate = useCallback(async (tab: TabSummary) => {
@@ -185,105 +154,13 @@ export function App() {
     }
   }, []);
 
-  // ── Spaces ─────────────────────────────────────────────────────────
-  const refreshSpaces = useCallback(async () => {
-    try {
-      const sp = await bridge.send("space.list");
-      dispatch({ type: "setSpaces", spaces: sp });
-    } catch {
-      // ignore
-    }
-  }, [dispatch]);
-
-  const switchSpace = useCallback(
-    async (id: string, name: string) => {
-      try {
-        await bridge.send("space.switch", { space_id: id });
-        dispatch({ type: "setActiveSpace", id, name });
-        dispatch({ type: "toggleSpaces", open: false });
-      } catch (e) {
-        console.warn("space.switch failed", e);
-      }
-    },
-    [dispatch],
-  );
-
-  const createSpace = useCallback(async () => {
-    const name = prompt("Space name:");
-    if (!name) return;
-    const path = prompt("Workspace path (leave blank for current):", "");
-    try {
-      await bridge.send("space.create", {
-        name,
-        root_path: path || ".",
-      });
-      void refreshSpaces();
-    } catch (e) {
-      console.warn("space.create failed", e);
-    }
-  }, [refreshSpaces]);
-
   return (
     <aside
       ref={dragRef as React.RefObject<HTMLElement>}
       className="app-drag flex h-full flex-col bg-cronymax-body pt-7 text-cronymax-title"
     >
-      {/* Space header */}
-      <div className="no-drag relative flex items-center gap-2 px-3 py-2.5">
-        <span className="h-2.5 w-2.5 flex-none rounded-full bg-cronymax-primary" />
-        <span className="flex-1 truncate text-sm font-medium">
-          {activeSpaceName}
-        </span>
-        <button
-          type="button"
-          title="Switch Space"
-          onClick={(e) => {
-            e.stopPropagation();
-            const next = !spacesOpen;
-            dispatch({ type: "toggleSpaces", open: next });
-            if (next) void refreshSpaces();
-          }}
-          className="flex h-5 w-5 items-center justify-center rounded text-cronymax-caption hover:bg-cronymax-float hover:text-white"
-        >
-          ▾
-        </button>
-        {spacesOpen && (
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="absolute left-3 right-3 top-full z-10 mt-1 rounded-lg border border-cronymax-border bg-cronymax-base p-1 shadow-cronymax-elev-2"
-          >
-            <ul>
-              {spaces.map((sp) => (
-                <li
-                  key={sp.id}
-                  onClick={() => void switchSpace(sp.id, sp.name)}
-                  className={
-                    "cursor-pointer rounded px-2 py-1.5 text-xs hover:bg-cronymax-float " +
-                    (sp.id === activeSpaceId
-                      ? "text-cronymax-title"
-                      : "text-cronymax-caption")
-                  }
-                >
-                  {sp.name}
-                </li>
-              ))}
-            </ul>
-            <button
-              type="button"
-              onClick={() => {
-                dispatch({ type: "toggleSpaces", open: false });
-                void createSpace();
-              }}
-              className="mt-1 w-full rounded px-2 py-1.5 text-left text-xs text-cronymax-secondary hover:bg-cronymax-float"
-            >
-              + New Space
-            </button>
-          </div>
-        )}
-      </div>
-
       {/* Items section */}
-      <section className="no-drag flex-1 overflow-auto px-2 pb-4">
+      <section className="no-drag flex-1 overflow-auto px-2 pb-4 pt-2">
         <div className="no-drag px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-cronymax-caption">
           Tabs
         </div>

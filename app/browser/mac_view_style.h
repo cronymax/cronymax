@@ -148,4 +148,31 @@ void ShowPopoverScrim(void* main_window_nsview,
 // `window_nsview` is CefWindow::GetWindowHandle() (the contentView NSView).
 void HidePopoverScrim(void* window_nsview);
 
+// Capture the widget root NSView of the overlay child NSWindow that was most
+// recently added to the main window. Call immediately after AddOverlayView()
+// to obtain the NSView needed by StyleOverlayBrowserView and
+// SetOverlayWindowBackground. `main_nsview` is the value returned by
+// CefWindow::GetWindowHandle().
+void* CaptureLastChildNSView(void* main_nsview);
+
+// Style a CefPanel-based overlay (not a BrowserView). Unlike
+// StyleOverlayBrowserView, this function does NOT clear intermediate layer
+// backgrounds (AppKit-rendered views need their backgrounds intact). It:
+//   - Sets the overlay root layer.backgroundColor = bg_color
+//   - Rounds the selected corners with cornerRadius + maskedCorners
+//   - Enables masksToBounds so children are clipped to the rounded rect
+// `nsview` is any NSView within the overlay (e.g. from CaptureLastChildNSView).
+void StyleOverlayPanel(void* nsview,
+                       double radius,
+                       int corner_mask,
+                       cef_color_t bg_color);
+
+// Paint a background color on a native overlay view (e.g. a CefPanel used as
+// an overlay via AddOverlayView). CefPanel::SetBackgroundColor is ignored for
+// overlay NSViews on macOS because the child TYPE_CONTROL NSWindow is non-
+// opaque. This function sets the NSWindow's backgroundColor directly so the
+// color shows through all transparent NSView layers above it.
+// `nsview` is any NSView inside the overlay (e.g. from CaptureLastChildNSView).
+void SetOverlayWindowBackground(void* nsview, cef_color_t argb);
+
 }  // namespace cronymax

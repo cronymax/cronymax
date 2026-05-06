@@ -16,7 +16,10 @@
 #include "include/cef_path_util.h"
 #include "include/views/cef_browser_view_delegate.h"
 #include "include/views/cef_fill_layout.h"
+#include "include/views/cef_menu_button.h"
 #include "include/views/cef_panel_delegate.h"
+#include "include/cef_menu_model.h"
+#include "include/cef_menu_model_delegate.h"
 #include "include/wrapper/cef_closure_task.h"
 #include "include/wrapper/cef_helpers.h"
 
@@ -175,6 +178,57 @@ class FnButtonDelegate : public CefButtonDelegate {
   DISALLOW_COPY_AND_ASSIGN(FnButtonDelegate);
 };
 
+// std::function-backed CefMenuButtonDelegate — calls OnMenuButtonPressed
+// handler then lets the handler call ShowMenu().
+class FnMenuButtonDelegate : public CefMenuButtonDelegate {
+ public:
+  using PressFn = std::function<void(
+      CefRefPtr<CefMenuButton>,
+      const CefPoint&,
+      CefRefPtr<CefMenuButtonPressedLock>)>;
+  explicit FnMenuButtonDelegate(PressFn fn) : fn_(std::move(fn)) {}
+  void OnMenuButtonPressed(CefRefPtr<CefMenuButton> btn,
+                           const CefPoint& pt,
+                           CefRefPtr<CefMenuButtonPressedLock> lock) override {
+    if (fn_) fn_(btn, pt, lock);
+  }
+  void OnButtonPressed(CefRefPtr<CefButton>) override {}
+ private:
+  PressFn fn_;
+  IMPLEMENT_REFCOUNTING(FnMenuButtonDelegate);
+  DISALLOW_COPY_AND_ASSIGN(FnMenuButtonDelegate);
+};
+
+// std::function-backed CefMenuModelDelegate for space-selector menu results.
+class FnMenuModelDelegate : public CefMenuModelDelegate {
+ public:
+  using ExecFn = std::function<void(int)>;
+  explicit FnMenuModelDelegate(ExecFn fn) : fn_(std::move(fn)) {}
+  void ExecuteCommand(CefRefPtr<CefMenuModel>, int cmd,
+                      cef_event_flags_t) override {
+    if (fn_) fn_(cmd);
+  }
+ private:
+  ExecFn fn_;
+  IMPLEMENT_REFCOUNTING(FnMenuModelDelegate);
+  DISALLOW_COPY_AND_ASSIGN(FnMenuModelDelegate);
+};
+
+// std::function-backed CefTextfieldDelegate for the popover URL textfield.
+class FnTextfieldDelegate : public CefTextfieldDelegate {
+ public:
+  using KeyFn = std::function<bool(CefRefPtr<CefTextfield>, const CefKeyEvent&)>;
+  explicit FnTextfieldDelegate(KeyFn fn) : fn_(std::move(fn)) {}
+  bool OnKeyEvent(CefRefPtr<CefTextfield> tf,
+                  const CefKeyEvent& ev) override {
+    return fn_ ? fn_(tf, ev) : false;
+  }
+ private:
+  KeyFn fn_;
+  IMPLEMENT_REFCOUNTING(FnTextfieldDelegate);
+  DISALLOW_COPY_AND_ASSIGN(FnTextfieldDelegate);
+};
+
 // Forward declaration — defined later in this TU inside the helpers section.
 void PushToView(CefRefPtr<CefBrowserView> view,
                 const std::string& event_name,
@@ -317,6 +371,10 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
           if (sp->id == new_id) {
             PushToSidebar("shell.space_changed",
                           nlohmann::json{{"id", new_id}, {"name", sp->name}}.dump());
+            // Refresh the native title-bar space button label.
+            if (btn_space_) {
+              btn_space_->SetText(sp->name + " \u25BE");
+            }
             break;
           }
         }
@@ -822,12 +880,6 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   // updates. The callbacks below are kept for cross-cutting concerns:
   // sidebar event mirroring and popover URL display.
   client_handler_->on_browser_created = [this](int browser_id) {
-    // Pair the chrome-strip BrowserView so its address-change events are
-    // filtered out and not mistaken for content-browser navigation.
-    if (popover_chrome_view_ && popover_chrome_view_->GetBrowser() &&
-        popover_chrome_view_->GetBrowser()->GetIdentifier() == browser_id) {
-      popover_chrome_browser_id_ = browser_id;
-    }
     // When the popover content browser is created, apply corners/shadow/scrim.
     // GetBrowser() is nil during OpenPopover's CefPostTask because CEF Alloy
     // creates the browser asynchronously after AddOverlayView returns.  This
@@ -866,15 +918,12 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
 
   client_handler_->on_address_change =
       [this](int browser_id, const std::string& url) {
-        // Ignore address changes from the chrome-strip BrowserView itself.
-        if (browser_id == popover_chrome_browser_id_) return;
-        // Mirror popover content URL into the HTML chrome strip.
+        // Mirror popover content URL into the native chrome strip textfield.
         if (popover_view_ && popover_view_->GetBrowser() &&
             popover_view_->GetBrowser()->GetIdentifier() == browser_id) {
           popover_content_browser_id_ = browser_id;
-          PushToView(popover_chrome_view_,
-                     "popover_chrome.url_changed",
-                     nlohmann::json{{"url", url}}.dump());
+          popover_current_url_ = url;
+          if (popover_url_label_) popover_url_label_->SetText(url);
           return;
         }
         Tab* t = tabs_->FindByBrowserId(browser_id);
@@ -1021,15 +1070,25 @@ namespace {
 #if defined(__APPLE__)
 constexpr double kPopoverCornerRadius = 12.0;
 
-void StylePopoverChrome(CefRefPtr<CefBrowserView> v) {
-  if (!v) return;
-  auto b = v->GetBrowser();
-  if (!b) return;
-  // No shadow on the chrome strip — shadow comes from the content view below.
-  StyleOverlayBrowserView(b->GetHost()->GetWindowHandle(),
-                          kPopoverCornerRadius,
-                          kCornerTop,
-                          /*with_shadow=*/false);
+// Native CefPanel toolbar: round the top two corners and paint the toolbar
+// background. Takes the hosting CefWindow so it can look up the overlay
+// NSWindow lazily at call time — CEF defers adding the child NSWindow to the
+// next event-loop iteration, so capturing the NSView immediately after
+// AddOverlayView() always returns nullptr.
+void StylePopoverChrome(CefRefPtr<CefWindow> main_win, cef_color_t bg_color) {
+  if (!main_win) return;
+  void* main_nsv = reinterpret_cast<void*>(main_win->GetWindowHandle());
+  // The chrome overlay is always the LAST child NSWindow (added after the
+  // content overlay).
+  void* nsview = CaptureLastChildNSView(main_nsv);
+  if (!nsview) return;
+  // Paint background + corner radius on the view layer.
+  StyleOverlayPanel(nsview, kPopoverCornerRadius, kCornerTop, bg_color);
+  // The NSWindow must stay non-opaque (clearColor) so the layer's rounded
+  // corner masking is actually visible. Setting opaque=YES would cause the
+  // NSWindow to paint a solid rectangle BEHIND all layers, overriding the
+  // masksToBounds corner clip. The real background comes from the layer above.
+  SetOverlayWindowBackground(nsview, 0x00000000);  // clearColor, opaque=NO
 }
 
 void StylePopoverContent(CefRefPtr<CefBrowserView> v, int corner_mask) {
@@ -1042,7 +1101,7 @@ void StylePopoverContent(CefRefPtr<CefBrowserView> v, int corner_mask) {
                           /*with_shadow=*/true);
 }
 #else
-inline void StylePopoverChrome(CefRefPtr<CefBrowserView>) {}
+inline void StylePopoverChrome(CefRefPtr<CefWindow>, cef_color_t) {}
 inline void StylePopoverContent(CefRefPtr<CefBrowserView>, int) {}
 #endif
 
@@ -1069,10 +1128,9 @@ void MainWindow::OpenPopover(const std::string& url, int owner_browser_id) {
       auto b = popover_view_->GetBrowser();
       if (b) b->GetMainFrame()->LoadURL(url);
     }
-    if (!is_builtin && popover_chrome_view_) {
-      PushToView(popover_chrome_view_,
-                 "popover_chrome.url_changed",
-                 nlohmann::json{{"url", url}}.dump());
+    if (!is_builtin && popover_url_label_) {
+      popover_current_url_ = url;
+      popover_url_label_->SetText(url);
     }
     LayoutPopover();
     UpdatePopoverVisibility();
@@ -1099,9 +1157,9 @@ void MainWindow::OpenPopover(const std::string& url, int owner_browser_id) {
   //    added last so it sits above the content overlay.
   //    Suppressed for builtin panels: they render their own title bar.
   if (!is_builtin) {
-    popover_chrome_view_ = BuildPopoverChromeView(url);
+    popover_chrome_panel_ = BuildPopoverChromePanel();
     popover_chrome_overlay_ = main_window_->AddOverlayView(
-        popover_chrome_view_, CEF_DOCKING_MODE_CUSTOM, /*can_activate=*/true);
+        popover_chrome_panel_, CEF_DOCKING_MODE_CUSTOM, /*can_activate=*/true);
   }
 
   LayoutPopover();
@@ -1109,18 +1167,26 @@ void MainWindow::OpenPopover(const std::string& url, int owner_browser_id) {
   if (popover_view_) popover_view_->RequestFocus();
 
   const bool builtin_for_style = is_builtin;
+  const cef_color_t bg_float = current_chrome_.bg_float != 0
+      ? current_chrome_.bg_float
+      : static_cast<cef_color_t>(0xFF182625);
   CefPostTask(TID_UI, base::BindOnce(
       [](CefRefPtr<CefBrowserView> content,
-         CefRefPtr<CefBrowserView> chrome_view,
+         CefRefPtr<CefPanel> chrome_panel,
+         CefRefPtr<CefWindow> main_win,
+         cef_color_t bg,
          bool builtin) {
         // Builtin panels fill the entire popover → all 4 corners rounded.
         // Web-page popovers have a chrome strip on top → only bottom corners
         // on the content view; the chrome strip gets the top corners.
         const int content_mask = builtin ? kCornerAll : kCornerBottom;
         StylePopoverContent(content, content_mask);
-        if (!builtin && chrome_view) StylePopoverChrome(chrome_view);
+        // StylePopoverChrome captures the chrome overlay NSWindow lazily here
+        // (on the next UI tick) — CEF defers addChildWindow: so it would fail
+        // if called immediately after AddOverlayView.
+        if (!builtin && chrome_panel) StylePopoverChrome(main_win, bg);
       },
-      popover_view_, popover_chrome_view_, builtin_for_style));
+      popover_view_, popover_chrome_panel_, main_window_, bg_float, builtin_for_style));
 }
 
 void MainWindow::ClosePopover() {
@@ -1135,11 +1201,15 @@ void MainWindow::ClosePopover() {
     popover_overlay_ = nullptr;
   }
   popover_view_ = nullptr;
-  popover_chrome_view_ = nullptr;
+  popover_chrome_panel_ = nullptr;
+  popover_url_label_ = nullptr;
+  popover_btn_reload_ = nullptr;
+  popover_btn_open_tab_ = nullptr;
+  popover_btn_close_ = nullptr;
+  popover_current_url_.clear();
   popover_root_ = nullptr;
   popover_owner_browser_id_ = 0;
   popover_content_browser_id_ = 0;
-  popover_chrome_browser_id_ = 0;
   popover_is_builtin_ = false;
   // Restore the normal content-panel insets now that the popover is gone.
   SetContentOuterVInsets(0, 8);
@@ -1218,8 +1288,12 @@ void MainWindow::LayoutPopover() {
   // Re-assert corner mask + shadow after CEF lays out / re-parents.
   const int content_mask = popover_is_builtin_ ? kCornerAll : kCornerBottom;
   StylePopoverContent(popover_view_, content_mask);
-  if (!popover_is_builtin_ && popover_chrome_view_)
-    StylePopoverChrome(popover_chrome_view_);
+  if (!popover_is_builtin_ && popover_chrome_panel_) {
+    const cef_color_t bg_float = current_chrome_.bg_float != 0
+        ? current_chrome_.bg_float
+        : static_cast<cef_color_t>(0xFF182625);
+    StylePopoverChrome(main_window_, bg_float);
+  }
 #if defined(__APPLE__)
   // The scrim must cover the CONTENT CARD (the scaled-down underlying tab),
   // not the popover footprint.  The popover (child NSWindow) floats above the
@@ -1246,30 +1320,93 @@ void MainWindow::OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
 }
 
 // ---------------------------------------------------------------------------
-// Popover chrome (HTML BrowserView)
+// Popover chrome (native CefPanel)
 // ---------------------------------------------------------------------------
-// A CefPanel overlay does not paint SetBackgroundColor on macOS overlay
-// NSViews — the NSView layer stays transparent regardless of the logical
-// color. Using a CefBrowserView backed by an HTML page gives us a solid
-// dark background via CSS and the same bridge mechanism used by every
-// other panel in the app.
+// Replaces the former HTML BrowserView toolbar with native CefPanel +
+// CefLabelButton (read-only URL display) + CefLabelButtons (Reload / Open-as-tab / Close).
+// Background color is applied via SetOverlayWindowBackground() in
+// StylePopoverChrome() because CefPanel::SetBackgroundColor is ignored for
+// TYPE_CONTROL overlay child NSWindows on macOS.
 
-CefRefPtr<CefBrowserView> MainWindow::BuildPopoverChromeView(
-    const std::string& initial_url) {
-  CefBrowserSettings bs;
-  // Use the theme's float surface color as the initial background so the
-  // toolbar matches the content card on first paint, before installThemeMirror
-  // fires. Falls back to the dark default before ApplyThemeChrome has run.
-  bs.background_color = current_chrome_.bg_float != 0
-                            ? current_chrome_.bg_float
-                            : static_cast<cef_color_t>(0xFF182625);
-  (void)initial_url;
-  auto view = CefBrowserView::CreateBrowserView(
-      client_handler_,
-      ResourceUrl("panels/popover/index.html"),
-      bs, nullptr, nullptr,
-      new AlloyBrowserViewDelegate());
-  return view;
+CefRefPtr<CefPanel> MainWindow::BuildPopoverChromePanel() {
+  const cef_color_t bg = current_chrome_.bg_float != 0
+                             ? current_chrome_.bg_float
+                             : static_cast<cef_color_t>(0xFF182625);
+  // Derive a readable foreground from the theme — same logic as ApplyThemeChrome.
+  const cef_color_t fg = current_chrome_.text_title != 0
+                             ? current_chrome_.text_title
+                             : static_cast<cef_color_t>(0xFFE8F2F0);
+  // Icon tint matches the title bar: dark_mode=true when the glyph needs to be
+  // light (i.e. text_title green component > 0x80 means a light colour).
+  const bool icon_dark = ((fg >> 8) & 0xFF) > 0x80;
+
+  auto panel = CefPanel::CreatePanel(
+      new SizedPanelDelegate(CefSize(0, 44)));  // 44 = kChromeH
+  panel->SetBackgroundColor(bg);  // logical hint; actual paint via StyleOverlayPanel
+
+  CefBoxLayoutSettings box;
+  box.horizontal = true;
+  box.inside_border_insets = {0, 8, 0, 8};
+  box.between_child_spacing = 4;
+  // CENTER so icon-button wrappers are vertically centered at their preferred
+  // size (28 px) rather than being stretched to the full 44 px panel height.
+  box.cross_axis_alignment = CEF_AXIS_ALIGNMENT_CENTER;
+  auto layout = panel->SetToBoxLayout(box);
+
+  // URL label — read-only display, not editable. Use a disabled CefLabelButton
+  // so no caret or selection is ever shown. Color uses the theme foreground.
+  popover_url_label_ = CefLabelButton::CreateLabelButton(
+      new FnButtonDelegate([]{}), "");
+  popover_url_label_->SetEnabled(false);
+  popover_url_label_->SetTextColor(CEF_BUTTON_STATE_NORMAL,   fg);
+  popover_url_label_->SetTextColor(CEF_BUTTON_STATE_DISABLED, fg);
+  popover_url_label_->SetBackgroundColor(bg);
+  panel->AddChildView(popover_url_label_);
+  layout->SetFlexForView(popover_url_label_, 1);
+
+  // Action buttons — each wrapped in a 28×28 fixed-size panel so the box
+  // layout sees a 28 px preferred cross-axis size and the ink-drop hover
+  // fills exactly 28×28 rather than the full 44 px toolbar height.
+  constexpr int kBtnSz = 28;
+  auto add_icon_btn = [&](CefRefPtr<CefLabelButton>* slot,
+                          IconId icon,
+                          std::string_view tooltip,
+                          std::function<void()> action) {
+    auto btn = MakeIconButton(new FnButtonDelegate(std::move(action)), icon,
+                              tooltip);
+    IconRegistry::ApplyToButton(btn, icon, icon_dark);
+    btn->SetBackgroundColor(bg);
+    *slot = btn;
+
+    // Wrap in a fixed 28×28 panel — SizedPanelDelegate overrides
+    // GetPreferredSize so the box layout honours the 28 px cross-axis size.
+    auto wrapper = CefPanel::CreatePanel(
+        new SizedPanelDelegate(CefSize(kBtnSz, kBtnSz)));
+    wrapper->SetBackgroundColor(bg);
+    wrapper->SetToFillLayout();
+    wrapper->AddChildView(btn);
+    panel->AddChildView(wrapper);
+    layout->SetFlexForView(wrapper, 0);
+  };
+
+  add_icon_btn(&popover_btn_reload_, IconId::kRefresh, "Reload", [this]() {
+    if (popover_view_ && popover_view_->GetBrowser())
+      popover_view_->GetBrowser()->Reload();
+  });
+  add_icon_btn(&popover_btn_open_tab_, IconId::kTabWeb, "Open as tab", [this]() {
+    std::string url = popover_current_url_;
+    ClosePopover();
+    if (!url.empty()) OpenWebTab(url);
+  });
+  add_icon_btn(&popover_btn_close_, IconId::kClose, "Close", [this]() {
+    // Post to next UI tick so this button's click handler unwinds before
+    // ClosePopover() tears down the overlay (and this button with it).
+    CefPostTask(TID_UI, base::BindOnce(
+        [](CefRefPtr<MainWindow> self) { self->ClosePopover(); },
+        CefRefPtr<MainWindow>(this)));
+  });
+
+  return panel;
 }
 
 // ---------------------------------------------------------------------------
@@ -1335,6 +1472,58 @@ CefRefPtr<CefPanel> MainWindow::BuildTitleBar() {
                                      : current_chrome_.bg_body);
     panel->AddChildView(btn_sidebar_toggle_);
     layout->SetFlexForView(btn_sidebar_toggle_, 0);
+  }
+
+  // 1c. Workspace (space) selector — menu button showing the active space
+  //     name with a dropdown chevron. Sits right of the sidebar toggle so
+  //     users can switch workspaces from the title bar without opening the
+  //     sidebar.
+  {
+    static constexpr int kNewSpaceCmd = 9000;
+    const std::string init_label =
+        space_manager_.ActiveSpace()
+            ? space_manager_.ActiveSpace()->name + " \u25BE"
+            : "Default \u25BE";
+    auto delegate = new FnMenuButtonDelegate(
+        [this](CefRefPtr<CefMenuButton> btn,
+               const CefPoint& pt,
+               CefRefPtr<CefMenuButtonPressedLock> /*lock*/) {
+          const auto& spaces = space_manager_.spaces();
+          auto menu = CefMenuModel::CreateMenuModel(
+              new FnMenuModelDelegate([this](int cmd) {
+                if (cmd == kNewSpaceCmd) {
+                  // Open Settings panel — it contains the Space management UI.
+                  CefPostTask(TID_UI, base::BindOnce(
+                      [](CefRefPtr<MainWindow> self) {
+                        self->OpenPopover(
+                            self->ResourceUrl("panels/settings/index.html"));
+                      },
+                      CefRefPtr<MainWindow>(this)));
+                } else if (cmd >= 0 &&
+                           cmd < static_cast<int>(
+                               space_manager_.spaces().size())) {
+                  const auto& sp = space_manager_.spaces()[cmd];
+                  space_manager_.SwitchTo(sp->id);
+                }
+              }));
+          for (int i = 0; i < static_cast<int>(spaces.size()); ++i) {
+            menu->AddItem(i, spaces[i]->name);
+            const bool active = space_manager_.ActiveSpace() &&
+                                spaces[i]->id == space_manager_.ActiveSpace()->id;
+            if (active) menu->SetChecked(i, true);
+          }
+          menu->AddSeparator();
+          menu->AddItem(kNewSpaceCmd, "New Space\u2026");
+          btn->ShowMenu(menu, pt, CEF_MENU_ANCHOR_TOPLEFT);
+        });
+    btn_space_ = CefMenuButton::CreateMenuButton(delegate, init_label);
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kTitleBarBtnFg);
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_HOVERED, 0xFFFFFFFF);
+    btn_space_->SetBackgroundColor(
+        current_chrome_.bg_body == 0 ? kTitleBarBgFallback
+                                     : current_chrome_.bg_body);
+    panel->AddChildView(btn_space_);
+    layout->SetFlexForView(btn_space_, 0);
   }
 
   // 2. Drag spacer (drag overlay attaches here on macOS).
@@ -1901,6 +2090,36 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
     b->SetBackgroundColor(chrome.bg_body);
     IconRegistry::ApplyToButton(*kTitleBtns[i], kTitleBtnIcons[i], title_dark);
   }
+  // Popover chrome panel: retint URL label + icon buttons when theme changes.
+  if (popover_chrome_panel_) {
+    const bool pop_dark = title_dark;  // same luminance heuristic
+    popover_chrome_panel_->SetBackgroundColor(chrome.bg_float);
+    if (popover_url_label_) {
+      popover_url_label_->SetTextColor(CEF_BUTTON_STATE_NORMAL,   chrome.text_title);
+      popover_url_label_->SetTextColor(CEF_BUTTON_STATE_DISABLED, chrome.text_title);
+      popover_url_label_->SetBackgroundColor(chrome.bg_float);
+    }
+    const struct { CefRefPtr<CefLabelButton>* btn; IconId id; } kPopBtns[] = {
+        {&popover_btn_reload_,   IconId::kRefresh},
+        {&popover_btn_open_tab_, IconId::kTabWeb},
+        {&popover_btn_close_,    IconId::kClose},
+    };
+    for (auto& e : kPopBtns) {
+      if (!e.btn->get()) continue;
+      e.btn->get()->SetBackgroundColor(chrome.bg_float);
+      // Also retint the 28×28 wrapper panel that surrounds the button.
+      if (auto wrapper = e.btn->get()->GetParentView())
+        wrapper->SetBackgroundColor(chrome.bg_float);
+      IconRegistry::ApplyToButton(*e.btn, e.id, pop_dark);
+    }
+    // Re-apply the background color through the NSWindow layer too.
+    if (main_window_) {
+      CefPostTask(TID_UI, base::BindOnce(
+          [](CefRefPtr<CefWindow> w, cef_color_t bg) {
+            StylePopoverChrome(w, bg);
+          }, main_window_, chrome.bg_float));
+    }
+  }
   if (tabs_) {
     for (const auto& summary : tabs_->Snapshot()) {
       if (Tab* tab = tabs_->Get(summary.id)) {
@@ -1914,6 +2133,11 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
   if (lights_pad_) lights_pad_->SetBackgroundColor(chrome.bg_body);
   if (spacer_)     spacer_->SetBackgroundColor(chrome.bg_body);
   if (win_pad_)    win_pad_->SetBackgroundColor(chrome.bg_body);
+  if (btn_space_) {
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_NORMAL,  chrome.text_title);
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_HOVERED, chrome.text_title);
+    btn_space_->SetBackgroundColor(chrome.bg_body);
+  }
 #if defined(__APPLE__)
   if (main_window_) {
     SetMainWindowBackgroundColor(main_window_->GetWindowHandle(),
