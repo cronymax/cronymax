@@ -8,19 +8,21 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <nlohmann/json.hpp>
 
 #include "document/document_store.h"
 #include "event_bus/event_bus.h"
 #include "event_bus/app_event.h"
+#include "workspace/flow_yaml.h"
 // (task 4.1) flow_runtime.h, trace_event.h, trace_writer.h removed —
 // run lifecycle is now owned by the Rust runtime over GIPS.
-#include "flow/mention_parser.h"
-#include "sandbox/sandbox_launcher.h"
+// (task 5.0) sandbox, flow C++ modules removed — logic now lives in the
+// Rust runtime (crates/cronymax).
 #include "workspace/file_broker.h"
-#include "flow/gitignore_helper.h"
-#include "flow/workspace_layout.h"
+#include "workspace/workspace_layout.h"
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
 #include "include/wrapper/cef_helpers.h"
@@ -60,6 +62,52 @@ std::string SpaceToJson(const Space& sp) {
       {"name",      sp.name},
       {"root_path", sp.workspace_root.string()},
   }.dump();
+}
+
+// Shell execution helper — replaces the removed sandbox::SandboxLauncher.
+// Runs `cmd` via /bin/sh -c in `cwd` and captures stdout/stderr.
+// No sandbox policy enforcement; the Rust runtime is the authoritative
+// capability gate for agent tool calls.
+ExecResult RunShellCommand(const std::filesystem::path& cwd,
+                           const std::string& cmd) {
+  ExecResult result;
+  int stdout_pipe[2] = {-1, -1};
+  int stderr_pipe[2] = {-1, -1};
+  if (pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
+    result.stderr_data = "failed to create pipes";
+    return result;
+  }
+  const pid_t pid = fork();
+  if (pid < 0) {
+    result.stderr_data = "failed to fork";
+    close(stdout_pipe[0]); close(stdout_pipe[1]);
+    close(stderr_pipe[0]); close(stderr_pipe[1]);
+    return result;
+  }
+  if (pid == 0) {
+    close(stdout_pipe[0]); close(stderr_pipe[0]);
+    dup2(stdout_pipe[1], STDOUT_FILENO); close(stdout_pipe[1]);
+    dup2(stderr_pipe[1], STDERR_FILENO); close(stderr_pipe[1]);
+    if (!cwd.empty()) chdir(cwd.c_str());
+    execl("/bin/sh", "/bin/sh", "-c", cmd.c_str(), nullptr);
+    _exit(127);
+  }
+  close(stdout_pipe[1]); close(stderr_pipe[1]);
+  auto read_fd = [](int fd) {
+    std::string data;
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof(buf))) > 0)
+      data.append(buf, static_cast<size_t>(n));
+    close(fd);
+    return data;
+  };
+  result.stdout_data = read_fd(stdout_pipe[0]);
+  result.stderr_data = read_fd(stderr_pipe[0]);
+  int status = 0;
+  waitpid(pid, &status, 0);
+  result.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  return result;
 }
 
 // Extract a string field from a JSON payload using nlohmann::json (no-throw).
@@ -747,11 +795,7 @@ void BridgeHandler::SetupCapabilityHandler() {
             reply({{"outcome","err"},{"error",{{"code","bad_request"},{"message","empty argv"}}}});
             return;
           }
-          SandboxLauncher launcher;
-          FileBroker file_broker(workspace_root);
-          const auto result = launcher.ExecuteShellCommand(
-              Actor::kAgent, file_broker.policy(), cwd, cmd,
-              /*confirmation_granted=*/true);
+          const auto result = RunShellCommand(cwd, cmd);
           if (result.exit_code == 0) {
             reply({{"outcome","ok"},{"stdout",result.stdout_data},
                    {"stderr",result.stderr_data},{"exit_code",result.exit_code}});
@@ -1267,9 +1311,25 @@ bool BridgeHandler::HandleWorkspace(std::string_view channel,
   }
 
   if (channel == "workspace.gitignore_suggestions") {
-    const auto missing = GitignoreHelper::MissingEntries(sp->workspace_root);
+    static const std::vector<std::string> kSuggested = {
+        ".cronymax/flows/*/runs/*/trace.jsonl",
+        ".cronymax/flows/*/runs/*/reviews.json",
+    };
+    const auto gitignore_path = sp->workspace_root / ".gitignore";
+    std::string gitignore_content;
+    {
+      std::ifstream in(gitignore_path);
+      if (in) {
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        gitignore_content = ss.str();
+      }
+    }
     nlohmann::json arr = nlohmann::json::array();
-    for (const auto& s : missing) arr.push_back(s);
+    for (const auto& entry : kSuggested) {
+      if (gitignore_content.find(entry) == std::string::npos)
+        arr.push_back(entry);
+    }
     callback->Success(nlohmann::json{{"missing", arr}}.dump());
     return true;
   }
@@ -1293,7 +1353,7 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
                                    std::string_view payload,
                                    CefRefPtr<Callback> callback) {
   auto* sp = space_manager_->ActiveSpace();
-  if (!sp || !sp->agent_registry || !sp->flow_registry ||
+  if (!sp || !sp->agent_registry ||
       !sp->doc_type_registry) {
     callback->Failure(503, "registries not ready");
     return true;
@@ -1660,18 +1720,24 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   }
 
   if (channel == "flow.list") {
+    WorkspaceLayout layout(sp->workspace_root);
     nlohmann::json flows = nlohmann::json::array();
-    for (const auto& id : sp->flow_registry->Ids()) {
-      const auto* f = sp->flow_registry->Get(id);
-      if (!f) continue;
-      nlohmann::json agents_arr = nlohmann::json::array();
-      for (const auto& a : f->agents()) agents_arr.push_back(a);
-      flows.push_back({
-          {"id",         id},
-          {"name",       f->name()},
-          {"edge_count", f->edges().size()},
-          {"agents",     agents_arr},
-      });
+    std::error_code scan_ec;
+    if (std::filesystem::is_directory(layout.FlowsDir(), scan_ec)) {
+      for (const auto& entry :
+           std::filesystem::directory_iterator(layout.FlowsDir(), scan_ec)) {
+        if (!entry.is_directory()) continue;
+        const std::string id = entry.path().filename().string();
+        const auto flow_yaml = layout.FlowFile(id);
+        std::error_code exist_ec;
+        if (!std::filesystem::exists(flow_yaml, exist_ec)) continue;
+        const auto doc = LoadFlowYaml(flow_yaml, id);
+        if (!doc.ok) continue;
+        nlohmann::json agents_arr = nlohmann::json::array();
+        for (const auto& a : doc.agents) agents_arr.push_back(a.id);
+        flows.push_back({{"id", id}, {"name", doc.name},
+                         {"edge_count", doc.edges.size()}, {"agents", agents_arr}});
+      }
     }
     callback->Success(nlohmann::json{{"flows", flows}}.dump());
     return true;
@@ -1679,32 +1745,41 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
 
   if (channel == "flow.load") {
     const auto id = extract_field("id");
-    const auto* f = sp->flow_registry->Get(id);
-    if (!f) {
+    if (id.empty()) { callback->Failure(400, "id required"); return true; }
+    WorkspaceLayout layout(sp->workspace_root);
+    const auto flow_yaml = layout.FlowFile(id);
+    std::error_code exist_ec;
+    if (!std::filesystem::exists(flow_yaml, exist_ec)) {
       callback->Failure(404, "flow not found");
       return true;
     }
+    const auto doc = LoadFlowYaml(flow_yaml, id);
+    if (!doc.ok) {
+      callback->Failure(500,
+                        std::string("flow.yaml parse error: ") + doc.error);
+      return true;
+    }
     nlohmann::json agents_arr = nlohmann::json::array();
-    for (const auto& a : f->agents()) agents_arr.push_back(a);
+    for (const auto& a : doc.agents) agents_arr.push_back(a.id);
     nlohmann::json edges_arr = nlohmann::json::array();
-    for (const auto& e : f->edges()) {
+    for (const auto& e : doc.edges) {
       edges_arr.push_back({
-          {"from",                    e.from_agent},
-          {"to",                      e.to_agent},
-          {"port",                    e.port},
+          {"from", e.from},
+          {"to", e.to},
+          {"port", e.port},
           {"requires_human_approval", e.requires_human_approval},
       });
     }
     callback->Success(nlohmann::json{
-        {"id",                   id},
-        {"name",                 f->name()},
-        {"description",          f->description()},
-        {"max_review_rounds",    f->max_review_rounds()},
-        {"on_review_exhausted",  f->on_review_exhausted()},
-        {"reviewer_enabled",     f->reviewer_enabled()},
-        {"reviewer_timeout_secs",f->reviewer_timeout_secs()},
-        {"agents",               agents_arr},
-        {"edges",                edges_arr},
+        {"id", id},
+        {"name", doc.name},
+        {"description", doc.description},
+        {"max_review_rounds", doc.max_review_rounds},
+        {"on_review_exhausted", doc.on_review_exhausted},
+        {"reviewer_enabled", doc.reviewer_enabled},
+        {"reviewer_timeout_secs", doc.reviewer_timeout_secs},
+        {"agents", agents_arr},
+        {"edges", edges_arr},
     }.dump());
     return true;
   }
@@ -1834,8 +1909,7 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   // mention.user_input — server-side @mention parser. Renderer sends the raw
   // user-typed text and the active flow id; we return the matched agent
   // names (and any unknown mentions) so the renderer can dispatch the
-  // message to those agents. This keeps mention-parsing rules in one place
-  // (MentionParser) and out of JS.
+  // message to those agents.
   //   payload: {flow_id, text}
   //   reply:   {mentions:[name], unknown:[name]}
   // -------------------------------------------------------------------------
@@ -1846,29 +1920,35 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
       callback->Failure(400, "flow_id required");
       return true;
     }
-    if (!sp->flow_registry) {
-      callback->Failure(503, "flow registry not ready");
-      return true;
-    }
-    const auto* flow = sp->flow_registry->Get(flow_id);
-    if (!flow) {
-      callback->Failure(404, "flow not found");
-      return true;
-    }
-    // Build the set of agent names declared by the flow.
+    WorkspaceLayout layout(sp->workspace_root);
     std::set<std::string> known;
-    for (const auto& a : flow->agents()) known.insert(a);
-    auto parsed = MentionParser::Parse(text);
+    const auto flow_yaml = layout.FlowFile(flow_id);
+    std::error_code yaml_ec;
+    if (std::filesystem::exists(flow_yaml, yaml_ec)) {
+      for (const auto& agent_id : LoadFlowAgents(flow_yaml))
+        known.insert(agent_id);
+    }
+    // Inline @mention parser: @[a-zA-Z_][a-zA-Z0-9_-]*
     nlohmann::json mentions = nlohmann::json::array();
     nlohmann::json unknown_arr = nlohmann::json::array();
-    for (const auto& m : parsed) {
-      if (known.count(m.name)) {
-        mentions.push_back(m.name);
-      } else {
-        unknown_arr.push_back(m.name);
-      }
+    for (size_t i = 0; i < text.size(); ++i) {
+      if (text[i] != '@') continue;
+      if (i > 0 && (std::isalnum((unsigned char)text[i-1]) || text[i-1] == '_'))
+        continue;
+      size_t j = i + 1;
+      if (j >= text.size() ||
+          (!std::isalpha((unsigned char)text[j]) && text[j] != '_'))
+        continue;
+      while (j < text.size() &&
+             (std::isalnum((unsigned char)text[j]) || text[j] == '_' ||
+              text[j] == '-'))
+        ++j;
+      std::string name = text.substr(i + 1, j - i - 1);
+      if (known.count(name)) mentions.push_back(name);
+      else unknown_arr.push_back(name);
     }
-    callback->Success(nlohmann::json{{"mentions", mentions}, {"unknown", unknown_arr}}.dump());
+    callback->Success(
+        nlohmann::json{{"mentions", mentions}, {"unknown", unknown_arr}}.dump());
     return true;
   }
 
@@ -1909,13 +1989,16 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
     callback->Failure(400, "missing 'flow' in payload");
     return true;
   }
-  // FlowRegistry is the source of truth for valid flow ids.
-  if (!sp->flow_registry || !sp->flow_registry->Get(flow_id)) {
-    callback->Failure(404, "unknown flow");
-    return true;
+  // Validate flow id via filesystem (flow_registry removed).
+  WorkspaceLayout layout(sp->workspace_root);
+  {
+    std::error_code flow_ec;
+    if (!std::filesystem::is_directory(layout.FlowDir(flow_id), flow_ec)) {
+      callback->Failure(404, "unknown flow");
+      return true;
+    }
   }
 
-  WorkspaceLayout layout(sp->workspace_root);
   DocumentStore store(layout.FlowDir(flow_id));
 
   if (channel == "document.list") {

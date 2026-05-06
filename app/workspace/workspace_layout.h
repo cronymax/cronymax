@@ -1,5 +1,5 @@
-#ifndef CRONYMAX_FLOW_WORKSPACE_LAYOUT_H_
-#define CRONYMAX_FLOW_WORKSPACE_LAYOUT_H_
+#ifndef CRONYMAX_WORKSPACE_WORKSPACE_LAYOUT_H_
+#define CRONYMAX_WORKSPACE_WORKSPACE_LAYOUT_H_
 
 #include <filesystem>
 #include <string>
@@ -20,8 +20,7 @@ namespace cronymax {
 //       conflicts/
 //
 // All path methods return absolute paths; they do not check existence. Use
-// EnsureSkeleton() to materialize the directory tree (see workspace_layout.cc
-// task 2.2).
+// EnsureSkeleton() to materialize the directory tree.
 class WorkspaceLayout {
  public:
   explicit WorkspaceLayout(std::filesystem::path workspace_root);
@@ -95,4 +94,4 @@ class WorkspaceLayout {
 
 }  // namespace cronymax
 
-#endif  // CRONYMAX_FLOW_WORKSPACE_LAYOUT_H_
+#endif  // CRONYMAX_WORKSPACE_WORKSPACE_LAYOUT_H_

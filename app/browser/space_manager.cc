@@ -8,7 +8,7 @@
 #include <sstream>
 
 #include "event_bus/event_bus.h"
-#include "flow/workspace_layout.h"
+#include "workspace/workspace_layout.h"
 #include "platform/macos/notifications.h"
 // (task 4.1) agent_runtime.h and flow_runtime.h removed — run lifecycle
 // now owned by the Rust runtime via GIPS / RuntimeProxy.
@@ -166,24 +166,19 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
 
         sp->agent_registry =
             std::make_unique<AgentRegistry>(layout.AgentsDir());
-        sp->flow_registry =
-            std::make_unique<FlowRegistry>(layout.FlowsDir());
         sp->doc_type_registry = std::make_unique<DocTypeRegistry>(
             builtin_doc_types_dir_, layout.DocTypesDir());
         sp->agent_registry->Refresh();
-        sp->flow_registry->Refresh();
         sp->doc_type_registry->Refresh();
 
         sp->fs_watcher = std::make_unique<FsWatcher>();
         std::vector<std::filesystem::path> watch_paths = {
-            layout.AgentsDir(), layout.FlowsDir(), layout.DocTypesDir()};
+            layout.AgentsDir(), layout.DocTypesDir()};
         AgentRegistry* ar = sp->agent_registry.get();
-        FlowRegistry* fr = sp->flow_registry.get();
         DocTypeRegistry* dr = sp->doc_type_registry.get();
         sp->fs_watcher->Start(watch_paths, std::chrono::milliseconds(250),
-                              [ar, fr, dr]() {
+                              [ar, dr]() {
                                 ar->Refresh();
-                                fr->Refresh();
                                 dr->Refresh();
                               });
 

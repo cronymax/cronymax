@@ -1,4 +1,4 @@
-#include "flow/fs_watcher.h"
+#include "workspace/fs_watcher.h"
 
 #include <CoreServices/CoreServices.h>
 
@@ -69,8 +69,6 @@ bool FsWatcher::Start(const std::vector<std::filesystem::path>& paths,
   }
 
   FSEventStreamContext ctx{0, impl_.get(), nullptr, nullptr, nullptr};
-  // Latency is the FSEvents-internal coalescing window; we additionally
-  // debounce in our own thread.
   const CFAbsoluteTime kFsLatency = 0.1;  // 100 ms
   impl_->stream = FSEventStreamCreate(
       nullptr, &OnFsEvent, &ctx, cf_paths,

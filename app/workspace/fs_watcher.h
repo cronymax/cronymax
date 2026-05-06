@@ -1,5 +1,5 @@
-#ifndef CRONYMAX_FLOW_FS_WATCHER_H_
-#define CRONYMAX_FLOW_FS_WATCHER_H_
+#ifndef CRONYMAX_WORKSPACE_FS_WATCHER_H_
+#define CRONYMAX_WORKSPACE_FS_WATCHER_H_
 
 #include <chrono>
 #include <filesystem>
@@ -16,8 +16,8 @@ namespace cronymax {
 // events occurred. The callback runs on a dedicated dispatch thread; it
 // must be thread-safe relative to whatever data it touches.
 //
-// Used by the per-Space registries to reload .cronymax/agents/,
-// .cronymax/flows/ and .cronymax/doc-types/ on disk changes.
+// Used by the per-Space registries to reload .cronymax/agents/ and
+// .cronymax/doc-types/ on disk changes.
 class FsWatcher {
  public:
   using Callback = std::function<void()>;
@@ -46,4 +46,4 @@ class FsWatcher {
 
 }  // namespace cronymax
 
-#endif  // CRONYMAX_FLOW_FS_WATCHER_H_
+#endif  // CRONYMAX_WORKSPACE_FS_WATCHER_H_

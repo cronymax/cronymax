@@ -10,8 +10,7 @@
 #include "document/agent_registry.h"
 #include "document/doc_type_registry.h"
 #include "event_bus/event_bus.h"
-#include "flow/flow_registry.h"
-#include "flow/fs_watcher.h"
+#include "workspace/fs_watcher.h"
 #include "terminal/pty_session.h"
 #include "workspace/space_store.h"
 
@@ -45,7 +44,6 @@ struct Space {
   // Per-Space orchestration registries (Phase A: read-only). Lazily
   // populated by SpaceManager when the Space is first activated.
   std::unique_ptr<AgentRegistry> agent_registry;
-  std::unique_ptr<FlowRegistry> flow_registry;
   std::unique_ptr<DocTypeRegistry> doc_type_registry;
   std::unique_ptr<FsWatcher> fs_watcher;
 

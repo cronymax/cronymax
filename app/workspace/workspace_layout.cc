@@ -1,4 +1,4 @@
-#include "flow/workspace_layout.h"
+#include "workspace/workspace_layout.h"
 
 #include <fstream>
 #include <system_error>
@@ -46,7 +46,6 @@ std::filesystem::path WorkspaceLayout::DocsDir(const std::string& flow) const {
 
 std::filesystem::path WorkspaceLayout::DocFile(const std::string& flow,
                                                const std::string& doc) const {
-  // Caller is responsible for stripping any path traversal in `doc`.
   return DocsDir(flow) / (doc + ".md");
 }
 

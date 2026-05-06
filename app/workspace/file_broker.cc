@@ -8,16 +8,11 @@
 namespace cronymax {
 
 FileBroker::FileBroker(std::filesystem::path workspace_root)
-    : workspace_root_(NormalizePath(workspace_root)),
-      policy_(SandboxPolicy::DefaultForWorkspace(workspace_root_)) {}
+    : workspace_root_(NormalizePath(workspace_root)) {}
 
-FileReadResult FileBroker::ReadText(Actor actor,
+FileReadResult FileBroker::ReadText(Actor /*actor*/,
                                     const std::filesystem::path& path) const {
   const auto normalized = NormalizePath(path);
-  const auto decision = permission_broker_.CheckRead(actor, normalized, policy_);
-  if (!decision.allowed) {
-    return {.ok = false, .error = decision.reason};
-  }
 
   std::ifstream in(normalized, std::ios::binary);
   if (!in) {
@@ -30,15 +25,10 @@ FileReadResult FileBroker::ReadText(Actor actor,
 }
 
 FileWriteResult FileBroker::WriteText(
-    Actor actor,
+    Actor /*actor*/,
     const std::filesystem::path& path,
     const std::string& content) const {
   const auto normalized = NormalizePath(path);
-  const auto decision =
-      permission_broker_.CheckWrite(actor, normalized, policy_);
-  if (!decision.allowed) {
-    return {.ok = false, .error = decision.reason};
-  }
 
   std::error_code ec;
   std::filesystem::create_directories(normalized.parent_path(), ec);

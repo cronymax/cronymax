@@ -7,8 +7,6 @@
 #include "browser/space_manager.h"
 #include "workspace/file_broker.h"
 #include "workspace/space_store.h"
-#include "sandbox/sandbox_launcher.h"
-#include "sandbox/sandbox_policy.h"
 
 namespace {
 
@@ -26,9 +24,6 @@ std::string JoinArgs(int argc, char** argv, int start) {
 void Usage() {
   std::cerr
       << "Usage:\n"
-      << "  native_probe policy <workspace>\n"
-      << "  native_probe exec <workspace> <command...>\n"
-      << "  native_probe exec-confirmed <workspace> <command...>\n"
       << "  native_probe read <workspace> <relative-path>\n"
       << "  native_probe agent <workspace> <task...>\n"
       << "  native_probe space-store <db-path>\n"
@@ -249,30 +244,6 @@ int main(int argc, char** argv) {
 
   if (mode == "file-boundary") {
     return RunFileBoundary(workspace);
-  }
-
-  if (mode == "policy") {
-    const auto policy =
-        cronymax::SandboxPolicy::DefaultForWorkspace(workspace);
-    std::cout << policy.ToSeatbeltProfile();
-    return 0;
-  }
-
-  if (mode == "exec" || mode == "exec-confirmed") {
-    if (argc < 4) {
-      Usage();
-      return 2;
-    }
-    const auto command = JoinArgs(argc, argv, 3);
-    const auto policy =
-        cronymax::SandboxPolicy::DefaultForWorkspace(workspace);
-    const cronymax::SandboxLauncher launcher;
-    const bool confirmed = mode == "exec-confirmed";
-    const auto result = launcher.ExecuteShellCommand(
-        cronymax::Actor::kAgent, policy, workspace, command, confirmed);
-    std::cout << result.stdout_data;
-    std::cerr << result.stderr_data;
-    return result.exit_code;
   }
 
   if (mode == "read") {

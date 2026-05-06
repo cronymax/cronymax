@@ -91,23 +91,23 @@ else()
   target_sources(cronymax_common PRIVATE app/platform/macos/notifications_stub.cc)
 endif()
 
-# sandbox: command classifier + permission/policy + sandbox launcher.
-add_library(cronymax_sandbox STATIC
-  app/sandbox/command_classifier.cc
-  app/sandbox/permission_broker.cc
-  app/sandbox/sandbox_launcher.cc
-  app/sandbox/sandbox_policy.cc
-)
-target_link_libraries(cronymax_sandbox PUBLIC cronymax_common)
-
-# workspace: file broker + space store (depends on sandbox).
+# workspace: file broker + space store + layout utilities.
 add_library(cronymax_workspace STATIC
   app/workspace/file_broker.cc
+  app/workspace/flow_yaml.cc
   app/workspace/space_store.cc
+  app/workspace/workspace_layout.cc
 )
 target_link_libraries(cronymax_workspace
-  PUBLIC cronymax_sandbox SQLite3::SQLite3
+  PUBLIC cronymax_common SQLite3::SQLite3
+  PRIVATE yaml-cpp
 )
+if(APPLE)
+  target_sources(cronymax_workspace PRIVATE app/workspace/fs_watcher.cc)
+  target_link_libraries(cronymax_workspace PRIVATE "-framework CoreServices")
+else()
+  message(WARNING "FsWatcher is currently macOS-only.")
+endif()
 
 # event_bus: typed event store (SQLite + JSONL) + inbox triage. Sits on top
 # of cronymax_workspace because it borrows the SpaceStore's sqlite3 handle.
@@ -129,14 +129,15 @@ else()
   message(WARNING "PTY implementation is currently macOS-only for the prototype.")
 endif()
 
-# agent: planner + tool registry + LLM router (depends on sandbox + workspace).
+# agent: planner + tool registry + LLM router (depends on workspace).
 add_library(cronymax_agent STATIC
+  app/agent/agent_runtime.cc
   app/agent/graph_engine.cc
   app/agent/model_router.cc
   app/agent/tool_registry.cc
 )
 target_link_libraries(cronymax_agent
-  PUBLIC cronymax_sandbox cronymax_workspace cronymax_common cronymax_document
+  PUBLIC cronymax_workspace cronymax_common cronymax_document
 )
 
 # document: doc-type schemas, agent definitions, document store,
@@ -156,23 +157,6 @@ target_link_libraries(cronymax_document
 )
 target_include_directories(cronymax_document PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
-# flow: workspace layout helpers, flow/agent registries, router, mention
-# parser. FlowRuntime and TraceWriter removed (cutover to Rust runtime).
-add_library(cronymax_flow STATIC
-  app/flow/flow_definition.cc
-  app/flow/flow_registry.cc
-  app/flow/fs_watcher.cc
-  app/flow/gitignore_helper.cc
-  app/flow/mention_parser.cc
-  app/flow/router.cc
-  app/flow/trace_event.cc
-  app/flow/workspace_layout.cc
-)
-target_link_libraries(cronymax_flow
-  PUBLIC cronymax_common cronymax_workspace cronymax_agent cronymax_document cronymax_event_bus yaml-cpp nlohmann_json
-  PRIVATE "-framework CoreServices"
-)
-target_include_directories(cronymax_flow PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
 # runtime_bridge: C++ side of the Rust runtime GIPS client.
 # Depends on Cronymax::Crony (static lib + crony.h header) for the C ABI.
@@ -198,12 +182,10 @@ endif()
 add_library(cronymax_native INTERFACE)
 target_link_libraries(cronymax_native INTERFACE
   cronymax_common
-  cronymax_sandbox
   cronymax_workspace
   cronymax_terminal
   cronymax_agent
   cronymax_document
-  cronymax_flow
   cronymax_event_bus
   cronymax_runtime_bridge
 )
@@ -215,7 +197,7 @@ add_library(cronymax_space STATIC
   app/browser/space_manager.cc
 )
 target_link_libraries(cronymax_space
-  PUBLIC cronymax_workspace cronymax_agent cronymax_terminal cronymax_document cronymax_flow cronymax_event_bus
+  PUBLIC cronymax_workspace cronymax_agent cronymax_terminal cronymax_document cronymax_event_bus
 )
 target_include_directories(cronymax_space PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
@@ -230,7 +212,7 @@ if(CRONYMAX_BUILD_TOOLS)
   # Loader tests for cronymax_document + cronymax_flow YAML parsers.
   # Run with: ./build/loader_test
   add_executable(loader_test tools/loader_test.cc)
-  target_link_libraries(loader_test PRIVATE cronymax_agent cronymax_document cronymax_flow)
+  target_link_libraries(loader_test PRIVATE cronymax_agent cronymax_document)
 
   # rebuild_trace --- admin CLI to regenerate trace.jsonl from SQLite.
   add_executable(rebuild_trace tools/rebuild_trace.cc)

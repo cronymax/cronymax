@@ -467,7 +467,16 @@ export function App() {
   // ── ensure terminal session for this chat tab ─────────────────────────
   const ensureChatTerminal = useCallback(
     async (currentTid: string | null, chatId: string) => {
-      if (currentTid) return currentTid;
+      // Validate the cached terminal ID: it won't survive an app restart,
+      // so check whether it's still present in the C++ process before reusing.
+      if (currentTid) {
+        try {
+          const { items } = await bridge.send("terminal.list");
+          if (items.some((t) => t.id === currentTid)) return currentTid;
+        } catch {
+          // Fall through to create a new terminal.
+        }
+      }
       try {
         const newTid = await bridge.send("terminal.new");
         const tid =

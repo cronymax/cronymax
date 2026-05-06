@@ -10,12 +10,10 @@
 #include "agent/model_router.h"
 #include "agent/tool_registry.h"
 #include "workspace/file_broker.h"
-#include "sandbox/sandbox_launcher.h"
 
 namespace cronymax {
 
 class DocumentStore;
-class ReviewStore;
 
 struct TraceEntry {
   std::string type;
@@ -38,12 +36,10 @@ struct AgentIdentity {
 
 // Optional Flow-level wiring used by the `submit_document` tool. When
 // `document_store` is non-null the tool writes the new revision through
-// it; when `review_store` is non-null the doc is transitioned to
-// IN_REVIEW and the revision is recorded in `reviews.json`.
+// it. Review tracking is handled by the Rust runtime.
 struct FlowBindings {
   std::string flow_id;
   std::shared_ptr<DocumentStore> document_store;
-  std::shared_ptr<ReviewStore> review_store;
   // Producing-port type (e.g. "prd"). The submit_document tool rejects
   // submissions whose `type` argument doesn't match this value, enforcing
   // typed-port discipline.
@@ -97,7 +93,6 @@ class AgentRuntime {
   AgentIdentity identity_;
   FlowBindings flow_bindings_;
   FileBroker file_broker_;
-  SandboxLauncher sandbox_launcher_;
   ModelRouter model_router_;
   ToolRegistry tools_;
   bool terminal_tool_called_ = false;

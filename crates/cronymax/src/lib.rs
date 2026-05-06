@@ -20,10 +20,13 @@
 pub mod agent_loop;
 pub mod capability;
 pub mod config;
+pub mod flow;
 pub mod lifecycle;
 pub mod llm;
 pub mod protocol;
 pub mod runtime;
+pub mod sandbox;
+pub mod terminal;
 
 pub use config::{LogConfig, RuntimeConfig, StoragePaths};
 pub use lifecycle::{Runtime, RuntimeError, RuntimeHandle};

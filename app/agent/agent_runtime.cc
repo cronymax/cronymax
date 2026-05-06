@@ -1,30 +1,14 @@
 #include "agent/agent_runtime.h"
 
 #include <chrono>
-#include <ctime>
 #include <sstream>
 #include <system_error>
 
 #include "agent/graph_engine.h"
 #include "common/path_utils.h"
 #include "document/document_store.h"
-#include "document/review_store.h"
-#include "document/reviews_state.h"
 
 namespace cronymax {
-
-namespace {
-std::string IsoNowUtc() {
-  auto now = std::chrono::system_clock::now();
-  std::time_t t = std::chrono::system_clock::to_time_t(now);
-  std::tm tm{};
-  gmtime_r(&t, &tm);
-  char buf[32];
-  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
-  return buf;
-}
-}  // namespace
-
 AgentRuntime::AgentRuntime(std::filesystem::path workspace_root)
     : AgentRuntime(std::move(workspace_root), {}, {}) {}
 
@@ -100,16 +84,10 @@ void AgentRuntime::RegisterDefaultTools() {
     return ToolResult{.ok = true, .output = "wrote " + rel_path};
   });
 
-  tools_.Register("terminal.execSandboxed", [this](const ToolCall& call) {
-    const auto result = sandbox_launcher_.ExecuteShellCommand(
-        Actor::kAgent, file_broker_.policy(), workspace_root_,
-        call.input);
-    if (result.exit_code != 0) {
-      return ToolResult{.ok = false, .output = result.stdout_data,
-                        .error = result.stderr_data};
-    }
-    return ToolResult{.ok = true, .output = result.stdout_data,
-                      .error = result.stderr_data};
+  tools_.Register("terminal.execSandboxed", [](const ToolCall& /*call*/) {
+    return ToolResult{.ok = false,
+                      .error = "terminal.execSandboxed is deprecated; use "
+                               "the Rust runtime shell capability instead"};
   });
 }
 
@@ -133,18 +111,8 @@ AgentRunResult AgentRuntime::RunPrototypeTask(const std::string& task,
   }
 
   if (task.rfind("/exec ", 0) == 0) {
-    const auto command = task.substr(6);
-    run.trace.push_back({"tool.request", "terminal.execSandboxed"});
-    const auto result = sandbox_launcher_.ExecuteShellCommand(
-        Actor::kAgent, file_broker_.policy(), workspace_root_, command,
-        confirmation_granted);
-    run.trace.push_back({"tool.result.exitCode", std::to_string(result.exit_code)});
-    if (!result.stderr_data.empty()) {
-      run.trace.push_back({"tool.result.stderr", result.stderr_data});
-    }
-    run.ok = result.exit_code == 0;
-    run.final_message = result.stdout_data.empty() ? result.stderr_data
-                                                   : result.stdout_data;
+    run.ok = false;
+    run.final_message = "/exec is deprecated; use the Rust runtime shell capability instead";
     return run;
   }
 
@@ -249,26 +217,7 @@ void AgentRuntime::RegisterFlowTools() {
       return ToolResult{.ok = false, .error = err.empty() ? "submit failed" : err};
     }
 
-    // Record revision in reviews.json (best-effort; surface failure but
-    // don't fail the tool, the doc itself was written).
-    if (flow_bindings_.review_store) {
-      const auto submitter = identity_.agent_id.empty() ? std::string("agent")
-                                                        : identity_.agent_id;
-      const auto now = IsoNowUtc();
-      const int rev = wr.revision;
-      const auto sha = wr.sha256_hex;
-      std::string rerr;
-      flow_bindings_.review_store->Update(
-          [&](ReviewsState& s) {
-            auto& doc = s.docs[name];
-            doc.current_revision = rev;
-            doc.status = DocStatus::kInReview;
-            doc.round_count += 1;
-            doc.revisions.push_back({rev, now, submitter, sha});
-            return true;
-          },
-          std::chrono::milliseconds(2000), &rerr);
-    }
+    // Review tracking is handled by the Rust runtime.
 
     terminal_tool_called_ = true;
     return ToolResult{.ok = true,
