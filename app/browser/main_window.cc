@@ -316,8 +316,7 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
         for (const auto& sp : space_manager_.spaces()) {
           if (sp->id == new_id) {
             PushToSidebar("shell.space_changed",
-                          "{\"id\":\"" + new_id + "\",\"name\":\"" +
-                              JsEsc(sp->name) + "\"}");
+                          nlohmann::json{{"id", new_id}, {"name", sp->name}}.dump());
             break;
           }
         }
@@ -434,39 +433,22 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   // and the broadcast so the sidebar can show every tab kind, not just
   // web. The legacy shape (id:int + is_pinned + url/title) is gone.
   sh.list_tabs = [this]() -> std::string {
-    std::string out = "{\"tabs\":[";
-    bool first = true;
+    nlohmann::json tabs_arr = nlohmann::json::array();
     for (const auto& s : tabs_->Snapshot()) {
-      if (!first) out += ",";
-      first = false;
-      out += "{\"kind\":\"";
-      out += TabKindToString(s.kind);
-      out += "\",\"id\":\"";
-      out += JsEsc(s.id);
-      out += "\",\"displayName\":\"";
-      out += JsEsc(s.display_name);
-      out += "\"";
+      nlohmann::json entry = {{"kind", TabKindToString(s.kind)},
+                              {"id", s.id},
+                              {"displayName", s.display_name}};
       if (s.kind == TabKind::kWeb) {
         Tab* t = tabs_->Get(s.id);
         auto* wb = t ? static_cast<WebTabBehavior*>(t->behavior()) : nullptr;
-        if (wb) {
-          out += ",\"url\":\"";
-          out += JsEsc(wb->current_url());
-          out += "\"";
-        }
+        if (wb) entry["url"] = wb->current_url();
       }
-      out += "}";
+      tabs_arr.push_back(std::move(entry));
     }
-    out += "],\"activeTabId\":";
-    if (tabs_->active_tab_id().empty()) {
-      out += "null";
-    } else {
-      out += "\"";
-      out += JsEsc(tabs_->active_tab_id());
-      out += "\"";
-    }
-    out += "}";
-    return out;
+    nlohmann::json result = {{"tabs", std::move(tabs_arr)}};
+    const std::string& aid = tabs_->active_tab_id();
+    result["activeTabId"] = aid.empty() ? nlohmann::json(nullptr) : nlohmann::json(aid);
+    return result.dump();
   };
 
   sh.new_tab = [this](const std::string& url) -> std::string {
@@ -475,11 +457,9 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     if (id.empty()) return "{}";
     const std::string final_url =
         raw.find("://") == std::string::npos ? "https://" + raw : raw;
-    std::string json = "{\"id\":\"";
-    json += JsEsc(id);
-    json += "\",\"url\":\"";
-    json += JsEsc(final_url);
-    json += "\",\"title\":\"\",\"is_pinned\":false}";
+    const std::string json = nlohmann::json{
+        {"id", id}, {"url", final_url}, {"title", ""}, {"is_pinned", false}
+    }.dump();
     PushToSidebar("shell.tab_created", json);
     return json;
   };
@@ -530,12 +510,8 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     ClosePopover();
     const TabId id = OpenWebTab(url);
     if (id.empty()) return;
-    std::string json = "{\"id\":\"";
-    json += JsEsc(id);
-    json += "\",\"url\":\"";
-    json += JsEsc(url);
-    json += "\",\"title\":\"\",\"is_pinned\":false}";
-    PushToSidebar("shell.tab_created", json);
+    PushToSidebar("shell.tab_created",
+        nlohmann::json{{"id", id}, {"url", url}, {"title", ""}, {"is_pinned", false}}.dump());
   };
 
   sh.popover_navigate = [this](const std::string& url) {
@@ -602,7 +578,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     }
     tabs_->Close(tab_id);
     PushToSidebar("shell.tab_closed",
-                  std::string("{\"id\":\"") + JsEsc(tab_id) + "\"}");
+                  nlohmann::json{{"id", tab_id}}.dump());
     // Promote any remaining tab.
     if (tabs_->active_tab_id().empty()) {
       const auto snap = tabs_->Snapshot();
@@ -630,12 +606,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
                       current_chrome_.text_title);
     }
     if (!id.empty()) tabs_->Activate(id);
-    std::string out = "{\"tabId\":\"";
-    out += JsEsc(id);
-    out += "\",\"created\":";
-    out += created ? "true" : "false";
-    out += "}";
-    return out;
+    return nlohmann::json{{"tabId", id}, {"created", created}}.dump();
   };
 
   // native-title-bar: one button → one new tab. Web/terminal/chat are the
@@ -666,19 +637,10 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     if (id.compare(0, sizeof(kPrefix) - 1, kPrefix) == 0) {
       numeric = std::atoi(id.c_str() + sizeof(kPrefix) - 1);
     }
-    std::string created = "{\"id\":";
-    created += std::to_string(numeric);
-    created += ",\"url\":\"";
-    if (kind == TabKind::kWeb) created += "https://www.google.com";
-    created += "\",\"title\":\"\",\"is_pinned\":false}";
-    PushToSidebar("shell.tab_created", created);
-
-    std::string resp = "{\"tabId\":\"";
-    resp += JsEsc(id);
-    resp += "\",\"kind\":\"";
-    resp += kind_s;
-    resp += "\"}";
-    return resp;
+    const std::string tab_url = (kind == TabKind::kWeb) ? "https://www.google.com" : "";
+    PushToSidebar("shell.tab_created",
+        nlohmann::json{{"id", numeric}, {"url", tab_url}, {"title", ""}, {"is_pinned", false}}.dump());
+    return nlohmann::json{{"tabId", id}, {"kind", kind_s}}.dump();
   };
 
   sh.set_toolbar_state =
@@ -714,19 +676,13 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   // Tab identity query: returns JSON {tabId, meta} for the calling browser.
   sh.this_tab_id = [this](int browser_id) -> std::string {
     Tab* t = tabs_ ? tabs_->FindByBrowserId(browser_id) : nullptr;
-    std::string js = "{\"tabId\":\"";
-    js += t ? JsEsc(t->tab_id()) : "";
-    js += "\",\"meta\":{";
+    nlohmann::json meta = nlohmann::json::object();
     if (t) {
-      bool first_meta = true;
-      for (const auto& [k, v] : t->meta()) {
-        if (!first_meta) js += ",";
-        first_meta = false;
-        js += "\""; js += JsEsc(k); js += "\":\""; js += JsEsc(v); js += "\"";
-      }
+      for (const auto& [k, v] : t->meta()) meta[k] = v;
     }
-    js += "}}";
-    return js;
+    return nlohmann::json{
+        {"tabId", t ? t->tab_id() : ""}, {"meta", std::move(meta)}
+    }.dump();
   };
 
   // Renderer-push: store one meta key on the calling tab and persist.
@@ -744,43 +700,28 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   tabs_->SetOnChange([this]() {
     // shell.tabs_list snapshot
     const auto snap = tabs_->Snapshot();
-    std::string js = "{\"tabs\":[";
-    for (size_t i = 0; i < snap.size(); ++i) {
-      if (i) js += ",";
-      js += "{\"kind\":\"";
-      js += TabKindToString(snap[i].kind);
-      js += "\",\"id\":\"";
-      js += JsEsc(snap[i].id);
-      js += "\",\"displayName\":\"";
-      js += JsEsc(snap[i].display_name);
-      js += "\"";
-      if (snap[i].kind == TabKind::kWeb) {
-        Tab* t = tabs_->Get(snap[i].id);
-        auto* wb = t ? static_cast<WebTabBehavior*>(t->behavior()) : nullptr;
-        if (wb) {
-          js += ",\"url\":\"";
-          js += JsEsc(wb->current_url());
-          js += "\"";
+    {
+      nlohmann::json tabs_arr = nlohmann::json::array();
+      for (const auto& s : snap) {
+        nlohmann::json entry = {{"kind", TabKindToString(s.kind)},
+                                {"id", s.id},
+                                {"displayName", s.display_name}};
+        if (s.kind == TabKind::kWeb) {
+          Tab* t = tabs_->Get(s.id);
+          auto* wb = t ? static_cast<WebTabBehavior*>(t->behavior()) : nullptr;
+          if (wb) entry["url"] = wb->current_url();
         }
+        tabs_arr.push_back(std::move(entry));
       }
-      js += "}";
+      nlohmann::json list_snap = {{"tabs", std::move(tabs_arr)}};
+      const std::string& aid = tabs_->active_tab_id();
+      list_snap["activeTabId"] = aid.empty() ? nlohmann::json(nullptr) : nlohmann::json(aid);
+      BroadcastToAllPanels("shell.tabs_list", list_snap.dump());
     }
-    js += "],\"activeTabId\":";
-    if (tabs_->active_tab_id().empty()) {
-      js += "null";
-    } else {
-      js += "\"";
-      js += JsEsc(tabs_->active_tab_id());
-      js += "\"";
-    }
-    js += "}";
-    BroadcastToAllPanels("shell.tabs_list", js);
 
     if (!tabs_->active_tab_id().empty()) {
-      std::string a = "{\"tabId\":\"";
-      a += JsEsc(tabs_->active_tab_id());
-      a += "\"}";
-      BroadcastToAllPanels("shell.tab_activated", a);
+      BroadcastToAllPanels("shell.tab_activated",
+          nlohmann::json{{"tabId", tabs_->active_tab_id()}}.dump());
     }
 
     // Phase 9: swap the visible card in content_panel_ to the active tab.
@@ -920,8 +861,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
         Tab* t = tabs_->FindByBrowserId(browser_id);
         if (!t) return;
         PushToSidebar("shell.tab_title_changed",
-                      std::string("{\"id\":\"") + JsEsc(t->tab_id()) +
-                          "\",\"title\":\"" + JsEsc(title) + "\"}");
+                      nlohmann::json{{"id", t->tab_id()}, {"title", title}}.dump());
       };
 
   client_handler_->on_address_change =
@@ -934,14 +874,13 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
           popover_content_browser_id_ = browser_id;
           PushToView(popover_chrome_view_,
                      "popover_chrome.url_changed",
-                     "{\"url\":\"" + JsEsc(url) + "\"}");
+                     nlohmann::json{{"url", url}}.dump());
           return;
         }
         Tab* t = tabs_->FindByBrowserId(browser_id);
         if (!t) return;
         PushToSidebar("shell.tab_url_changed",
-                      std::string("{\"id\":\"") + JsEsc(t->tab_id()) +
-                          "\",\"url\":\"" + JsEsc(url) + "\"}");
+                      nlohmann::json{{"id", t->tab_id()}, {"url", url}}.dump());
       };
 
   client_handler_->on_popup_request =
@@ -1133,7 +1072,7 @@ void MainWindow::OpenPopover(const std::string& url, int owner_browser_id) {
     if (!is_builtin && popover_chrome_view_) {
       PushToView(popover_chrome_view_,
                  "popover_chrome.url_changed",
-                 "{\"url\":\"" + JsEsc(url) + "\"}");
+                 nlohmann::json{{"url", url}}.dump());
     }
     LayoutPopover();
     UpdatePopoverVisibility();
@@ -1516,11 +1455,7 @@ void MainWindow::OpenNewTabKind(const std::string& kind) {
   if (id.compare(0, sizeof(kPrefix) - 1, kPrefix) == 0) {
     numeric = std::atoi(id.c_str() + sizeof(kPrefix) - 1);
   }
-  std::string created = "{\"id\":";
-  created += std::to_string(numeric);
-  created += ",\"url\":\"";
-  created += JsEsc(url_for_event);
-  created += "\",\"title\":\"\",\"is_pinned\":false}";
+  std::string created = nlohmann::json{{"id", numeric}, {"url", url_for_event}, {"title", ""}, {"is_pinned", false}}.dump();
   PushToSidebar("shell.tab_created", created);
 }
 
@@ -1927,30 +1862,19 @@ std::string ArgbToCssHex(cef_color_t argb) {
 
 std::string MainWindow::ThemeStateJson(bool include_chrome) const {
   std::string resolved = ResolveAppearance();
-  std::string out = "{\"mode\":\"";
-  out += theme_mode_;
-  out += "\",\"resolved\":\"";
-  out += resolved;
-  out += "\"";
+  nlohmann::json j = {{"mode", theme_mode_}, {"resolved", resolved}};
   if (include_chrome) {
-    out += ",\"chrome\":{\"bg_body\":\"";
-    out += ArgbToCssHex(current_chrome_.bg_body);
-    out += "\",\"bg_base\":\"";
-    out += ArgbToCssHex(current_chrome_.bg_base);
-    out += "\",\"bg_float\":\"";
-    out += ArgbToCssHex(current_chrome_.bg_float);
-    out += "\",\"bg_mask\":\"";
-    out += ArgbToCssHex(current_chrome_.bg_mask);
-    out += "\",\"border\":\"";
-    out += ArgbToCssHex(current_chrome_.border);
-    out += "\",\"text_title\":\"";
-    out += ArgbToCssHex(current_chrome_.text_title);
-    out += "\",\"text_caption\":\"";
-    out += ArgbToCssHex(current_chrome_.text_caption);
-    out += "\"}";
+    j["chrome"] = {
+        {"bg_body",      ArgbToCssHex(current_chrome_.bg_body)},
+        {"bg_base",      ArgbToCssHex(current_chrome_.bg_base)},
+        {"bg_float",     ArgbToCssHex(current_chrome_.bg_float)},
+        {"bg_mask",      ArgbToCssHex(current_chrome_.bg_mask)},
+        {"border",       ArgbToCssHex(current_chrome_.border)},
+        {"text_title",   ArgbToCssHex(current_chrome_.text_title)},
+        {"text_caption", ArgbToCssHex(current_chrome_.text_caption)},
+    };
   }
-  out += "}";
-  return out;
+  return j.dump();
 }
 
 void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {

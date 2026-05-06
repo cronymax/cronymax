@@ -1,46 +1,11 @@
 #include "flow/trace_event.h"
 
-#include <cstdio>
+#include <nlohmann/json.hpp>
 
 namespace cronymax {
 
 namespace {
-
-std::string EscapeJson(const std::string& in) {
-  std::string out;
-  out.reserve(in.size() + 2);
-  for (char c : in) {
-    switch (c) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default:
-        if (static_cast<unsigned char>(c) < 0x20) {
-          char buf[8];
-          std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<int>(c));
-          out += buf;
-        } else {
-          out += c;
-        }
-    }
-  }
-  return out;
-}
-
-void AppendField(std::string* out, const char* key, const std::string& v,
-                 bool* first) {
-  if (v.empty()) return;
-  if (!*first) *out += ',';
-  *first = false;
-  *out += '"';
-  *out += key;
-  *out += "\":\"";
-  *out += EscapeJson(v);
-  *out += '"';
-}
-
+// (helpers removed — nlohmann/json handles escaping)
 }  // namespace
 
 const char* TraceKindToString(TraceKind k) {
@@ -65,25 +30,18 @@ const char* TraceKindToString(TraceKind k) {
 }
 
 std::string TraceEvent::ToJsonLine() const {
-  std::string out = "{\"kind\":\"";
-  out += TraceKindToString(kind);
-  out += "\",\"ts_ms\":";
-  char buf[32];
-  std::snprintf(buf, sizeof(buf), "%lld", ts_ms);
-  out += buf;
-  bool first = false;  // ts_ms always present, others optional
-  AppendField(&out, "space_id", space_id, &first);
-  AppendField(&out, "run_id", run_id, &first);
-  AppendField(&out, "agent_id", agent_id, &first);
-  AppendField(&out, "tool_name", tool_name, &first);
-  AppendField(&out, "doc_name", doc_name, &first);
-  AppendField(&out, "doc_type", doc_type, &first);
+  nlohmann::json j = {{"kind", TraceKindToString(kind)}, {"ts_ms", ts_ms}};
+  if (!space_id.empty())     j["space_id"]   = space_id;
+  if (!run_id.empty())       j["run_id"]     = run_id;
+  if (!agent_id.empty())     j["agent_id"]   = agent_id;
+  if (!tool_name.empty())    j["tool_name"]  = tool_name;
+  if (!doc_name.empty())     j["doc_name"]   = doc_name;
+  if (!doc_type.empty())     j["doc_type"]   = doc_type;
   if (!payload_json.empty()) {
-    out += ",\"payload\":";
-    out += payload_json;
+    auto pj = nlohmann::json::parse(payload_json, nullptr, false);
+    j["payload"] = pj.is_discarded() ? nlohmann::json(payload_json) : pj;
   }
-  out += "}\n";
-  return out;
+  return j.dump() + "\n";
 }
 
 }  // namespace cronymax

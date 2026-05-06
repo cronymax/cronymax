@@ -29,105 +29,23 @@ namespace cronymax {
 namespace {
 
 // ---------------------------------------------------------------------------
-// JSON helpers (minimal, no external dependency)
+// JSON helpers
 // ---------------------------------------------------------------------------
-
-std::string JsEscape(std::string_view value) {
-  std::string out;
-  out.reserve(value.size() + 2);
-  for (char c : value) {
-    switch (c) {
-      case '\\': out += "\\\\"; break;
-      case '"':  out += "\\\""; break;
-      case '\n': out += "\\n";  break;
-      case '\r': out += "\\r";  break;
-      case '\t': out += "\\t";  break;
-      default:   out += c;      break;
-    }
-  }
-  return out;
-}
-
-std::string JsonString(std::string_view s) {
-  return "\"" + JsEscape(s) + "\"";
-}
-
-// Extract value for "key" from a flat JSON object string.
-std::string JsonGet(const std::string& json, std::string_view key) {
-  const std::string search = "\"" + std::string(key) + "\"";
-  const auto pos = json.find(search);
-  if (pos == std::string::npos) return {};
-  auto colon = json.find(':', pos + search.size());
-  if (colon == std::string::npos) return {};
-  auto vstart = json.find_first_not_of(" \t\r\n", colon + 1);
-  if (vstart == std::string::npos) return {};
-  if (json[vstart] == '"') {
-    auto end = json.find('"', vstart + 1);
-    while (end != std::string::npos && json[end - 1] == '\\') {
-      end = json.find('"', end + 1);
-    }
-    if (end == std::string::npos) return {};
-    return json.substr(vstart + 1, end - vstart - 1);
-  }
-  auto end = json.find_first_of(",}", vstart);
-  return json.substr(vstart, end == std::string::npos ? std::string::npos
-                                                       : end - vstart);
-}
-
-// Unescape a JSON string value (the raw substring extracted by JsonGet).
-std::string JsonUnescape(const std::string& s) {
-  std::string out;
-  out.reserve(s.size());
-  for (size_t i = 0; i < s.size(); ++i) {
-    char c = s[i];
-    if (c != '\\' || i + 1 >= s.size()) { out += c; continue; }
-    char n = s[++i];
-    switch (n) {
-      case '"':  out += '"';  break;
-      case '\\': out += '\\'; break;
-      case '/':  out += '/';  break;
-      case 'b':  out += '\b'; break;
-      case 'f':  out += '\f'; break;
-      case 'n':  out += '\n'; break;
-      case 'r':  out += '\r'; break;
-      case 't':  out += '\t'; break;
-      case 'u': {
-        if (i + 4 >= s.size()) break;
-        unsigned cp = 0;
-        for (int k = 0; k < 4; ++k) {
-          char h = s[++i];
-          cp <<= 4;
-          if (h >= '0' && h <= '9') cp |= h - '0';
-          else if (h >= 'a' && h <= 'f') cp |= h - 'a' + 10;
-          else if (h >= 'A' && h <= 'F') cp |= h - 'A' + 10;
-        }
-        if (cp < 0x80) {
-          out += static_cast<char>(cp);
-        } else if (cp < 0x800) {
-          out += static_cast<char>(0xC0 | (cp >> 6));
-          out += static_cast<char>(0x80 | (cp & 0x3F));
-        } else {
-          out += static_cast<char>(0xE0 | (cp >> 12));
-          out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-          out += static_cast<char>(0x80 | (cp & 0x3F));
-        }
-        break;
-      }
-      default: out += n; break;
-    }
-  }
-  return out;
-}
 
 std::pair<std::string, std::string> SplitEnvelope(const std::string& request) {
   // Modern web bridge format: a JSON envelope
   // `{"channel":"...","payload":"<json-string>"}` where payload is itself a
   // JSON-encoded string. Detect this shape and decode.
   if (!request.empty() && request.front() == '{') {
-    const std::string channel = JsonGet(request, "channel");
-    if (!channel.empty()) {
-      const std::string payload = JsonUnescape(JsonGet(request, "payload"));
-      return {channel, payload};
+    auto env = nlohmann::json::parse(request, nullptr, false);
+    if (!env.is_discarded() && env.is_object()) {
+      const std::string channel = env.value("channel", std::string{});
+      if (!channel.empty()) {
+        std::string payload;
+        if (env.contains("payload") && env["payload"].is_string())
+          payload = env["payload"].get<std::string>();
+        return {channel, payload};
+      }
     }
   }
   // Legacy format: "<channel>\n<payload>".
@@ -137,9 +55,11 @@ std::pair<std::string, std::string> SplitEnvelope(const std::string& request) {
 }
 
 std::string SpaceToJson(const Space& sp) {
-  return "{\"id\":" + JsonString(sp.id) +
-         ",\"name\":" + JsonString(sp.name) +
-         ",\"root_path\":" + JsonString(sp.workspace_root.string()) + "}";
+  return nlohmann::json{
+      {"id",        sp.id},
+      {"name",      sp.name},
+      {"root_path", sp.workspace_root.string()},
+  }.dump();
 }
 
 // Extract a string field from a JSON payload using nlohmann::json (no-throw).
@@ -167,16 +87,15 @@ std::string AppEventToJson(const event_bus::AppEvent& e) {
 
 // Render an InboxRow as compact JSON for bridge serialisation.
 std::string InboxRowToJson(const event_bus::InboxRow& r) {
-  std::string out = "{\"event_id\":" + JsonString(r.event_id) +
-                    ",\"state\":" +
-                    JsonString(event_bus::InboxStateToString(r.state)) +
-                    ",\"flow_id\":" + JsonString(r.flow_id) +
-                    ",\"kind\":" + JsonString(r.kind);
-  if (r.snooze_until.has_value()) {
-    out += ",\"snooze_until\":" + std::to_string(*r.snooze_until);
-  }
-  out += "}";
-  return out;
+  nlohmann::json j = {
+      {"event_id", r.event_id},
+      {"state",    event_bus::InboxStateToString(r.state)},
+      {"flow_id",  r.flow_id},
+      {"kind",     r.kind},
+  };
+  if (r.snooze_until.has_value())
+    j["snooze_until"] = *r.snooze_until;
+  return j.dump();
 }
 
 }  // namespace
@@ -278,41 +197,35 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
   if (!sp) { callback->Failure(503, "no active space"); return true; }
 
   // Resolve a TerminalSession from optional "id" field; fall back to active.
-  const std::string p_str(payload);
-  auto resolve_terminal = [&](const std::string& payload_str) -> TerminalSession* {
-    const std::string id = JsonGet(payload_str, "id");
+  auto j = nlohmann::json::parse(payload, nullptr, false);
+  auto resolve_terminal = [&]() -> TerminalSession* {
+    const std::string id = j.is_object() ? j.value("id", std::string{}) : std::string{};
     if (!id.empty()) return sp->FindTerminal(id);
     return sp->ActiveTerminal();
   };
 
   // List terminals for the active Space.
   if (channel == "terminal.list") {
-    std::string json = "{\"active\":" + JsonString(sp->active_terminal_id) +
-                       ",\"items\":[";
-    for (size_t i = 0; i < sp->terminals.size(); ++i) {
-      const auto& t = sp->terminals[i];
-      if (i) json += ",";
-      json += "{\"id\":" + JsonString(t->id) +
-              ",\"name\":" + JsonString(t->name) + "}";
-    }
-    json += "]}";
-    callback->Success(json);
+    nlohmann::json items = nlohmann::json::array();
+    for (const auto& t : sp->terminals)
+      items.push_back({{"id", t->id}, {"name", t->name}});
+    callback->Success(nlohmann::json{
+        {"active", sp->active_terminal_id}, {"items", items}
+    }.dump());
     return true;
   }
 
   // Create a new terminal session (does NOT auto-start the PTY).
   if (channel == "terminal.new") {
     auto* t = sp->CreateTerminal();
-    const std::string item =
-        "{\"id\":" + JsonString(t->id) + ",\"name\":" + JsonString(t->name) + "}";
+    const std::string item    = nlohmann::json{{"id", t->id}, {"name", t->name}}.dump();
+    const std::string switched = nlohmann::json{{"id", t->id}}.dump();
     if (shell_cbs_.broadcast_event) {
       shell_cbs_.broadcast_event("terminal.created", item);
-      shell_cbs_.broadcast_event("terminal.switched",
-                                 "{\"id\":" + JsonString(t->id) + "}");
+      shell_cbs_.broadcast_event("terminal.switched", switched);
     } else {
       SendEvent(browser, "terminal.created", item);
-      SendEvent(browser, "terminal.switched",
-                "{\"id\":" + JsonString(t->id) + "}");
+      SendEvent(browser, "terminal.switched", switched);
     }
     callback->Success(item);
     return true;
@@ -320,13 +233,13 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
 
   // Switch the active terminal.
   if (channel == "terminal.switch") {
-    const std::string id = JsonGet(p_str, "id");
+    const std::string id = j.is_object() ? j.value("id", std::string{}) : std::string{};
     if (id.empty() || !sp->FindTerminal(id)) {
       callback->Failure(404, "no such terminal");
       return true;
     }
     sp->active_terminal_id = id;
-    const std::string body = "{\"id\":" + JsonString(id) + "}";
+    const std::string body = nlohmann::json{{"id", id}}.dump();
     if (shell_cbs_.broadcast_event) {
       shell_cbs_.broadcast_event("terminal.switched", body);
     } else {
@@ -338,17 +251,16 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
 
   // Close a terminal session.
   if (channel == "terminal.close") {
-    const std::string id = JsonGet(p_str, "id");
+    const std::string id = j.is_object() ? j.value("id", std::string{}) : std::string{};
     if (!sp->CloseTerminal(id)) { callback->Failure(404, "no such terminal"); return true; }
-    const std::string removed = "{\"id\":" + JsonString(id) + "}";
+    const std::string removed = nlohmann::json{{"id", id}}.dump();
     if (shell_cbs_.broadcast_event) {
       shell_cbs_.broadcast_event("terminal.removed", removed);
     } else {
       SendEvent(browser, "terminal.removed", removed);
     }
     if (!sp->active_terminal_id.empty()) {
-      const std::string sw =
-          "{\"id\":" + JsonString(sp->active_terminal_id) + "}";
+      const std::string sw = nlohmann::json{{"id", sp->active_terminal_id}}.dump();
       if (shell_cbs_.broadcast_event) {
         shell_cbs_.broadcast_event("terminal.switched", sw);
       } else {
@@ -360,7 +272,7 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
   }
 
   if (channel == "terminal.start") {
-    auto* term = resolve_terminal(p_str);
+    auto* term = resolve_terminal();
     if (!term) { callback->Failure(404, "no such terminal"); return true; }
     auto* pty = term->pty.get();
     const std::string tid = term->id;
@@ -368,22 +280,20 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
       const bool started = pty->Start(
           sp->workspace_root, "/bin/zsh",
           [this, browser, tid](std::string_view data) {
-            const std::string payload =
-                "{\"id\":" + JsonString(tid) +
-                ",\"data\":" + JsonString(data) + "}";
+            const std::string pld =
+                nlohmann::json{{"id", tid}, {"data", std::string(data)}}.dump();
             // Broadcast to all renderers so both Chat and Terminal panels
             // receive output from any terminal they are watching.
             if (shell_cbs_.broadcast_event) {
-              shell_cbs_.broadcast_event("terminal.output", payload);
+              shell_cbs_.broadcast_event("terminal.output", pld);
             } else {
-              SendEvent(browser, "terminal.output", payload);
+              SendEvent(browser, "terminal.output", pld);
             }
           },
           [this, browser, tid](int code) {
-            const std::string payload =
-                "{\"id\":" + JsonString(tid) +
-                ",\"code\":" + std::to_string(code) + "}";
-            SendEvent(browser, "terminal.exit", payload);
+            const std::string pld =
+                nlohmann::json{{"id", tid}, {"code", code}}.dump();
+            SendEvent(browser, "terminal.exit", pld);
           });
       if (!started) { callback->Failure(500, "failed to start PTY"); return true; }
     }
@@ -392,28 +302,31 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
   }
 
   if (channel == "terminal.input") {
-    auto* term = resolve_terminal(p_str);
+    auto* term = resolve_terminal();
     if (!term) { callback->Failure(404, "no such terminal"); return true; }
-    const std::string data = JsonUnescape(JsonGet(p_str, "data"));
+    std::string data = j.is_object() ? j.value("data", std::string{}) : std::string{};
     // Backward-compat: if no "data" field, treat the whole payload as input.
-    const std::string& to_write = data.empty() ? p_str : data;
+    const std::string& to_write = data.empty() ? std::string(payload) : data;
     if (term->pty->running()) term->pty->Write(to_write);
     callback->Success("ok");
     return true;
   }
 
   if (channel == "terminal.resize") {
-    auto* term = resolve_terminal(p_str);
+    auto* term = resolve_terminal();
     if (!term) { callback->Failure(404, "no such terminal"); return true; }
-    const std::string sc = JsonGet(p_str, "cols");
-    const std::string sr = JsonGet(p_str, "rows");
-    term->pty->Resize(sc.empty() ? 100 : std::stoi(sc), sr.empty() ? 30 : std::stoi(sr));
+    int cols = 100, rows = 30;
+    if (j.is_object()) {
+      if (j.contains("cols") && j["cols"].is_number()) cols = j["cols"].get<int>();
+      if (j.contains("rows") && j["rows"].is_number()) rows = j["rows"].get<int>();
+    }
+    term->pty->Resize(cols, rows);
     callback->Success("ok");
     return true;
   }
 
   if (channel == "terminal.stop") {
-    auto* term = resolve_terminal(p_str);
+    auto* term = resolve_terminal();
     if (!term) { callback->Failure(404, "no such terminal"); return true; }
     term->pty->Stop();
     callback->Success("ok");
@@ -427,9 +340,9 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
   }
 
   if (channel == "terminal.run") {
-    auto* term = resolve_terminal(p_str);
+    auto* term = resolve_terminal();
     if (!term) { callback->Failure(404, "no such terminal"); return true; }
-    const std::string command = JsonGet(p_str, "command");
+    const std::string command = j.is_object() ? j.value("command", std::string{}) : std::string{};
     if (!command.empty() && term->pty->running()) {
       term->pty->Write(command + "\n");
     }
@@ -439,38 +352,36 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
 
   if (channel == "terminal.block_save") {
     TerminalBlockRow row;
-    row.space_id = JsonGet(p_str, "space_id");
+    row.space_id   = j.is_object() ? j.value("space_id", std::string{}) : std::string{};
     if (row.space_id.empty()) row.space_id = sp->id;
-    row.command = JsonGet(p_str, "command");
-    row.output = JsonGet(p_str, "output");
-    const std::string ec = JsonGet(p_str, "exit_code");
-    row.exit_code = ec.empty() ? -1 : std::stoi(ec);
-    const std::string sa = JsonGet(p_str, "started_at");
-    row.started_at = sa.empty() ? 0 : std::stoll(sa);
-    const std::string ea = JsonGet(p_str, "ended_at");
-    row.ended_at = ea.empty() ? 0 : std::stoll(ea);
+    row.command    = j.is_object() ? j.value("command",    std::string{}) : std::string{};
+    row.output     = j.is_object() ? j.value("output",     std::string{}) : std::string{};
+    if (j.is_object()) {
+      if (j.contains("exit_code")  && j["exit_code"].is_number())  row.exit_code  = j["exit_code"].get<int>();
+      if (j.contains("started_at") && j["started_at"].is_number()) row.started_at = j["started_at"].get<long long>();
+      if (j.contains("ended_at")   && j["ended_at"].is_number())   row.ended_at   = j["ended_at"].get<long long>();
+    }
     space_manager_->store().CreateBlock(row);
     callback->Success("ok");
     return true;
   }
 
   if (channel == "terminal.blocks_load") {
-    const std::string sid =
-        JsonGet(p_str, "space_id").empty() ? sp->id : JsonGet(p_str, "space_id");
-    const auto blocks = space_manager_->store().ListBlocksForSpace(sid);
-    std::string json = "[";
-    for (size_t i = 0; i < blocks.size(); ++i) {
-      const auto& b = blocks[i];
-      if (i) json += ",";
-      json += "{\"id\":" + std::to_string(b.id) +
-              ",\"command\":" + JsonString(b.command) +
-              ",\"output\":" + JsonString(b.output) +
-              ",\"exit_code\":" + std::to_string(b.exit_code) +
-              ",\"started_at\":" + std::to_string(b.started_at) +
-              ",\"ended_at\":" + std::to_string(b.ended_at) + "}";
+    const std::string sid = j.is_object() ? j.value("space_id", std::string{}) : std::string{};
+    const std::string& effective_sid = sid.empty() ? sp->id : sid;
+    const auto blocks = space_manager_->store().ListBlocksForSpace(effective_sid);
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& b : blocks) {
+      arr.push_back({
+          {"id",         b.id},
+          {"command",    b.command},
+          {"output",     b.output},
+          {"exit_code",  b.exit_code},
+          {"started_at", b.started_at},
+          {"ended_at",   b.ended_at},
+      });
     }
-    json += "]";
-    callback->Success(json);
+    callback->Success(arr.dump());
     return true;
   }
 
@@ -601,22 +512,22 @@ bool BridgeHandler::HandleSpace(CefRefPtr<CefBrowser> browser,
                                 std::string_view payload,
                                 CefRefPtr<Callback> callback) {
   if (channel == "space.list") {
-    std::string json = "[";
-    bool first = true;
+    nlohmann::json arr = nlohmann::json::array();
     for (const auto& sp : space_manager_->spaces()) {
-      if (!first) json += ",";
-      json += SpaceToJson(*sp);
-      first = false;
+      arr.push_back({
+          {"id",        sp->id},
+          {"name",      sp->name},
+          {"root_path", sp->workspace_root.string()},
+      });
     }
-    json += "]";
-    callback->Success(json);
+    callback->Success(arr.dump());
     return true;
   }
 
   if (channel == "space.create") {
-    const std::string p(payload);
-    const std::string name = JsonGet(p, "name");
-    const std::string root = JsonGet(p, "root_path");
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    const std::string name = j.is_object() ? j.value("name",      std::string{}) : std::string{};
+    const std::string root = j.is_object() ? j.value("root_path", std::string{}) : std::string{};
     if (name.empty() || root.empty()) {
       callback->Failure(400, "name and root_path required");
       return true;
@@ -634,13 +545,13 @@ bool BridgeHandler::HandleSpace(CefRefPtr<CefBrowser> browser,
         return true;
       }
     }
-    callback->Success("{\"id\":" + JsonString(id) + "}");
+    callback->Success(nlohmann::json{{"id", id}}.dump());
     return true;
   }
 
   if (channel == "space.switch") {
-    const std::string p(payload);
-    const std::string id = JsonGet(p, "space_id");
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    const std::string id = j.is_object() ? j.value("space_id", std::string{}) : std::string{};
     if (!space_manager_->SwitchTo(id)) {
       callback->Failure(404, "space not found");
       return true;
@@ -650,14 +561,14 @@ bool BridgeHandler::HandleSpace(CefRefPtr<CefBrowser> browser,
   }
 
   if (channel == "space.delete") {
-    const std::string p(payload);
-    const std::string id = JsonGet(p, "space_id");
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    const std::string id = j.is_object() ? j.value("space_id", std::string{}) : std::string{};
     if (!space_manager_->DeleteSpace(id)) {
       callback->Failure(404, "space not found");
       return true;
     }
     callback->Success("ok");
-    SendEvent(browser, "space.deleted", "{\"space_id\":" + JsonString(id) + "}");
+    SendEvent(browser, "space.deleted", nlohmann::json{{"space_id", id}}.dump());
     return true;
   }
 
@@ -681,15 +592,18 @@ bool BridgeHandler::HandleTool(std::string_view channel,
 
   const std::string p(payload);
   ToolCall call;
-  call.name = JsonGet(p, "name");
-  call.input = JsonGet(p, "input");
+  {
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    call.name  = j.is_object() ? j.value("name",  std::string{}) : std::string{};
+    call.input = j.is_object() ? j.value("input", std::string{}) : std::string{};
+  }
   if (call.name.empty()) { callback->Failure(400, "tool name required"); return true; }
 
   const auto result = sp->runtime_binding.tool_registry.Invoke(call);
   if (result.ok) {
-    callback->Success("{\"ok\":true,\"output\":" + JsonString(result.output) + "}");
+    callback->Success(nlohmann::json{{"ok", true},  {"output", result.output}}.dump());
   } else {
-    callback->Failure(500, "{\"ok\":false,\"error\":" + JsonString(result.error) + "}");
+    callback->Failure(500, nlohmann::json{{"ok", false}, {"error", result.error}}.dump());
   }
   return true;
 }
@@ -702,9 +616,9 @@ bool BridgeHandler::HandlePermission(std::string_view channel,
                                      std::string_view payload,
                                      CefRefPtr<Callback> callback) {
   if (channel == "permission.respond") {
-    const std::string p(payload);
-    const std::string rid = JsonGet(p, "request_id");
-    const std::string dec = JsonGet(p, "decision");
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    const std::string rid = j.is_object() ? j.value("request_id", std::string{}) : std::string{};
+    const std::string dec = j.is_object() ? j.value("decision",   std::string{}) : std::string{};
     const bool allow = (dec == "allow");
 
     // (task 3.3) Check for a pending runtime capability reply first.
@@ -943,32 +857,30 @@ bool BridgeHandler::HandleLlmConfig(std::string_view channel,
                                     std::string_view payload,
                                     CefRefPtr<Callback> callback) {
   if (channel == "llm.config.set") {
-    const std::string p(payload);
+    auto j = nlohmann::json::parse(payload, nullptr, false);
     LlmConfig cfg;
-    cfg.base_url = JsonGet(p, "base_url");
-    cfg.api_key = JsonGet(p, "api_key");
+    cfg.base_url = j.is_object() ? j.value("base_url", std::string{}) : std::string{};
+    cfg.api_key  = j.is_object() ? j.value("api_key",  std::string{}) : std::string{};
     space_manager_->store().SetLlmConfig(cfg);
     callback->Success("ok");
     return true;
   }
   if (channel == "llm.config.get") {
     const auto cfg = space_manager_->store().GetLlmConfig();
-    callback->Success("{\"base_url\":" + JsonString(cfg.base_url) +
-                      ",\"api_key\":" + JsonString(cfg.api_key) + "}");
+    callback->Success(nlohmann::json{{"base_url", cfg.base_url}, {"api_key", cfg.api_key}}.dump());
     return true;
   }
   if (channel == "llm.providers.get") {
     const std::string raw = space_manager_->store().GetKv("llm.providers");
     const std::string active =
         space_manager_->store().GetKv("llm.active_provider_id");
-    callback->Success("{\"raw\":" + JsonString(raw) +
-                      ",\"active_id\":" + JsonString(active) + "}");
+    callback->Success(nlohmann::json{{"raw", raw}, {"active_id", active}}.dump());
     return true;
   }
   if (channel == "llm.providers.set") {
-    const std::string p(payload);
-    const std::string raw = JsonUnescape(JsonGet(p, "raw"));
-    const std::string active = JsonUnescape(JsonGet(p, "active_id"));
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    const std::string raw    = j.is_object() ? j.value("raw",       std::string{}) : std::string{};
+    const std::string active = j.is_object() ? j.value("active_id", std::string{}) : std::string{};
     space_manager_->store().SetKv("llm.providers", raw);
     space_manager_->store().SetKv("llm.active_provider_id", active);
     callback->Success("{\"ok\":true}");
@@ -991,7 +903,7 @@ bool BridgeHandler::HandleBrowser(CefRefPtr<CefBrowser> browser,
     if (!browser) { callback->Failure(503, "no browser"); return true; }
     const auto frame = browser->GetMainFrame();
     const std::string url = frame ? frame->GetURL().ToString() : "";
-    callback->Success("{\"url\":" + JsonString(url) + ",\"text\":\"\"}");
+    callback->Success(nlohmann::json{{"url", url}, {"text", ""}}.dump());
     return true;
   }
   callback->Failure(404, "unknown browser channel");
@@ -1014,7 +926,7 @@ void BridgeHandler::SendEvent(CefRefPtr<CefBrowser> browser,
     if (!frame) return;
     const std::string js =
         "window.__aiDesktopDispatch && window.__aiDesktopDispatch(" +
-        ("\"" + ev + "\"") + "," + JsonString(pl) + ");";
+        ("\"" + ev + "\"") + "," + nlohmann::json(pl).dump() + ");";
     frame->ExecuteJavaScript(js, frame->GetURL(), 0);
   };
 
@@ -1028,7 +940,7 @@ void BridgeHandler::SendEvent(CefRefPtr<CefBrowser> browser,
                                  const std::string js =
                                      "window.__aiDesktopDispatch && "
                                      "window.__aiDesktopDispatch(\"" +
-                                     e + "\"," + JsonString(p) + ");";
+                                     e + "\"," + nlohmann::json(p).dump() + ");";
                                  frame->ExecuteJavaScript(js, frame->GetURL(), 0);
                                },
                                browser, ev, pl));
@@ -1045,7 +957,10 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
                                 std::string_view channel,
                                 std::string_view payload,
                                 CefRefPtr<Callback> callback) {
-  const std::string p(payload);
+  auto j = nlohmann::json::parse(payload, nullptr, false);
+  auto get = [&](const char* k) -> std::string {
+    return j.is_object() ? j.value(k, std::string{}) : std::string{};
+  };
 
   if (channel == "shell.tabs_list") {
     if (!shell_cbs_.list_tabs) { callback->Success("{\"tabs\":[],\"active_tab_id\":-1}"); return true; }
@@ -1055,13 +970,13 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
 
   if (channel == "shell.tab_new") {
     if (!shell_cbs_.new_tab) { callback->Failure(503, "not available"); return true; }
-    const std::string url = JsonGet(p, "url");
+    const std::string url = get("url");
     callback->Success(shell_cbs_.new_tab(url.empty() ? "https://www.google.com" : url));
     return true;
   }
 
   if (channel == "shell.tab_switch") {
-    const std::string sid = JsonGet(p, "id");
+    const std::string sid = get("id");
     if (sid.empty()) { callback->Success("ok"); return true; }
     // Try string-id (TabManager) first; fall back to legacy numeric.
     if (shell_cbs_.tab_activate_str && shell_cbs_.tab_activate_str(sid)) {
@@ -1080,7 +995,7 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
   }
 
   if (channel == "shell.tab_close") {
-    const std::string sid = JsonGet(p, "id");
+    const std::string sid = get("id");
     if (sid.empty()) { callback->Success("ok"); return true; }
     if (shell_cbs_.tab_close_str && shell_cbs_.tab_close_str(sid)) {
       callback->Success("ok");
@@ -1102,7 +1017,7 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
       callback->Failure(503, "not available");
       return true;
     }
-    const std::string kind = JsonGet(p, "kind");
+    const std::string kind = get("kind");
     callback->Success(shell_cbs_.tab_open_singleton(kind));
     return true;
   }
@@ -1112,7 +1027,7 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
       callback->Failure(503, "not available");
       return true;
     }
-    const std::string kind = JsonGet(p, "kind");
+    const std::string kind = get("kind");
     const std::string out = shell_cbs_.new_tab_kind(kind);
     callback->Success(out.empty() ? "{}" : out);
     return true;
@@ -1129,8 +1044,8 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
   }
 
   if (channel == "shell.tab_set_meta") {
-    const std::string key   = JsonGet(p, "key");
-    const std::string value = JsonGet(p, "value");
+    const std::string key   = get("key");
+    const std::string value = get("value");
     if (!key.empty() && shell_cbs_.tab_set_meta) {
       const int bid = browser ? browser->GetIdentifier() : 0;
       shell_cbs_.tab_set_meta(bid, key, value);
@@ -1148,7 +1063,7 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
 
   if (channel == "shell.navigate") {
     if (!shell_cbs_.navigate) { callback->Success("ok"); return true; }
-    const std::string url = JsonGet(p, "url");
+    const std::string url = get("url");
     if (!url.empty()) shell_cbs_.navigate(url);
     callback->Success("ok");
     return true;
@@ -1174,7 +1089,7 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
 
   if (channel == "shell.popover_open") {
     if (!shell_cbs_.popover_open) { callback->Success("ok"); return true; }
-    const std::string url = JsonGet(p, "url");
+    const std::string url = get("url");
     shell_cbs_.popover_open(url.empty() ? "https://www.google.com" : url);
     callback->Success("ok");
     return true;
@@ -1199,7 +1114,7 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
   }
 
   if (channel == "shell.popover_navigate") {
-    const std::string url = JsonUnescape(JsonGet(std::string(payload), "url"));
+    const std::string url = get("url");
     if (!url.empty() && shell_cbs_.popover_navigate)
       shell_cbs_.popover_navigate(url);
     callback->Success("ok");
@@ -1238,8 +1153,6 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
 bool BridgeHandler::HandleTheme(std::string_view channel,
                                 std::string_view payload,
                                 CefRefPtr<Callback> callback) {
-  const std::string p(payload);
-
   if (channel == "theme.get") {
     if (!theme_cbs_.get_mode) {
       callback->Success("{\"mode\":\"system\",\"resolved\":\"dark\"}");
@@ -1250,7 +1163,8 @@ bool BridgeHandler::HandleTheme(std::string_view channel,
   }
 
   if (channel == "theme.set") {
-    const std::string mode = JsonGet(p, "mode");
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    const std::string mode = j.is_object() ? j.value("mode", std::string{}) : std::string{};
     if (mode != "system" && mode != "light" && mode != "dark") {
       callback->Failure(400, "invalid mode");
       return true;
@@ -1271,33 +1185,18 @@ bool BridgeHandler::HandleTheme(std::string_view channel,
 bool BridgeHandler::HandleTab(std::string_view channel,
                               std::string_view payload,
                               CefRefPtr<Callback> callback) {
-  const std::string p(payload);
-
   if (channel == "tab.set_toolbar_state") {
     if (!shell_cbs_.set_toolbar_state) { callback->Success("ok"); return true; }
-    const std::string tab_id = JsonGet(p, "tabId");
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    const std::string tab_id = j.is_object() ? j.value("tabId", std::string{}) : std::string{};
     if (tab_id.empty()) {
       callback->Failure(400, "missing tabId");
       return true;
     }
-    // Forward the entire "state" sub-object as raw JSON; the C++ side
-    // re-extracts kind + per-kind fields via JsonGet (or the behavior's
-    // own parser later).
-    size_t spos = p.find("\"state\"");
+    // Forward the entire "state" sub-object as raw JSON.
     std::string state_json;
-    if (spos != std::string::npos) {
-      size_t obj = p.find('{', spos);
-      if (obj != std::string::npos) {
-        // Find matching closing brace (depth-tracked).
-        int depth = 0;
-        size_t end = obj;
-        for (; end < p.size(); ++end) {
-          if (p[end] == '{') ++depth;
-          else if (p[end] == '}') { if (--depth == 0) { ++end; break; } }
-        }
-        state_json = p.substr(obj, end - obj);
-      }
-    }
+    if (j.is_object() && j.contains("state") && j["state"].is_object())
+      state_json = j["state"].dump();
     if (state_json.empty()) {
       callback->Failure(400, "missing state");
       return true;
@@ -1312,13 +1211,16 @@ bool BridgeHandler::HandleTab(std::string_view channel,
 
   if (channel == "tab.set_chrome_theme") {
     if (!shell_cbs_.set_chrome_theme) { callback->Success("ok"); return true; }
-    const std::string tab_id = JsonGet(p, "tabId");
+    auto j = nlohmann::json::parse(payload, nullptr, false);
+    const std::string tab_id = j.is_object() ? j.value("tabId", std::string{}) : std::string{};
     if (tab_id.empty()) {
       callback->Failure(400, "missing tabId");
       return true;
     }
-    // color may be either a string or null. JsonGet returns empty for null.
-    const std::string color = JsonGet(p, "color");
+    // color may be either a string or null; treat null/absent as empty.
+    std::string color;
+    if (j.is_object() && j.contains("color") && j["color"].is_string())
+      color = j["color"].get<std::string>();
     if (!shell_cbs_.set_chrome_theme(tab_id, color)) {
       callback->Failure(404, "unknown tab");
       return true;
@@ -1347,33 +1249,28 @@ bool BridgeHandler::HandleWorkspace(std::string_view channel,
     std::string err;
     const bool ensured = layout.EnsureSkeleton(&err);
     const int version = layout.ReadVersion();
-    std::string json =
-        "{\"root\":" + JsonString(layout.Root().string()) +
-        ",\"cronymax_dir\":" + JsonString(layout.CronymaxDir().string()) +
-        ",\"flows_dir\":" + JsonString(layout.FlowsDir().string()) +
-        ",\"agents_dir\":" + JsonString(layout.AgentsDir().string()) +
-        ",\"doc_types_dir\":" + JsonString(layout.DocTypesDir().string()) +
-        ",\"conflicts_dir\":" + JsonString(layout.ConflictsDir().string()) +
-        ",\"version\":" + std::to_string(version) +
-        ",\"layout_version\":" + std::to_string(WorkspaceLayout::kLayoutVersion) +
-        ",\"ensured\":" + (ensured ? "true" : "false");
-    if (!ensured && !err.empty()) {
-      json += ",\"error\":" + JsonString(err);
-    }
-    json += "}";
-    callback->Success(json);
+    nlohmann::json j = {
+        {"root",           layout.Root().string()},
+        {"cronymax_dir",   layout.CronymaxDir().string()},
+        {"flows_dir",      layout.FlowsDir().string()},
+        {"agents_dir",     layout.AgentsDir().string()},
+        {"doc_types_dir",  layout.DocTypesDir().string()},
+        {"conflicts_dir",  layout.ConflictsDir().string()},
+        {"version",        version},
+        {"layout_version", WorkspaceLayout::kLayoutVersion},
+        {"ensured",        ensured},
+    };
+    if (!ensured && !err.empty())
+      j["error"] = err;
+    callback->Success(j.dump());
     return true;
   }
 
   if (channel == "workspace.gitignore_suggestions") {
     const auto missing = GitignoreHelper::MissingEntries(sp->workspace_root);
-    std::string json = "{\"missing\":[";
-    for (size_t i = 0; i < missing.size(); ++i) {
-      if (i) json += ",";
-      json += JsonString(missing[i]);
-    }
-    json += "]}";
-    callback->Success(json);
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& s : missing) arr.push_back(s);
+    callback->Success(nlohmann::json{{"missing", arr}}.dump());
     return true;
   }
 
@@ -1402,59 +1299,43 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
     return true;
   }
 
-  // Lightweight payload extraction: payload looks like `{"name":"foo"}` or
-  // `{"id":"bar"}`. Avoid pulling in a full JSON parser for these reads.
-  auto extract_field = [](std::string_view body,
-                          std::string_view key) -> std::string {
-    auto pos = body.find("\"" + std::string(key) + "\"");
-    if (pos == std::string_view::npos) return {};
-    pos = body.find(':', pos);
-    if (pos == std::string_view::npos) return {};
-    pos = body.find('"', pos);
-    if (pos == std::string_view::npos) return {};
-    auto end = body.find('"', pos + 1);
-    if (end == std::string_view::npos) return {};
-    return std::string(body.substr(pos + 1, end - pos - 1));
+  // Parse payload once for all channels that need it.
+  auto jp = nlohmann::json::parse(payload, nullptr, false);
+  auto extract_field = [&](std::string_view key) -> std::string {
+    if (!jp.is_object()) return {};
+    auto it = jp.find(std::string(key));
+    if (it == jp.end() || !it->is_string()) return {};
+    return it->get<std::string>();
   };
 
   if (channel == "agent.registry.list") {
-    std::string json = "{\"agents\":[";
-    bool first = true;
+    nlohmann::json agents = nlohmann::json::array();
     for (const auto& name : sp->agent_registry->Names()) {
       const auto* def = sp->agent_registry->Get(name);
       if (!def) continue;
-      if (!first) json += ",";
-      first = false;
-      json += "{\"name\":" + JsonString(name) +
-              ",\"kind\":" + JsonString(def->kind()) +
-              ",\"llm\":" + JsonString(def->llm()) + "}";
+      agents.push_back({{"name", name}, {"kind", def->kind()}, {"llm", def->llm()}});
     }
-    json += "]}";
-    callback->Success(json);
+    callback->Success(nlohmann::json{{"agents", agents}}.dump());
     return true;
   }
 
   if (channel == "agent.registry.load") {
-    auto name = extract_field(payload, "name");
+    const auto name = extract_field("name");
     const auto* def = sp->agent_registry->Get(name);
     if (!def) {
       callback->Failure(404, "agent not found");
       return true;
     }
-    std::string json = "{\"name\":" + JsonString(def->name()) +
-                       ",\"kind\":" + JsonString(def->kind()) +
-                       ",\"llm\":" + JsonString(def->llm()) +
-                       ",\"system_prompt\":" + JsonString(def->system_prompt()) +
-                       ",\"memory_namespace\":" +
-                       JsonString(def->memory_namespace()) + ",\"tools\":[";
-    bool first = true;
-    for (const auto& t : def->tools()) {
-      if (!first) json += ",";
-      first = false;
-      json += JsonString(t);
-    }
-    json += "]}";
-    callback->Success(json);
+    nlohmann::json tools = nlohmann::json::array();
+    for (const auto& t : def->tools()) tools.push_back(t);
+    callback->Success(nlohmann::json{
+        {"name",             def->name()},
+        {"kind",             def->kind()},
+        {"llm",              def->llm()},
+        {"system_prompt",    def->system_prompt()},
+        {"memory_namespace", def->memory_namespace()},
+        {"tools",            tools},
+    }.dump());
     return true;
   }
 
@@ -1468,15 +1349,12 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   //   Deletes <workspace>/.cronymax/agents/<name>.agent.yaml then refreshes.
   // -------------------------------------------------------------------------
   if (channel == "agent.registry.save") {
-    const std::string p(payload);
-    const std::string name = JsonUnescape(JsonGet(p, "name"));
-    const std::string kind = JsonUnescape(JsonGet(p, "kind"));
-    const std::string llm = JsonUnescape(JsonGet(p, "llm"));
-    const std::string system_prompt =
-        JsonUnescape(JsonGet(p, "system_prompt"));
-    const std::string memory_ns =
-        JsonUnescape(JsonGet(p, "memory_namespace"));
-    const std::string tools_csv = JsonUnescape(JsonGet(p, "tools_csv"));
+    const std::string name          = jp.is_object() ? jp.value("name",             std::string{}) : std::string{};
+    const std::string kind          = jp.is_object() ? jp.value("kind",             std::string{}) : std::string{};
+    const std::string llm           = jp.is_object() ? jp.value("llm",              std::string{}) : std::string{};
+    const std::string system_prompt = jp.is_object() ? jp.value("system_prompt",    std::string{}) : std::string{};
+    const std::string memory_ns     = jp.is_object() ? jp.value("memory_namespace", std::string{}) : std::string{};
+    const std::string tools_csv     = jp.is_object() ? jp.value("tools_csv",        std::string{}) : std::string{};
 
     // Validate the basename — it becomes a filename, so reject anything
     // that could escape the agents directory or break YAML/file APIs.
@@ -1591,8 +1469,7 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   }
 
   if (channel == "agent.registry.delete") {
-    const std::string p(payload);
-    const std::string name = JsonUnescape(JsonGet(p, "name"));
+    const std::string name = jp.is_object() ? jp.value("name", std::string{}) : std::string{};
     auto valid_name = [](const std::string& s) {
       if (s.empty() || s.size() > 64) return false;
       for (char c : s) {
@@ -1631,28 +1508,6 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   if (channel == "space.profile.get" || channel == "space.profile.set") {
     WorkspaceLayout layout(sp->workspace_root);
     const auto profile_path = layout.CronymaxDir() / "space.profile.yaml";
-
-    auto json_escape_path = [](const std::string& s) {
-      std::string out;
-      out.reserve(s.size() + 2);
-      out += '"';
-      for (char c : s) {
-        if (c == '\\' || c == '"') {
-          out += '\\';
-          out += c;
-        } else if (c == '\n') {
-          out += "\\n";
-        } else if (static_cast<unsigned char>(c) < 0x20) {
-          char buf[8];
-          std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-          out += buf;
-        } else {
-          out += c;
-        }
-      }
-      out += '"';
-      return out;
-    };
 
     // Tiny YAML reader that pulls the four keys we wrote. Tolerates
     // missing file / missing keys — defaults to disabled + empty arrays.
@@ -1708,49 +1563,28 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
     }
 
     if (channel == "space.profile.get") {
-      auto emit_arr = [&](const std::vector<std::string>& v) {
-        std::string s = "[";
-        bool first = true;
-        for (const auto& p : v) {
-          if (!first) s += ",";
-          first = false;
-          s += json_escape_path(p);
-        }
-        s += "]";
-        return s;
+      auto to_arr = [](const std::vector<std::string>& v) {
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& s : v) arr.push_back(s);
+        return arr;
       };
-      std::string json = "{";
-      json += "\"space_id\":" + JsonString(sp->id) + ",";
-      json += "\"space_name\":" + JsonString(sp->name) + ",";
-      json += "\"workspace_root\":" + JsonString(sp->workspace_root.string()) +
-              ",";
-      json += std::string("\"allow_network\":") +
-              (allow_network ? "true" : "false") + ",";
-      json += "\"extra_read_paths\":" + emit_arr(reads) + ",";
-      json += "\"extra_write_paths\":" + emit_arr(writes) + ",";
-      json += "\"extra_deny_paths\":" + emit_arr(denies);
-      json += "}";
-      callback->Success(json);
+      callback->Success(nlohmann::json{
+          {"space_id",          sp->id},
+          {"space_name",        sp->name},
+          {"workspace_root",    sp->workspace_root.string()},
+          {"allow_network",     allow_network},
+          {"extra_read_paths",  to_arr(reads)},
+          {"extra_write_paths", to_arr(writes)},
+          {"extra_deny_paths",  to_arr(denies)},
+      }.dump());
       return true;
     }
 
     // space.profile.set: parse payload and write YAML.
-    const std::string p(payload);
-    auto get_bool = [&](const char* k) {
-      const std::string needle = std::string("\"") + k + "\":";
-      auto pos = p.find(needle);
-      if (pos == std::string::npos) return false;
-      pos += needle.size();
-      while (pos < p.size() && (p[pos] == ' ' || p[pos] == '\t')) ++pos;
-      return p.compare(pos, 4, "true") == 0;
-    };
-    const bool new_allow_network = get_bool("allow_network");
-    const std::string reads_nl =
-        JsonUnescape(JsonGet(p, "extra_read_paths_nl"));
-    const std::string writes_nl =
-        JsonUnescape(JsonGet(p, "extra_write_paths_nl"));
-    const std::string denies_nl =
-        JsonUnescape(JsonGet(p, "extra_deny_paths_nl"));
+    const bool new_allow_network = jp.is_object() ? jp.value("allow_network", false) : false;
+    const std::string reads_nl  = jp.is_object() ? jp.value("extra_read_paths_nl",  std::string{}) : std::string{};
+    const std::string writes_nl = jp.is_object() ? jp.value("extra_write_paths_nl", std::string{}) : std::string{};
+    const std::string denies_nl = jp.is_object() ? jp.value("extra_deny_paths_nl",  std::string{}) : std::string{};
 
     auto split_lines = [](const std::string& s) {
       std::vector<std::string> out;
@@ -1826,88 +1660,67 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   }
 
   if (channel == "flow.list") {
-    std::string json = "{\"flows\":[";
-    bool first = true;
+    nlohmann::json flows = nlohmann::json::array();
     for (const auto& id : sp->flow_registry->Ids()) {
       const auto* f = sp->flow_registry->Get(id);
       if (!f) continue;
-      if (!first) json += ",";
-      first = false;
-      json += "{\"id\":" + JsonString(id) +
-              ",\"name\":" + JsonString(f->name()) +
-              ",\"edge_count\":" + std::to_string(f->edges().size()) +
-              ",\"agents\":[";
-      bool ai = true;
-      for (const auto& a : f->agents()) {
-        if (!ai) json += ",";
-        ai = false;
-        json += JsonString(a);
-      }
-      json += "]}";
+      nlohmann::json agents_arr = nlohmann::json::array();
+      for (const auto& a : f->agents()) agents_arr.push_back(a);
+      flows.push_back({
+          {"id",         id},
+          {"name",       f->name()},
+          {"edge_count", f->edges().size()},
+          {"agents",     agents_arr},
+      });
     }
-    json += "]}";
-    callback->Success(json);
+    callback->Success(nlohmann::json{{"flows", flows}}.dump());
     return true;
   }
 
   if (channel == "flow.load") {
-    auto id = extract_field(payload, "id");
+    const auto id = extract_field("id");
     const auto* f = sp->flow_registry->Get(id);
     if (!f) {
       callback->Failure(404, "flow not found");
       return true;
     }
-    std::string json = "{\"id\":" + JsonString(id) +
-                       ",\"name\":" + JsonString(f->name()) +
-                       ",\"description\":" + JsonString(f->description()) +
-                       ",\"max_review_rounds\":" +
-                       std::to_string(f->max_review_rounds()) +
-                       ",\"on_review_exhausted\":" +
-                       JsonString(f->on_review_exhausted()) +
-                       ",\"reviewer_enabled\":" +
-                       (f->reviewer_enabled() ? "true" : "false") +
-                       ",\"reviewer_timeout_secs\":" +
-                       std::to_string(f->reviewer_timeout_secs()) +
-                       ",\"agents\":[";
-    bool ai = true;
-    for (const auto& a : f->agents()) {
-      if (!ai) json += ",";
-      ai = false;
-      json += JsonString(a);
-    }
-    json += "],\"edges\":[";
-    bool ei = true;
+    nlohmann::json agents_arr = nlohmann::json::array();
+    for (const auto& a : f->agents()) agents_arr.push_back(a);
+    nlohmann::json edges_arr = nlohmann::json::array();
     for (const auto& e : f->edges()) {
-      if (!ei) json += ",";
-      ei = false;
-      json += "{\"from\":" + JsonString(e.from_agent) +
-              ",\"to\":" + JsonString(e.to_agent) +
-              ",\"port\":" + JsonString(e.port) +
-              ",\"requires_human_approval\":" +
-              (e.requires_human_approval ? "true" : "false") + "}";
+      edges_arr.push_back({
+          {"from",                    e.from_agent},
+          {"to",                      e.to_agent},
+          {"port",                    e.port},
+          {"requires_human_approval", e.requires_human_approval},
+      });
     }
-    json += "]}";
-    callback->Success(json);
+    callback->Success(nlohmann::json{
+        {"id",                   id},
+        {"name",                 f->name()},
+        {"description",          f->description()},
+        {"max_review_rounds",    f->max_review_rounds()},
+        {"on_review_exhausted",  f->on_review_exhausted()},
+        {"reviewer_enabled",     f->reviewer_enabled()},
+        {"reviewer_timeout_secs",f->reviewer_timeout_secs()},
+        {"agents",               agents_arr},
+        {"edges",                edges_arr},
+    }.dump());
     return true;
   }
 
   if (channel == "doc_type.list") {
-    std::string json = "{\"doc_types\":[";
-    bool first = true;
+    nlohmann::json types = nlohmann::json::array();
     for (const auto& name : sp->doc_type_registry->Names()) {
       const auto* s = sp->doc_type_registry->Get(name);
       if (!s) continue;
-      if (!first) json += ",";
-      first = false;
-      json +=
-          "{\"name\":" + JsonString(name) +
-          ",\"display_name\":" + JsonString(s->display_name()) +
-          ",\"user_defined\":" +
-          (sp->doc_type_registry->IsUserDefined(name) ? "true" : "false") +
-          "}";
+      types.push_back({
+          {"name",         name},
+          {"display_name", s->display_name()},
+          {"user_defined", sp->doc_type_registry->IsUserDefined(name)},
+      });
     }
-    json += "]}";
-    callback->Success(json);
+    callback->Success(nlohmann::json{{"doc_types", types}}.dump());
     return true;
   }
 
@@ -1930,12 +1743,12 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
     if (!sp) { callback->Failure(503, "no active space"); return true; }
 
     if (channel == "flow.run.start") {
-      auto flow_id = extract_field(payload, "flow_id");
+      const auto flow_id = extract_field("flow_id");
       if (flow_id.empty()) {
         callback->Failure(400, "flow_id required");
         return true;
       }
-      auto initial_input = extract_field(payload, "initial_input");
+      const auto initial_input = extract_field("initial_input");
       nlohmann::json run_payload = {{"flow_id", flow_id}};
       if (!initial_input.empty()) run_payload["initial_input"] = initial_input;
       nlohmann::json req = {
@@ -1959,7 +1772,7 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
     }
 
     if (channel == "flow.run.cancel") {
-      auto run_id = extract_field(payload, "run_id");
+      const auto run_id = extract_field("run_id");
       if (run_id.empty()) { callback->Failure(400, "run_id required"); return true; }
       nlohmann::json req = {{"kind", "cancel_run"}, {"run_id", run_id}};
       runtime_proxy_->SendControl(std::move(req),
@@ -1970,7 +1783,7 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
     }
 
     if (channel == "flow.run.pause") {
-      auto run_id = extract_field(payload, "run_id");
+      const auto run_id = extract_field("run_id");
       if (run_id.empty()) { callback->Failure(400, "run_id required"); return true; }
       nlohmann::json req = {{"kind", "pause_run"}, {"run_id", run_id}};
       runtime_proxy_->SendControl(std::move(req),
@@ -1981,7 +1794,7 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
     }
 
     if (channel == "flow.run.resume") {
-      auto run_id = extract_field(payload, "run_id");
+      const auto run_id = extract_field("run_id");
       if (run_id.empty()) { callback->Failure(400, "run_id required"); return true; }
       nlohmann::json req = {{"kind", "resume_run"}, {"run_id", run_id}};
       runtime_proxy_->SendControl(std::move(req),
@@ -1992,15 +1805,11 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
     }
 
     if (channel == "flow.run.post_input") {
-      auto run_id = extract_field(payload, "run_id");
+      const auto run_id = extract_field("run_id");
       if (run_id.empty()) { callback->Failure(400, "run_id required"); return true; }
       nlohmann::json input_payload;
-      {
-        auto p = nlohmann::json::parse(std::string(payload), nullptr,
-                                       /*allow_exceptions=*/false);
-        if (!p.is_discarded() && p.is_object())
-          input_payload = p.value("input", nlohmann::json{});
-      }
+      if (jp.is_object())
+        input_payload = jp.value("input", nlohmann::json{});
       nlohmann::json req = {
           {"kind", "post_input"},
           {"run_id", run_id},
@@ -2031,8 +1840,8 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   //   reply:   {mentions:[name], unknown:[name]}
   // -------------------------------------------------------------------------
   if (channel == "mention.user_input") {
-    auto flow_id = extract_field(payload, "flow_id");
-    auto text = extract_field(payload, "text");
+    const auto flow_id = extract_field("flow_id");
+    const auto text    = extract_field("text");
     if (flow_id.empty()) {
       callback->Failure(400, "flow_id required");
       return true;
@@ -2050,27 +1859,16 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
     std::set<std::string> known;
     for (const auto& a : flow->agents()) known.insert(a);
     auto parsed = MentionParser::Parse(text);
-    std::string json = "{\"mentions\":[";
-    bool first = true;
-    std::vector<std::string> unknown;
+    nlohmann::json mentions = nlohmann::json::array();
+    nlohmann::json unknown_arr = nlohmann::json::array();
     for (const auto& m : parsed) {
       if (known.count(m.name)) {
-        if (!first) json += ",";
-        first = false;
-        json += JsonString(m.name);
+        mentions.push_back(m.name);
       } else {
-        unknown.push_back(m.name);
+        unknown_arr.push_back(m.name);
       }
     }
-    json += "],\"unknown\":[";
-    first = true;
-    for (const auto& u : unknown) {
-      if (!first) json += ",";
-      first = false;
-      json += JsonString(u);
-    }
-    json += "]}";
-    callback->Success(json);
+    callback->Success(nlohmann::json{{"mentions", mentions}, {"unknown", unknown_arr}}.dump());
     return true;
   }
 
@@ -2097,21 +1895,16 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
   auto* sp = space_manager_->ActiveSpace();
   if (!sp) { callback->Failure(503, "no active space"); return true; }
 
-  // Same lightweight extractor used by HandleRegistry. Keep it private to
-  // each handler so we don't grow a JSON dependency for trivial reads.
-  auto extract = [](std::string_view body, std::string_view key) -> std::string {
-    auto pos = body.find("\"" + std::string(key) + "\"");
-    if (pos == std::string_view::npos) return {};
-    pos = body.find(':', pos);
-    if (pos == std::string_view::npos) return {};
-    pos = body.find('"', pos);
-    if (pos == std::string_view::npos) return {};
-    auto end = body.find('"', pos + 1);
-    if (end == std::string_view::npos) return {};
-    return std::string(body.substr(pos + 1, end - pos - 1));
+  // Parse payload once for all document channels.
+  auto jp_doc = nlohmann::json::parse(payload, nullptr, false);
+  auto extract = [&](std::string_view key) -> std::string {
+    if (!jp_doc.is_object()) return {};
+    auto it = jp_doc.find(std::string(key));
+    if (it == jp_doc.end() || !it->is_string()) return {};
+    return it->get<std::string>();
   };
 
-  const std::string flow_id = extract(payload, "flow");
+  const std::string flow_id = extract("flow");
   if (flow_id.empty()) {
     callback->Failure(400, "missing 'flow' in payload");
     return true;
@@ -2127,27 +1920,25 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
 
   if (channel == "document.list") {
     const auto items = store.List();
-    std::string json = "{\"docs\":[";
-    bool first = true;
+    nlohmann::json docs = nlohmann::json::array();
     for (const auto& d : items) {
-      if (!first) json += ",";
-      first = false;
-      json += "{\"name\":" + JsonString(d.name) +
-              ",\"latest_revision\":" + std::to_string(d.latest_revision) +
-              ",\"size_bytes\":" + std::to_string(d.size_bytes) + "}";
+      docs.push_back({
+          {"name",            d.name},
+          {"latest_revision", d.latest_revision},
+          {"size_bytes",      d.size_bytes},
+      });
     }
-    json += "]}";
-    callback->Success(json);
+    callback->Success(nlohmann::json{{"docs", docs}}.dump());
     return true;
   }
 
   if (channel == "document.read") {
-    const std::string name = extract(payload, "name");
+    const std::string name    = extract("name");
     if (name.empty()) {
       callback->Failure(400, "missing 'name' in payload");
       return true;
     }
-    const std::string rev_str = extract(payload, "revision");
+    const std::string rev_str = extract("revision");
     std::string err;
     std::optional<std::string> content;
     int revision = 0;
@@ -2171,9 +1962,7 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
       callback->Failure(404, err.empty() ? "document not found" : err);
       return true;
     }
-    std::string json = "{\"revision\":" + std::to_string(revision) +
-                       ",\"content\":" + JsonString(*content) + "}";
-    callback->Success(json);
+    callback->Success(nlohmann::json{{"revision", revision}, {"content", *content}}.dump());
     return true;
   }
 
@@ -2220,8 +2009,8 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
   // emits a `document_event` AppEvent so chat panels refresh, and
   // broadcasts `document.changed` so other workbench instances reload.
   if (channel == "document.submit") {
-    const std::string name = extract(payload, "name");
-    const std::string content = extract(payload, "content");
+    const std::string name    = extract("name");
+    const std::string content = extract("content");
     if (name.empty()) {
       callback->Failure(400, "missing 'name' in payload");
       return true;
@@ -2253,15 +2042,10 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
       sp->event_bus->Append(std::move(e));
     }
     if (shell_cbs_.broadcast_event) {
-      std::string evt = "{\"flow\":" + JsonString(flow_id) +
-                        ",\"name\":" + JsonString(name) +
-                        ",\"revision\":" + std::to_string(wr.revision) + "}";
-      shell_cbs_.broadcast_event("document.changed", evt);
+      shell_cbs_.broadcast_event("document.changed",
+          nlohmann::json{{"flow", flow_id}, {"name", name}, {"revision", wr.revision}}.dump());
     }
-    std::string out_json = "{\"ok\":true,\"revision\":" +
-                           std::to_string(wr.revision) +
-                           ",\"sha\":" + JsonString(wr.sha256_hex) + "}";
-    callback->Success(out_json);
+    callback->Success(nlohmann::json{{"ok", true}, {"revision", wr.revision}, {"sha", wr.sha256_hex}}.dump());
     return true;
   }
 
@@ -2272,10 +2056,10 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
   // revision via DocumentStore. `block_id` and `suggestion` are provided
   // directly by the caller (sourced from the runtime review event).
   if (channel == "document.suggestion.apply") {
-    const std::string run_id    = extract(payload, "run_id");
-    const std::string name      = extract(payload, "name");
-    const std::string block_id  = extract(payload, "block_id");
-    const std::string suggestion = extract(payload, "suggestion");
+    const std::string run_id     = extract("run_id");
+    const std::string name       = extract("name");
+    const std::string block_id   = extract("block_id");
+    const std::string suggestion = extract("suggestion");
     if (run_id.empty() || name.empty() || block_id.empty() || suggestion.empty()) {
       callback->Failure(400, "missing 'run_id', 'name', 'block_id', or 'suggestion'");
       return true;
@@ -2384,9 +2168,7 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
       sp->event_bus->Append(std::move(e));
     }
 
-    std::string out_json = "{\"ok\":true,\"new_revision\":" +
-                           std::to_string(wr.revision) +
-                           ",\"sha\":" + JsonString(wr.sha256_hex) + "}";
+    std::string out_json = nlohmann::json{{"ok", true}, {"new_revision", wr.revision}, {"sha", wr.sha256_hex}}.dump();
     callback->Success(out_json);
     return true;
   }
@@ -2412,16 +2194,12 @@ bool BridgeHandler::HandleReview(std::string_view channel,
   auto* sp = space_manager_->ActiveSpace();
   if (!sp) { callback->Failure(503, "no active space"); return true; }
 
-  auto extract = [](std::string_view body, std::string_view key) -> std::string {
-    auto pos = body.find("\"" + std::string(key) + "\"");
-    if (pos == std::string_view::npos) return {};
-    pos = body.find(':', pos);
-    if (pos == std::string_view::npos) return {};
-    pos = body.find('"', pos);
-    if (pos == std::string_view::npos) return {};
-    auto end = body.find('"', pos + 1);
-    if (end == std::string_view::npos) return {};
-    return std::string(body.substr(pos + 1, end - pos - 1));
+  auto jp_rev = nlohmann::json::parse(payload, nullptr, false);
+  auto extract = [&](std::string_view key) -> std::string {
+    if (!jp_rev.is_object()) return {};
+    auto it = jp_rev.find(std::string(key));
+    if (it == jp_rev.end() || !it->is_string()) return {};
+    return it->get<std::string>();
   };
 
   // review.list — forwarded to runtime via RuntimeProxy.
@@ -2430,7 +2208,7 @@ bool BridgeHandler::HandleReview(std::string_view channel,
       callback->Failure(503, "runtime not connected");
       return true;
     }
-    const std::string run_id_l = extract(payload, "run_id");
+    const std::string run_id_l = extract("run_id");
     if (run_id_l.empty()) {
       callback->Failure(400, "missing 'run_id' in payload");
       return true;
@@ -2450,9 +2228,9 @@ bool BridgeHandler::HandleReview(std::string_view channel,
   }
 
   // Mutating review channels — forwarded to the runtime via RuntimeProxy.
-  const std::string run_id    = extract(payload, "run_id");
-  const std::string review_id = extract(payload, "review_id");
-  const std::string body      = extract(payload, "body");
+  const std::string run_id    = extract("run_id");
+  const std::string review_id = extract("review_id");
+  const std::string body      = extract("body");
 
   if (channel == "review.approve") {
     if (!runtime_proxy_ || review_id.empty()) {
@@ -2511,7 +2289,7 @@ bool BridgeHandler::HandleReview(std::string_view channel,
     }
     nlohmann::json comment_payload = {{"comment", body}};
     if (!review_id.empty()) comment_payload["review_id"] = review_id;
-    const std::string name = extract(payload, "name");
+    const std::string name = extract("name");
     if (!name.empty()) comment_payload["doc"] = name;
     nlohmann::json req = {
         {"kind",    "post_input"},
@@ -2551,15 +2329,9 @@ bool BridgeHandler::HandleEvents(CefRefPtr<CefBrowser> browser,
     long long lim = ExtractJsonInt(payload, "limit");
     if (lim > 0) q.limit = static_cast<int>(lim);
     auto res = bus->List(q);
-    std::string out = "{\"events\":[";
-    bool first = true;
-    for (const auto& e : res.events) {
-      if (!first) out += ",";
-      first = false;
-      out += AppEventToJson(e);
-    }
-    out += "],\"cursor\":" + JsonString(res.cursor) + "}";
-    callback->Success(out);
+    nlohmann::json events_arr = nlohmann::json::array();
+    for (const auto& e : res.events) events_arr.push_back(nlohmann::json::parse(AppEventToJson(e), nullptr, false));
+    callback->Success(nlohmann::json{{"events", events_arr}, {"cursor", res.cursor}}.dump());
     return true;
   }
 
@@ -2622,7 +2394,7 @@ bool BridgeHandler::HandleEvents(CefRefPtr<CefBrowser> browser,
       evt.payload = {{"body", body}, {"mentions", nlohmann::json::array()}};
     }
     auto id = bus->Append(std::move(evt));
-    callback->Success("{\"id\":" + JsonString(id) + "}");
+    callback->Success(nlohmann::json{{"id", id}}.dump());
     return true;
   }
 
@@ -2653,17 +2425,14 @@ bool BridgeHandler::HandleInbox(std::string_view channel,
     long long lim = ExtractJsonInt(payload, "limit");
     if (lim > 0) q.limit = static_cast<int>(lim);
     auto res = bus->ListInbox(q);
-    std::string out = "{\"rows\":[";
-    bool first = true;
-    for (const auto& r : res.rows) {
-      if (!first) out += ",";
-      first = false;
-      out += InboxRowToJson(r);
-    }
-    out += "],\"unread_count\":" + std::to_string(res.unread_count) +
-           ",\"needs_action_count\":" +
-           std::to_string(res.needs_action_count) + "}";
-    callback->Success(out);
+    nlohmann::json rows_arr = nlohmann::json::array();
+    for (const auto& r : res.rows)
+      rows_arr.push_back(nlohmann::json::parse(InboxRowToJson(r), nullptr, false));
+    callback->Success(nlohmann::json{
+        {"rows",               rows_arr},
+        {"unread_count",       res.unread_count},
+        {"needs_action_count", res.needs_action_count},
+    }.dump());
     return true;
   }
 
@@ -2712,15 +2481,9 @@ bool BridgeHandler::HandleNotifications(std::string_view channel,
 
   if (channel == "notifications.get_prefs") {
     auto kinds = bus->ListEnabledNotificationKinds();
-    std::string out = "{\"enabled\":[";
-    bool first = true;
-    for (const auto& k : kinds) {
-      if (!first) out += ",";
-      first = false;
-      out += JsonString(k);
-    }
-    out += "]}";
-    callback->Success(out);
+    nlohmann::json enabled = nlohmann::json::array();
+    for (const auto& k : kinds) enabled.push_back(k);
+    callback->Success(nlohmann::json{{"enabled", enabled}}.dump());
     return true;
   }
 
@@ -2730,8 +2493,8 @@ bool BridgeHandler::HandleNotifications(std::string_view channel,
       callback->Failure(400, "kind required");
       return true;
     }
-    // Accept either `"enabled":true` or `"enabled":false` literal.
-    bool enabled = payload.find("\"enabled\":true") != std::string_view::npos;
+    auto jp_n = nlohmann::json::parse(payload, nullptr, false);
+    bool enabled = jp_n.is_object() ? jp_n.value("enabled", false) : false;
     bus->SetKindNotificationEnabled(kind, enabled);
     callback->Success("{\"ok\":true}");
     return true;
