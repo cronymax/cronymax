@@ -12,8 +12,10 @@
 //! Risk classification for exec decisions is provided by
 //! [`crate::capability::shell::classify_command`] — no duplication.
 
-mod broker;
-mod policy;
+pub mod broker;
+pub mod fs_gate;
+pub mod policy;
+pub mod shell_gate;
 
 pub use broker::{Actor, PermissionBroker, PermissionDecision};
 pub use policy::SandboxPolicy;

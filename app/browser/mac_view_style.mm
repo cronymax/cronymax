@@ -986,6 +986,13 @@ void SetMainWindowBackgroundColor(void* nswindow_ptr, cef_color_t argb) {
   }
 }
 
+void SetAppAppearance(bool dark) {
+  if (@available(macOS 10.14, *)) {
+    NSAppearanceName name = dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua;
+    NSApp.appearance = [NSAppearance appearanceNamed:name];
+  }
+}
+
 void InstallRoundedFrame(void* nsview_ptr,
                          double radius,
                          cef_color_t border_argb) {

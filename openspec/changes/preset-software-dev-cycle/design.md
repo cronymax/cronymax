@@ -5,6 +5,7 @@
 The key constraint throughout: this change MUST NOT modify the existing `AgentRuntime` ReAct loop interface. All new behaviour is layered into `FlowRuntime` (orchestration) and `LlmProviderRegistry` (credentials). The agent YAML format change (structured `llm` field) is additive with a backwards-compat fallback.
 
 **Existing constraints carried forward:**
+
 - C++20, exceptions disabled; no nlohmann JSON (hand-written `JsonValue`).
 - `yaml-cpp` already vendored for YAML parsing.
 - CEF desktop app on macOS; `AgentRuntime` instances live in the renderer; `FlowRuntime` lives in the C++ host.
@@ -16,12 +17,14 @@ The key constraint throughout: this change MUST NOT modify the existing `AgentRu
 ## Goals / Non-Goals
 
 **Goals:**
+
 - Ship `software-dev-cycle` preset with PM, RD, QA, QA-Critic agents and all required doc types.
 - Extend FlowRuntime with `on_approved_reschedule`, `max_cycles`, per-edge `reviewer_agents`, port-completion tracking in `state.json`, and InvocationContext envelope injection.
 - Replace single global LLM config with a named multi-provider registry; add `github-copilot` device-flow OAuth and `openai-compat` API-key kinds.
 - Add `test_runner.*` built-in tools to the agent-entity layer.
 
 **Non-Goals:**
+
 - Visual editor changes for new edge fields (deferred → `agent-orchestration-ui`).
 - Skills Marketplace migration of `test_runner.*` (explicitly deferred).
 - WYSIWYG `prototype` rendering with Mermaid (deferred → `document-wysiwyg`).
@@ -35,6 +38,7 @@ The key constraint throughout: this change MUST NOT modify the existing `AgentRu
 **Chosen**: Extend the existing `state.json` with an `agents` map. Each agent entry has `ports` (map of port name → `PENDING | IN_REVIEW | APPROVED`) and `invocations` (ordered list with trigger metadata).
 
 **Alternatives**:
+
 - Separate `port-state.json` — extra file, extra lock, no benefit; `state.json` is already the Run's source of truth.
 - In-memory only — breaks restart recovery; the "Run state survives restart" requirement already mandates persistence.
 
@@ -47,6 +51,7 @@ The key constraint throughout: this change MUST NOT modify the existing `AgentRu
 **Chosen**: When `on_approved_reschedule` fires, FlowRuntime finds the first port in the producing agent's `ports` map with status `PENDING`, where order is the order of edge declarations in `flow.yaml`.
 
 **Alternatives**:
+
 - Explicit `sequence:` field on the agent YAML — more expressive but adds a config surface that must be kept in sync with flow edges; fragile.
 - LLM decides next task — Option A from exploration; rejected as non-deterministic and fragile.
 - Human re-trigger between phases — Option C from exploration; valid for v1 but removes automation value of the preset.
@@ -60,6 +65,7 @@ The key constraint throughout: this change MUST NOT modify the existing `AgentRu
 **Chosen**: FlowRuntime prepends a `{ role: "system", content: "<rendered context>" }` message to the agent's initial message history before passing it to `AgentRuntime`. The rendered content includes: what was approved/changed, the next task (next pending port), and a list of available approved docs in the Run.
 
 **Alternatives**:
+
 - New field on `AgentRuntime::start()` — cleaner API but requires changing the `AgentRuntime` interface, which we want to avoid.
 - Tool call response — agent would need to call a `get_context` tool first; roundabout.
 
@@ -72,6 +78,7 @@ The key constraint throughout: this change MUST NOT modify the existing `AgentRu
 **Chosen**: `~/.cronymax/providers.json` stores provider metadata (id, kind, base_url, default_provider flag). API keys and OAuth tokens stored exclusively in the macOS Security framework keychain under item name `cronymax-provider-<id>`. Registry loaded at app start; written atomically on any change.
 
 **Alternatives**:
+
 - SQLite — overkill for a flat config with <10 entries.
 - Workspace-scoped config — providers contain user credentials; should not be committed to git.
 - Env vars — not persistent; poor UX for desktop app.
@@ -85,6 +92,7 @@ The key constraint throughout: this change MUST NOT modify the existing `AgentRu
 **Chosen**: GitHub device flow (`POST /login/device/code` → poll `/login/oauth/access_token` → exchange for Copilot token).
 
 **Alternatives**:
+
 - Redirect OAuth with localhost callback server — requires managing a dynamic port, browser redirect, CSRF token; complex for a desktop app.
 - Better Auth sidecar — overkill for scope (one OAuth provider + API keys); adds a Node.js process dependency.
 - Personal access token (PAT) — no OAuth dance; user experience worse than device flow; PAT scopes are broader than needed.
@@ -93,11 +101,12 @@ The key constraint throughout: this change MUST NOT modify the existing `AgentRu
 
 ---
 
-### Decision 6: test_runner.* implemented as a thin shell-exec wrapper per runner
+### Decision 6: test_runner.\* implemented as a thin shell-exec wrapper per runner
 
 **Chosen**: `test_runner.run_suite` executes the appropriate test command (`npx jest --json`, `pytest --json`, `go test -json`, `vitest run --reporter=json`) as a sandboxed subprocess, parses the JSON reporter output, and maps it to the structured result schema. Each runner has a parser registered at compile time.
 
 **Alternatives**:
+
 - Single generic parser on raw stdout — fragile; test output formats are not standardised.
 - Native test runner library bindings — impractical in C++; each runner is a different ecosystem.
 - Delegate entirely to `terminal.execSandboxed` and let LLM parse — rejected; defeats the purpose of structured output.
@@ -111,6 +120,7 @@ The key constraint throughout: this change MUST NOT modify the existing `AgentRu
 **Chosen**: When `reviewer_agents:` is present on an edge, it completely replaces the Flow-level reviewer agent set for that edge. An empty list `[]` means no LLM reviewers for that edge.
 
 **Alternatives**:
+
 - Additive (merge with global) — surprising when trying to remove a global reviewer from a specific edge.
 - Named exclude list — less readable.
 

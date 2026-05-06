@@ -58,7 +58,10 @@ const NODE_BG_CLS = "bg-cronymax-primary/15 border-cronymax-primary/40";
 function buildEdgeOffsets(edges: GraphEdge[]): number[] {
   const groupMap = new Map<string, number[]>();
   edges.forEach((e, i) => {
-    const key = [Math.min(e.from_id, e.to_id), Math.max(e.from_id, e.to_id)].join("-");
+    const key = [
+      Math.min(e.from_id, e.to_id),
+      Math.max(e.from_id, e.to_id),
+    ].join("-");
     const grp = groupMap.get(key) ?? [];
     grp.push(i);
     groupMap.set(key, grp);
@@ -240,6 +243,9 @@ export function FlowEditor() {
   const [traceOpen, setTraceOpen] = useState(true);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  // Active flow run state — set when a run is started, cleared on cancel.
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [runStarting, setRunStarting] = useState(false);
 
   // Drag state lives in a ref + local component state for live position.
   const dragRef = useRef<{
@@ -584,6 +590,63 @@ export function FlowEditor() {
           <button type="button" onClick={onClear} className={btnDangerCls}>
             Clear
           </button>
+          <span className="mx-1 h-4 w-px bg-cronymax-border" />
+          {activeRunId ? (
+            <>
+              <span className="text-cronymax-description">
+                run:{" "}
+                <code className="font-mono text-[10px]">
+                  {activeRunId.slice(0, 8)}…
+                </code>
+              </span>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await bridge.send("flow.run.cancel", {
+                      run_id: activeRunId,
+                    });
+                  } catch (_) {
+                    // ignore
+                  }
+                  setActiveRunId(null);
+                  dispatch({ type: "setRunning", running: false });
+                }}
+                className={btnDangerCls + " inline-flex items-center gap-1"}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              disabled={runStarting || !state.activeFlowName}
+              onClick={async () => {
+                if (!state.activeFlowName) return;
+                setRunStarting(true);
+                try {
+                  const res = await bridge.send("flow.run.start", {
+                    flow_id: state.activeFlowName,
+                  });
+                  setActiveRunId(res.run_id);
+                  dispatch({ type: "setRunning", running: true });
+                } catch (err) {
+                  console.warn(
+                    "[flow] flow.run.start failed:",
+                    (err as Error).message,
+                  );
+                } finally {
+                  setRunStarting(false);
+                }
+              }}
+              className={
+                btnCls + " inline-flex items-center gap-1 disabled:opacity-50"
+              }
+              title="Start a flow run for this flow"
+            >
+              {runStarting ? "Starting…" : "▶ Start Run"}
+            </button>
+          )}
         </div>
       </header>
 
@@ -604,12 +667,26 @@ export function FlowEditor() {
             style={{ width: canvasSize.width, height: canvasSize.height }}
           >
             <defs>
-              <marker id="arrowhead" viewBox="0 0 8 8" refX="7" refY="4"
-                      markerWidth="5" markerHeight="5" orient="auto">
+              <marker
+                id="arrowhead"
+                viewBox="0 0 8 8"
+                refX="7"
+                refY="4"
+                markerWidth="5"
+                markerHeight="5"
+                orient="auto"
+              >
                 <path d="M0,0 L8,4 L0,8 Z" fill="rgba(124,124,140,0.75)" />
               </marker>
-              <marker id="arrowhead-sel" viewBox="0 0 8 8" refX="7" refY="4"
-                      markerWidth="5" markerHeight="5" orient="auto">
+              <marker
+                id="arrowhead-sel"
+                viewBox="0 0 8 8"
+                refX="7"
+                refY="4"
+                markerWidth="5"
+                markerHeight="5"
+                orient="auto"
+              >
                 <path d="M0,0 L8,4 L0,8 Z" fill="rgb(124,158,255)" />
               </marker>
             </defs>
@@ -621,7 +698,9 @@ export function FlowEditor() {
               const lp = edgeLabelPos(from, to, vOff);
               const portLabel = edge.port || "(no doc-type)";
               const gateLabel = edge.requires_human_approval ? " ✋" : "";
-              const sourceNode = effectiveNodes.find((n) => n.id === edge.from_id);
+              const sourceNode = effectiveNodes.find(
+                (n) => n.id === edge.from_id,
+              );
               const producesEntry = sourceNode?.produces?.find(
                 (p) => p.doc_type === edge.port,
               );
@@ -653,9 +732,7 @@ export function FlowEditor() {
                     width={104}
                     height={boxH}
                     rx={3}
-                    fill={
-                      isSel ? "rgba(124,158,255,0.18)" : "rgba(0,0,0,0.5)"
-                    }
+                    fill={isSel ? "rgba(124,158,255,0.18)" : "rgba(0,0,0,0.5)"}
                     stroke={
                       isSel ? "rgb(124,158,255)" : "rgba(124,124,140,0.35)"
                     }
@@ -677,7 +754,8 @@ export function FlowEditor() {
                     textAnchor="middle"
                     pointerEvents="none"
                   >
-                    {portLabel}{gateLabel}
+                    {portLabel}
+                    {gateLabel}
                   </text>
                   {revLabel && (
                     <text
@@ -697,7 +775,10 @@ export function FlowEditor() {
           </svg>
 
           {/* Nodes layer. */}
-          <div className="relative" style={{ width: canvasSize.width, height: canvasSize.height }}>
+          <div
+            className="relative"
+            style={{ width: canvasSize.width, height: canvasSize.height }}
+          >
             {effectiveNodes.map((n) => {
               const isSelected = state.selectedId === n.id;
               const isRunning = state.runningId === n.id;
@@ -771,53 +852,57 @@ export function FlowEditor() {
 
         {/* Inspector */}
         {inspectorOpen ? (
-        <Inspector
-          state={state}
-          node={selectedNode}
-          edge={selectedEdge}
-          edgeIndex={state.selectedEdgeIndex}
-          onToggleCollapse={() => setInspectorOpen(false)}
-          onClose={() => {
-            dispatch({ type: "select", id: null });
-            dispatch({ type: "selectEdge", index: null });
-          }}
-          onChangeName={(name) => {
-            if (state.selectedId != null)
-              dispatch({ type: "updateNodeName", id: state.selectedId, name });
-          }}
-          onChangeConfig={(key, value) => {
-            if (state.selectedId != null)
-              dispatch({
-                type: "updateNodeConfig",
-                id: state.selectedId,
-                key,
-                value,
-              });
-          }}
-          onChangeProduces={(produces) => {
-            if (state.selectedId != null)
-              dispatch({
-                type: "updateNodeProduces",
-                id: state.selectedId,
-                produces,
-              });
-          }}
-          onChangeEdge={(patch) => {
-            if (state.selectedEdgeIndex != null)
-              dispatch({
-                type: "updateEdge",
-                index: state.selectedEdgeIndex,
-                patch,
-              });
-          }}
-          onDeleteEdge={() => {
-            if (state.selectedEdgeIndex != null)
-              dispatch({
-                type: "deleteEdge",
-                index: state.selectedEdgeIndex,
-              });
-          }}
-        />
+          <Inspector
+            state={state}
+            node={selectedNode}
+            edge={selectedEdge}
+            edgeIndex={state.selectedEdgeIndex}
+            onToggleCollapse={() => setInspectorOpen(false)}
+            onClose={() => {
+              dispatch({ type: "select", id: null });
+              dispatch({ type: "selectEdge", index: null });
+            }}
+            onChangeName={(name) => {
+              if (state.selectedId != null)
+                dispatch({
+                  type: "updateNodeName",
+                  id: state.selectedId,
+                  name,
+                });
+            }}
+            onChangeConfig={(key, value) => {
+              if (state.selectedId != null)
+                dispatch({
+                  type: "updateNodeConfig",
+                  id: state.selectedId,
+                  key,
+                  value,
+                });
+            }}
+            onChangeProduces={(produces) => {
+              if (state.selectedId != null)
+                dispatch({
+                  type: "updateNodeProduces",
+                  id: state.selectedId,
+                  produces,
+                });
+            }}
+            onChangeEdge={(patch) => {
+              if (state.selectedEdgeIndex != null)
+                dispatch({
+                  type: "updateEdge",
+                  index: state.selectedEdgeIndex,
+                  patch,
+                });
+            }}
+            onDeleteEdge={() => {
+              if (state.selectedEdgeIndex != null)
+                dispatch({
+                  type: "deleteEdge",
+                  index: state.selectedEdgeIndex,
+                });
+            }}
+          />
         ) : (
           <div className="flex h-full w-7 shrink-0 flex-col items-center border-l border-cronymax-border bg-cronymax-float">
             <button
@@ -1062,9 +1147,7 @@ function Inspector({
                       !state.docTypeCatalog.find(
                         (d) => d.name === entry.doc_type,
                       ) && (
-                        <option value={entry.doc_type}>
-                          {entry.doc_type}
-                        </option>
+                        <option value={entry.doc_type}>{entry.doc_type}</option>
                       )}
                     {state.docTypeCatalog.map((d) => (
                       <option key={d.name} value={d.name}>

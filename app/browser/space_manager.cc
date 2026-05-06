@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -63,7 +64,6 @@ TerminalSession* Space::CreateTerminal() {
   t->id = "t" + std::to_string(next_terminal_seq);
   t->name = "Terminal " + std::to_string(next_terminal_seq);
   ++next_terminal_seq;
-  t->pty = std::make_unique<PtySession>();
   active_terminal_id = t->id;
   terminals.push_back(std::move(t));
   return terminals.back().get();
@@ -72,7 +72,6 @@ TerminalSession* Space::CreateTerminal() {
 bool Space::CloseTerminal(const std::string& tid) {
   for (auto it = terminals.begin(); it != terminals.end(); ++it) {
     if ((*it)->id == tid) {
-      if ((*it)->pty && (*it)->pty->running()) (*it)->pty->Stop();
       terminals.erase(it);
       if (active_terminal_id == tid) {
         active_terminal_id = terminals.empty() ? "" : terminals.front()->id;
@@ -95,6 +94,15 @@ bool SpaceManager::Init(const std::filesystem::path& db_path) {
     return false;
   }
 
+  // Initialise ProfileStore from the user home directory.
+  const char* home = std::getenv("HOME");
+  if (home && *home) {
+    profile_store_ = ProfileStore(std::filesystem::path(home));
+  } else {
+    profile_store_ = ProfileStore(db_path.parent_path());
+  }
+  profile_store_.EnsureDefaultProfile();
+
   const auto rows = store_.ListSpaces();
   for (const auto& row : rows) {
     spaces_.push_back(InstantiateSpace(row));
@@ -115,17 +123,28 @@ bool SpaceManager::Init(const std::filesystem::path& db_path) {
 // CreateSpace
 // ---------------------------------------------------------------------------
 
+// Name-from-basename overload (preferred for open-folder flow).
+std::string SpaceManager::CreateSpace(const std::filesystem::path& root_path,
+                                      const std::string& profile_id) {
+  const std::string name = root_path.filename().string();
+  return CreateSpace(name.empty() ? root_path.string() : name, root_path,
+                     profile_id);
+}
+
+// Legacy overload: caller supplies name explicitly.
 std::string SpaceManager::CreateSpace(const std::string& name,
-                                      const std::filesystem::path& root_path) {
+                                      const std::filesystem::path& root_path,
+                                      const std::string& profile_id) {
   if (!std::filesystem::is_directory(root_path)) {
     return {};
   }
 
   SpaceRow row;
-  row.id = MakeId();
-  row.name = name;
-  row.root_path = root_path.string();
-  row.created_at = NowMs();
+  row.id         = MakeId();
+  row.name       = name;
+  row.root_path  = root_path.string();
+  row.profile_id = profile_id.empty() ? "default" : profile_id;
+  row.created_at  = NowMs();
   row.last_active = NowMs();
 
   if (!store_.CreateSpace(row)) {
@@ -155,32 +174,13 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
       active_index_ = i;
       store_.UpdateLastActive(space_id, NowMs());
 
-      // Phase A task 4.5: lazily set up the .cronymax/ skeleton and
-      // per-Space registries on first activation. Subsequent switches
-      // reuse the cached registries; the FsWatcher keeps them fresh.
+      // Phase 3+4: registries and FsWatcher moved to Rust; only set up
+      // the .cronymax/ skeleton and EventBus on first activation.
       Space* sp = spaces_[static_cast<size_t>(i)].get();
-      if (!sp->agent_registry) {
+      if (!sp->event_bus) {
         WorkspaceLayout layout(sp->workspace_root);
         std::string err;
         layout.EnsureSkeleton(&err);  // best-effort; ignore err for now
-
-        sp->agent_registry =
-            std::make_unique<AgentRegistry>(layout.AgentsDir());
-        sp->doc_type_registry = std::make_unique<DocTypeRegistry>(
-            builtin_doc_types_dir_, layout.DocTypesDir());
-        sp->agent_registry->Refresh();
-        sp->doc_type_registry->Refresh();
-
-        sp->fs_watcher = std::make_unique<FsWatcher>();
-        std::vector<std::filesystem::path> watch_paths = {
-            layout.AgentsDir(), layout.DocTypesDir()};
-        AgentRegistry* ar = sp->agent_registry.get();
-        DocTypeRegistry* dr = sp->doc_type_registry.get();
-        sp->fs_watcher->Start(watch_paths, std::chrono::milliseconds(250),
-                              [ar, dr]() {
-                                ar->Refresh();
-                                dr->Refresh();
-                              });
 
         // EventBus: typed event store for the channel view, inbox, and
         // status dot. Borrows the SpaceStore's sqlite3 handle.
@@ -243,6 +243,25 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
             platform::macos::SetDockBadgeCount(inbox.unread_count);
           });
         }
+      }
+
+      if (runtime_restart_callback_) {
+        // Resolve the space's profile and trigger a runtime restart so the
+        // new sandbox policy is applied (design decision D4).
+        ProfileRecord profile;
+        if (auto opt = profile_store_.Get(sp->profile_id)) {
+          profile = *opt;
+        } else {
+          // Fall back to default profile if the referenced one is missing.
+          if (auto def = profile_store_.Get("default")) {
+            profile = *def;
+          } else {
+            profile.id           = "default";
+            profile.name         = "Default";
+            profile.allow_network = true;
+          }
+        }
+        runtime_restart_callback_(sp->workspace_root.string(), profile);
       }
 
       if (switch_callback_) {
@@ -320,8 +339,9 @@ Space* SpaceManager::FindSpace(const std::string& space_id) {
 std::unique_ptr<Space> SpaceManager::InstantiateSpace(
     const SpaceRow& row) {
   auto sp = std::make_unique<Space>();
-  sp->id = row.id;
-  sp->name = row.name;
+  sp->id         = row.id;
+  sp->name       = row.name;
+  sp->profile_id = row.profile_id;
   sp->workspace_root = row.root_path;
   // (task 4.1) agent_runtime removed; run lifecycle is now owned by the
   // Rust runtime over GIPS. RuntimeBindingState is value-initialized.

@@ -91,9 +91,9 @@ else()
   target_sources(cronymax_common PRIVATE app/platform/macos/notifications_stub.cc)
 endif()
 
-# workspace: file broker + space store + layout utilities.
+# workspace: space store + layout utilities.
+# (Phase 2) file_broker.cc removed — file I/O now in Rust crate.
 add_library(cronymax_workspace STATIC
-  app/workspace/file_broker.cc
   app/workspace/flow_yaml.cc
   app/workspace/space_store.cc
   app/workspace/workspace_layout.cc
@@ -103,10 +103,9 @@ target_link_libraries(cronymax_workspace
   PRIVATE yaml-cpp
 )
 if(APPLE)
-  target_sources(cronymax_workspace PRIVATE app/workspace/fs_watcher.cc)
-  target_link_libraries(cronymax_workspace PRIVATE "-framework CoreServices")
+  # fs_watcher removed — Phase 3 watches happen in Rust runtime.
 else()
-  message(WARNING "FsWatcher is currently macOS-only.")
+  # nothing
 endif()
 
 # event_bus: typed event store (SQLite + JSONL) + inbox triage. Sits on top
@@ -120,43 +119,10 @@ target_link_libraries(cronymax_event_bus
 )
 target_include_directories(cronymax_event_bus PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
-# terminal: PTY session implementation (macOS only for now).
-add_library(cronymax_terminal STATIC)
-target_link_libraries(cronymax_terminal PUBLIC cronymax_common Threads::Threads)
-if(APPLE)
-  target_sources(cronymax_terminal PRIVATE app/terminal/pty_session_mac.cc)
-else()
-  message(WARNING "PTY implementation is currently macOS-only for the prototype.")
-endif()
-
-# agent: planner + tool registry + LLM router (depends on workspace).
-add_library(cronymax_agent STATIC
-  app/agent/agent_runtime.cc
-  app/agent/graph_engine.cc
-  app/agent/model_router.cc
-  app/agent/tool_registry.cc
-)
-target_link_libraries(cronymax_agent
-  PUBLIC cronymax_workspace cronymax_common cronymax_document
-)
-
-# document: doc-type schemas, agent definitions, document store,
-# reviews state. ReviewStore and ReviewerPipeline removed (cutover to
-# Rust runtime).
-add_library(cronymax_document STATIC
-  app/document/agent_definition.cc
-  app/document/agent_registry.cc
-  app/document/doc_type_registry.cc
-  app/document/doc_type_schema.cc
-  app/document/document_store.cc
-  app/document/reviews_state.cc
-  app/document/schema_reviewer.cc
-)
-target_link_libraries(cronymax_document
-  PUBLIC cronymax_common cronymax_workspace yaml-cpp nlohmann_json
-)
-target_include_directories(cronymax_document PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
-
+# terminal: PTY session implementation moved to Rust runtime (Phase 4).
+# Kept as an INTERFACE library so existing link targets don't need to change.
+add_library(cronymax_terminal INTERFACE)
+target_link_libraries(cronymax_terminal INTERFACE cronymax_common Threads::Threads)
 
 # runtime_bridge: C++ side of the Rust runtime GIPS client.
 # Depends on Cronymax::Crony (static lib + crony.h header) for the C ABI.
@@ -184,8 +150,6 @@ target_link_libraries(cronymax_native INTERFACE
   cronymax_common
   cronymax_workspace
   cronymax_terminal
-  cronymax_agent
-  cronymax_document
   cronymax_event_bus
   cronymax_runtime_bridge
 )
@@ -195,9 +159,11 @@ target_link_libraries(cronymax_native INTERFACE
 # without dragging in CEF or the rest of app/browser/.
 add_library(cronymax_space STATIC
   app/browser/space_manager.cc
+  app/browser/profile_store.cc
 )
 target_link_libraries(cronymax_space
-  PUBLIC cronymax_workspace cronymax_agent cronymax_terminal cronymax_document cronymax_event_bus
+  PUBLIC cronymax_workspace cronymax_terminal cronymax_event_bus
+  PRIVATE yaml-cpp
 )
 target_include_directories(cronymax_space PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
@@ -208,11 +174,6 @@ target_include_directories(cronymax_space PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app
 if(CRONYMAX_BUILD_TOOLS)
   add_executable(native_probe tools/native_probe.cc)
   target_link_libraries(native_probe PRIVATE cronymax_native cronymax_space)
-
-  # Loader tests for cronymax_document + cronymax_flow YAML parsers.
-  # Run with: ./build/loader_test
-  add_executable(loader_test tools/loader_test.cc)
-  target_link_libraries(loader_test PRIVATE cronymax_agent cronymax_document)
 
   # rebuild_trace --- admin CLI to regenerate trace.jsonl from SQLite.
   add_executable(rebuild_trace tools/rebuild_trace.cc)
@@ -228,7 +189,7 @@ if(CRONYMAX_BUILD_TOOLS)
   # legacy line-range comment anchors into the new block-id form by
   # invoking ReviewStore::MigrateAnchors for every reviews.json file.
   add_executable(migrate_review_anchors tools/migrate_review_anchors.cc)
-  target_link_libraries(migrate_review_anchors PRIVATE cronymax_document)
+  target_link_libraries(migrate_review_anchors PRIVATE cronymax_common)
 endif()
 
 if(CRONYMAX_BUILD_APP)

@@ -20,7 +20,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 // ── Public GitHub OAuth App client_id ────────────────────────────────────────
 //

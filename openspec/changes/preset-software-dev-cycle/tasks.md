@@ -94,7 +94,7 @@
 - [x] 13.3 Migration is idempotent: if provider `default` already exists, skip
 - [x] 13.4 Write migration test: populate old config → run migration → assert registry has `default` provider and keychain entry exists
 
-## 14. test_runner.* Built-in Tools
+## 14. test_runner.\* Built-in Tools
 
 - [x] 14.1 Define `TestRunnerResult` struct in C++ (or as a typed JSON schema in the bridge layer): total, passed, failed, skipped, duration_ms, failures[], coverage?
 - [x] 14.2 Implement `test_runner.discover` tool: scan workspace for `package.json` (jest/vitest), `setup.cfg`/`pyproject.toml` (pytest), `*_test.go` (go test); return typed suite list

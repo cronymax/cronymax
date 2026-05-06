@@ -45,6 +45,32 @@ pub struct LogConfig {
     pub filter: Option<String>,
 }
 
+/// Sandbox policy the host communicates to the runtime per-workspace.
+///
+/// This is derived from the active space's `ProfileRecord` and the
+/// workspace root path. When `None` is present in `RuntimeConfig`, the
+/// runtime falls back to a permissive default policy.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SandboxConfig {
+    /// Absolute path to the workspace root for this space.
+    pub workspace_root: PathBuf,
+
+    /// Whether outbound network access is allowed for this space.
+    pub allow_network: bool,
+
+    /// Additional absolute paths the runtime may read (beyond `workspace_root`).
+    #[serde(default)]
+    pub extra_read_paths: Vec<PathBuf>,
+
+    /// Additional absolute paths the runtime may write (beyond `workspace_root`).
+    #[serde(default)]
+    pub extra_write_paths: Vec<PathBuf>,
+
+    /// Absolute paths that must always be denied, regardless of other rules.
+    #[serde(default)]
+    pub extra_deny_paths: Vec<PathBuf>,
+}
+
 /// Configuration the host hands to the runtime at startup.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RuntimeConfig {
@@ -57,4 +83,9 @@ pub struct RuntimeConfig {
     /// Protocol version the host expects to speak. The runtime fails
     /// fast if this is incompatible with `protocol::PROTOCOL_VERSION`.
     pub host_protocol: ProtocolVersion,
+
+    /// Sandbox policy for the active workspace. `None` means use a
+    /// permissive default (allow all network, workspace root only).
+    #[serde(default)]
+    pub sandbox: Option<SandboxConfig>,
 }

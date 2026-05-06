@@ -63,7 +63,91 @@ pub enum CapabilityRequest {
         review_id: String,
         prompt: serde_json::Value,
     },
+
+    /// Submit or read a document via the host `DocumentStore`.
+    ///
+    /// The host is the authoritative document store: it applies POSIX
+    /// flock locking, maintains history snapshots, and computes SHA-256
+    /// digests. The runtime uses this capability when it needs
+    /// cross-process consistency (e.g. concurrent C++ agents and Rust
+    /// agents writing to the same flow).
+    Document {
+        space_id: String,
+        flow_id: String,
+        op: DocumentOp,
+    },
+
+    /// Load an agent definition from the host `AgentRegistry`.
+    ///
+    /// The host reads `<workspace>/.cronymax/agents/<agent_id>.agent.yaml`
+    /// and returns the parsed definition. The runtime falls back to
+    /// reading the YAML directly when the host is not connected.
+    Agent {
+        space_id: String,
+        op: AgentOp,
+    },
+
+    /// Manage a PTY terminal session via the host `PtySession`.
+    ///
+    /// Terminal sessions are lifecycle-managed by the C++ host so that
+    /// output can be streamed to the UI and the session survives runtime
+    /// restarts.
+    Terminal {
+        space_id: String,
+        op: TerminalOp,
+    },
 }
+
+/// Operations on the host `DocumentStore`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DocumentOp {
+    /// Submit a new document revision.  The host acquires an exclusive
+    /// flock lock, writes a history snapshot, then writes the current
+    /// file atomically.
+    Submit {
+        flow_id: String,
+        /// The document name/type (e.g. `"prd"`, `"implementation-plan"`).
+        name: String,
+        content: String,
+    },
+    /// Read the latest revision of a document.
+    Read { flow_id: String, name: String },
+}
+
+/// Operations on the host `AgentRegistry`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentOp {
+    /// Return the parsed definition for `agent_id`.
+    LoadDefinition { agent_id: String },
+    /// List all registered agent ids in the space.
+    ListAgents,
+}
+
+/// PTY terminal session lifecycle operations.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TerminalOp {
+    /// Open a new PTY session. Returns `{"session_id": "<uuid>"}` on success.
+    Open {
+        cwd: String,
+        shell: String,
+        #[serde(default = "default_cols")]
+        cols: u16,
+        #[serde(default = "default_rows")]
+        rows: u16,
+    },
+    /// Write bytes to an open session.
+    Write { session_id: String, data: String },
+    /// Resize the pseudo-terminal.
+    Resize { session_id: String, cols: u16, rows: u16 },
+    /// Close the session and release resources.
+    Close { session_id: String },
+}
+
+fn default_cols() -> u16 { 220 }
+fn default_rows() -> u16 { 50 }
 
 /// Read/write operations on host-managed secrets.
 #[derive(Clone, Debug, Serialize, Deserialize)]

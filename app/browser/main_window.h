@@ -140,6 +140,10 @@ class MainWindow : public CefWindowDelegate,
   bool sidebar_visible_ = true;  // tracks current sidebar visibility
   // Toggle sidebar visibility (called by btn_sidebar_toggle_ press).
   void ToggleSidebar();
+
+  // Native folder-picker delegate — set once in BuildChrome when ShellCallbacks
+  // are wired, then called from the titlebar "Open Folder…" command.
+  std::function<void(std::function<void(const std::string&)>)> run_file_dialog_;
   // Track which tab cards are mounted in `content_panel_` so we never
   // re-add the same CefView (which CEF rejects).
   std::map<std::string, bool> mounted_cards_;

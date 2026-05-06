@@ -30,7 +30,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tracing::warn;
 
 use crate::agent_loop::tools::{ToolDispatcher, ToolOutcome};
 use crate::llm::{ToolCall, ToolDef};
@@ -39,6 +38,7 @@ use super::browser::{BrowserCapability, PageInspectRequest};
 use super::filesystem::{FilesystemCapability, WorkspaceScope};
 use super::notify::{NotifyCapability, NotifyRequest, ApprovalRequest, ApprovalResponse};
 use super::shell::{ShellCapability, ShellRequest};
+use super::submit_document::DocumentSubmitted;
 
 // ── Handler type alias ───────────────────────────────────────────────────────
 
@@ -550,6 +550,191 @@ impl DispatcherBuilder {
         );
 
         self
+    }
+
+    /// Register the `submit_document` tool.
+    ///
+    /// `workspace_root` is the absolute path to the Space's workspace directory.
+    /// `flow_id` and `run_id` scope the output path and the notification.
+    /// `agent_id` identifies the agent submitting the document (for routing).
+    /// `tx` is the bounded mpsc sender used to signal the supervision loop.
+    pub fn register_submit_document(
+        &mut self,
+        workspace_root: std::path::PathBuf,
+        flow_id: String,
+        run_id: String,
+        agent_id: String,
+        tx: tokio::sync::mpsc::Sender<DocumentSubmitted>,
+    ) -> &mut Self {
+        use crate::llm::ToolDef;
+
+        let def = ToolDef {
+            name: "submit_document".into(),
+            description:
+                "Submit a document produced during this run. \
+                 The document is written to the workspace and queued for routing \
+                 to downstream agents. Use this to deliver your output."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "doc_type": {
+                        "type": "string",
+                        "description": "Document type identifier (e.g. 'prd', 'implementation-plan')"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Short human-readable title for the document"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Full Markdown body of the document"
+                    }
+                },
+                "required": ["doc_type", "title", "body"]
+            }),
+        };
+
+        self.register(def, false, move |args| {
+            let wr = workspace_root.clone();
+            let fid = flow_id.clone();
+            let rid = run_id.clone();
+            let aid = agent_id.clone();
+            let sender = tx.clone();
+            async move {
+                crate::capability::submit_document::handle(args, wr, fid, rid, aid, sender).await
+            }
+        })
+    }
+
+    /// Register a `run_terminal` tool backed by the Rust [`PtySession`].
+    ///
+    /// Exposes a single tool named `run_terminal` that opens a PTY session
+    /// in `<workspace_root>` using the default shell and runs a command,
+    /// returning up to `max_lines` lines of output.  For long-running
+    /// sessions, agents should prefer `submit_document` with shell output
+    /// embedded; this tool is for short-lived diagnostic commands.
+    ///
+    /// **Session lifecycle**: the session is opened, the command is written,
+    /// output is collected until the shell exits (or `timeout_secs`), then
+    /// the session is closed.  State is not persisted across tool calls.
+    pub fn register_terminal(
+        &mut self,
+        workspace_root: std::path::PathBuf,
+    ) -> &mut Self {
+        use crate::llm::ToolDef;
+
+        let def = ToolDef {
+            name: "run_terminal".into(),
+            description: "Run a shell command in an interactive PTY in the workspace and return \
+                          the output. Use for build commands, test runs, or any command that \
+                          requires a real terminal (e.g. interactive installers). \
+                          Prefer `run_shell` for simple non-interactive commands."
+                .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to run (passed to /bin/zsh -c)"
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Working directory (defaults to workspace root)"
+                    },
+                    "timeout_secs": {
+                        "type": "number",
+                        "description": "Seconds to wait for the command to finish (default 60)"
+                    }
+                },
+                "required": ["command"]
+            }),
+        };
+
+        self.register(def, true, move |args_json| {
+            let wr = workspace_root.clone();
+            async move {
+                use crate::agent_loop::tools::ToolOutcome;
+                use crate::terminal::PtySession;
+                use tokio::sync::{mpsc, oneshot};
+                use tokio::time::{timeout, Duration};
+
+                #[derive(serde::Deserialize)]
+                struct Args {
+                    command: String,
+                    #[serde(default)]
+                    cwd: Option<String>,
+                    #[serde(default)]
+                    timeout_secs: Option<u64>,
+                }
+
+                let args: Args = match serde_json::from_str(&args_json) {
+                    Ok(a) => a,
+                    Err(e) => return ToolOutcome::Error(format!("run_terminal: bad args: {e}")),
+                };
+
+                let cwd_str = args.cwd.unwrap_or_else(|| wr.to_str().unwrap_or(".").to_owned());
+                let cwd = std::path::PathBuf::from(&cwd_str);
+                let shell = "/bin/zsh";
+                let secs = args.timeout_secs.unwrap_or(60);
+
+                // PtySession uses UnboundedSender<Vec<u8>> for output and
+                // oneshot::Sender<i32> for the exit code.
+                let (output_tx, mut output_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                let (exit_tx, exit_rx) = oneshot::channel::<i32>();
+
+                let session = match PtySession::start(
+                    &cwd, shell, 220, 50, output_tx, exit_tx,
+                ).await {
+                    Ok(s) => s,
+                    Err(e) => return ToolOutcome::Error(format!("run_terminal: pty start failed: {e}")),
+                };
+
+                // Write the command followed by an explicit `exit` so the
+                // shell terminates and fires the exit channel.
+                let cmd = format!("{}\nexit\n", args.command);
+                if let Err(e) = session.write(cmd.as_bytes()) {
+                    return ToolOutcome::Error(format!("run_terminal: write failed: {e}"));
+                }
+
+                // Collect output until the session exits or the timeout fires.
+                let mut output_bytes: Vec<u8> = Vec::new();
+                let deadline = Duration::from_secs(secs);
+
+                let collection = async {
+                    tokio::pin!(exit_rx);
+                    loop {
+                        tokio::select! {
+                            Some(chunk) = output_rx.recv() => {
+                                output_bytes.extend_from_slice(&chunk);
+                            }
+                            _ = &mut exit_rx => break,
+                            else => break,
+                        }
+                    }
+                };
+
+                match timeout(deadline, collection).await {
+                    Ok(()) => {}
+                    Err(_) => {
+                        session.stop();
+                        return ToolOutcome::Error(format!(
+                            "run_terminal: command timed out after {secs}s"
+                        ));
+                    }
+                };
+
+                session.stop();
+
+                let output = String::from_utf8_lossy(&output_bytes);
+                let line_count = output.lines().count();
+
+                ToolOutcome::Output(serde_json::json!({
+                    "output": output.as_ref(),
+                    "line_count": line_count,
+                }))
+            }
+        })
     }
 
     pub fn build(self) -> HostCapabilityDispatcher {

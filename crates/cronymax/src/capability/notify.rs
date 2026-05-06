@@ -81,3 +81,30 @@ pub trait NotifyCapability: Send + Sync + std::fmt::Debug {
     /// badge.
     async fn set_badge(&self, count: Option<u32>) -> anyhow::Result<()>;
 }
+
+// ── No-op implementation ──────────────────────────────────────────────────────
+
+/// A [`NotifyCapability`] that silently discards all notifications and
+/// approvals (always returns `Approved`). Used in contexts where the host
+/// notification bridge is not available (e.g. standalone runtime tests or
+/// agent runs that don't require native notifications).
+#[derive(Debug)]
+pub struct NullNotify;
+
+#[async_trait]
+impl NotifyCapability for NullNotify {
+    async fn notify(&self, _request: NotifyRequest) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn request_approval(
+        &self,
+        _request: ApprovalRequest,
+    ) -> anyhow::Result<ApprovalResponse> {
+        Ok(ApprovalResponse::Approved)
+    }
+
+    async fn set_badge(&self, _count: Option<u32>) -> anyhow::Result<()> {
+        Ok(())
+    }
+}

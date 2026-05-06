@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { bridge } from "@/bridge";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { useDragRegions } from "@/hooks/useDragRegions";
@@ -6,6 +6,7 @@ import { Icon } from "@/shared/components/Icon";
 import type { IconName } from "@/shared/icons";
 import type { TabKind, TabSummary } from "@/types";
 import { useStore } from "./store";
+import { ProfilePickerOverlay } from "@/components/ProfilePickerOverlay";
 
 /**
  * Sidebar — unified tab list.
@@ -108,6 +109,7 @@ export function App() {
   const dragRef = useDragRegions("sidebar");
   const [state, dispatch] = useStore();
   const { tabs, activeTabId } = state;
+  const [switching, setSwitching] = useState(false);
 
   // ── Initial load ───────────────────────────────────────────────────
   useEffect(() => {
@@ -136,6 +138,9 @@ export function App() {
   useBridgeEvent("shell.tab_activated", (p) =>
     dispatch({ type: "setActiveTab", id: p.tabId }),
   );
+  useBridgeEvent("space.switch_loading", ({ loading }) =>
+    setSwitching(loading),
+  );
 
   // ── Actions ────────────────────────────────────────────────────────
   const activate = useCallback(async (tab: TabSummary) => {
@@ -155,27 +160,35 @@ export function App() {
   }, []);
 
   return (
-    <aside
-      ref={dragRef as React.RefObject<HTMLElement>}
-      className="app-drag flex h-full flex-col bg-cronymax-body pt-7 text-cronymax-title"
-    >
-      {/* Items section */}
-      <section className="no-drag flex-1 overflow-auto px-2 pb-4 pt-2">
-        <div className="no-drag px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-cronymax-caption">
-          Tabs
-        </div>
-        <ul className="no-drag space-y-0.5">
-          {tabs.map((t) => (
-            <Row
-              key={t.id}
-              tab={t}
-              active={t.id === activeTabId}
-              onActivate={() => void activate(t)}
-              onClose={() => void close(t)}
-            />
-          ))}
-        </ul>
-      </section>
-    </aside>
+    <>
+      <ProfilePickerOverlay />
+      <aside
+        ref={dragRef as React.RefObject<HTMLElement>}
+        className="app-drag flex h-full flex-col bg-cronymax-body pt-7 text-cronymax-title"
+      >
+        {/* Items section */}
+        <section className="no-drag flex-1 overflow-auto px-2 pb-4 pt-2">
+          {switching && (
+            <div className="mb-2 rounded bg-cronymax-float px-2 py-1 text-[11px] text-cronymax-caption">
+              Restarting runtime…
+            </div>
+          )}
+          <div className="no-drag px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-cronymax-caption">
+            Tabs
+          </div>
+          <ul className="no-drag space-y-0.5">
+            {tabs.map((t) => (
+              <Row
+                key={t.id}
+                tab={t}
+                active={t.id === activeTabId}
+                onActivate={() => void activate(t)}
+                onClose={() => void close(t)}
+              />
+            ))}
+          </ul>
+        </section>
+      </aside>
+    </>
   );
 }

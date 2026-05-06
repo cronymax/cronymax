@@ -374,6 +374,7 @@ struct AccumCall {
     arguments: String,
 }
 
+#[allow(dead_code)]
 enum ToolStepResult {
     Continue,
     Terminal,

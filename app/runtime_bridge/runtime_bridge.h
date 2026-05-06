@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "crony.h"  // provided via Cronymax::Crony INTERFACE_INCLUDE_DIRECTORIES
+#include "nlohmann/json.hpp"
 
 namespace cronymax {
 
@@ -113,6 +114,14 @@ class RuntimeBridge {
   // Remove a subscription by token. Thread safe.
   void Unsubscribe(int64_t token);
 
+  // Set the sandbox configuration that will be included in the next
+  // RuntimeConfig JSON handed to the child process via stdin.
+  // Thread safe; must be called before Start() or Stop()+Start() to take effect.
+  void SetSandboxConfig(nlohmann::json config) {
+    std::lock_guard<std::mutex> lock(mu_);
+    sandbox_config_ = std::move(config);
+  }
+
   // ---------- diagnostics ----------
 
   RuntimeBridgeStatus Status() const;
@@ -176,6 +185,10 @@ class RuntimeBridge {
 
   // App-private data directory handed to the runtime as its persistence root.
   std::filesystem::path app_data_dir_;
+
+  // Sandbox policy for the active workspace; serialized into the RuntimeConfig
+  // JSON on each Start() / SpawnAndHandshake(). null_json = no sandbox section.
+  nlohmann::json sandbox_config_ = nullptr;
 
   // Service name advertised by the current child (used to reconnect after
   // restart).

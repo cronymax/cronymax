@@ -1,0 +1,242 @@
+//! Agent-definition loader — reads `<workspace>/.cronymax/agents/<agent>.agent.yaml`
+//! and surfaces the fields the Rust runtime needs when spawning an agent loop.
+//!
+//! The on-disk format mirrors `app/document/agent_definition.h` (the C++ truth
+//! source). We keep only the fields the runtime touches; unknown YAML keys are
+//! silently ignored so future schema additions are backwards-compatible.
+//!
+//! ## Lookup order
+//!
+//! 1. `<workspace>/.cronymax/agents/<agent_id>.agent.yaml`
+//! 2. If absent, returns a default `AgentDef` (empty `system_prompt`,
+//!    `kind = "worker"`, no tools filter, no LLM override).
+//!
+//! The default is intentionally permissive so ad-hoc / legacy runs are not
+//! broken by the absence of an agent definition file.
+
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+use tracing::warn;
+
+// ── AgentDef ─────────────────────────────────────────────────────────────────
+
+/// Parsed subset of `<agent>.agent.yaml` that the Rust runtime cares about.
+#[derive(Clone, Debug, Default)]
+pub struct AgentDef {
+    /// Human-readable name from the YAML `name:` field.
+    /// Defaults to the file stem if absent.
+    pub name: String,
+
+    /// `"worker"` or `"reviewer"` (defaults to `"worker"` if absent or unknown).
+    pub kind: AgentKind,
+
+    /// Provider name from structured `llm.provider` form, e.g. `"copilot"`,
+    /// `"openai"`. Empty means "use workspace default".
+    pub llm_provider: String,
+
+    /// Model identifier from structured `llm.model` form, e.g. `"gpt-4o"`.
+    /// Also populated when the simple `llm:` string form is used.
+    /// Empty means "use workspace default".
+    pub llm_model: String,
+
+    /// Pre-authored system prompt that describes the agent's role.
+    /// The Rust runtime prepends this to the FlowRuntime invocation context
+    /// message so the LLM understands both its persona and the flow context.
+    pub system_prompt: String,
+
+    /// Optional memory namespace. Defaults to the agent id when empty.
+    pub memory_namespace: String,
+
+    /// Explicit tool allow-list. If empty the agent gets the full default
+    /// tool set registered for the run. Non-empty means only the listed
+    /// tool names will be available.
+    pub tools: Vec<String>,
+}
+
+/// The two legal agent kinds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AgentKind {
+    #[default]
+    Worker,
+    Reviewer,
+}
+
+impl AgentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentKind::Worker => "worker",
+            AgentKind::Reviewer => "reviewer",
+        }
+    }
+}
+
+// ── YAML deserialization ──────────────────────────────────────────────────────
+
+/// Raw deserialization target — maps 1:1 to the YAML keys we care about.
+#[derive(Debug, Default, Deserialize)]
+struct RawAgentDef {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    kind: String,
+    /// Simple string form: `llm: gpt-4o`
+    #[serde(default)]
+    llm: Option<serde_yml::Value>,
+    #[serde(default)]
+    system_prompt: String,
+    #[serde(default)]
+    memory_namespace: String,
+    #[serde(default)]
+    tools: Vec<String>,
+}
+
+impl RawAgentDef {
+    fn into_agent_def(self, fallback_name: &str) -> AgentDef {
+        let name = if self.name.is_empty() { fallback_name.to_owned() } else { self.name };
+
+        let kind = match self.kind.as_str() {
+            "reviewer" => AgentKind::Reviewer,
+            _ => AgentKind::Worker,
+        };
+
+        // The `llm` field can be:
+        //   - a plain string: `llm: gpt-4o`
+        //   - a mapping: `llm: {provider: copilot, model: gpt-4o}`
+        let (llm_provider, llm_model) = match &self.llm {
+            Some(serde_yml::Value::String(s)) => (String::new(), s.clone()),
+            Some(serde_yml::Value::Mapping(map)) => {
+                let provider = map
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let model = map
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                (provider, model)
+            }
+            _ => (String::new(), String::new()),
+        };
+
+        AgentDef {
+            name,
+            kind,
+            llm_provider,
+            llm_model,
+            system_prompt: self.system_prompt,
+            memory_namespace: self.memory_namespace,
+            tools: self.tools,
+        }
+    }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Load an agent definition from `<workspace_root>/.cronymax/agents/<agent_id>.agent.yaml`.
+///
+/// Returns a default `AgentDef` (with `name = agent_id`) if:
+/// * The file does not exist (agent definition is optional).
+/// * The file cannot be read or parsed (logged at `warn` level).
+///
+/// This function never fails — a missing or malformed YAML just means
+/// "use defaults", which is safe for ad-hoc runs.
+pub async fn load_agent(workspace_root: &Path, agent_id: &str) -> AgentDef {
+    let path = agents_dir(workspace_root).join(format!("{agent_id}.agent.yaml"));
+    load_from_path(&path, agent_id).await
+}
+
+/// Build the agents directory path `<workspace_root>/.cronymax/agents/`.
+pub fn agents_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".cronymax").join("agents")
+}
+
+async fn load_from_path(path: &Path, fallback_name: &str) -> AgentDef {
+    let yaml = match tokio::fs::read_to_string(path).await {
+        Ok(y) => y,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // No definition file — silently use defaults.
+            return AgentDef {
+                name: fallback_name.to_owned(),
+                ..Default::default()
+            };
+        }
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "agent_loader: failed to read agent yaml");
+            return AgentDef {
+                name: fallback_name.to_owned(),
+                ..Default::default()
+            };
+        }
+    };
+
+    match serde_yml::from_str::<RawAgentDef>(&yaml) {
+        Ok(raw) => raw.into_agent_def(fallback_name),
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "agent_loader: failed to parse agent yaml");
+            AgentDef {
+                name: fallback_name.to_owned(),
+                ..Default::default()
+            }
+        }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_simple_llm() {
+        let yaml = r#"
+name: coder
+kind: worker
+llm: gpt-4o
+system_prompt: "You are an expert software engineer."
+tools:
+  - run_shell
+  - read_file
+  - write_file
+"#;
+        let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
+        let def = raw.into_agent_def("coder");
+        assert_eq!(def.name, "coder");
+        assert_eq!(def.kind, AgentKind::Worker);
+        assert_eq!(def.llm_model, "gpt-4o");
+        assert_eq!(def.llm_provider, "");
+        assert_eq!(def.system_prompt, "You are an expert software engineer.");
+        assert_eq!(def.tools, vec!["run_shell", "read_file", "write_file"]);
+    }
+
+    #[test]
+    fn parse_structured_llm() {
+        let yaml = r#"
+name: pm
+kind: reviewer
+llm:
+  provider: copilot
+  model: claude-3-5-sonnet
+system_prompt: "Review the PRD for completeness."
+"#;
+        let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
+        let def = raw.into_agent_def("pm");
+        assert_eq!(def.kind, AgentKind::Reviewer);
+        assert_eq!(def.llm_provider, "copilot");
+        assert_eq!(def.llm_model, "claude-3-5-sonnet");
+        assert!(def.tools.is_empty());
+    }
+
+    #[test]
+    fn empty_yaml_gives_defaults() {
+        let yaml = "{}";
+        let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
+        let def = raw.into_agent_def("my-agent");
+        assert_eq!(def.name, "my-agent");
+        assert_eq!(def.kind, AgentKind::Worker);
+        assert!(def.system_prompt.is_empty());
+    }
+}

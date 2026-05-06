@@ -26,6 +26,7 @@
 #if defined(__APPLE__)
 #include "browser/icon_registry.h"
 #include "browser/mac_view_style.h"
+#include "browser/mac_folder_picker.h"
 #include "browser/tab.h"
 #include "browser/tab_behavior.h"
 #include "browser/tab_behaviors/web_tab_behavior.h"
@@ -282,7 +283,7 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   }
 
   if (space_manager_.spaces().empty())
-    space_manager_.CreateSpace("Default", std::filesystem::current_path());
+    space_manager_.CreateSpace("Default", std::filesystem::current_path(), "default");
 
   // arc-style-tab-cards: TabManager owns every tab; per-kind *_view_
   // singletons are gone. All non-web kinds are singleton tabs whose
@@ -380,6 +381,43 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
             break;
           }
         }
+      });
+
+  // Wire runtime restart callback: on every space switch, restart the
+  // Rust runtime with the new space's sandbox policy (design decision D4).
+  space_manager_.SetRuntimeRestartCallback(
+      [this](const std::string& workspace_root,
+             const ProfileRecord& profile) {
+        // Build the sandbox JSON that SpawnAndHandshake will inject.
+        nlohmann::json sandbox;
+        sandbox["workspace_root"] = workspace_root;
+        sandbox["allow_network"]  = profile.allow_network;
+        {
+          auto arr = nlohmann::json::array();
+          for (const auto& p : profile.extra_read_paths) arr.push_back(p);
+          sandbox["extra_read_paths"] = arr;
+        }
+        {
+          auto arr = nlohmann::json::array();
+          for (const auto& p : profile.extra_write_paths) arr.push_back(p);
+          sandbox["extra_write_paths"] = arr;
+        }
+        {
+          auto arr = nlohmann::json::array();
+          for (const auto& p : profile.extra_deny_paths) arr.push_back(p);
+          sandbox["extra_deny_paths"] = arr;
+        }
+        runtime_bridge_->SetSandboxConfig(sandbox);
+
+        // Restart the runtime bridge on a background thread so the UI
+        // thread is not blocked (the switch UX shows a loading indicator
+        // until the new runtime is ready).
+        std::thread([this]() {
+          BroadcastToAllPanels("space.switch_loading", "{\"loading\":true}");
+          runtime_bridge_->Stop();
+          runtime_bridge_->Start();
+          BroadcastToAllPanels("space.switch_loading", "{\"loading\":false}");
+        }).detach();
       });
 
   window->Show();
@@ -794,6 +832,21 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     // Persist sidebar tab layout (chat/terminal) so it survives restarts.
     PersistSidebarTabs();
   });
+
+  // Wire run_file_dialog_ for the "Open Folder…" titlebar command and the
+  // space.open_folder bridge channel.  On macOS we use NSOpenPanel; the
+  // callback is invoked on the main thread with the selected path (or ""
+  // on cancel).
+#if defined(__APPLE__)
+  run_file_dialog_ = [](std::function<void(const std::string&)> cb) {
+    ShowNativeFolderPicker(std::move(cb));
+  };
+#else
+  run_file_dialog_ = [](std::function<void(const std::string&)> cb) {
+    cb("");  // Not implemented on non-macOS platforms yet.
+  };
+#endif
+  sh.run_file_dialog = run_file_dialog_;
 
   client_handler_->SetShellCallbacks(std::move(sh));
 
@@ -1494,13 +1547,16 @@ CefRefPtr<CefPanel> MainWindow::BuildTitleBar() {
           auto menu = CefMenuModel::CreateMenuModel(
               new FnMenuModelDelegate([this](int cmd) {
                 if (cmd == kNewSpaceCmd) {
-                  // Open Settings panel — it contains the Space management UI.
-                  CefPostTask(TID_UI, base::BindOnce(
-                      [](CefRefPtr<MainWindow> self) {
-                        self->OpenPopover(
-                            self->ResourceUrl("panels/settings/index.html"));
-                      },
-                      CefRefPtr<MainWindow>(this)));
+                  // Invoke the native folder picker. On selection broadcast
+                  // "space.folder_picked" so the ProfilePickerOverlay appears.
+                  if (run_file_dialog_) {
+                    run_file_dialog_([this](const std::string& path) {
+                      if (path.empty()) return;
+                      BroadcastToAllPanels(
+                          "space.folder_picked",
+                          nlohmann::json{{"path", path}}.dump());
+                    });
+                  }
                 } else if (cmd >= 0 &&
                            cmd < static_cast<int>(
                                space_manager_.spaces().size())) {
@@ -1515,12 +1571,13 @@ CefRefPtr<CefPanel> MainWindow::BuildTitleBar() {
             if (active) menu->SetChecked(i, true);
           }
           menu->AddSeparator();
-          menu->AddItem(kNewSpaceCmd, "New Space\u2026");
+          menu->AddItem(kNewSpaceCmd, "Open Folder\u2026");
           btn->ShowMenu(menu, pt, CEF_MENU_ANCHOR_TOPLEFT);
         });
     btn_space_ = CefMenuButton::CreateMenuButton(delegate, init_label);
-    btn_space_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kTitleBarBtnFg);
-    btn_space_->SetTextColor(CEF_BUTTON_STATE_HOVERED, 0xFFFFFFFF);
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_NORMAL,  kTitleBarBtnFg);
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_HOVERED,  kTitleBarBtnFg);
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_PRESSED,  kTitleBarBtnFg);
     btn_space_->SetBackgroundColor(
         current_chrome_.bg_body == 0 ? kTitleBarBgFallback
                                      : current_chrome_.bg_body);
@@ -1678,7 +1735,14 @@ void MainWindow::RefreshTitleBarDragRegion() {
     if (r.width <= 0 || r.height <= 0) return;
     nodrag.emplace_back(r.x - win.x, r.y - win.y, r.width, r.height);
   };
+  auto add_view = [&](const CefRefPtr<CefView>& b) {
+    if (!b) return;
+    CefRect r = b->GetBoundsInScreen();
+    if (r.width <= 0 || r.height <= 0) return;
+    nodrag.emplace_back(r.x - win.x, r.y - win.y, r.width, r.height);
+  };
   add(btn_sidebar_toggle_);
+  add_view(btn_space_);  // CefMenuButton — not a CefLabelButton, needs own punch-out
   add(btn_web_);
   add(btn_term_);
   add(btn_chat_);
@@ -2138,6 +2202,7 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
   if (btn_space_) {
     btn_space_->SetTextColor(CEF_BUTTON_STATE_NORMAL,  chrome.text_title);
     btn_space_->SetTextColor(CEF_BUTTON_STATE_HOVERED, chrome.text_title);
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_PRESSED, chrome.text_title);
     btn_space_->SetBackgroundColor(chrome.bg_body);
   }
 #if defined(__APPLE__)
@@ -2145,6 +2210,9 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
     SetMainWindowBackgroundColor(main_window_->GetWindowHandle(),
                                  chrome.bg_body);
   }
+  // Force NSApp appearance so native menus (NSMenu) match the app theme
+  // rather than always following the OS preference.
+  SetAppAppearance(chrome.text_title > 0x80808080);  // text is light → dark bg
   // Refresh the AppKit corner-punch views for the active tab so they match
   // the new bg_body. Without this re-call, old punch views keep the previous
   // theme's color and create visually wrong corners on theme switch.

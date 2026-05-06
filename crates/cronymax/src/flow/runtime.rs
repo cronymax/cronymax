@@ -372,6 +372,16 @@ impl FlowRuntime {
         // Mark port as APPROVED.
         self.mark_port_status(run_id, producing_agent, port, PortStatus::Approved).await?;
 
+        // Update reviews.json: mark doc as APPROVED.
+        if let Some(flow_id) = self.get_run(run_id).map(|s| s.flow_id.clone()) {
+            if let Err(e) = self
+                .upsert_review_state(&flow_id, run_id, port, producing_agent, "", 0, "APPROVED")
+                .await
+            {
+                tracing::warn!(run_id, error = %e, "on_document_approved: failed to update reviews.json");
+            }
+        }
+
         // Check if any edge from this agent for this port has on_approved_reschedule.
         let should_reschedule = flow
             .edges
@@ -475,6 +485,156 @@ impl FlowRuntime {
         } else {
             Ok(None)
         }
+    }
+
+    // ── Document-submission routing ───────────────────────────────────────
+
+    /// Called when an agent submits a document via the `submit_document` tool.
+    ///
+    /// Responsibilities:
+    /// 1. Check cycle limits — if exceeded, returns `Err` with the
+    ///    on-exhausted action string (caller should fail or halt the run).
+    /// 2. Mark the producing agent's port as `InReview` in `state.json`.
+    /// 3. Update `reviews.json` — creates/upserts the doc entry with status
+    ///    `IN_REVIEW`, appends a revision record with the SHA-256 digest.
+    /// 4. Call [`Router::route()`] to discover downstream agents.
+    /// 5. For each downstream agent: call [`schedule_agent_with_context()`]
+    ///    and collect the resulting `InvocationContext` values.
+    ///
+    /// Returns `Vec<(agent_id, Option<InvocationContext>)>` — the caller
+    /// (supervision task in `RuntimeHandler`) spawns a `ReactLoop` for each
+    /// entry whose context is `Some`.
+    pub async fn on_document_submitted(
+        &self,
+        run_id: &str,
+        producing_agent: &str,
+        doc_type: &str,
+        body: &str,
+        flow: &FlowDefinition,
+        sha256: &str,
+        revision: u32,
+    ) -> anyhow::Result<Vec<(String, Option<InvocationContext>)>> {
+        // 1. Cycle-limit check (increments counter in state.json).
+        if let Some(action) = self.check_cycle_limit(run_id, producing_agent, doc_type, flow).await? {
+            anyhow::bail!(
+                "cycle limit exceeded on edge {producing_agent}:{doc_type}; action={action}"
+            );
+        }
+
+        // 2. Transition the producing agent's port to InReview.
+        self.mark_port_status(run_id, producing_agent, doc_type, PortStatus::InReview)
+            .await?;
+
+        // 3. Persist the doc submission in reviews.json.
+        if let Some(flow_id) = self.get_run(run_id).map(|s| s.flow_id.clone()) {
+            if let Err(e) = self
+                .upsert_review_state(
+                    &flow_id,
+                    run_id,
+                    doc_type,
+                    producing_agent,
+                    sha256,
+                    revision,
+                    "IN_REVIEW",
+                )
+                .await
+            {
+                tracing::warn!(run_id, error = %e, "on_document_submitted: failed to write reviews.json");
+            }
+        }
+
+        // Emit doc-submitted trace event.
+        if let Some(tw) = self.trace_writers.read().get(run_id) {
+            let mut evt = TraceEvent::now(TraceKind::DocumentSubmitted);
+            evt.run_id = run_id.to_owned();
+            evt.agent_id = producing_agent.to_owned();
+            tw.append(evt);
+        }
+
+        // 4. Route the submission to downstream agents.
+        let decision = crate::flow::router::Router::route(flow, producing_agent, doc_type, body);
+
+        for unknown in &decision.unknown_mentions {
+            tracing::warn!(run_id, %unknown, "on_document_submitted: unknown @mention ignored");
+        }
+
+        // 5. Schedule each downstream agent.
+        let mut results = Vec::new();
+        for target in decision.targets {
+            let trigger = InvocationTrigger {
+                kind: "document_submitted".into(),
+                approved_port: Some(doc_type.to_owned()),
+                approved_doc: None,
+            };
+            let ctx = self
+                .schedule_agent_with_context(run_id, &target.agent, trigger, flow)
+                .await?;
+            results.push((target.agent, ctx));
+        }
+
+        self.emit("flow.run.changed", run_id);
+        Ok(results)
+    }
+
+    /// Called when a `ResolveReview` with `decision=Rejected` is received for
+    /// a flow document. Re-queues the producing agent by transitioning its
+    /// port back to `Pending` and emitting a new `InvocationContext`.
+    ///
+    /// Returns `Some(InvocationContext)` if the agent should be re-invoked,
+    /// `None` if the run state is unknown or all ports are already approved.
+    pub async fn on_rejected_requeue(
+        &self,
+        run_id: &str,
+        producing_agent: &str,
+        port: &str,
+        flow: &FlowDefinition,
+    ) -> anyhow::Result<Option<InvocationContext>> {
+        // Reset port to Pending so the agent can re-submit.
+        // mark_port_status guards against downgrades from Approved → Pending,
+        // but we need to allow InReview → Pending here. We write directly.
+        let state_snapshot = {
+            let runs = self.runs.read();
+            let run = runs
+                .get(run_id)
+                .ok_or_else(|| anyhow::anyhow!("run '{run_id}' not found"))?;
+            let mut s = run.write();
+            let agent_state = s.agents.entry(producing_agent.to_owned()).or_default();
+            agent_state.ports.insert(port.to_owned(), PortStatus::Pending);
+            s.clone()
+        };
+        self.persist_run(&state_snapshot).await?;
+
+        // Update reviews.json: mark as CHANGES_REQUESTED so reviewers and the
+        // UI can see the rejection before the agent re-submits.
+        if let Some(flow_id) = self.get_run(run_id).map(|s| s.flow_id.clone()) {
+            if let Err(e) = self
+                .upsert_review_state(
+                    &flow_id,
+                    run_id,
+                    port,
+                    producing_agent,
+                    "",
+                    0,
+                    "CHANGES_REQUESTED",
+                )
+                .await
+            {
+                tracing::warn!(run_id, error = %e, "on_rejected_requeue: failed to update reviews.json");
+            }
+        }
+
+        // Schedule the agent with a rejection trigger.
+        let trigger = InvocationTrigger {
+            kind: "rejected_requeue".into(),
+            approved_port: Some(port.to_owned()),
+            approved_doc: None,
+        };
+        let ctx = self
+            .schedule_agent_with_context(run_id, producing_agent, trigger, flow)
+            .await?;
+
+        self.emit("flow.run.changed", run_id);
+        Ok(ctx)
     }
 
     // ── Reviewer set resolution ───────────────────────────────────────────
@@ -817,6 +977,98 @@ impl FlowRuntime {
         }
         let json = serde_json::to_string_pretty(state)?;
         tokio::fs::write(&path, json).await?;
+        Ok(())
+    }
+
+    /// Write or update `reviews.json` for a run document.
+    ///
+    /// The on-disk format is compatible with C++ `ReviewsState`:
+    /// ```json
+    /// {
+    ///   "docs": {
+    ///     "<doc_name>": {
+    ///       "current_revision": 1,
+    ///       "status": "IN_REVIEW",
+    ///       "round_count": 1,
+    ///       "revisions": [{"rev": 1, "submitted_at": "...", "submitted_by": "agent", "sha": "..."}],
+    ///       "comments": []
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// When `revision` is 0 the revisions array is not modified (status-only
+    /// update for approve / reject transitions). When `revision` > 0 a new
+    /// revision record is appended and `current_revision` is updated.
+    async fn upsert_review_state(
+        &self,
+        flow_id: &str,
+        run_id: &str,
+        doc_name: &str,
+        agent: &str,
+        sha256: &str,
+        revision: u32,
+        status: &str,
+    ) -> anyhow::Result<()> {
+        let reviews_path = self.layout.run_reviews_file(flow_id, run_id);
+        if let Some(parent) = reviews_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        // Read existing reviews.json or start fresh.
+        let mut reviews: serde_json::Value = if reviews_path.exists() {
+            let raw = tokio::fs::read_to_string(&reviews_path).await.unwrap_or_default();
+            serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({"docs": {}}))
+        } else {
+            serde_json::json!({"docs": {}})
+        };
+
+        // Ensure the "docs" key is an object.
+        if !reviews.get("docs").map(|v| v.is_object()).unwrap_or(false) {
+            reviews["docs"] = serde_json::json!({});
+        }
+
+        let docs = reviews["docs"].as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("reviews.json: docs is not an object"))?;
+
+        let entry = docs.entry(doc_name).or_insert_with(|| serde_json::json!({
+            "current_revision": 0,
+            "status": "DRAFT",
+            "round_count": 0,
+            "revisions": [],
+            "comments": []
+        }));
+
+        // Append a new revision record when the caller provides one.
+        if revision > 0 {
+            entry["current_revision"] = serde_json::json!(revision);
+
+            let revisions = entry["revisions"]
+                .as_array_mut()
+                .ok_or_else(|| anyhow::anyhow!("reviews.json: revisions is not an array"))?;
+            revisions.push(serde_json::json!({
+                "rev": revision,
+                "submitted_at": utc_now_iso(),
+                "submitted_by": agent,
+                "sha": sha256,
+            }));
+
+            // Increment round_count when a new revision is submitted for review.
+            if status == "IN_REVIEW" {
+                if let Some(count) = entry["round_count"].as_u64() {
+                    entry["round_count"] = serde_json::json!(count + 1);
+                }
+            }
+        }
+
+        entry["status"] = serde_json::json!(status);
+
+        // Atomic write: write to .tmp then rename.
+        let json = serde_json::to_string_pretty(&reviews)?;
+        let tmp_path = reviews_path.with_extension("tmp");
+        tokio::fs::write(&tmp_path, json).await?;
+        tokio::fs::rename(&tmp_path, &reviews_path).await?;
+
         Ok(())
     }
 

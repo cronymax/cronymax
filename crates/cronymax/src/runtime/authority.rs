@@ -542,6 +542,12 @@ impl RuntimeAuthority {
         Self::emit_locked(&mut inner, run_topic(run_id), payload);
     }
 
+    /// Emit a payload on an arbitrary topic (e.g. `"terminal:<id>"`).
+    pub fn emit(&self, topic: impl Into<String>, payload: RuntimeEventPayload) {
+        let mut inner = self.inner.lock();
+        Self::emit_locked(&mut inner, topic.into(), payload);
+    }
+
     /// Append a payload to a run's persistent history (task 7.3). The
     /// agent loop calls this for any state-shaping event it wants to
     /// be replayable across restarts. The append is durable —

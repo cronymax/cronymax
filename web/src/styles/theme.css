@@ -251,8 +251,12 @@ body,
   font-family: var(--font-family-sans);
   caret-color: var(--color-cronymax-primary);
 }
-.cronymax-wysiwyg .ProseMirror > * + * { margin-top: 0.5em; }
-.cronymax-wysiwyg .ProseMirror p { margin: 0; }
+.cronymax-wysiwyg .ProseMirror > * + * {
+  margin-top: 0.5em;
+}
+.cronymax-wysiwyg .ProseMirror p {
+  margin: 0;
+}
 .cronymax-wysiwyg .ProseMirror h1,
 .cronymax-wysiwyg .ProseMirror h2,
 .cronymax-wysiwyg .ProseMirror h3,
@@ -261,15 +265,23 @@ body,
   color: var(--color-cronymax-title);
   line-height: 1.35;
 }
-.cronymax-wysiwyg .ProseMirror h1 { font-size: 1.3em; }
-.cronymax-wysiwyg .ProseMirror h2 { font-size: 1.15em; }
-.cronymax-wysiwyg .ProseMirror h3 { font-size: 1em; }
+.cronymax-wysiwyg .ProseMirror h1 {
+  font-size: 1.3em;
+}
+.cronymax-wysiwyg .ProseMirror h2 {
+  font-size: 1.15em;
+}
+.cronymax-wysiwyg .ProseMirror h3 {
+  font-size: 1em;
+}
 .cronymax-wysiwyg .ProseMirror ul,
 .cronymax-wysiwyg .ProseMirror ol {
   padding-left: 1.5em;
   margin: 0;
 }
-.cronymax-wysiwyg .ProseMirror li + li { margin-top: 0.2em; }
+.cronymax-wysiwyg .ProseMirror li + li {
+  margin-top: 0.2em;
+}
 .cronymax-wysiwyg .ProseMirror code {
   font-family: var(--font-family-mono);
   font-size: 0.875em;

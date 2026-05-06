@@ -21,6 +21,7 @@ struct SpaceRow {
   std::string id;
   std::string name;
   std::string root_path;
+  std::string profile_id = "default";  // FK to ~/.cronymax/profiles/<id>.yaml
   int64_t created_at = 0;
   int64_t last_active = 0;
 };

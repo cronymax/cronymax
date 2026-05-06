@@ -3,7 +3,6 @@
 #include <sstream>
 #include <string>
 
-#include "agent/agent_runtime.h"
 #include "browser/space_manager.h"
 #include "workspace/file_broker.h"
 #include "workspace/space_store.h"
@@ -150,76 +149,9 @@ int RunSpaceManager(const std::filesystem::path& db_path,
 }
 
 // ---------------------------------------------------------------------------
-// 9.4: file boundary test — exercise file.read / file.write through
-// AgentRuntime's ToolRegistry and confirm an out-of-workspace path is
-// rejected by FileBroker. Uses a temp dir scoped to <workspace>/.probe.
+// 9.4: file boundary test removed — AgentRuntime deleted (Phase 1 migration).
+// The filesystem capability is now enforced by the Rust runtime directly.
 // ---------------------------------------------------------------------------
-
-int RunFileBoundary(const std::filesystem::path& workspace) {
-  if (!std::filesystem::is_directory(workspace)) {
-    std::cerr << "FAIL: workspace is not a directory: " << workspace << "\n";
-    return 1;
-  }
-  const auto sub = workspace / ".probe_file_boundary";
-  std::error_code ec;
-  std::filesystem::create_directories(sub, ec);
-
-  cronymax::AgentRuntime runtime(workspace);
-  // Write inside workspace — must succeed.
-  const std::string rel = ".probe_file_boundary/hello.txt";
-  cronymax::ToolCall write_in{
-      .name = "file.write",
-      .input = rel + "\nhello probe",
-  };
-  const auto wr = runtime.tools().Invoke(write_in);
-  if (!wr.ok) {
-    std::cerr << "FAIL: file.write inside workspace: " << wr.error << "\n";
-    return 1;
-  }
-  std::cout << "PASS: file.write inside workspace\n";
-
-  cronymax::ToolCall read_in{.name = "file.read", .input = rel};
-  const auto rr = runtime.tools().Invoke(read_in);
-  if (!rr.ok || rr.output != "hello probe") {
-    std::cerr << "FAIL: file.read inside workspace ok=" << rr.ok
-              << " output='" << rr.output << "' error='" << rr.error << "'\n";
-    return 1;
-  }
-  std::cout << "PASS: file.read inside workspace\n";
-
-  // Read outside workspace — must be rejected. We pass an absolute path
-  // that escapes the workspace; AgentRuntime resolves call.input as
-  // <workspace_root>/<input>, so use ../ to escape.
-  cronymax::ToolCall escape{
-      .name = "file.read",
-      .input = "../../../../../etc/hosts",
-  };
-  const auto er = runtime.tools().Invoke(escape);
-  if (er.ok) {
-    std::cerr << "FAIL: file.read outside workspace was allowed\n";
-    return 1;
-  }
-  std::cout << "PASS: file.read outside workspace rejected ("
-            << er.error << ")\n";
-
-  // Write outside workspace — must be rejected.
-  cronymax::ToolCall escape_w{
-      .name = "file.write",
-      .input = std::string("../../../../../tmp/probe_should_fail.txt\n")
-          + "no",
-  };
-  const auto ew = runtime.tools().Invoke(escape_w);
-  if (ew.ok) {
-    std::cerr << "FAIL: file.write outside workspace was allowed\n";
-    return 1;
-  }
-  std::cout << "PASS: file.write outside workspace rejected ("
-            << ew.error << ")\n";
-
-  // Cleanup.
-  std::filesystem::remove_all(sub, ec);
-  return 0;
-}
 
 }  // namespace
 
@@ -243,7 +175,8 @@ int main(int argc, char** argv) {
   const std::filesystem::path workspace = argv[2];
 
   if (mode == "file-boundary") {
-    return RunFileBoundary(workspace);
+    std::cerr << "file-boundary mode removed (AgentRuntime deleted in Phase 1 migration)\n";
+    return 1;
   }
 
   if (mode == "read") {
@@ -263,17 +196,8 @@ int main(int argc, char** argv) {
   }
 
   if (mode == "agent") {
-    if (argc < 4) {
-      Usage();
-      return 2;
-    }
-    cronymax::AgentRuntime runtime(workspace);
-    const auto result = runtime.RunPrototypeTask(JoinArgs(argc, argv, 3));
-    for (const auto& event : result.trace) {
-      std::cerr << "[" << event.type << "] " << event.message << "\n";
-    }
-    std::cout << result.final_message;
-    return result.ok ? 0 : 1;
+    std::cerr << "agent mode removed (AgentRuntime deleted in Phase 1 migration)\n";
+    return 1;
   }
 
   Usage();

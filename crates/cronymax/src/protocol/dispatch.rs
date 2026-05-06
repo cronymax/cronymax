@@ -49,6 +49,12 @@ impl ResponseSink {
             .send(msg)
             .map_err(|_| TransportError::Closed)
     }
+
+    /// Non-async send for use from synchronous closures. Succeeds as long
+    /// as the receiver is alive (unbounded channel never blocks).
+    pub fn try_send(&self, msg: RuntimeToClient) -> Result<(), TransportError> {
+        self.tx.send(msg).map_err(|_| TransportError::Closed)
+    }
 }
 
 /// Implemented by the runtime authority (task 4.x). For task 2.x we

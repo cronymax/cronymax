@@ -6,12 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "agent/tool_registry.h"
-#include "document/agent_registry.h"
-#include "document/doc_type_registry.h"
+#include "browser/profile_store.h"
 #include "event_bus/event_bus.h"
-#include "workspace/fs_watcher.h"
-#include "terminal/pty_session.h"
 #include "workspace/space_store.h"
 
 namespace cronymax {
@@ -26,13 +22,13 @@ struct SpaceBrowserState {
 struct TerminalSession {
   std::string id;    // unique within Space, e.g. "t1"
   std::string name;  // display label, e.g. "Terminal 1"
-  std::unique_ptr<PtySession> pty;
 };
 
 // One Space = one Workspace context owning all runtime resources.
 struct Space {
   std::string id;
   std::string name;
+  std::string profile_id = "default";  // FK to ProfileStore
   std::filesystem::path workspace_root;
 
   std::vector<std::unique_ptr<TerminalSession>> terminals;
@@ -40,12 +36,6 @@ struct Space {
   int next_terminal_seq = 1;
 
   SpaceBrowserState browser_state;
-
-  // Per-Space orchestration registries (Phase A: read-only). Lazily
-  // populated by SpaceManager when the Space is first activated.
-  std::unique_ptr<AgentRegistry> agent_registry;
-  std::unique_ptr<DocTypeRegistry> doc_type_registry;
-  std::unique_ptr<FsWatcher> fs_watcher;
 
   // Per-Space typed event store (agent-event-bus). Lazily initialised on
   // first activation. Borrows SpaceStore's sqlite3 handle.
@@ -62,9 +52,6 @@ struct Space {
     int64_t event_sub_token = -1;
     // Runtime-side subscription IDs for active event streams.
     std::vector<std::string> runtime_sub_ids;
-    // Tool registry for direct tool.exec invocations (renderer debug path).
-    // Empty until populated by tool-scope enforcement (task 4.3).
-    ToolRegistry tool_registry;
   };
   RuntimeBindingState runtime_binding;
 
@@ -77,6 +64,14 @@ struct Space {
 // Callback invoked (on the caller's thread) when the active Space changes.
 using SpaceSwitchCallback = std::function<void(const std::string& old_id,
                                                const std::string& new_id)>;
+
+// Callback invoked when a space switch requires a runtime restart.
+// Receives the new workspace_root (absolute path string) and the resolved
+// ProfileRecord for the new space's profile_id. The callee (MainWindow)
+// is responsible for calling RuntimeBridge::Stop()+Start() with the new config.
+using RuntimeRestartCallback =
+    std::function<void(const std::string& workspace_root,
+                       const ProfileRecord& profile)>;
 
 class SpaceManager {
  public:
@@ -108,9 +103,21 @@ class SpaceManager {
     return builtin_flows_dir_;
   }
 
+  const std::filesystem::path& builtin_doc_types_dir() const {
+    return builtin_doc_types_dir_;
+  }
+
   // Create a new Space. Returns the new space_id on success, empty on error.
+  // `name` is derived automatically from root_path.filename().
+  // `profile_id` defaults to "default" if empty.
+  std::string CreateSpace(const std::filesystem::path& root_path,
+                          const std::string& profile_id = "default");
+
+  // Legacy overload retained for in-process callers (MainWindow default space).
+  // The supplied name is used as-is.
   std::string CreateSpace(const std::string& name,
-                          const std::filesystem::path& root_path);
+                          const std::filesystem::path& root_path,
+                          const std::string& profile_id = "default");
 
   // Switch the active Space. Returns false if space_id not found.
   bool SwitchTo(const std::string& space_id);
@@ -131,6 +138,14 @@ class SpaceManager {
     switch_callback_ = std::move(cb);
   }
 
+  // Register a callback for runtime restart on space switch.
+  void SetRuntimeRestartCallback(RuntimeRestartCallback cb) {
+    runtime_restart_callback_ = std::move(cb);
+  }
+
+  // Expose the profile store so bridge handlers can call profiles.* APIs.
+  ProfileStore& profile_store() { return profile_store_; }
+
   SpaceStore& store() { return store_; }
   const SpaceStore& store() const { return store_; }
 
@@ -139,9 +154,11 @@ class SpaceManager {
   std::unique_ptr<Space> InstantiateSpace(const SpaceRow& row);
 
   SpaceStore store_;
+  ProfileStore profile_store_;
   std::vector<std::unique_ptr<Space>> spaces_;
   int active_index_ = -1;
   SpaceSwitchCallback switch_callback_;
+  RuntimeRestartCallback runtime_restart_callback_;
   std::filesystem::path builtin_doc_types_dir_;
   std::filesystem::path builtin_flows_dir_;
 };

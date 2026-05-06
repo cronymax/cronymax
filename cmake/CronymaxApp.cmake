@@ -46,6 +46,8 @@ set(CRONYMAX_APP_SRCS
   app/browser/desktop_app.h
   app/browser/main_window.cc
   app/browser/main_window.h
+  app/browser/profile_store.cc
+  app/browser/profile_store.h
   app/browser/space_manager.cc
   app/browser/space_manager.h
   # unified-icons: semantic icon registry + native button factories.
@@ -72,6 +74,9 @@ if(APPLE)
     app/browser/main_mac.mm
     app/browser/mac_view_style.h
     app/browser/mac_view_style.mm
+    # workspace-with-profile: native NSOpenPanel folder picker.
+    app/browser/mac_folder_picker.h
+    app/browser/mac_folder_picker.mm
     # unified-icons: macOS implementation — NSImage rasterisation of embedded SVGs.
     app/browser/icon_registry_mac.mm
   )
@@ -104,6 +109,13 @@ list(APPEND CRONYMAX_APP_SRCS "${ICON_DATA_CC}")
 
 add_executable(cronymax_app MACOSX_BUNDLE ${CRONYMAX_APP_SRCS})
 
+# profile_store.cc uses yaml-cpp which requires exceptions. Override the
+# target-wide -fno-exceptions flag for this single translation unit.
+set_source_files_properties(
+  app/browser/profile_store.cc
+  PROPERTIES COMPILE_FLAGS "-fexceptions"
+)
+
 target_include_directories(cronymax_app PRIVATE
   ${CEF_ROOT}
   ${CMAKE_CURRENT_SOURCE_DIR}/app
@@ -116,6 +128,7 @@ target_link_libraries(cronymax_app PRIVATE
   cronymax_native
   libcef_dll_wrapper
   ${CEF_STANDARD_LIBS}
+  yaml-cpp
 )
 
 if(APPLE)

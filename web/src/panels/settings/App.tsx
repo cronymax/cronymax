@@ -37,7 +37,7 @@ type SettingsTab =
   | "providers"
   | "agents"
   | "doc-types"
-  | "workspace"
+  | "profiles"
   | "flows"
   | "runner";
 
@@ -919,7 +919,9 @@ function AgentsTab() {
   const loadList = useCallback(async () => {
     try {
       let res = await bridge.send("agent.registry.list");
-      const existingNames = new Set((res.agents ?? []).map((a: AgentSummary) => a.name));
+      const existingNames = new Set(
+        (res.agents ?? []).map((a: AgentSummary) => a.name),
+      );
 
       // Seed the built-in agents if they are not yet registered.
       // "Chat" is always seeded; the software-dev-cycle agents are seeded
@@ -990,7 +992,9 @@ function AgentsTab() {
         },
       ];
 
-      const missing = BUILTIN_AGENTS.filter((a) => a && !existingNames.has(a.name));
+      const missing = BUILTIN_AGENTS.filter(
+        (a) => a && !existingNames.has(a.name),
+      );
       if (missing.length > 0) {
         await Promise.all(
           missing.map((a) => bridge.send("agent.registry.save", a)),
@@ -1120,9 +1124,7 @@ function AgentsTab() {
                 }
               >
                 <span className="font-medium">{a.name}</span>
-                <span className="text-[10px] opacity-70">
-                  {a.llm}
-                </span>
+                <span className="text-[10px] opacity-70">{a.llm}</span>
               </button>
             </li>
           ))}
@@ -1247,141 +1249,315 @@ function AgentsTab() {
   );
 }
 
-// ── Workspace tab ─────────────────────────────────────────────────────────
+// ── Profiles tab ─────────────────────────────────────────────────────────
 
-interface WorkspaceProfile {
-  space_id: string;
-  space_name: string;
-  workspace_root: string;
+interface ProfileRecord {
+  id: string;
+  name: string;
   allow_network: boolean;
   extra_read_paths: string[];
   extra_write_paths: string[];
   extra_deny_paths: string[];
 }
 
-function WorkspaceTab() {
-  const [profile, setProfile] = useState<WorkspaceProfile | null>(null);
-  const [reads, setReads] = useState("");
-  const [writes, setWrites] = useState("");
-  const [denies, setDenies] = useState("");
-  const [allowNet, setAllowNet] = useState(false);
+/** Inline edit form for a single profile. */
+function ProfileForm({
+  initial,
+  onSave,
+  onDelete,
+  onCancel,
+  isDefault,
+}: {
+  initial: ProfileRecord;
+  onSave: (r: ProfileRecord) => Promise<void>;
+  onDelete?: () => Promise<void>;
+  onCancel: () => void;
+  isDefault: boolean;
+}) {
+  const [name, setName] = useState(initial.name);
+  const [allowNet, setAllowNet] = useState(initial.allow_network);
+  const [reads, setReads] = useState(initial.extra_read_paths.join("\n"));
+  const [writes, setWrites] = useState(initial.extra_write_paths.join("\n"));
+  const [denies, setDenies] = useState(initial.extra_deny_paths.join("\n"));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const splitPaths = (s: string) =>
+    s
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+  const handleSave = async () => {
+    if (!name.trim()) {
+      setErr("Name is required.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await onSave({
+        ...initial,
+        name: name.trim(),
+        allow_network: allowNet,
+        extra_read_paths: splitPaths(reads),
+        extra_write_paths: splitPaths(writes),
+        extra_deny_paths: splitPaths(denies),
+      });
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!onDelete) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await onDelete();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const taCls =
+    "w-full min-h-[80px] resize-y rounded border border-cronymax-border " +
+    "bg-cronymax-base px-2 py-1 font-mono text-xs text-cronymax-title " +
+    "outline-none focus:border-cronymax-primary";
+
+  return (
+    <div className="mt-2 rounded border border-cronymax-border bg-cronymax-float p-3 text-xs">
+      <Field label="Profile name">
+        <input
+          className={inputCls}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Restricted"
+          disabled={isDefault}
+        />
+        {isDefault && (
+          <p className="mt-1 text-[11px] text-cronymax-caption">
+            The default profile name cannot be changed.
+          </p>
+        )}
+      </Field>
+      <Field label="Network">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={allowNet}
+            onChange={(e) => setAllowNet(e.target.checked)}
+          />
+          Allow outbound network access
+        </label>
+      </Field>
+      <Field label="Extra readable paths (one per line)">
+        <textarea
+          className={taCls}
+          value={reads}
+          onChange={(e) => setReads(e.target.value)}
+          placeholder="/Users/me/datasets"
+          spellCheck={false}
+        />
+      </Field>
+      <Field label="Extra writable paths (one per line)">
+        <textarea
+          className={taCls}
+          value={writes}
+          onChange={(e) => setWrites(e.target.value)}
+          placeholder="/Users/me/scratch"
+          spellCheck={false}
+        />
+      </Field>
+      <Field label="Extra denied paths (one per line)">
+        <textarea
+          className={taCls}
+          value={denies}
+          onChange={(e) => setDenies(e.target.value)}
+          placeholder="/Users/me/secrets"
+          spellCheck={false}
+        />
+      </Field>
+      {err && <p className="mb-2 text-xs text-red-500">{err}</p>}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void handleSave()}
+          disabled={busy}
+          className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs text-cronymax-title hover:bg-cronymax-float"
+        >
+          Cancel
+        </button>
+        {onDelete && !isDefault && (
+          <button
+            type="button"
+            onClick={() => void handleDelete()}
+            disabled={busy}
+            className="ml-auto rounded border border-red-400 px-3 py-1 text-xs text-red-500 hover:bg-red-50"
+          >
+            Delete
+          </button>
+        )}
+        {isDefault && (
+          <span
+            className="ml-auto text-[11px] text-cronymax-caption"
+            title="The default profile cannot be deleted"
+          >
+            🔒 Cannot delete default
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** New-profile creation form. */
+function NewProfileForm({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-3 rounded border border-dashed border-cronymax-border px-3 py-1.5 text-xs text-cronymax-caption hover:text-cronymax-title"
+      >
+        + New profile
+      </button>
+    );
+  }
+
+  const blank: ProfileRecord = {
+    id: "",
+    name: "",
+    allow_network: true,
+    extra_read_paths: [],
+    extra_write_paths: [],
+    extra_deny_paths: [],
+  };
+
+  return (
+    <ProfileForm
+      initial={blank}
+      isDefault={false}
+      onSave={async (r) => {
+        await bridge.send("profiles.create", {
+          name: r.name,
+          allow_network: r.allow_network,
+          extra_read_paths: r.extra_read_paths,
+          extra_write_paths: r.extra_write_paths,
+          extra_deny_paths: r.extra_deny_paths,
+        });
+        setOpen(false);
+        onCreated();
+      }}
+      onCancel={() => setOpen(false)}
+    />
+  );
+}
+
+function ProfilesTab() {
+  const [profiles, setProfiles] = useState<ProfileRecord[]>([]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setMsg(null);
     try {
-      const res = await bridge.send("space.profile.get");
-      setProfile(res);
-      setAllowNet(res.allow_network);
-      setReads(res.extra_read_paths.join("\n"));
-      setWrites(res.extra_write_paths.join("\n"));
-      setDenies(res.extra_deny_paths.join("\n"));
-    } catch (err) {
-      setMsg(`load failed: ${(err as Error).message}`);
+      const res = await bridge.send("profiles.list");
+      setProfiles(res);
+    } catch (e) {
+      setMsg(`load failed: ${(e as Error).message}`);
     }
   }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
-  useBridgeEvent("shell.space_changed", () => void reload());
 
-  const onSave = useCallback(async () => {
+  const handleSave = async (r: ProfileRecord) => {
     setBusy(true);
-    setMsg(null);
     try {
-      await bridge.send("space.profile.set", {
-        allow_network: allowNet,
-        extra_read_paths_nl: reads,
-        extra_write_paths_nl: writes,
-        extra_deny_paths_nl: denies,
+      await bridge.send("profiles.update", {
+        id: r.id,
+        name: r.name,
+        allow_network: r.allow_network,
+        extra_read_paths: r.extra_read_paths,
+        extra_write_paths: r.extra_write_paths,
+        extra_deny_paths: r.extra_deny_paths,
       });
-      setMsg("Saved.");
+      setExpandedId(null);
       await reload();
-    } catch (err) {
-      setMsg(`save failed: ${(err as Error).message}`);
     } finally {
       setBusy(false);
     }
-  }, [allowNet, reads, writes, denies, reload]);
+  };
 
-  const taCls =
-    "w-full min-h-[100px] resize-y rounded border border-cronymax-border " +
-    "bg-cronymax-base px-2 py-1 font-mono text-xs text-cronymax-title " +
-    "outline-none focus:border-cronymax-primary";
+  const handleDelete = async (id: string) => {
+    setBusy(true);
+    try {
+      await bridge.send("profiles.delete", { id });
+      setExpandedId(null);
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="h-full overflow-auto p-4">
-      {!profile ? (
-        <p className="text-xs text-cronymax-caption">Loading profile…</p>
-      ) : (
-        <div className="max-w-[600px]">
-          <h2 className="mb-1 text-sm font-semibold">{profile.space_name}</h2>
-          <p className="mb-4 break-all text-[11px] text-cronymax-caption">
-            <code>{profile.workspace_root}</code>
-          </p>
-          <p className="mb-4 rounded border border-cronymax-border bg-cronymax-float p-2 text-[11px] text-cronymax-caption">
-            Overrides supplement the default sandbox rules. Persisted to{" "}
-            <code>.cronymax/space.profile.yaml</code>.
-          </p>
-          <Field label="Network">
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={allowNet}
-                onChange={(e) => setAllowNet(e.target.checked)}
+      <p className="mb-4 text-[11px] text-cronymax-caption">
+        Named sandbox profiles are stored in <code>~/.cronymax/profiles/</code>.
+        Assign a profile to a workspace when opening a folder.
+      </p>
+      {msg && <p className="mb-3 text-xs text-red-500">{msg}</p>}
+      <div className="max-w-[600px] space-y-2">
+        {profiles.map((p) => (
+          <div
+            key={p.id}
+            className="rounded border border-cronymax-border bg-cronymax-base"
+          >
+            <button
+              type="button"
+              onClick={() =>
+                setExpandedId((prev) => (prev === p.id ? null : p.id))
+              }
+              className="flex w-full items-center justify-between px-3 py-2 text-left text-xs"
+            >
+              <span className="font-medium text-cronymax-title">{p.name}</span>
+              <span className="text-cronymax-caption">
+                {p.allow_network ? "network ✓" : "network ✗"} ·{" "}
+                {p.id === "default" ? "🔒 default" : p.id}
+              </span>
+            </button>
+            {expandedId === p.id && (
+              <ProfileForm
+                initial={p}
+                isDefault={p.id === "default"}
+                onSave={handleSave}
+                onDelete={() => handleDelete(p.id)}
+                onCancel={() => setExpandedId(null)}
               />
-              Allow outbound network access
-            </label>
-          </Field>
-          <Field label="Extra readable paths (one per line)">
-            <textarea
-              className={taCls}
-              value={reads}
-              onChange={(e) => setReads(e.target.value)}
-              placeholder="/Users/me/datasets"
-              spellCheck={false}
-            />
-          </Field>
-          <Field label="Extra writable paths (one per line)">
-            <textarea
-              className={taCls}
-              value={writes}
-              onChange={(e) => setWrites(e.target.value)}
-              placeholder="/Users/me/scratch"
-              spellCheck={false}
-            />
-          </Field>
-          <Field label="Extra denied paths (one per line)">
-            <textarea
-              className={taCls}
-              value={denies}
-              onChange={(e) => setDenies(e.target.value)}
-              placeholder="/Users/me/secrets"
-              spellCheck={false}
-            />
-          </Field>
-          {msg && <p className="mb-3 text-xs text-cronymax-caption">{msg}</p>}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void onSave()}
-              disabled={busy}
-              className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-            >
-              Save profile
-            </button>
-            <button
-              type="button"
-              onClick={() => void reload()}
-              disabled={busy}
-              className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs text-cronymax-title hover:bg-cronymax-float"
-            >
-              Reload
-            </button>
+            )}
           </div>
-        </div>
+        ))}
+      </div>
+      <NewProfileForm onCreated={() => void reload()} />
+      {busy && (
+        <p className="mt-3 text-[11px] text-cronymax-caption">Saving…</p>
       )}
     </div>
   );
@@ -1454,10 +1630,13 @@ function WysiwygMarkdownField({
     }
   }, [value]);
 
-  const handleEmit = useCallback((md: string) => {
-    lastEmitted.current = md;
-    onChange?.(md);
-  }, [onChange]);
+  const handleEmit = useCallback(
+    (md: string) => {
+      lastEmitted.current = md;
+      onChange?.(md);
+    },
+    [onChange],
+  );
 
   return (
     <div
@@ -1634,9 +1813,9 @@ function DocTypesTab() {
         {!draft && (
           <p className="text-xs text-cronymax-caption">
             Select a doc type to view its Markdown description, or click{" "}
-            <b>+</b> to create a new one. User-defined doc types are stored
-            in <code>.cronymax/doc-types/&lt;name&gt;.yaml</code> and
-            appear alongside built-ins in the Flow PRODUCES picker.
+            <b>+</b> to create a new one. User-defined doc types are stored in{" "}
+            <code>.cronymax/doc-types/&lt;name&gt;.yaml</code> and appear
+            alongside built-ins in the Flow PRODUCES picker.
           </p>
         )}
         {draft && (
@@ -1818,13 +1997,13 @@ function RunnerTab() {
 
   const newSpace = useCallback(async () => {
     // eslint-disable-next-line no-alert
-    const name = prompt("Space name:");
-    if (!name) return;
-    // eslint-disable-next-line no-alert
     const root = prompt("Root path:", "/");
     if (!root) return;
     try {
-      await bridge.send("space.create", { name, root_path: root });
+      await bridge.send("space.create", {
+        root_path: root,
+        profile_id: "default",
+      });
       await loadSpaces();
     } catch (e) {
       console.warn("space.create failed", e);
@@ -1996,7 +2175,7 @@ const TAB_LABELS: { id: SettingsTab; label: string }[] = [
   { id: "providers", label: "Providers" },
   { id: "agents", label: "Agents" },
   { id: "doc-types", label: "Doc Types" },
-  { id: "workspace", label: "Workspace" },
+  { id: "profiles", label: "Profiles" },
   { id: "flows", label: "Flows" },
   { id: "runner", label: "Runner" },
 ];
@@ -2112,7 +2291,7 @@ export function App() {
         {tab === "providers" && <ProvidersTab />}
         {tab === "agents" && <AgentsTab />}
         {tab === "doc-types" && <DocTypesTab />}
-        {tab === "workspace" && <WorkspaceTab />}
+        {tab === "profiles" && <ProfilesTab />}
         {tab === "flows" && <Flows />}
         {tab === "runner" && <RunnerTab />}
       </div>

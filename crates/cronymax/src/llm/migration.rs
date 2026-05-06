@@ -19,7 +19,7 @@
 use std::{
     fs,
     io::Write,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use serde_json::Value;

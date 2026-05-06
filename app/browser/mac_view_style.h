@@ -44,6 +44,12 @@ void StyleMainWindowTranslucent(void* nswindow, cef_color_t argb = 0);
 // MainWindow::ApplyThemeChrome when the theme flips.
 void SetMainWindowBackgroundColor(void* nswindow, cef_color_t argb);
 
+// Set NSApp.appearance to force the NSMenu (and other native controls)
+// to adopt "dark" or "light" mode regardless of the OS preference.
+// Pass `dark=true` for dark theme, `false` for light. Called from
+// ApplyThemeChrome so the workspace-selector NSMenu matches the app theme.
+void SetAppAppearance(bool dark);
+
 // refine-ui-theme-layout: install/refresh a 12 px rounded outline on a
 // CEF panel's NSView. The view receives `cornerRadius`, `masksToBounds`,
 // and a 1 pt border colored with `border_argb`. Call once after the

@@ -141,6 +141,14 @@ void SpaceStore::ApplySchema() {
     );
   )";
   sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
+
+  // Additive migration: add profile_id if the column doesn't exist yet.
+  // SQLite ignores ALTER TABLE ADD COLUMN when the column already exists only
+  // from SQLite 3.37+; use a try-and-ignore approach for older versions.
+  sqlite3_exec(db_,
+      "ALTER TABLE spaces ADD COLUMN "
+      "profile_id TEXT NOT NULL DEFAULT 'default';",
+      nullptr, nullptr, nullptr);  // error ignored — column may already exist
 }
 
 // ---------------------------------------------------------------------------
@@ -197,15 +205,16 @@ void SpaceStore::WriteLoop() {
 bool SpaceStore::CreateSpace(const SpaceRow& row) {
   if (!db_) return false;
   const char* sql =
-      "INSERT OR IGNORE INTO spaces (id, name, root_path, created_at, "
-      "last_active) VALUES (?,?,?,?,?);";
+      "INSERT OR IGNORE INTO spaces (id, name, root_path, profile_id, created_at, "
+      "last_active) VALUES (?,?,?,?,?,?);";
   sqlite3_stmt* stmt = nullptr;
   sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
   BindText(stmt, 1, row.id);
   BindText(stmt, 2, row.name);
   BindText(stmt, 3, row.root_path);
-  sqlite3_bind_int64(stmt, 4, row.created_at ? row.created_at : NowMs());
-  sqlite3_bind_int64(stmt, 5, row.last_active ? row.last_active : NowMs());
+  BindText(stmt, 4, row.profile_id.empty() ? "default" : row.profile_id);
+  sqlite3_bind_int64(stmt, 5, row.created_at ? row.created_at : NowMs());
+  sqlite3_bind_int64(stmt, 6, row.last_active ? row.last_active : NowMs());
   const int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
   return rc == SQLITE_DONE;
@@ -216,7 +225,7 @@ std::vector<SpaceRow> SpaceStore::ListSpaces() const {
   std::vector<SpaceRow> result;
   if (!db_) return result;
   const char* sql =
-      "SELECT id, name, root_path, created_at, last_active FROM spaces "
+      "SELECT id, name, root_path, profile_id, created_at, last_active FROM spaces "
       "ORDER BY last_active DESC;";
   sqlite3_stmt* stmt = nullptr;
   sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -225,8 +234,10 @@ std::vector<SpaceRow> SpaceStore::ListSpaces() const {
     row.id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
     row.name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
     row.root_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-    row.created_at = sqlite3_column_int64(stmt, 3);
-    row.last_active = sqlite3_column_int64(stmt, 4);
+    const unsigned char* pid = sqlite3_column_text(stmt, 3);
+    row.profile_id = pid ? reinterpret_cast<const char*>(pid) : "default";
+    row.created_at = sqlite3_column_int64(stmt, 4);
+    row.last_active = sqlite3_column_int64(stmt, 5);
     result.push_back(std::move(row));
   }
   sqlite3_finalize(stmt);

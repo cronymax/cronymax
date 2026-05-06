@@ -19,6 +19,9 @@
 //! `PtySession` is `Send`. The underlying master PTY writer is guarded by a
 //! `Mutex`; all public methods are safe to call from any thread or task.
 
+pub mod session_manager;
+pub use session_manager::{SessionManager, SharedSessionManager, new_shared};
+
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

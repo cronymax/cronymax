@@ -162,8 +162,8 @@ function migrateFlowSpec(raw: FlowSpec): FlowSpec {
       const config = { ...(n.config ?? {}) } as Record<string, string>;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let produces: ProducesEntry[] = Array.isArray((n as any).produces)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ? [...((n as any).produces as ProducesEntry[])]
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          [...((n as any).produces as ProducesEntry[])]
         : [];
       if (produces.length === 0 && config["produces"]) {
         produces = [{ doc_type: config["produces"]!, reviewers: "" }];
@@ -189,8 +189,7 @@ function migrateFlowSpec(raw: FlowSpec): FlowSpec {
       .filter(Boolean);
     if (entryIdx >= 0) {
       const existing = new Set(
-        src.produces[entryIdx]!.reviewers
-          .split(",")
+        src.produces[entryIdx]!.reviewers.split(",")
           .map((s) => s.trim())
           .filter(Boolean),
       );
@@ -464,9 +463,7 @@ export const SEED_SOFTWARE_DEV_CYCLE_FLOW: FlowSpec = {
       name: "pm",
       x: 80,
       y: 120,
-      produces: [
-        { doc_type: "prd", reviewers: "critic" },
-      ],
+      produces: [{ doc_type: "prd", reviewers: "critic" }],
       config: {
         agent_name: "pm",
       },

@@ -13,21 +13,6 @@
 #include "include/wrapper/cef_message_router.h"
 #include "runtime_bridge/runtime_proxy.h"
 
-// MIGRATION (rust-runtime-migration, group 8): the agent.*, review.*,
-// inbox.*, events.*, and permission.* channels handled below are
-// transitioning to forward to the Rust runtime over GIPS via a
-// host-side `RuntimeProxy` (not yet implemented). New channels for
-// these surfaces MUST go through the proxy; do not add new in-process
-// orchestration paths here. Compatibility shims that route through
-// both old and new paths are forbidden by design Decision 6.
-//
-// Per-handler removal-path notes live alongside each Handle*() method
-// in the .cc; the hard cutover is gated on:
-//   1. Standalone `cronymax-runtime` boot from `crony/bin/`.
-//   2. C++ GIPS client (mirrors `gips::ipc::Endpoint` shape).
-//   3. RuntimeProxy abstraction in app/runtime_bridge/.
-// See `openspec/changes/rust-runtime-migration/tasks.md` group 8.
-
 namespace cronymax {
 
 // Callbacks for shell.* bridge channels — set by MainWindow.
@@ -114,6 +99,12 @@ struct ShellCallbacks {
   std::function<bool(int browser_id,
                      const std::string& key,
                      const std::string& value)> tab_set_meta;
+
+  // Open a native folder-picker dialog. Calls `callback` on the main thread
+  // with the selected path (or empty string on cancel). Used by
+  // space.open_folder bridge channel.
+  std::function<void(std::function<void(const std::string& path)> callback)>
+      run_file_dialog;
 };
 
 // refine-ui-theme-layout: theme.* bridge callbacks. Read/write the
@@ -192,9 +183,6 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
                    std::string_view channel,
                    std::string_view payload,
                    CefRefPtr<Callback> callback);
-  bool HandleTool(std::string_view channel,
-                  std::string_view payload,
-                  CefRefPtr<Callback> callback);
   bool HandlePermission(std::string_view channel,
                         std::string_view payload,
                         CefRefPtr<Callback> callback);
@@ -243,6 +231,11 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   bool HandleNotifications(std::string_view channel,
                            std::string_view payload,
                            CefRefPtr<Callback> callback);
+  // profiles.list / profiles.create / profiles.update / profiles.delete.
+  bool HandleProfiles(CefRefPtr<CefBrowser> browser,
+                      std::string_view channel,
+                      std::string_view payload,
+                      CefRefPtr<Callback> callback);
 
   // Install the user_approval capability handler on the RuntimeProxy.
   // Called automatically from SetRuntimeProxy.

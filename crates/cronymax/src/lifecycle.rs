@@ -21,6 +21,7 @@ use crate::protocol::session;
 use crate::protocol::transport::Transport;
 use crate::protocol::{ProtocolVersion, PROTOCOL_VERSION};
 use crate::runtime::{JsonFilePersistence, RuntimeAuthority, RuntimeHandler};
+use crate::sandbox::policy::SandboxPolicy;
 
 /// Errors surfaced from runtime lifecycle operations.
 #[derive(Debug, Error)]
@@ -134,7 +135,29 @@ impl Runtime {
         &self,
         transport: T,
     ) -> JoinHandle<Result<(), DispatchError>> {
-        let handler = Arc::new(RuntimeHandler::new(self.authority.clone()));
+        // Build sandbox policy from the optional `sandbox` section of
+        // the RuntimeConfig (task 6.1).
+        let sandbox_policy: Option<SandboxPolicy> =
+            self.config.sandbox.as_ref().map(|sc| {
+                let mut policy = SandboxPolicy::default_for_workspace(&sc.workspace_root);
+                policy.set_allow_network(sc.allow_network);
+                for p in &sc.extra_read_paths {
+                    policy.add_read_path(p);
+                }
+                for p in &sc.extra_write_paths {
+                    policy.add_write_path(p);
+                }
+                for p in &sc.extra_deny_paths {
+                    policy.add_deny_path(p);
+                }
+                policy
+            });
+
+        let handler = Arc::new(RuntimeHandler::with_policy(
+            self.authority.clone(),
+            self.config.storage.workspace_roots.clone(),
+            sandbox_policy,
+        ));
         session::spawn_session(transport, handler)
     }
 

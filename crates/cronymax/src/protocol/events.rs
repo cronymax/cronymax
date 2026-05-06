@@ -72,6 +72,10 @@ pub enum RuntimeEventPayload {
         target: String,
         message: String,
     },
+
+    /// Generic raw payload — used for terminal output and other
+    /// non-structured events that carry opaque JSON data.
+    Raw { data: serde_json::Value },
 }
 
 /// Severity for `RuntimeEventPayload::Log`.

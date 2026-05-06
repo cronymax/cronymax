@@ -269,7 +269,9 @@ bool RuntimeBridge::Start(const std::filesystem::path& runtime_dir,
   restart_count_ = 0;
 
   runtime_binary_ = FindRuntimeBinary(runtime_dir);
-  app_data_dir_   = app_data_dir;
+  if (!app_data_dir.empty()) {
+    app_data_dir_ = app_data_dir;
+  }
   if (runtime_binary_.empty()) {
     last_error_ = "cronymax-runtime binary not found";
     status_ = RuntimeBridgeStatus::kFailed;
@@ -345,6 +347,15 @@ bool RuntimeBridge::SpawnAndHandshake() {
   cfg["host_protocol"]["major"]     = 0;
   cfg["host_protocol"]["minor"]     = 1;
   cfg["host_protocol"]["patch"]     = 0;
+
+  // Inject sandbox config if one has been set via SetSandboxConfig().
+  {
+    std::lock_guard lock(mu_);
+    if (!sandbox_config_.is_null()) {
+      cfg["sandbox"] = sandbox_config_;
+    }
+  }
+
   const std::string config_json     = cfg.dump();
 
   // Spawn with config piped to stdin.

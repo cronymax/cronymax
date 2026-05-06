@@ -8,12 +8,12 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <nlohmann/json.hpp>
 
-#include "document/document_store.h"
 #include "event_bus/event_bus.h"
 #include "event_bus/app_event.h"
 #include "workspace/flow_yaml.h"
@@ -21,7 +21,9 @@
 // run lifecycle is now owned by the Rust runtime over GIPS.
 // (task 5.0) sandbox, flow C++ modules removed — logic now lives in the
 // Rust runtime (crates/cronymax).
-#include "workspace/file_broker.h"
+// (Phase 2) file_broker.h removed — file I/O proxied to Rust FileBroker.
+#include "common/types.h"
+#include "common/path_utils.h"
 #include "workspace/workspace_layout.h"
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
@@ -58,9 +60,10 @@ std::pair<std::string, std::string> SplitEnvelope(const std::string& request) {
 
 std::string SpaceToJson(const Space& sp) {
   return nlohmann::json{
-      {"id",        sp.id},
-      {"name",      sp.name},
-      {"root_path", sp.workspace_root.string()},
+      {"id",         sp.id},
+      {"name",       sp.name},
+      {"root_path",  sp.workspace_root.string()},
+      {"profile_id", sp.profile_id},
   }.dump();
 }
 
@@ -146,6 +149,52 @@ std::string InboxRowToJson(const event_bus::InboxRow& r) {
   return j.dump();
 }
 
+// Decode a standard base64 string to raw bytes (returned as std::string).
+// Returns an empty string on malformed input.
+std::string Base64Decode(const std::string& in) {
+  static const int8_t kTable[256] = {
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
+    52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+    -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+    15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+    -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+    41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+  };
+  std::string out;
+  out.reserve(in.size() * 3 / 4);
+  int bits = 0, n = 0;
+  for (unsigned char c : in) {
+    int v = kTable[c];
+    if (v < 0) continue;  // skip padding and whitespace
+    bits = (bits << 6) | v;
+    if (++n == 4) {
+      out.push_back(static_cast<char>((bits >> 16) & 0xff));
+      out.push_back(static_cast<char>((bits >>  8) & 0xff));
+      out.push_back(static_cast<char>( bits        & 0xff));
+      bits = 0; n = 0;
+    }
+  }
+  if (n == 3) {
+    bits <<= 6;
+    out.push_back(static_cast<char>((bits >> 16) & 0xff));
+    out.push_back(static_cast<char>((bits >>  8) & 0xff));
+  } else if (n == 2) {
+    bits <<= 12;
+    out.push_back(static_cast<char>((bits >> 16) & 0xff));
+  }
+  return out;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -182,8 +231,6 @@ bool BridgeHandler::OnQuery(CefRefPtr<CefBrowser> browser,
     return HandleAgent(browser, channel, payload, callback);
   if (channel.rfind("space.", 0) == 0)
     return HandleSpace(browser, channel, payload, callback);
-  if (channel.rfind("tool.", 0) == 0)
-    return HandleTool(channel, payload, callback);
   if (channel.rfind("permission.", 0) == 0)
     return HandlePermission(channel, payload, callback);
   if (channel.rfind("llm.config", 0) == 0)
@@ -220,6 +267,8 @@ bool BridgeHandler::OnQuery(CefRefPtr<CefBrowser> browser,
     return HandleInbox(channel, payload, callback);
   if (channel.rfind("notifications.", 0) == 0)
     return HandleNotifications(channel, payload, callback);
+  if (channel.rfind("profiles.", 0) == 0)
+    return HandleProfiles(browser, channel, payload, callback);
 
   callback->Failure(404, "unknown bridge channel");
   return true;
@@ -322,30 +371,51 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
   if (channel == "terminal.start") {
     auto* term = resolve_terminal();
     if (!term) { callback->Failure(404, "no such terminal"); return true; }
-    auto* pty = term->pty.get();
     const std::string tid = term->id;
-    if (!pty->running()) {
-      const bool started = pty->Start(
-          sp->workspace_root, "/bin/zsh",
-          [this, browser, tid](std::string_view data) {
-            const std::string pld =
-                nlohmann::json{{"id", tid}, {"data", std::string(data)}}.dump();
-            // Broadcast to all renderers so both Chat and Terminal panels
-            // receive output from any terminal they are watching.
-            if (shell_cbs_.broadcast_event) {
-              shell_cbs_.broadcast_event("terminal.output", pld);
-            } else {
-              SendEvent(browser, "terminal.output", pld);
-            }
-          },
-          [this, browser, tid](int code) {
-            const std::string pld =
-                nlohmann::json{{"id", tid}, {"code", code}}.dump();
-            SendEvent(browser, "terminal.exit", pld);
-          });
-      if (!started) { callback->Failure(500, "failed to start PTY"); return true; }
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    int cols = 100, rows = 30;
+    if (j.is_object()) {
+      if (j.contains("cols") && j["cols"].is_number()) cols = j["cols"].get<int>();
+      if (j.contains("rows") && j["rows"].is_number()) rows = j["rows"].get<int>();
     }
-    callback->Success("ok");
+    runtime_proxy_->SendControl({
+        {"kind", "terminal_start"},
+        {"terminal_id", tid},
+        {"workspace_root", sp->workspace_root.string()},
+        {"shell", "/bin/zsh"},
+        {"cols", cols},
+        {"rows", rows},
+    }, [this, tid, callback](nlohmann::json resp, bool is_error) {
+        if (is_error) {
+          callback->Failure(500, resp.value("error", nlohmann::json{})
+                                     .value("message", "start failed"));
+          return;
+        }
+        // Subscribe to the terminal's output topic so we can broadcast
+        // terminal.output events to the renderer.
+        runtime_proxy_->SendControl(
+            {{"kind", "subscribe"}, {"topic", "terminal:" + tid}},
+            [this, tid](nlohmann::json sub_resp, bool sub_err) {
+                if (sub_err) return;
+                runtime_proxy_->SubscribeEvents(
+                    [this, tid](const nlohmann::json& msg) {
+                        // Filter for this terminal's Raw events.
+                        const auto& ev = msg.value("event", nlohmann::json::object());
+                        const auto& pl = ev.value("payload", nlohmann::json::object());
+                        if (pl.value("kind", "") != "raw") return;
+                        const auto& d = pl.value("data", nlohmann::json::object());
+                        if (d.value("id", "") != tid) return;
+                        const std::string b64 = d.value("data", std::string{});
+                        const std::string raw = Base64Decode(b64);
+                        if (shell_cbs_.broadcast_event) {
+                            shell_cbs_.broadcast_event(
+                                "terminal.output",
+                                nlohmann::json{{"id", tid}, {"data", raw}}.dump());
+                        }
+                    });
+            });
+        callback->Success("ok");
+    });
     return true;
   }
 
@@ -353,10 +423,13 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
     auto* term = resolve_terminal();
     if (!term) { callback->Failure(404, "no such terminal"); return true; }
     std::string data = j.is_object() ? j.value("data", std::string{}) : std::string{};
-    // Backward-compat: if no "data" field, treat the whole payload as input.
-    const std::string& to_write = data.empty() ? std::string(payload) : data;
-    if (term->pty->running()) term->pty->Write(to_write);
-    callback->Success("ok");
+    if (data.empty()) data = std::string(payload);
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind", "terminal_input"},
+        {"terminal_id", term->id},
+        {"data", data},
+    }, [callback](nlohmann::json, bool) { callback->Success("ok"); });
     return true;
   }
 
@@ -368,16 +441,24 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
       if (j.contains("cols") && j["cols"].is_number()) cols = j["cols"].get<int>();
       if (j.contains("rows") && j["rows"].is_number()) rows = j["rows"].get<int>();
     }
-    term->pty->Resize(cols, rows);
-    callback->Success("ok");
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind", "terminal_resize"},
+        {"terminal_id", term->id},
+        {"cols", cols},
+        {"rows", rows},
+    }, [callback](nlohmann::json, bool) { callback->Success("ok"); });
     return true;
   }
 
   if (channel == "terminal.stop") {
     auto* term = resolve_terminal();
     if (!term) { callback->Failure(404, "no such terminal"); return true; }
-    term->pty->Stop();
-    callback->Success("ok");
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind", "terminal_stop"},
+        {"terminal_id", term->id},
+    }, [callback](nlohmann::json, bool) { callback->Success("ok"); });
     return true;
   }
 
@@ -391,10 +472,13 @@ bool BridgeHandler::HandleTerminal(CefRefPtr<CefBrowser> browser,
     auto* term = resolve_terminal();
     if (!term) { callback->Failure(404, "no such terminal"); return true; }
     const std::string command = j.is_object() ? j.value("command", std::string{}) : std::string{};
-    if (!command.empty() && term->pty->running()) {
-      term->pty->Write(command + "\n");
-    }
-    callback->Success("ok");
+    if (command.empty()) { callback->Success("ok"); return true; }
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind", "terminal_input"},
+        {"terminal_id", term->id},
+        {"data", command + "\n"},
+    }, [callback](nlohmann::json, bool) { callback->Success("ok"); });
     return true;
   }
 
@@ -490,6 +574,7 @@ bool BridgeHandler::HandleAgent(CefRefPtr<CefBrowser> browser,
           {"space_id", sp->id},
           {"payload", {
               {"task", std::string(payload)},
+              {"workspace_root", sp->workspace_root.string()},
               {"llm", {
                   {"base_url", base_url},
                   {"api_key", api_key},
@@ -574,13 +659,13 @@ bool BridgeHandler::HandleSpace(CefRefPtr<CefBrowser> browser,
 
   if (channel == "space.create") {
     auto j = nlohmann::json::parse(payload, nullptr, false);
-    const std::string name = j.is_object() ? j.value("name",      std::string{}) : std::string{};
-    const std::string root = j.is_object() ? j.value("root_path", std::string{}) : std::string{};
-    if (name.empty() || root.empty()) {
-      callback->Failure(400, "name and root_path required");
+    const std::string root       = j.is_object() ? j.value("root_path",  std::string{}) : std::string{};
+    const std::string profile_id = j.is_object() ? j.value("profile_id", std::string{"default"}) : std::string{"default"};
+    if (root.empty()) {
+      callback->Failure(400, "root_path required");
       return true;
     }
-    const auto id = space_manager_->CreateSpace(name, root);
+    const auto id = space_manager_->CreateSpace(std::filesystem::path(root), profile_id);
     if (id.empty()) {
       callback->Failure(500, "failed to create space (path may not exist)");
       return true;
@@ -594,6 +679,29 @@ bool BridgeHandler::HandleSpace(CefRefPtr<CefBrowser> browser,
       }
     }
     callback->Success(nlohmann::json{{"id", id}}.dump());
+    return true;
+  }
+
+  if (channel == "space.open_folder") {
+    // Trigger a native folder picker. On selection the host emits
+    // `space.folder_picked` with {path} so the frontend can show the
+    // ProfilePickerOverlay before calling space.create.
+    if (!shell_cbs_.run_file_dialog) {
+      callback->Failure(501, "folder picker not available");
+      return true;
+    }
+    // run_file_dialog is expected to call back with the selected path, or
+    // empty string on cancel. It must emit space.folder_picked via broadcast_event.
+    shell_cbs_.run_file_dialog(
+        [this, browser = browser](const std::string& path) {
+          if (path.empty()) return;  // cancelled
+          if (shell_cbs_.broadcast_event) {
+            const std::string evt =
+                nlohmann::json{{"path", path}}.dump();
+            shell_cbs_.broadcast_event("space.folder_picked", evt);
+          }
+        });
+    callback->Success("ok");
     return true;
   }
 
@@ -621,38 +729,6 @@ bool BridgeHandler::HandleSpace(CefRefPtr<CefBrowser> browser,
   }
 
   callback->Failure(404, "unknown space channel");
-  return true;
-}
-
-// ---------------------------------------------------------------------------
-// Tool channels
-// ---------------------------------------------------------------------------
-
-bool BridgeHandler::HandleTool(std::string_view channel,
-                               std::string_view payload,
-                               CefRefPtr<Callback> callback) {
-  if (channel != "tool.exec") {
-    callback->Failure(404, "unknown tool channel");
-    return true;
-  }
-  auto* sp = space_manager_->ActiveSpace();
-  if (!sp) { callback->Failure(503, "no active space"); return true; }
-
-  const std::string p(payload);
-  ToolCall call;
-  {
-    auto j = nlohmann::json::parse(payload, nullptr, false);
-    call.name  = j.is_object() ? j.value("name",  std::string{}) : std::string{};
-    call.input = j.is_object() ? j.value("input", std::string{}) : std::string{};
-  }
-  if (call.name.empty()) { callback->Failure(400, "tool name required"); return true; }
-
-  const auto result = sp->runtime_binding.tool_registry.Invoke(call);
-  if (result.ok) {
-    callback->Success(nlohmann::json{{"ok", true},  {"output", result.output}}.dump());
-  } else {
-    callback->Failure(500, nlohmann::json{{"ok", false}, {"error", result.error}}.dump());
-  }
   return true;
 }
 
@@ -795,6 +871,14 @@ void BridgeHandler::SetupCapabilityHandler() {
             reply({{"outcome","err"},{"error",{{"code","bad_request"},{"message","empty argv"}}}});
             return;
           }
+          // Hard floor: block execution of sensitive system paths (task 7.3).
+          // Extract the first token of cmd as the candidate executable path.
+          const std::string first_token = cmd.substr(0, cmd.find(' '));
+          if (!first_token.empty() && IsSensitivePath(std::filesystem::path(first_token))) {
+            reply({{"outcome","err"},{"error",{{"code","permission_denied"},
+                {"message","access to sensitive path denied"}}}});
+            return;
+          }
           const auto result = RunShellCommand(cwd, cmd);
           if (result.exit_code == 0) {
             reply({{"outcome","ok"},{"stdout",result.stdout_data},
@@ -814,7 +898,6 @@ void BridgeHandler::SetupCapabilityHandler() {
             reply({{"outcome","err"},{"error",{{"code","no_space"},{"message","no active space for filesystem capability"}}}});
             return;
           }
-          FileBroker file_broker(workspace_root);
           const auto& op = request.value("op", nlohmann::json{});
           const std::string op_kind = op.value("kind", std::string{});
           if (op_kind == "read") {
@@ -823,21 +906,31 @@ void BridgeHandler::SetupCapabilityHandler() {
               reply({{"outcome","err"},{"error",{{"code","bad_request"},{"message","path required"}}}});
               return;
             }
-            // (task 4.3) Scope enforcement: path must be within workspace_root.
-            std::filesystem::path p(path_str);
-            std::error_code ec;
-            auto rel = std::filesystem::relative(p, workspace_root, ec);
-            if (ec || rel.empty() || rel.native().substr(0,2) == "..") {
-              reply({{"outcome","err"},{"error",{{"code","scope_violation"},
-                  {"message","path is outside workspace root"}}}});
+            // Hard floor: block reads to sensitive system paths (task 7.1).
+            if (IsSensitivePath(std::filesystem::path(path_str))) {
+              reply({{"outcome","err"},{"error",{{"code","permission_denied"},
+                  {"message","access to sensitive path denied"}}}});
               return;
             }
-            auto res = file_broker.ReadText(Actor::kAgent, p);
-            if (res.ok) {
-              reply({{"outcome","ok"},{"content",res.data}});
-            } else {
-              reply({{"outcome","err"},{"error",{{"code","read_failed"},{"message",res.error}}}});
-            }
+            // Phase 2: proxy to Rust runtime FileRead.
+            nlohmann::json req = {
+                {"kind", "file_read"},
+                {"workspace_root", workspace_root},
+                {"path", path_str},
+            };
+            // reply_fn is captured by value — fire-and-forget via SendControl.
+            auto reply_copy = reply;
+            runtime_proxy_->SendControl(std::move(req),
+                [reply_copy](nlohmann::json resp, bool is_error) {
+                  if (is_error) {
+                    reply_copy({{"outcome","err"},{"error",{{"code","read_failed"},{"message",
+                        resp.value("error", nlohmann::json{}).value("message","read failed")}}}});
+                    return;
+                  }
+                  const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+                  const std::string content = p.value("content", std::string{});
+                  reply_copy({{"outcome","ok"},{"content", content}});
+                });
             return;
           }
           if (op_kind == "write") {
@@ -847,21 +940,29 @@ void BridgeHandler::SetupCapabilityHandler() {
               reply({{"outcome","err"},{"error",{{"code","bad_request"},{"message","path required"}}}});
               return;
             }
-            // (task 4.3) Scope enforcement.
-            std::filesystem::path p(path_str);
-            std::error_code ec;
-            auto rel = std::filesystem::relative(p, workspace_root, ec);
-            if (ec || rel.empty() || rel.native().substr(0,2) == "..") {
-              reply({{"outcome","err"},{"error",{{"code","scope_violation"},
-                  {"message","path is outside workspace root"}}}});
+            // Hard floor: block writes to sensitive system paths (task 7.2).
+            if (IsSensitivePath(std::filesystem::path(path_str))) {
+              reply({{"outcome","err"},{"error",{{"code","permission_denied"},
+                  {"message","access to sensitive path denied"}}}});
               return;
             }
-            auto res = file_broker.WriteText(Actor::kAgent, p, content);
-            if (res.ok) {
-              reply({{"outcome","ok"}});
-            } else {
-              reply({{"outcome","err"},{"error",{{"code","write_failed"},{"message",res.error}}}});
-            }
+            // Phase 2: proxy to Rust runtime FileWrite.
+            nlohmann::json req = {
+                {"kind", "file_write"},
+                {"workspace_root", workspace_root},
+                {"path", path_str},
+                {"content", content},
+            };
+            auto reply_copy = reply;
+            runtime_proxy_->SendControl(std::move(req),
+                [reply_copy](nlohmann::json resp, bool is_error) {
+                  if (is_error) {
+                    reply_copy({{"outcome","err"},{"error",{{"code","write_failed"},{"message",
+                        resp.value("error", nlohmann::json{}).value("message","write failed")}}}});
+                    return;
+                  }
+                  reply_copy({{"outcome","ok"}});
+                });
             return;
           }
           reply({{"outcome","err"},{"error",{{"code","unsupported"},
@@ -1289,24 +1390,27 @@ bool BridgeHandler::HandleWorkspace(std::string_view channel,
   if (!sp) { callback->Failure(503, "no active space"); return true; }
 
   if (channel == "workspace.layout") {
-    WorkspaceLayout layout(sp->workspace_root);
-    std::string err;
-    const bool ensured = layout.EnsureSkeleton(&err);
-    const int version = layout.ReadVersion();
-    nlohmann::json j = {
-        {"root",           layout.Root().string()},
-        {"cronymax_dir",   layout.CronymaxDir().string()},
-        {"flows_dir",      layout.FlowsDir().string()},
-        {"agents_dir",     layout.AgentsDir().string()},
-        {"doc_types_dir",  layout.DocTypesDir().string()},
-        {"conflicts_dir",  layout.ConflictsDir().string()},
-        {"version",        version},
-        {"layout_version", WorkspaceLayout::kLayoutVersion},
-        {"ensured",        ensured},
+    // Phase 2: proxy to Rust runtime.
+    if (!runtime_proxy_) {
+      callback->Failure(503, "runtime not available");
+      return true;
+    }
+    nlohmann::json req = {
+        {"kind", "workspace_layout"},
+        {"workspace_root", sp->workspace_root.string()},
     };
-    if (!ensured && !err.empty())
-      j["error"] = err;
-    callback->Success(j.dump());
+    runtime_proxy_->SendControl(std::move(req),
+        [callback](nlohmann::json resp, bool is_error) {
+          if (is_error) {
+            callback->Failure(500,
+                resp.value("error", nlohmann::json{})
+                    .value("message", "workspace_layout failed"));
+            return;
+          }
+          // resp is the ControlResponse::Data payload
+          const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+          callback->Success(p.dump());
+        });
     return true;
   }
 
@@ -1353,9 +1457,8 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
                                    std::string_view payload,
                                    CefRefPtr<Callback> callback) {
   auto* sp = space_manager_->ActiveSpace();
-  if (!sp || !sp->agent_registry ||
-      !sp->doc_type_registry) {
-    callback->Failure(503, "registries not ready");
+  if (!sp) {
+    callback->Failure(503, "no active space");
     return true;
   }
 
@@ -1368,473 +1471,182 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
     return it->get<std::string>();
   };
 
+  // Helper: forward a control request to Rust and relay the payload back.
+  auto send_ctl = [&](nlohmann::json req) {
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return; }
+    runtime_proxy_->SendControl(std::move(req),
+        [callback](nlohmann::json resp, bool is_error) {
+          if (is_error) {
+            callback->Failure(500, resp.value("error", nlohmann::json{})
+                                       .value("message", "registry error"));
+            return;
+          }
+          const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+          callback->Success(p.dump());
+        });
+  };
+
+  // ── Phase 3: agent registry (proxied to Rust) ─────────────────────────
+
   if (channel == "agent.registry.list") {
-    nlohmann::json agents = nlohmann::json::array();
-    for (const auto& name : sp->agent_registry->Names()) {
-      const auto* def = sp->agent_registry->Get(name);
-      if (!def) continue;
-      agents.push_back({{"name", name}, {"kind", def->kind()}, {"llm", def->llm()}});
-    }
-    callback->Success(nlohmann::json{{"agents", agents}}.dump());
+    send_ctl({
+        {"kind", "agent_registry_list"},
+        {"workspace_root", sp->workspace_root.string()},
+    });
     return true;
   }
 
   if (channel == "agent.registry.load") {
     const auto name = extract_field("name");
-    const auto* def = sp->agent_registry->Get(name);
-    if (!def) {
-      callback->Failure(404, "agent not found");
-      return true;
-    }
-    nlohmann::json tools = nlohmann::json::array();
-    for (const auto& t : def->tools()) tools.push_back(t);
-    callback->Success(nlohmann::json{
-        {"name",             def->name()},
-        {"kind",             def->kind()},
-        {"llm",              def->llm()},
-        {"system_prompt",    def->system_prompt()},
-        {"memory_namespace", def->memory_namespace()},
-        {"tools",            tools},
-    }.dump());
+    if (name.empty()) { callback->Failure(400, "name required"); return true; }
+    send_ctl({
+        {"kind", "agent_registry_load"},
+        {"workspace_root", sp->workspace_root.string()},
+        {"name", name},
+    });
     return true;
   }
 
-  // -------------------------------------------------------------------------
-  // agent.registry.save  payload {name, llm, system_prompt,
-  //                                memory_namespace, tools_csv}
-  //   Writes a minimal `<name>.agent.yaml` to <workspace>/.cronymax/agents/
-  //   then refreshes the registry. Idempotent — overwrites any existing
-  //   file with the same basename.
-  // agent.registry.delete payload {name}
-  //   Deletes <workspace>/.cronymax/agents/<name>.agent.yaml then refreshes.
-  // -------------------------------------------------------------------------
   if (channel == "agent.registry.save") {
-    const std::string name          = jp.is_object() ? jp.value("name",             std::string{}) : std::string{};
-    const std::string llm           = jp.is_object() ? jp.value("llm",              std::string{}) : std::string{};
-    const std::string system_prompt = jp.is_object() ? jp.value("system_prompt",    std::string{}) : std::string{};
-    const std::string memory_ns     = jp.is_object() ? jp.value("memory_namespace", std::string{}) : std::string{};
-    const std::string tools_csv     = jp.is_object() ? jp.value("tools_csv",        std::string{}) : std::string{};
-
-    // Validate the basename — it becomes a filename, so reject anything
-    // that could escape the agents directory or break YAML/file APIs.
-    auto valid_name = [](const std::string& s) {
-      if (s.empty() || s.size() > 64) return false;
-      for (char c : s) {
-        const bool ok = (c >= 'a' && c <= 'z') ||
-                        (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '_' || c == '-' ||
-                        c == '.';
-        if (!ok) return false;
-      }
-      return s.front() != '.' && s.find("..") == std::string::npos;
-    };
-    if (!valid_name(name)) {
-      callback->Failure(400, "invalid agent name");
-      return true;
-    }
-
-    WorkspaceLayout layout(sp->workspace_root);
-    std::error_code ec;
-    std::filesystem::create_directories(layout.AgentsDir(), ec);
-    if (ec) {
-      callback->Failure(500, "create agents dir failed: " + ec.message());
-      return true;
-    }
-    const auto target = layout.AgentsDir() / (name + ".agent.yaml");
-
-    // Build the YAML by hand. Quote scalars with single quotes (escape any
-    // embedded single quote by doubling it). System prompt uses a literal
-    // block scalar so newlines round-trip cleanly.
-    auto sq = [](const std::string& s) {
-      std::string out;
-      out.reserve(s.size() + 2);
-      out += '\'';
-      for (char c : s) {
-        if (c == '\'') out += "''";
-        else out += c;
-      }
-      out += '\'';
-      return out;
-    };
-    auto block = [](const std::string& s) {
-      std::string out = "|\n";
-      // Indent every line by two spaces; preserve empty lines.
-      const std::string indent = "  ";
-      bool at_line_start = true;
-      for (char c : s) {
-        if (at_line_start) {
-          out += indent;
-          at_line_start = false;
-        }
-        if (c == '\n') {
-          out += '\n';
-          at_line_start = true;
-        } else {
-          out += c;
-        }
-      }
-      if (!out.empty() && out.back() != '\n') out += '\n';
-      return out;
-    };
-
-    std::string yaml;
-    yaml += "name: " + sq(name) + "\n";
-    yaml += "llm: " + sq(llm) + "\n";
-    if (!memory_ns.empty()) {
-      yaml += "memory_namespace: " + sq(memory_ns) + "\n";
-    }
-    yaml += "system_prompt: " + block(system_prompt);
-    if (!tools_csv.empty()) {
-      yaml += "tools:\n";
-      std::string cur;
-      auto flush_tool = [&]() {
-        // Trim whitespace.
-        size_t a = cur.find_first_not_of(" \t");
-        size_t b = cur.find_last_not_of(" \t");
-        if (a == std::string::npos) {
-          cur.clear();
+    const std::string name = jp.is_object() ? jp.value("name", std::string{}) : std::string{};
+    const std::string yaml = jp.is_object() ? jp.value("yaml", std::string{}) : std::string{};
+    if (name.empty()) { callback->Failure(400, "name required"); return true; }
+    if (yaml.empty()) { callback->Failure(400, "yaml required"); return true; }
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind", "agent_registry_save"},
+        {"workspace_root", sp->workspace_root.string()},
+        {"name", name},
+        {"yaml", yaml},
+    }, [callback](nlohmann::json resp, bool is_error) {
+        if (is_error) {
+          callback->Failure(500, resp.value("error", nlohmann::json{})
+                                     .value("message", "save failed"));
           return;
         }
-        std::string tool = cur.substr(a, b - a + 1);
-        if (!tool.empty()) yaml += "  - " + sq(tool) + "\n";
-        cur.clear();
-      };
-      for (char c : tools_csv) {
-        if (c == ',') flush_tool();
-        else cur.push_back(c);
-      }
-      flush_tool();
-    }
-
-    std::ofstream out(target, std::ios::binary | std::ios::trunc);
-    if (!out) {
-      callback->Failure(500,
-                        "open for write failed: " + target.string());
-      return true;
-    }
-    out.write(yaml.data(), static_cast<std::streamsize>(yaml.size()));
-    out.close();
-    if (!out) {
-      callback->Failure(500, "write failed: " + target.string());
-      return true;
-    }
-
-    sp->agent_registry->Refresh();
-    callback->Success("{\"ok\":true}");
+        callback->Success("{\"ok\":true}");
+    });
     return true;
   }
 
   if (channel == "agent.registry.delete") {
     const std::string name = jp.is_object() ? jp.value("name", std::string{}) : std::string{};
-    auto valid_name = [](const std::string& s) {
-      if (s.empty() || s.size() > 64) return false;
-      for (char c : s) {
-        const bool ok = (c >= 'a' && c <= 'z') ||
-                        (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '_' || c == '-' ||
-                        c == '.';
-        if (!ok) return false;
-      }
-      return s.front() != '.' && s.find("..") == std::string::npos;
-    };
-    if (!valid_name(name)) {
-      callback->Failure(400, "invalid agent name");
-      return true;
-    }
-    WorkspaceLayout layout(sp->workspace_root);
-    const auto target = layout.AgentsDir() / (name + ".agent.yaml");
-    std::error_code ec;
-    if (!std::filesystem::remove(target, ec) || ec) {
-      callback->Failure(404, "agent file not found: " + target.string());
-      return true;
-    }
-    sp->agent_registry->Refresh();
-    callback->Success("{\"ok\":true}");
+    if (name.empty()) { callback->Failure(400, "name required"); return true; }
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind", "agent_registry_delete"},
+        {"workspace_root", sp->workspace_root.string()},
+        {"name", name},
+    }, [callback](nlohmann::json resp, bool is_error) {
+        if (is_error) {
+          callback->Failure(404, resp.value("error", nlohmann::json{})
+                                     .value("message", "delete failed"));
+          return;
+        }
+        callback->Success("{\"ok\":true}");
+    });
     return true;
   }
 
-  // -------------------------------------------------------------------------
-  // space.profile.get  → current Space's persisted sandbox-rule overrides.
-  // space.profile.set  payload {allow_network, extra_read_paths_nl,
-  //                             extra_write_paths_nl, extra_deny_paths_nl}
-  //   Newline-separated path lists; empty entries dropped. Persisted to
-  //   <workspace>/.cronymax/space.profile.yaml. Stored as user intent —
-  //   FileBroker enforcement plumbing is wired separately.
-  // -------------------------------------------------------------------------
-  if (channel == "space.profile.get" || channel == "space.profile.set") {
-    WorkspaceLayout layout(sp->workspace_root);
-    const auto profile_path = layout.CronymaxDir() / "space.profile.yaml";
-
-    // Tiny YAML reader that pulls the four keys we wrote. Tolerates
-    // missing file / missing keys — defaults to disabled + empty arrays.
-    bool allow_network = false;
-    std::vector<std::string> reads, writes, denies;
-    {
-      std::ifstream in(profile_path);
-      if (in) {
-        std::string line;
-        std::vector<std::string>* current_list = nullptr;
-        while (std::getline(in, line)) {
-          // Strip trailing CR.
-          if (!line.empty() && line.back() == '\r') line.pop_back();
-          // List item under a previous key.
-          if (current_list && line.size() >= 4 &&
-              line.substr(0, 4) == "  - ") {
-            std::string v = line.substr(4);
-            // Strip surrounding single quotes if present.
-            if (v.size() >= 2 && v.front() == '\'' && v.back() == '\'') {
-              v = v.substr(1, v.size() - 2);
-              std::string unq;
-              for (size_t i = 0; i < v.size(); ++i) {
-                if (v[i] == '\'' && i + 1 < v.size() && v[i + 1] == '\'') {
-                  unq += '\'';
-                  ++i;
-                } else {
-                  unq += v[i];
-                }
-              }
-              v = unq;
-            }
-            if (!v.empty()) current_list->push_back(v);
-            continue;
-          }
-          current_list = nullptr;
-          auto colon = line.find(':');
-          if (colon == std::string::npos) continue;
-          std::string key = line.substr(0, colon);
-          std::string val = line.substr(colon + 1);
-          while (!val.empty() && (val.front() == ' ' || val.front() == '\t'))
-            val.erase(val.begin());
-          if (key == "allow_network") {
-            allow_network = (val == "true");
-          } else if (key == "extra_read_paths") {
-            current_list = &reads;
-          } else if (key == "extra_write_paths") {
-            current_list = &writes;
-          } else if (key == "extra_deny_paths") {
-            current_list = &denies;
-          }
-        }
-      }
-    }
-
-    if (channel == "space.profile.get") {
-      auto to_arr = [](const std::vector<std::string>& v) {
-        nlohmann::json arr = nlohmann::json::array();
-        for (const auto& s : v) arr.push_back(s);
-        return arr;
-      };
-      callback->Success(nlohmann::json{
-          {"space_id",          sp->id},
-          {"space_name",        sp->name},
-          {"workspace_root",    sp->workspace_root.string()},
-          {"allow_network",     allow_network},
-          {"extra_read_paths",  to_arr(reads)},
-          {"extra_write_paths", to_arr(writes)},
-          {"extra_deny_paths",  to_arr(denies)},
-      }.dump());
-      return true;
-    }
-
-    // space.profile.set: parse payload and write YAML.
-    const bool new_allow_network = jp.is_object() ? jp.value("allow_network", false) : false;
-    const std::string reads_nl  = jp.is_object() ? jp.value("extra_read_paths_nl",  std::string{}) : std::string{};
-    const std::string writes_nl = jp.is_object() ? jp.value("extra_write_paths_nl", std::string{}) : std::string{};
-    const std::string denies_nl = jp.is_object() ? jp.value("extra_deny_paths_nl",  std::string{}) : std::string{};
-
-    auto split_lines = [](const std::string& s) {
-      std::vector<std::string> out;
-      std::string cur;
-      for (char c : s) {
-        if (c == '\n') {
-          // Trim.
-          size_t a = cur.find_first_not_of(" \t");
-          size_t b = cur.find_last_not_of(" \t");
-          if (a != std::string::npos)
-            out.push_back(cur.substr(a, b - a + 1));
-          cur.clear();
-        } else if (c != '\r') {
-          cur.push_back(c);
-        }
-      }
-      size_t a = cur.find_first_not_of(" \t");
-      size_t b = cur.find_last_not_of(" \t");
-      if (a != std::string::npos) out.push_back(cur.substr(a, b - a + 1));
-      return out;
-    };
-    auto sq = [](const std::string& s) {
-      std::string out;
-      out.reserve(s.size() + 2);
-      out += '\'';
-      for (char c : s) {
-        if (c == '\'') out += "''";
-        else out += c;
-      }
-      out += '\'';
-      return out;
-    };
-
-    const auto new_reads = split_lines(reads_nl);
-    const auto new_writes = split_lines(writes_nl);
-    const auto new_denies = split_lines(denies_nl);
-
-    std::error_code ec;
-    std::filesystem::create_directories(layout.CronymaxDir(), ec);
-    if (ec) {
-      callback->Failure(500, "create cronymax dir failed: " + ec.message());
-      return true;
-    }
-
-    std::string yaml;
-    yaml += "# Per-Space sandbox-rule overrides. Edited via Config →\n";
-    yaml += "# Workspace tab. Path lists supplement the default sandbox\n";
-    yaml += "# allow/deny set; allow_network gates outbound traffic.\n";
-    yaml += std::string("allow_network: ") +
-            (new_allow_network ? "true" : "false") + "\n";
-    auto emit_list = [&](const char* key,
-                         const std::vector<std::string>& v) {
-      yaml += std::string(key) + ":\n";
-      for (const auto& path : v) yaml += "  - " + sq(path) + "\n";
-    };
-    emit_list("extra_read_paths", new_reads);
-    emit_list("extra_write_paths", new_writes);
-    emit_list("extra_deny_paths", new_denies);
-
-    std::ofstream out(profile_path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-      callback->Failure(500, "open for write failed: " + profile_path.string());
-      return true;
-    }
-    out.write(yaml.data(), static_cast<std::streamsize>(yaml.size()));
-    out.close();
-    if (!out) {
-      callback->Failure(500, "write failed: " + profile_path.string());
-      return true;
-    }
-    callback->Success("{\"ok\":true}");
-    return true;
-  }
+  // space.profile.get and space.profile.set were removed in the
+  // workspace-with-profile change. Profile management is now done
+  // via the profiles.* bridge channels.
 
   if (channel == "flow.list") {
-    WorkspaceLayout layout(sp->workspace_root);
-    nlohmann::json flows = nlohmann::json::array();
-
-    // Helper: scan a directory for flow subdirs and append to `flows`.
-    // `is_builtin` marks bundled preset flows so the UI can distinguish them.
-    auto scan_flows_dir = [&](const std::filesystem::path& dir,
-                               bool is_builtin) {
-      std::error_code scan_ec;
-      if (!std::filesystem::is_directory(dir, scan_ec)) return;
-      for (const auto& entry :
-           std::filesystem::directory_iterator(dir, scan_ec)) {
-        if (!entry.is_directory()) continue;
-        const std::string id = entry.path().filename().string();
-        const auto flow_yaml = entry.path() / "flow.yaml";
-        std::error_code exist_ec;
-        if (!std::filesystem::exists(flow_yaml, exist_ec)) continue;
-        const auto doc = LoadFlowYaml(flow_yaml, id);
-        if (!doc.ok) continue;
-        nlohmann::json agents_arr = nlohmann::json::array();
-        for (const auto& a : doc.agents) agents_arr.push_back(a.id);
-        flows.push_back({{"id", id}, {"name", doc.name},
-                         {"edge_count", doc.edges.size()},
-                         {"agents", agents_arr},
-                         {"builtin", is_builtin}});
-      }
+    // Phase 2: proxy to Rust runtime.
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    nlohmann::json req = {
+        {"kind", "flow_list"},
+        {"workspace_root", sp->workspace_root.string()},
+        {"builtin_flows_dir", space_manager_->builtin_flows_dir().string()},
     };
-
-    // Workspace-local flows take priority; scan them first.
-    scan_flows_dir(layout.FlowsDir(), false);
-
-    // Bundled preset flows — only include those not already present in the
-    // workspace (de-duplicate by id so workspace overrides win).
-    const auto& builtin_dir = space_manager_->builtin_flows_dir();
-    if (!builtin_dir.empty()) {
-      // Build a set of workspace-local ids to skip duplicates.
-      std::set<std::string> local_ids;
-      for (const auto& f : flows) {
-        if (f.contains("id") && f["id"].is_string())
-          local_ids.insert(f["id"].get<std::string>());
-      }
-      std::error_code scan_ec;
-      if (std::filesystem::is_directory(builtin_dir, scan_ec)) {
-        for (const auto& entry :
-             std::filesystem::directory_iterator(builtin_dir, scan_ec)) {
-          if (!entry.is_directory()) continue;
-          const std::string id = entry.path().filename().string();
-          if (local_ids.count(id)) continue;  // workspace copy takes priority
-          const auto flow_yaml = entry.path() / "flow.yaml";
-          std::error_code exist_ec;
-          if (!std::filesystem::exists(flow_yaml, exist_ec)) continue;
-          const auto doc = LoadFlowYaml(flow_yaml, id);
-          if (!doc.ok) continue;
-          nlohmann::json agents_arr = nlohmann::json::array();
-          for (const auto& a : doc.agents) agents_arr.push_back(a.id);
-          flows.push_back({{"id", id}, {"name", doc.name},
-                           {"edge_count", doc.edges.size()},
-                           {"agents", agents_arr},
-                           {"builtin", true}});
-        }
-      }
-    }
-
-    callback->Success(nlohmann::json{{"flows", flows}}.dump());
+    runtime_proxy_->SendControl(std::move(req),
+        [callback](nlohmann::json resp, bool is_error) {
+          if (is_error) {
+            callback->Failure(500,
+                resp.value("error", nlohmann::json{}).value("message", "flow_list failed"));
+            return;
+          }
+          const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+          callback->Success(p.dump());
+        });
     return true;
   }
 
   if (channel == "flow.load") {
+    // Phase 2: proxy to Rust runtime.
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
     const auto id = extract_field("id");
     if (id.empty()) { callback->Failure(400, "id required"); return true; }
-    WorkspaceLayout layout(sp->workspace_root);
-    const auto flow_yaml = layout.FlowFile(id);
-    std::error_code exist_ec;
-    if (!std::filesystem::exists(flow_yaml, exist_ec)) {
-      callback->Failure(404, "flow not found");
+    nlohmann::json req = {
+        {"kind", "flow_load"},
+        {"workspace_root", sp->workspace_root.string()},
+        {"flow_id", id},
+    };
+    runtime_proxy_->SendControl(std::move(req),
+        [callback](nlohmann::json resp, bool is_error) {
+          if (is_error) {
+            const auto err = resp.value("error", nlohmann::json{});
+            callback->Failure(404, err.value("message", "flow not found"));
+            return;
+          }
+          const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+          callback->Success(p.dump());
+        });
+    return true;
+  }
+
+  // flow.save  payload {flow_id, graph}  → {ok:bool, error?}
+  if (channel == "flow.save") {
+    // Phase 2: proxy to Rust runtime.
+    if (!runtime_proxy_) {
+      callback->Success(R"({"ok":false,"error":"runtime not available"})");
       return true;
     }
-    const auto doc = LoadFlowYaml(flow_yaml, id);
-    if (!doc.ok) {
-      callback->Failure(500,
-                        std::string("flow.yaml parse error: ") + doc.error);
+    const auto flow_id = extract_field("flow_id");
+    if (flow_id.empty()) {
+      callback->Success(R"({"ok":false,"error":"flow_id required"})");
       return true;
     }
-    nlohmann::json agents_arr = nlohmann::json::array();
-    for (const auto& a : doc.agents) agents_arr.push_back(a.id);
-    nlohmann::json edges_arr = nlohmann::json::array();
-    for (const auto& e : doc.edges) {
-      edges_arr.push_back({
-          {"from", e.from},
-          {"to", e.to},
-          {"port", e.port},
-          {"requires_human_approval", e.requires_human_approval},
-      });
+    if (!jp.contains("graph") || jp["graph"].is_null()) {
+      callback->Success(R"({"ok":false,"error":"graph required"})");
+      return true;
     }
-    callback->Success(nlohmann::json{
-        {"id", id},
-        {"name", doc.name},
-        {"description", doc.description},
-        {"max_review_rounds", doc.max_review_rounds},
-        {"on_review_exhausted", doc.on_review_exhausted},
-        {"reviewer_enabled", doc.reviewer_enabled},
-        {"reviewer_timeout_secs", doc.reviewer_timeout_secs},
-        {"agents", agents_arr},
-        {"edges", edges_arr},
-    }.dump());
+    nlohmann::json req = {
+        {"kind", "flow_save"},
+        {"workspace_root", sp->workspace_root.string()},
+        {"flow_id", flow_id},
+        {"graph", jp["graph"]},
+    };
+    runtime_proxy_->SendControl(std::move(req),
+        [callback](nlohmann::json resp, bool is_error) {
+          if (is_error) {
+            const auto msg = resp.value("error", nlohmann::json{})
+                                 .value("message", "flow_save failed");
+            callback->Success(nlohmann::json{{"ok", false}, {"error", msg}}.dump());
+            return;
+          }
+          callback->Success(R"({"ok":true})");
+        });
     return true;
   }
 
   if (channel == "doc_type.list") {
-    nlohmann::json types = nlohmann::json::array();
-    for (const auto& name : sp->doc_type_registry->Names()) {
-      const auto* s = sp->doc_type_registry->Get(name);
-      if (!s) continue;
-      types.push_back({
-          {"name",         name},
-          {"display_name", s->display_name()},
-          {"user_defined", sp->doc_type_registry->IsUserDefined(name)},
-      });
-    }
-    callback->Success(nlohmann::json{{"doc_types", types}}.dump());
+    // Phase 3: proxy to Rust runtime.
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind", "doc_type_list"},
+        {"workspace_root", sp->workspace_root.string()},
+        {"builtin_doc_types_dir", space_manager_->builtin_doc_types_dir().string()},
+    }, [callback](nlohmann::json resp, bool is_error) {
+        if (is_error) {
+          callback->Failure(500, resp.value("error", nlohmann::json{})
+                                     .value("message", "doc_type_list failed"));
+          return;
+        }
+        const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+        callback->Success(p.dump());
+    });
     return true;
   }
 
@@ -1842,125 +1654,68 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   //   Returns the full schema details for a single doc type.
   if (channel == "doc_type.load") {
     const std::string name = jp.is_object() ? jp.value("name", std::string{}) : std::string{};
-    const auto* schema = sp->doc_type_registry->Get(name);
-    if (!schema) {
-      callback->Failure(404, "doc type not found: " + name);
-      return true;
-    }
-    callback->Success(nlohmann::json{
-        {"name",         schema->name()},
-        {"display_name", schema->display_name()},
-        {"description",  schema->description()},
-        {"user_defined", sp->doc_type_registry->IsUserDefined(name)},
-    }.dump());
+    if (name.empty()) { callback->Failure(400, "name required"); return true; }
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind", "doc_type_load"},
+        {"workspace_root", sp->workspace_root.string()},
+        {"builtin_doc_types_dir", space_manager_->builtin_doc_types_dir().string()},
+        {"name", name},
+    }, [callback](nlohmann::json resp, bool is_error) {
+        if (is_error) {
+          callback->Failure(404, resp.value("error", nlohmann::json{})
+                                     .value("message", "not found"));
+          return;
+        }
+        const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+        callback->Success(p.dump());
+    });
     return true;
   }
 
   // -------------------------------------------------------------------------
   // doc_type.save   payload {name, display_name, description?}
-  //   Writes a <name>.md to <workspace>/.cronymax/doc-types/ then refreshes
-  //   the registry.  The file uses YAML front matter (name, display_name)
-  //   followed by Markdown body (description).
   // doc_type.delete payload {name}
-  //   Removes <workspace>/.cronymax/doc-types/<name>.md (or .yaml for legacy)
-  //   and refreshes.
   // -------------------------------------------------------------------------
   if (channel == "doc_type.save") {
     const std::string name         = jp.is_object() ? jp.value("name",         std::string{}) : std::string{};
     const std::string display_name = jp.is_object() ? jp.value("display_name", std::string{}) : std::string{};
     const std::string description  = jp.is_object() ? jp.value("description",  std::string{}) : std::string{};
-
-    auto valid_name = [](const std::string& s) {
-      if (s.empty() || s.size() > 64) return false;
-      for (char c : s) {
-        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
-        if (!ok) return false;
-      }
-      return s.front() != '.' && s.find("..") == std::string::npos;
-    };
-    if (!valid_name(name)) {
-      callback->Failure(400, "invalid doc-type name");
-      return true;
-    }
-
-    WorkspaceLayout layout(sp->workspace_root);
-    std::error_code ec;
-    std::filesystem::create_directories(layout.DocTypesDir(), ec);
-    if (ec) {
-      callback->Failure(500, "create doc-types dir failed: " + ec.message());
-      return true;
-    }
-
-    // Single-quoted scalar — escapes embedded single quotes by doubling them.
-    auto sq = [](const std::string& s) {
-      std::string out;
-      out.reserve(s.size() + 2);
-      out += '\'';
-      for (char c : s) { if (c == '\'') out += "''"; else out += c; }
-      out += '\'';
-      return out;
-    };
-
-    // Build Markdown file: YAML front matter + blank line + Markdown body.
-    std::string md;
-    md += "---\n";
-    md += "name: " + sq(name) + "\n";
-    md += "display_name: " + sq(display_name.empty() ? name : display_name) + "\n";
-    md += "---\n";
-    if (!description.empty()) {
-      md += "\n";
-      md += description;
-      if (description.back() != '\n') md += "\n";
-    }
-
-    const auto target = layout.DocTypesDir() / (name + ".md");
-    std::ofstream out(target, std::ios::binary | std::ios::trunc);
-    if (!out) {
-      callback->Failure(500, "open for write failed: " + target.string());
-      return true;
-    }
-    out.write(md.data(), static_cast<std::streamsize>(md.size()));
-    out.close();
-    if (!out) {
-      callback->Failure(500, "write failed: " + target.string());
-      return true;
-    }
-    sp->doc_type_registry->Refresh();
-    callback->Success("{\"ok\":true}");
+    if (name.empty()) { callback->Failure(400, "name required"); return true; }
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind", "doc_type_save"},
+        {"workspace_root", sp->workspace_root.string()},
+        {"name", name},
+        {"display_name", display_name.empty() ? name : display_name},
+        {"description", description},
+    }, [callback](nlohmann::json resp, bool is_error) {
+        if (is_error) {
+          callback->Failure(500, resp.value("error", nlohmann::json{})
+                                     .value("message", "save failed"));
+          return;
+        }
+        callback->Success("{\"ok\":true}");
+    });
     return true;
   }
 
   if (channel == "doc_type.delete") {
     const std::string name = jp.is_object() ? jp.value("name", std::string{}) : std::string{};
-    auto valid_name = [](const std::string& s) {
-      if (s.empty() || s.size() > 64) return false;
-      for (char c : s) {
-        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                        (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
-        if (!ok) return false;
-      }
-      return s.front() != '.' && s.find("..") == std::string::npos;
-    };
-    if (!valid_name(name)) {
-      callback->Failure(400, "invalid doc-type name");
-      return true;
-    }
-    WorkspaceLayout layout(sp->workspace_root);
-    // Try .md first (new format), then .yaml for backward compatibility.
-    std::error_code ec;
-    auto target = layout.DocTypesDir() / (name + ".md");
-    if (!std::filesystem::exists(target, ec)) {
-      target = layout.DocTypesDir() / (name + ".yaml");
-    }
-    ec = {};
-    std::filesystem::remove(target, ec);
-    if (ec) {
-      callback->Failure(404, "doc-type file not found: " + target.string());
-      return true;
-    }
-    sp->doc_type_registry->Refresh();
-    callback->Success("{\"ok\":true}");
+    if (name.empty()) { callback->Failure(400, "name required"); return true; }
+    if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind", "doc_type_delete"},
+        {"workspace_root", sp->workspace_root.string()},
+        {"name", name},
+    }, [callback](nlohmann::json resp, bool is_error) {
+        if (is_error) {
+          callback->Failure(404, resp.value("error", nlohmann::json{})
+                                     .value("message", "not found"));
+          return;
+        }
+        callback->Success("{\"ok\":true}");
+    });
     return true;
   }
 
@@ -1989,7 +1744,10 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
         return true;
       }
       const auto initial_input = extract_field("initial_input");
-      nlohmann::json run_payload = {{"flow_id", flow_id}};
+      nlohmann::json run_payload = {
+          {"flow_id", flow_id},
+          {"workspace_root", sp->workspace_root.string()},
+      };
       if (!initial_input.empty()) run_payload["initial_input"] = initial_input;
       nlohmann::json req = {
           {"kind", "start_run"},
@@ -2139,13 +1897,13 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
                                    CefRefPtr<Callback> callback) {
   auto* sp = space_manager_->ActiveSpace();
   if (!sp) { callback->Failure(503, "no active space"); return true; }
+  if (!runtime_proxy_) { callback->Failure(503, "runtime not available"); return true; }
 
-  // Parse payload once for all document channels.
-  auto jp_doc = nlohmann::json::parse(payload, nullptr, false);
+  auto jp = nlohmann::json::parse(payload, nullptr, false);
   auto extract = [&](std::string_view key) -> std::string {
-    if (!jp_doc.is_object()) return {};
-    auto it = jp_doc.find(std::string(key));
-    if (it == jp_doc.end() || !it->is_string()) return {};
+    if (!jp.is_object()) return {};
+    auto it = jp.find(std::string(key));
+    if (it == jp.end() || !it->is_string()) return {};
     return it->get<std::string>();
   };
 
@@ -2154,270 +1912,131 @@ bool BridgeHandler::HandleDocument(std::string_view channel,
     callback->Failure(400, "missing 'flow' in payload");
     return true;
   }
-  // Validate flow id via filesystem (flow_registry removed).
-  WorkspaceLayout layout(sp->workspace_root);
-  {
-    std::error_code flow_ec;
-    if (!std::filesystem::is_directory(layout.FlowDir(flow_id), flow_ec)) {
-      callback->Failure(404, "unknown flow");
-      return true;
-    }
-  }
+  const std::string workspace_root = sp->workspace_root.string();
 
-  DocumentStore store(layout.FlowDir(flow_id));
+  auto relay_payload = [callback](nlohmann::json resp, bool is_error) {
+    if (is_error) {
+      callback->Failure(500, resp.value("error", nlohmann::json{})
+                                 .value("message", "document error"));
+      return;
+    }
+    const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+    callback->Success(p.dump());
+  };
 
   if (channel == "document.list") {
-    const auto items = store.List();
-    nlohmann::json docs = nlohmann::json::array();
-    for (const auto& d : items) {
-      docs.push_back({
-          {"name",            d.name},
-          {"latest_revision", d.latest_revision},
-          {"size_bytes",      d.size_bytes},
-      });
-    }
-    callback->Success(nlohmann::json{{"docs", docs}}.dump());
+    runtime_proxy_->SendControl({
+        {"kind",           "document_list"},
+        {"workspace_root", workspace_root},
+        {"flow_id",        flow_id},
+    }, relay_payload);
     return true;
   }
 
   if (channel == "document.read") {
     const std::string name    = extract("name");
+    const std::string rev_str = extract("revision");
     if (name.empty()) {
       callback->Failure(400, "missing 'name' in payload");
       return true;
     }
-    const std::string rev_str = extract("revision");
-    std::string err;
-    std::optional<std::string> content;
-    int revision = 0;
-    if (rev_str.empty()) {
-      content = store.Read(name, &err);
-      revision = store.LatestRevision(name);
-    } else {
-      // Exceptions are disabled in this build; manually validate digits.
+    nlohmann::json req = {
+        {"kind",           "document_read"},
+        {"workspace_root", workspace_root},
+        {"flow_id",        flow_id},
+        {"name",           name},
+    };
+    if (!rev_str.empty()) {
       if (rev_str.find_first_not_of("0123456789") != std::string::npos) {
-        callback->Failure(400, "bad 'revision' value");
-        return true;
+        callback->Failure(400, "bad 'revision' value"); return true;
       }
-      revision = std::atoi(rev_str.c_str());
-      if (revision < 1) {
-        callback->Failure(400, "bad 'revision' value");
-        return true;
-      }
-      content = store.ReadRevision(name, revision, &err);
+      req["revision"] = std::atoi(rev_str.c_str());
     }
-    if (!content) {
-      callback->Failure(404, err.empty() ? "document not found" : err);
-      return true;
-    }
-    callback->Success(nlohmann::json{{"revision", revision}, {"content", *content}}.dump());
+    runtime_proxy_->SendControl(std::move(req), relay_payload);
     return true;
   }
 
   if (channel == "document.subscribe") {
-    // (task 3.3) Also subscribe to runtime events so that runtime-emitted
-    // document-changed events are fanned out on "document.changed".
-    if (runtime_proxy_) {
-      auto* sp = space_manager_->ActiveSpace();
-      const std::string topic = sp
-          ? ("space/" + sp->id + "/document_events")
-          : "document_events";
-      nlohmann::json req = {{"kind", "subscribe"}, {"topic", topic}};
-      runtime_proxy_->SendControl(std::move(req),
+    // Subscribe to Rust runtime document events forwarded as "document.changed".
+    {
+      const std::string topic = "space/" + sp->id + "/document_events";
+      nlohmann::json req_sub = {{"kind", "subscribe"}, {"topic", topic}};
+      runtime_proxy_->SendControl(std::move(req_sub),
           [this](nlohmann::json resp, bool is_error) {
             if (is_error) return;
-            const std::string sub_id = resp.value("subscription", std::string{});
-            auto ev_token = runtime_proxy_->SubscribeEvents(
+            runtime_proxy_->SubscribeEvents(
                 [this](const nlohmann::json& event) {
-                  // Forward runtime document events as document.changed
-                  // broadcasts so existing renderer listeners pick them up.
                   if (shell_cbs_.broadcast_event)
                     shell_cbs_.broadcast_event("document.changed", event.dump());
                 });
-            // Note: cleanup on browser close is handled by the general
-            // events.subscribe cleanup path; these are supplemental.
-            (void)sub_id;
-            (void)ev_token;
           });
     }
-    // Subscription is implicit: the renderer listens for the
-    // "document.changed" broadcast event. This call exists so the
-    // renderer can confirm the channel/flow are valid before installing
-    // its event listener, and so future per-flow watchers know which
-    // flows have active subscribers.
     callback->Success("{\"ok\":true,\"event\":\"document.changed\"}");
     return true;
   }
 
-  // document.submit { flow, name, content }
-  //
-  // User-initiated revision write from the workbench (WYSIWYG / Source
-  // / Diff "save" paths). Mirrors the agent submit pathway in
-  // FlowRuntime: writes a new revision via DocumentStore::Submit,
-  // emits a `document_event` AppEvent so chat panels refresh, and
-  // broadcasts `document.changed` so other workbench instances reload.
   if (channel == "document.submit") {
     const std::string name    = extract("name");
-    const std::string content = extract("content");
-    if (name.empty()) {
-      callback->Failure(400, "missing 'name' in payload");
-      return true;
-    }
-    // `content` may legitimately be empty (e.g. user cleared the file),
-    // so we do not reject empty content here.
-    std::string err;
-    auto wr = store.Submit(name, content,
-                           std::chrono::milliseconds(2000), &err);
-    if (wr.revision == 0) {
-      callback->Failure(500, err.empty() ? "submit failed" : err);
-      return true;
-    }
-    if (sp->event_bus) {
-      event_bus::AppEvent e;
-      e.kind = event_bus::AppEventKind::kDocumentEvent;
-      e.space_id = sp->id;
-      e.flow_id = flow_id;
-      e.agent_id = "user";
-      nlohmann::json payload_obj = {
-        {"doc_id",   name},
-        {"doc_path", name + ".md"},
-        {"revision", wr.revision},
-        {"sha256",   wr.sha256_hex},
-        {"producer", "user"},
-        {"source",   "workbench_save"},
-      };
-      e.payload = std::move(payload_obj);
-      sp->event_bus->Append(std::move(e));
-    }
-    if (shell_cbs_.broadcast_event) {
-      shell_cbs_.broadcast_event("document.changed",
-          nlohmann::json{{"flow", flow_id}, {"name", name}, {"revision", wr.revision}}.dump());
-    }
-    callback->Success(nlohmann::json{{"ok", true}, {"revision", wr.revision}, {"sha", wr.sha256_hex}}.dump());
+    const std::string content = jp.is_object() ? jp.value("content", std::string{}) : std::string{};
+    if (name.empty()) { callback->Failure(400, "missing 'name' in payload"); return true; }
+    runtime_proxy_->SendControl({
+        {"kind",           "document_submit"},
+        {"workspace_root", workspace_root},
+        {"flow_id",        flow_id},
+        {"name",           name},
+        {"content",        content},
+    }, [this, flow_id, name, callback](nlohmann::json resp, bool is_error) {
+        if (is_error) {
+          callback->Failure(500, resp.value("error", nlohmann::json{})
+                                     .value("message", "submit failed"));
+          return;
+        }
+        const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+        int rev = p.value("revision", 0);
+        std::string sha = p.value("sha256", "");
+        if (shell_cbs_.broadcast_event) {
+          shell_cbs_.broadcast_event("document.changed",
+              nlohmann::json{{"flow", flow_id}, {"name", name}, {"revision", rev}}.dump());
+        }
+        callback->Success(
+            nlohmann::json{{"ok", true}, {"revision", rev}, {"sha", sha}}.dump());
+    });
     return true;
   }
 
-  // document.suggestion.apply { flow, run_id, name, block_id, suggestion }
-  //
-  // Finds the matching `<!-- block: <uuid> -->` marker in the current revision,
-  // replaces the block's body with the suggestion text, and submits a new
-  // revision via DocumentStore. `block_id` and `suggestion` are provided
-  // directly by the caller (sourced from the runtime review event).
   if (channel == "document.suggestion.apply") {
     const std::string run_id     = extract("run_id");
     const std::string name       = extract("name");
     const std::string block_id   = extract("block_id");
-    const std::string suggestion = extract("suggestion");
+    const std::string suggestion = jp.is_object() ? jp.value("suggestion", std::string{}) : std::string{};
     if (run_id.empty() || name.empty() || block_id.empty() || suggestion.empty()) {
       callback->Failure(400, "missing 'run_id', 'name', 'block_id', or 'suggestion'");
       return true;
     }
-
-    // Read the current document revision and locate the block marker.
-    std::string err;
-    auto current = store.Read(name, &err);
-    if (!current) {
-      callback->Failure(404, err.empty() ? "document not found" : err);
-      return true;
-    }
-
-    // Locate `<!-- block: <uuid> -->` in current content.
-    const std::string& md = *current;
-    std::vector<std::string> lines;
-    {
-      std::string cur;
-      for (char ch : md) {
-        if (ch == '\n') { lines.push_back(std::move(cur)); cur.clear(); }
-        else cur.push_back(ch);
-      }
-      lines.push_back(std::move(cur));
-    }
-    auto match_marker = [](const std::string& line) -> std::string {
-      size_t p = 0;
-      while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
-      if (line.compare(p, 4, "<!--") != 0) return {};
-      p += 4;
-      while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
-      if (line.compare(p, 6, "block:") != 0) return {};
-      p += 6;
-      while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
-      size_t start = p;
-      while (p < line.size() &&
-             ((line[p] >= '0' && line[p] <= '9') ||
-              (line[p] >= 'a' && line[p] <= 'f') ||
-              (line[p] >= 'A' && line[p] <= 'F') || line[p] == '-')) {
-        ++p;
-      }
-      if (p - start < 8) return {};
-      return line.substr(start, p - start);
-    };
-    int marker_idx = -1;
-    for (size_t i = 0; i < lines.size(); ++i) {
-      if (match_marker(lines[i]) == block_id) {
-        marker_idx = static_cast<int>(i);
-        break;
-      }
-    }
-    if (marker_idx < 0) {
-      callback->Failure(409, "block_not_found_in_current_revision");
-      return true;
-    }
-    int block_end = static_cast<int>(lines.size());
-    for (size_t i = static_cast<size_t>(marker_idx) + 1; i < lines.size(); ++i) {
-      if (!match_marker(lines[i]).empty()) {
-        block_end = static_cast<int>(i);
-        break;
-      }
-    }
-    // Build the new content.
-    std::string trimmed_suggestion = suggestion;
-    while (!trimmed_suggestion.empty() &&
-           trimmed_suggestion.back() == '\n') {
-      trimmed_suggestion.pop_back();
-    }
-    std::string new_content;
-    for (int i = 0; i <= marker_idx; ++i) {
-      new_content += lines[static_cast<size_t>(i)];
-      new_content += '\n';
-    }
-    new_content += trimmed_suggestion;
-    new_content += "\n\n";
-    for (size_t i = static_cast<size_t>(block_end); i < lines.size(); ++i) {
-      new_content += lines[i];
-      if (i + 1 < lines.size()) new_content += '\n';
-    }
-
-    // Write the new revision.
-    auto wr = store.Submit(name, new_content,
-                           std::chrono::milliseconds(2000), &err);
-    if (wr.revision == 0) {
-      callback->Failure(500, err.empty() ? "submit failed" : err);
-      return true;
-    }
-
-    // Emit a `document_event` AppEvent so the channel view picks up the new
-    // revision without polling.
-    if (sp->event_bus) {
-      event_bus::AppEvent e;
-      e.kind = event_bus::AppEventKind::kDocumentEvent;
-      e.space_id = sp->id;
-      e.flow_id = flow_id;
-      e.run_id = run_id;
-      e.agent_id = "user";
-      nlohmann::json payload_obj = {
-        {"doc_id",   name},
-        {"doc_path", name + ".md"},
-        {"revision", wr.revision},
-        {"sha256",   wr.sha256_hex},
-        {"producer", "user"},
-        {"source",   "suggestion_apply"},
-      };
-      e.payload = std::move(payload_obj);
-      sp->event_bus->Append(std::move(e));
-    }
-
-    std::string out_json = nlohmann::json{{"ok", true}, {"new_revision", wr.revision}, {"sha", wr.sha256_hex}}.dump();
-    callback->Success(out_json);
+    runtime_proxy_->SendControl({
+        {"kind",           "document_suggestion_apply"},
+        {"workspace_root", workspace_root},
+        {"flow_id",        flow_id},
+        {"run_id",         run_id},
+        {"name",           name},
+        {"block_id",       block_id},
+        {"suggestion",     suggestion},
+    }, [this, flow_id, name, callback](nlohmann::json resp, bool is_error) {
+        if (is_error) {
+          callback->Failure(500, resp.value("error", nlohmann::json{})
+                                     .value("message", "suggestion_apply failed"));
+          return;
+        }
+        const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+        int rev = p.value("new_revision", 0);
+        std::string sha = p.value("sha", "");
+        if (shell_cbs_.broadcast_event) {
+          shell_cbs_.broadcast_event("document.changed",
+              nlohmann::json{{"flow", flow_id}, {"name", name}, {"revision", rev}}.dump());
+        }
+        callback->Success(
+            nlohmann::json{{"ok", true}, {"new_revision", rev}, {"sha", sha}}.dump());
+    });
     return true;
   }
 
@@ -2816,6 +2435,121 @@ void BridgeHandler::OnSpaceSwitch(const std::string& old_space_id,
           space_runtime_subs_[new_space_id] = std::move(sub);
         });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Profiles channels
+// ---------------------------------------------------------------------------
+
+namespace {
+// Serialize a ProfileRecord to a JSON object (not a dump string).
+nlohmann::json ProfileRecordToJson(const ProfileRecord& r) {
+  auto to_arr = [](const std::vector<std::string>& v) {
+    auto arr = nlohmann::json::array();
+    for (const auto& s : v) arr.push_back(s);
+    return arr;
+  };
+  return nlohmann::json{
+      {"id",                r.id},
+      {"name",              r.name},
+      {"allow_network",     r.allow_network},
+      {"extra_read_paths",  to_arr(r.extra_read_paths)},
+      {"extra_write_paths", to_arr(r.extra_write_paths)},
+      {"extra_deny_paths",  to_arr(r.extra_deny_paths)},
+  };
+}
+}  // namespace
+
+bool BridgeHandler::HandleProfiles(CefRefPtr<CefBrowser> browser,
+                                   std::string_view channel,
+                                   std::string_view payload,
+                                   CefRefPtr<Callback> callback) {
+  ProfileStore& ps = space_manager_->profile_store();
+  const auto jp = nlohmann::json::parse(payload, nullptr, false);
+
+  if (channel == "profiles.list") {
+    const auto records = ps.List();
+    auto arr = nlohmann::json::array();
+    for (const auto& r : records) arr.push_back(ProfileRecordToJson(r));
+    callback->Success(arr.dump());
+    return true;
+  }
+
+  if (channel == "profiles.create") {
+    if (!jp.is_object()) { callback->Failure(400, "payload must be an object"); return true; }
+    ProfileRules rules;
+    rules.name          = jp.value("name",          std::string{});
+    rules.allow_network = jp.value("allow_network",  true);
+    if (rules.name.empty()) { callback->Failure(400, "name required"); return true; }
+    if (jp.contains("extra_read_paths") && jp["extra_read_paths"].is_array())
+      for (const auto& p : jp["extra_read_paths"]) if (p.is_string()) rules.extra_read_paths.push_back(p);
+    if (jp.contains("extra_write_paths") && jp["extra_write_paths"].is_array())
+      for (const auto& p : jp["extra_write_paths"]) if (p.is_string()) rules.extra_write_paths.push_back(p);
+    if (jp.contains("extra_deny_paths") && jp["extra_deny_paths"].is_array())
+      for (const auto& p : jp["extra_deny_paths"]) if (p.is_string()) rules.extra_deny_paths.push_back(p);
+
+    std::string new_id;
+    const auto err = ps.Create(rules, &new_id);
+    if (err == ProfileStoreError::kAlreadyExists) { callback->Failure(409, "profile name already exists"); return true; }
+    if (err == ProfileStoreError::kIoError)        { callback->Failure(500, "I/O error writing profile"); return true; }
+
+    if (const auto rec = ps.Get(new_id)) {
+      callback->Success(ProfileRecordToJson(*rec).dump());
+    } else {
+      callback->Success(nlohmann::json{{"id", new_id}}.dump());
+    }
+    return true;
+  }
+
+  if (channel == "profiles.update") {
+    if (!jp.is_object()) { callback->Failure(400, "payload must be an object"); return true; }
+    const std::string id = jp.value("id", std::string{});
+    if (id.empty()) { callback->Failure(400, "id required"); return true; }
+    ProfileRules rules;
+    rules.name          = jp.value("name",          std::string{});
+    rules.allow_network = jp.value("allow_network",  true);
+    if (rules.name.empty()) { callback->Failure(400, "name required"); return true; }
+    if (jp.contains("extra_read_paths") && jp["extra_read_paths"].is_array())
+      for (const auto& p : jp["extra_read_paths"]) if (p.is_string()) rules.extra_read_paths.push_back(p);
+    if (jp.contains("extra_write_paths") && jp["extra_write_paths"].is_array())
+      for (const auto& p : jp["extra_write_paths"]) if (p.is_string()) rules.extra_write_paths.push_back(p);
+    if (jp.contains("extra_deny_paths") && jp["extra_deny_paths"].is_array())
+      for (const auto& p : jp["extra_deny_paths"]) if (p.is_string()) rules.extra_deny_paths.push_back(p);
+
+    const auto err = ps.Update(id, rules);
+    if (err == ProfileStoreError::kNotFound) { callback->Failure(404, "profile not found"); return true; }
+    if (err == ProfileStoreError::kIoError)  { callback->Failure(500, "I/O error writing profile"); return true; }
+
+    if (const auto rec = ps.Get(id)) {
+      callback->Success(ProfileRecordToJson(*rec).dump());
+    } else {
+      callback->Success("{\"ok\":true}");
+    }
+    return true;
+  }
+
+  if (channel == "profiles.delete") {
+    if (!jp.is_object()) { callback->Failure(400, "payload must be an object"); return true; }
+    const std::string id = jp.value("id", std::string{});
+    if (id.empty()) { callback->Failure(400, "id required"); return true; }
+
+    // Collect the profile_id of every space so we can detect "in use".
+    std::vector<std::string> space_profile_ids;
+    for (const auto& s : space_manager_->spaces())
+      space_profile_ids.push_back(s->profile_id);
+
+    const auto err = ps.Delete(id, space_profile_ids);
+    if (err == ProfileStoreError::kNotFound)       { callback->Failure(404, "profile not found"); return true; }
+    if (err == ProfileStoreError::kCannotDeleteDefault) { callback->Failure(403, "cannot delete default profile"); return true; }
+    if (err == ProfileStoreError::kInUse)          { callback->Failure(409, "profile is in use by one or more spaces"); return true; }
+    if (err == ProfileStoreError::kIoError)        { callback->Failure(500, "I/O error deleting profile"); return true; }
+
+    callback->Success("{\"ok\":true}");
+    return true;
+  }
+
+  callback->Failure(404, "unknown profiles channel");
+  return true;
 }
 
 }  // namespace cronymax
