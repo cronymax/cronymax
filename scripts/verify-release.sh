@@ -56,16 +56,16 @@ run_web() {
   step "JOB: web-build (ubuntu-latest equivalent)"
 
   step "Install dependencies"
-  pnpm install --frozen-lockfile
+  bun install --frozen-lockfile
 
   step "Typecheck"
-  pnpm --filter cronymax-web typecheck
+  bun run --cwd web typecheck
 
   step "Lint"
-  pnpm --filter cronymax-web lint
+  bun run --cwd web lint
 
   step "Build"
-  pnpm --filter cronymax-web build
+  bun run --cwd web build
 
   step "Upload web dist  →  $ARTIFACT_DIR/web-dist/"
   rm -rf "$ARTIFACT_DIR/web-dist"
@@ -163,7 +163,6 @@ run_dmg() {
     --hide-extension "cronymax.app" \
     --app-drop-link 495 185 \
     --add-file "README.txt" "assets/installer/README.txt" 330 320 \
-    --applescript-sleep-duration 10 \
     --hdiutil-retries 10 \
     "$DMG_NAME" \
     "$DMG_STAGING"
