@@ -284,6 +284,16 @@ if(CRONYMAX_BUILD_WEB)
   )
 endif()
 
+# App icon: copy assets/installer/AppIcon.icns into the bundle Resources/
+# so macOS can display it in the Dock, Finder, and window decorations.
+add_custom_command(TARGET cronymax_app POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/installer/AppIcon.icns"
+    "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/AppIcon.icns"
+  COMMENT "Bundling AppIcon.icns into cronymax.app"
+  VERBATIM
+)
+
 add_custom_command(TARGET cronymax_app POST_BUILD
   # All panels are now React; copy only the built dist/. Remove the
   # destination first so stale, content-hashed asset files from prior

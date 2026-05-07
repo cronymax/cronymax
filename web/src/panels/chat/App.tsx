@@ -986,7 +986,7 @@ export function App() {
         const wrapped = `echo '${startMarker}'; ${command}; _ec=$?; echo "${endMarker}:$_ec"`;
         try {
           await bridge.send("terminal.run", { id: tid, command: wrapped });
-        } catch (err) {
+        } catch {
           dispatch({
             type: "finalizeShellBlock",
             id: blockId,

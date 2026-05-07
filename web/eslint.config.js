@@ -3,6 +3,7 @@
 // enables the recommended rule set, with a couple of project-specific tweaks.
 import tsParser from "@typescript-eslint/parser";
 import tsPlugin from "@typescript-eslint/eslint-plugin";
+import reactHooksPlugin from "eslint-plugin-react-hooks";
 
 export default [
   {
@@ -58,7 +59,10 @@ export default [
         Promise: "readonly",
       },
     },
-    plugins: { "@typescript-eslint": tsPlugin },
+    plugins: {
+      "@typescript-eslint": tsPlugin,
+      "react-hooks": reactHooksPlugin,
+    },
     rules: {
       ...tsPlugin.configs.recommended.rules,
       // Allow intentional empty catch / non-null assertion for now;

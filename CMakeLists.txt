@@ -5,6 +5,12 @@ project(cronymax
   LANGUAGES C CXX
 )
 
+# Allow CI to inject the release version from the git tag without modifying
+# this file. Pass -DCRONYMAX_VERSION=0.2.0 to cmake to override.
+if(DEFINED CRONYMAX_VERSION)
+  set(PROJECT_VERSION "${CRONYMAX_VERSION}")
+endif()
+
 if(APPLE)
   enable_language(OBJCXX)
 endif()

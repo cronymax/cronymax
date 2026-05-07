@@ -606,7 +606,7 @@ export function FlowEditor() {
                     await bridge.send("flow.run.cancel", {
                       run_id: activeRunId,
                     });
-                  } catch (_) {
+                  } catch {
                     // ignore
                   }
                   setActiveRunId(null);
