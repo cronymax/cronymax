@@ -129,9 +129,9 @@ target_link_libraries(cronymax_terminal INTERFACE cronymax_common Threads::Threa
 # Only available when CRONYMAX_BUILD_RUST is ON (the default).
 if(CRONYMAX_BUILD_RUST)
   add_library(cronymax_runtime_bridge STATIC
-    app/runtime_bridge/runtime_bridge.cc
-    app/runtime_bridge/runtime_proxy.cc
-    app/runtime_bridge/legacy_importer.cc
+    app/runtime/crony_bridge.cc
+    app/runtime/crony_proxy.cc
+    app/runtime/legacy_importer.cc
   )
   target_link_libraries(cronymax_runtime_bridge
     PUBLIC cronymax_common Cronymax::Crony nlohmann_json

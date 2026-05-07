@@ -13,9 +13,9 @@
 
 namespace cronymax {
 
-class RenderApp : public CefApp, public CefRenderProcessHandler {
+class App : public CefApp, public CefRenderProcessHandler {
  public:
-  RenderApp();
+  App();
 
   CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override {
     return this;
@@ -33,7 +33,7 @@ class RenderApp : public CefApp, public CefRenderProcessHandler {
                                 CefRefPtr<CefProcessMessage> message) override;
 
  private:
-  // V8 handler classes defined in render_app.cc need access to bridge fields.
+  // V8 handler classes defined in app.cc need access to bridge fields.
   friend class SendHandler;
   friend class SubscribeHandler;
   friend class UnsubHandler;
@@ -75,8 +75,8 @@ class RenderApp : public CefApp, public CefRenderProcessHandler {
   // Called on the render thread via CefPostTask from the pump thread.
   void DispatchEvent(const std::string& payload);
 
-  IMPLEMENT_REFCOUNTING(RenderApp);
-  DISALLOW_COPY_AND_ASSIGN(RenderApp);
+  IMPLEMENT_REFCOUNTING(App);
+  DISALLOW_COPY_AND_ASSIGN(App);
 };
 
 }  // namespace cronymax

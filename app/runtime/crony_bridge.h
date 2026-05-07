@@ -1,12 +1,12 @@
 #pragma once
 
-// runtime_bridge.h — C++ side of the Rust runtime GIPS bridge.
+// crony_bridge.h — C++ side of the Rust runtime GIPS bridge.
 //
 // Implements tasks 1.4 and 1.5 of the `rust-runtime-cpp-cutover` change.
 //
 // RuntimeBridge owns two responsibilities:
 //
-//   1. RuntimeSupervisor   — finds the `cronymax-runtime` binary, spawns it as
+//   1. RuntimeSupervisor   — finds the `crony` binary, spawns it as
 //      a child process, performs the Hello/Welcome handshake, restarts it after
 //      unexpected exit, and stops it during app shutdown.
 //

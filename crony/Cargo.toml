@@ -16,8 +16,8 @@ path = "src/lib.rs"
 crate-type = ["staticlib", "rlib"]
 
 [[bin]]
-name = "cronymax-runtime"
-path = "src/bin/cronymax_runtime.rs"
+name = "crony"
+path = "src/main.rs"
 
 [dependencies]
 cronymax = { workspace = true }

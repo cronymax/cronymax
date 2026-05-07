@@ -12,7 +12,7 @@
 
 #include "include/base/cef_callback.h"
 #include "include/cef_app.h"
-#include "runtime_bridge/legacy_importer.h"
+#include "runtime/legacy_importer.h"
 #include "include/cef_path_util.h"
 #include "include/views/cef_browser_view_delegate.h"
 #include "include/views/cef_fill_layout.h"

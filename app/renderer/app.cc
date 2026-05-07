@@ -1,4 +1,4 @@
-#include "browser/render_app.h"
+#include "renderer/app.h"
 
 #include <chrono>
 #include <functional>
@@ -26,7 +26,7 @@ static constexpr auto kHandshakeTimeout = std::chrono::seconds(10);
 
 class SendHandler : public CefV8Handler {
  public:
-  explicit SendHandler(RenderApp* app) : app_(app) {}
+  explicit SendHandler(App* app) : app_(app) {}
 
   bool Execute(const CefString& name,
                CefRefPtr<CefV8Value> object,
@@ -35,7 +35,7 @@ class SendHandler : public CefV8Handler {
                CefString& exception) override;
 
  private:
-  RenderApp* app_;  // not owned; outlived by V8 context
+  App* app_;  // not owned; outlived by V8 context
   IMPLEMENT_REFCOUNTING(SendHandler);
 };
 
@@ -129,10 +129,10 @@ bool SendHandler::Execute(const CefString& /*name*/,
 // ---------------------------------------------------------------------------
 
 // UnsubHandler is at file scope (not a local class) so that the
-// friend class declaration in RenderApp can grant it private access.
+// friend class declaration in App can grant it private access.
 class UnsubHandler : public CefV8Handler {
  public:
-  UnsubHandler(RenderApp* app, std::string topic, CefRefPtr<CefV8Value> cb)
+  UnsubHandler(App* app, std::string topic, CefRefPtr<CefV8Value> cb)
       : app_(app), topic_(std::move(topic)), cb_(std::move(cb)) {}
   bool Execute(const CefString&, CefRefPtr<CefV8Value>, const CefV8ValueList&,
                CefRefPtr<CefV8Value>&, CefString&) override {
@@ -146,7 +146,7 @@ class UnsubHandler : public CefV8Handler {
     return true;
   }
  private:
-  RenderApp* app_;
+  App* app_;
   std::string topic_;
   CefRefPtr<CefV8Value> cb_;
   IMPLEMENT_REFCOUNTING(UnsubHandler);
@@ -154,7 +154,7 @@ class UnsubHandler : public CefV8Handler {
 
 class SubscribeHandler : public CefV8Handler {
  public:
-  explicit SubscribeHandler(RenderApp* app) : app_(app) {}
+  explicit SubscribeHandler(App* app) : app_(app) {}
 
   bool Execute(const CefString& name,
                CefRefPtr<CefV8Value> object,
@@ -163,7 +163,7 @@ class SubscribeHandler : public CefV8Handler {
                CefString& exception) override;
 
  private:
-  RenderApp* app_;
+  App* app_;
   IMPLEMENT_REFCOUNTING(SubscribeHandler);
 };
 
@@ -193,7 +193,7 @@ bool SubscribeHandler::Execute(const CefString& /*name*/,
 
 class ReconnectHandler : public CefV8Handler {
  public:
-  ReconnectHandler(RenderApp* app, CefRefPtr<CefFrame> frame)
+  ReconnectHandler(App* app, CefRefPtr<CefFrame> frame)
       : app_(app), frame_(frame) {}
 
   bool Execute(const CefString& name,
@@ -209,16 +209,16 @@ class ReconnectHandler : public CefV8Handler {
   }
 
  private:
-  RenderApp* app_;
+  App* app_;
   CefRefPtr<CefFrame> frame_;
   IMPLEMENT_REFCOUNTING(ReconnectHandler);
 };
 
 // ---------------------------------------------------------------------------
-// RenderApp implementation
+// App implementation
 // ---------------------------------------------------------------------------
 
-RenderApp::RenderApp() {
+App::App() {
   CefMessageRouterConfig config;
   config.js_query_function = "cefQuery";
   config.js_cancel_function = "cefQueryCancel";
@@ -232,7 +232,7 @@ static bool IsBuiltinUrl(const CefString& url) {
   return u.rfind("https://", 0) != 0 && u.rfind("http://", 0) != 0;
 }
 
-void RenderApp::OnContextCreated(CefRefPtr<CefBrowser> browser,
+void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                                  CefRefPtr<CefFrame> frame,
                                  CefRefPtr<CefV8Context> context) {
   render_message_router_->OnContextCreated(browser, frame, context);
@@ -269,7 +269,7 @@ void RenderApp::OnContextCreated(CefRefPtr<CefBrowser> browser,
   global->SetValue("cronymax", bridge, V8_PROPERTY_ATTRIBUTE_NONE);
 }
 
-void RenderApp::OnContextReleased(CefRefPtr<CefBrowser> browser,
+void App::OnContextReleased(CefRefPtr<CefBrowser> browser,
                                   CefRefPtr<CefFrame> frame,
                                   CefRefPtr<CefV8Context> context) {
   render_message_router_->OnContextReleased(browser, frame, context);
@@ -281,7 +281,7 @@ void RenderApp::OnContextReleased(CefRefPtr<CefBrowser> browser,
   }
 }
 
-bool RenderApp::OnProcessMessageReceived(
+bool App::OnProcessMessageReceived(
     CefRefPtr<CefBrowser> browser,
     CefRefPtr<CefFrame> frame,
     CefProcessId source_process,
@@ -294,7 +294,7 @@ bool RenderApp::OnProcessMessageReceived(
 // Bridge — connect
 // ---------------------------------------------------------------------------
 
-bool RenderApp::ConnectRuntimeClient() {
+bool App::ConnectRuntimeClient() {
   const auto deadline = std::chrono::steady_clock::now() + kHandshakeTimeout;
   crony_client_t* c = nullptr;
   while (!c && std::chrono::steady_clock::now() < deadline) {
@@ -358,7 +358,7 @@ bool RenderApp::ConnectRuntimeClient() {
 // Bridge — pump thread
 // ---------------------------------------------------------------------------
 
-void RenderApp::StartPumpThread(CefRefPtr<CefFrame> frame) {
+void App::StartPumpThread(CefRefPtr<CefFrame> frame) {
   pump_stop_.store(false);
   pump_thread_ = std::thread([this, frame]() {
     // Connect phase: runs off the render thread so it can block freely.
@@ -395,7 +395,7 @@ void RenderApp::StartPumpThread(CefRefPtr<CefFrame> frame) {
 
       // Marshal dispatch to the render thread.
       CefPostTask(TID_RENDERER,
-                  base::BindOnce(&RenderApp::DispatchEvent,
+                  base::BindOnce(&App::DispatchEvent,
                                  base::Unretained(this), payload));
     }
   });
@@ -405,7 +405,7 @@ void RenderApp::StartPumpThread(CefRefPtr<CefFrame> frame) {
 // Bridge — disconnect
 // ---------------------------------------------------------------------------
 
-void RenderApp::DisconnectRuntimeClient() {
+void App::DisconnectRuntimeClient() {
   pump_stop_.store(true);
   crony_client_t* c = renderer_client_.exchange(nullptr);
   if (c) {
@@ -421,7 +421,7 @@ void RenderApp::DisconnectRuntimeClient() {
 // Bridge — event dispatch (render thread)
 // ---------------------------------------------------------------------------
 
-void RenderApp::DispatchEvent(const std::string& payload) {
+void App::DispatchEvent(const std::string& payload) {
   if (!main_context_) return;
 
   auto j = nlohmann::json::parse(payload, nullptr, /*allow_exceptions=*/false);

@@ -2,7 +2,7 @@
 //
 // See legacy_importer.h for the full design rationale.
 
-#include "runtime_bridge/legacy_importer.h"
+#include "runtime/legacy_importer.h"
 
 #include <chrono>
 #include <fstream>

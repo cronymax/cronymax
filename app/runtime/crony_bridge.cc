@@ -14,7 +14,7 @@
 //   * mu_               — guards status_, last_error_, client_, child_pid_,
 //     runtime_binary_, service_name_, restart_count_.
 
-#include "runtime_bridge/runtime_bridge.h"
+#include "runtime/crony_bridge.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -159,7 +159,7 @@ int WaitForProcessExit(int pid) {
 #endif  // platform
 
 // ---------------------------------------------------------------------------
-// Locate the cronymax-runtime binary.
+// Locate the crony binary.
 //
 // Search order (first existing path wins):
 //   1. hint (passed from tests or command-line override)
@@ -172,9 +172,9 @@ std::filesystem::path FindRuntimeBinary(
     const std::filesystem::path& hint) {
   const char* binary_name =
 #if defined(_WIN32)
-      "cronymax-runtime.exe";
+      "crony.exe";
 #else
-      "cronymax-runtime";
+      "crony";
 #endif
 
   if (!hint.empty()) {
@@ -200,7 +200,7 @@ std::filesystem::path FindRuntimeBinary(
   }
 #elif defined(__APPLE__)
   // On macOS the executable is Contents/MacOS/<name>; the runtime binary is
-  // bundled at Contents/Frameworks/cronymax-runtime.
+  // bundled at Contents/Frameworks/crony.
   // Use _NSGetExecutablePath to get the real executable path independent of CWD.
   {
     char exe_buf[PATH_MAX];
@@ -273,7 +273,7 @@ bool RuntimeBridge::Start(const std::filesystem::path& runtime_dir,
     app_data_dir_ = app_data_dir;
   }
   if (runtime_binary_.empty()) {
-    last_error_ = "cronymax-runtime binary not found";
+    last_error_ = "crony binary not found";
     status_ = RuntimeBridgeStatus::kFailed;
     return false;
   }
@@ -304,12 +304,12 @@ bool RuntimeBridge::SpawnAndHandshake() {
   }
 
   // Kill any stale runtime from a previous crashed session.  If an old
-  // cronymax-runtime is still alive and bound to the GIPS service, a new
+  // crony is still alive and bound to the GIPS service, a new
   // handshake would fail with "Hello sent twice".  We terminate it
   // gracefully (SIGTERM, then SIGKILL) before spawning our own child.
 #if !defined(_WIN32)
   {
-    FILE* fp = popen("pgrep -x cronymax-runtime", "r");
+    FILE* fp = popen("pgrep -x crony", "r");
     if (fp) {
       char buf[32];
       bool killed_any = false;
@@ -361,7 +361,7 @@ bool RuntimeBridge::SpawnAndHandshake() {
   // Spawn with config piped to stdin.
   if (!SpawnChild(bin, config_json)) {
     std::lock_guard lock(mu_);
-    last_error_ = "failed to spawn cronymax-runtime";
+    last_error_ = "failed to spawn crony";
     status_ = RuntimeBridgeStatus::kFailed;
     return false;
   }

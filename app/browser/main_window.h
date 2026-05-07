@@ -16,8 +16,8 @@
 #include "include/views/cef_panel.h"
 #include "include/views/cef_textfield.h"
 #include "include/views/cef_window.h"
-#include "runtime_bridge/runtime_bridge.h"
-#include "runtime_bridge/runtime_proxy.h"
+#include "runtime/crony_bridge.h"
+#include "runtime/crony_proxy.h"
 
 namespace cronymax {
 

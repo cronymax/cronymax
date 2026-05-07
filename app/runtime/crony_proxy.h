@@ -63,7 +63,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "runtime_bridge/runtime_bridge.h"
+#include "runtime/crony_bridge.h"
 
 namespace cronymax {
 

@@ -45,13 +45,13 @@ async fn main() -> Result<()> {
     tracing::info!(
         version = crony::CRATE_VERSION,
         protocol = %cronymax::PROTOCOL_VERSION,
-        "cronymax-runtime up; awaiting shutdown signal"
+        "crony up; awaiting shutdown signal"
     );
 
     wait_for_shutdown().await;
 
     crony::lifecycle::shutdown();
-    tracing::info!("cronymax-runtime exited cleanly");
+    tracing::info!("crony exited cleanly");
     Ok(())
 }
 

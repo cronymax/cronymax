@@ -1,4 +1,4 @@
-#include "browser/render_app.h"
+#include "renderer/app.h"
 #include "include/cef_app.h"
 #include "include/wrapper/cef_library_loader.h"
 
@@ -20,7 +20,7 @@ int main(int argc, char* argv[]) {
   }
 
   CefMainArgs main_args(argc, argv);
-  CefRefPtr<cronymax::RenderApp> app(
-      new cronymax::RenderApp());
+  CefRefPtr<cronymax::App> app(
+      new cronymax::App());
   return CefExecuteProcess(main_args, app.get(), nullptr);
 }

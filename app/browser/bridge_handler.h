@@ -11,7 +11,7 @@
 
 #include "browser/space_manager.h"
 #include "include/wrapper/cef_message_router.h"
-#include "runtime_bridge/runtime_proxy.h"
+#include "runtime/crony_proxy.h"
 
 namespace cronymax {
 

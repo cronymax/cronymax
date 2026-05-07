@@ -3,7 +3,7 @@
 // Covers tasks 2.1 (request/reply correlation), 2.2 (event subscription
 // fanout), and 2.3 (capability adapter boundary).
 
-#include "runtime_bridge/runtime_proxy.h"
+#include "runtime/crony_proxy.h"
 
 #include <cstdlib>
 #include <random>

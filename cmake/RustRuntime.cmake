@@ -44,7 +44,7 @@ set(_cronymax_rust_root      "${CMAKE_SOURCE_DIR}")
 set(_cronymax_cargo_target   "${CMAKE_BINARY_DIR}/rust-target")
 set(_cronymax_crony_lib_name "${CMAKE_STATIC_LIBRARY_PREFIX}crony${CMAKE_STATIC_LIBRARY_SUFFIX}")
 set(_cronymax_crony_lib_path "${_cronymax_cargo_target}/${_cronymax_cargo_target_dir}/${_cronymax_crony_lib_name}")
-set(_cronymax_runtime_bin    "${_cronymax_cargo_target}/${_cronymax_cargo_target_dir}/cronymax-runtime${CMAKE_EXECUTABLE_SUFFIX}")
+set(_cronymax_runtime_bin    "${_cronymax_cargo_target}/${_cronymax_cargo_target_dir}/crony${CMAKE_EXECUTABLE_SUFFIX}")
 
 include(ExternalProject)
 
@@ -54,7 +54,7 @@ set(_cronymax_cargo_args
   --target-dir    "${_cronymax_cargo_target}"
   -p crony
   --lib
-  --bin cronymax-runtime
+  --bin crony
 )
 if(_cronymax_cargo_profile STREQUAL "release")
   list(APPEND _cronymax_cargo_args --release)
