@@ -470,12 +470,16 @@ export function App() {
   const [pickerIdx, setPickerIdx] = useState(0);
   const [workspacePrompts, setWorkspacePrompts] = useState<PickerItem[]>([]);
   const [workspaceRoot, setWorkspaceRoot] = useState("");
+  /** Model options grouped by provider name, loaded from llm.providers.get */
+  const [modelGroups, setModelGroups] = useState<
+    { label: string; models: string[] }[]
+  >([]);
   /** Prompt pills attached to the current message (like VS Code slash commands). */
   const [attachedPrompts, setAttachedPrompts] = useState<
     { id: string; label: string; content: string }[]
   >([]);
 
-  // Load workspace prompts + root on mount.
+  // Load workspace prompts + root + provider models on mount.
   useEffect(() => {
     bridge
       .send("workspace.prompts.list")
@@ -493,6 +497,77 @@ export function App() {
     bridge
       .send("space.profile.get")
       .then((res) => setWorkspaceRoot(res.workspace_root))
+      .catch(() => undefined);
+    // Load model list from configured providers
+    bridge
+      .send("llm.providers.get")
+      .then(async ({ raw }) => {
+        if (!raw) return;
+        interface StoredProvider {
+          id: string;
+          name: string;
+          kind: "openai" | "anthropic" | "ollama" | "github_copilot" | "custom";
+          base_url: string;
+          api_key: string;
+          default_model: string;
+        }
+        const COPILOT_FALLBACK = [
+          "gpt-4o",
+          "gpt-4o-mini",
+          "claude-3.5-sonnet",
+          "o3-mini",
+        ];
+        const providers: StoredProvider[] = JSON.parse(raw);
+        const groups: { label: string; models: string[] }[] = [];
+        for (const p of providers) {
+          if (!p.base_url) continue;
+          let models: string[] = [];
+          try {
+            if (p.kind === "anthropic") {
+              models = [
+                "claude-opus-4-5",
+                "claude-sonnet-4-5",
+                "claude-3-5-sonnet-latest",
+                "claude-3-5-haiku-latest",
+              ];
+            } else if (p.kind === "ollama") {
+              const base = p.base_url.replace(/\/v1\/?$/, "");
+              const r = await fetch(`${base}/api/tags`, {
+                signal: AbortSignal.timeout(4000),
+              });
+              if (r.ok) {
+                const d = (await r.json()) as { models?: { name: string }[] };
+                models = (d.models ?? []).map((m) => m.name).sort();
+              }
+            } else {
+              // openai-compat / github_copilot / custom — try GET /models
+              const headers: Record<string, string> = {
+                Accept: "application/json",
+              };
+              if (p.api_key) headers["Authorization"] = `Bearer ${p.api_key}`;
+              const url = p.base_url.replace(/\/?$/, "") + "/models";
+              const r = await fetch(url, {
+                headers,
+                signal: AbortSignal.timeout(5000),
+              });
+              if (r.ok) {
+                const d = (await r.json()) as { data?: { id: string }[] };
+                models = (d.data ?? []).map((m) => m.id).sort();
+              }
+              if (models.length === 0 && p.kind === "github_copilot") {
+                models = COPILOT_FALLBACK;
+              }
+            }
+          } catch {
+            if (p.kind === "github_copilot") models = COPILOT_FALLBACK;
+          }
+          if (models.length === 0 && p.default_model)
+            models = [p.default_model];
+          if (models.length > 0)
+            groups.push({ label: p.name || p.kind, models });
+        }
+        setModelGroups(groups);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -1718,14 +1793,19 @@ export function App() {
                   dispatch({ type: "setModel", model: e.target.value });
                   persistSelectedModel(e.target.value);
                 }}
-                className="rounded-md border border-cronymax-border bg-cronymax-base px-1.5 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title transition max-w-[120px] truncate"
+                className="rounded-md border border-cronymax-border bg-cronymax-base px-1.5 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title transition max-w-[130px] truncate"
                 title="LLM model"
               >
-                <option value="">{state.model || "default"}</option>
-                {state.model && (
-                  <option value={state.model}>{state.model}</option>
-                )}
-                <option value="">default</option>
+                <option value="">provider default</option>
+                {modelGroups.map((g) => (
+                  <optgroup key={g.label} label={g.label}>
+                    {g.models.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
               </select>
 
               <div className="flex-1" />
