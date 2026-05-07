@@ -539,9 +539,10 @@ bool BridgeHandler::HandleAgent(CefRefPtr<CefBrowser> browser,
       // Read LLM config from the active provider in llm.providers (new-style)
       // with fallback to the old-style individual keys (llm.base_url, llm.api_key).
       const auto llm_cfg = space_manager_->store().GetLlmConfig();
-      std::string base_url = llm_cfg.base_url;
-      std::string api_key  = llm_cfg.api_key;
-      std::string model    = "gpt-4o-mini";
+      std::string base_url      = llm_cfg.base_url;
+      std::string api_key       = llm_cfg.api_key;
+      std::string model         = "gpt-4o-mini";
+      std::string provider_kind = "openai_compat";
       const std::string providers_raw =
           space_manager_->store().GetKv("llm.providers");
       const std::string active_id =
@@ -563,6 +564,10 @@ bool BridgeHandler::HandleAgent(CefRefPtr<CefBrowser> browser,
               // Provider stores the model as "default_model".
               const std::string pm = p.value("default_model", std::string{});
               if (!pm.empty()) model = pm;
+              // Forward provider kind so the runtime can apply Copilot-specific
+              // token exchange and required request headers.
+              const std::string pk = p.value("kind", std::string{});
+              if (!pk.empty()) provider_kind = pk;
               break;
             }
           }
@@ -576,9 +581,10 @@ bool BridgeHandler::HandleAgent(CefRefPtr<CefBrowser> browser,
               {"task", std::string(payload)},
               {"workspace_root", sp->workspace_root.string()},
               {"llm", {
-                  {"base_url", base_url},
-                  {"api_key", api_key},
-                  {"model", model}
+                  {"base_url",      base_url},
+                  {"api_key",       api_key},
+                  {"model",         model},
+                  {"provider_kind", provider_kind}
               }}
           }}
       };
@@ -1435,6 +1441,28 @@ bool BridgeHandler::HandleWorkspace(std::string_view channel,
         arr.push_back(entry);
     }
     callback->Success(nlohmann::json{{"missing", arr}}.dump());
+    return true;
+  }
+
+  if (channel == "workspace.prompts.list") {
+    const auto prompts_dir = sp->workspace_root / ".cronymax" / "prompts";
+    nlohmann::json arr = nlohmann::json::array();
+    std::error_code ec;
+    for (const auto& entry :
+         std::filesystem::directory_iterator(prompts_dir, ec)) {
+      const auto& p = entry.path();
+      // Accept files named  <name>.prompt.md
+      if (p.extension() == ".md" && p.stem().extension() == ".prompt") {
+        std::ifstream f(p);
+        if (f) {
+          std::ostringstream ss;
+          ss << f.rdbuf();
+          const std::string name = p.stem().stem().string();
+          arr.push_back({{"name", name}, {"content", ss.str()}});
+        }
+      }
+    }
+    callback->Success(nlohmann::json{{"prompts", arr}}.dump());
     return true;
   }
 

@@ -45,6 +45,10 @@ export interface Attachment {
   content?: string;
   /** Comment reference for kind==="comment" */
   commentId?: string;
+  /** Full selected text (kind==="comment"). Label is truncated; this is the original. */
+  selectedText?: string;
+  /** User-typed annotation on the comment (kind==="comment"). */
+  commentText?: string;
 }
 
 export interface ThreadMessage {
@@ -318,6 +322,8 @@ function reducer(state: State, action: Action): State {
         kind: "comment",
         label: comment.selectedText.slice(0, 60),
         commentId: comment.id,
+        selectedText: comment.selectedText,
+        commentText: comment.text,
       };
       // Add comment to its block
       const idx = state.blocks.findIndex((b) => b.id === comment.blockId);

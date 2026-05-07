@@ -43,6 +43,17 @@ Agent Runtime
   - graph-shaped interfaces
 ```
 
+> **jsb (in progress).** Built-in renderer pages are gaining a direct
+> IPC channel to the Rust runtime (`window.__runtimeBridge`), bypassing
+> the browser-process relay for both directions. The runtime binds a
+> second GIPS service (`ai.cronymax.runtime.renderer`) alongside the
+> existing browser-process service; the renderer helper binary links
+> `libcrony.a`; `RenderApp::OnContextCreated` injects the bridge and
+> manages a pump thread. Reconnect on space switch is driven by the
+> `space.switch_loading` broadcast. See
+> `docs/renderer-runtime-bridge.md` and
+> `openspec/changes/jsb/` for full design and tasks.
+
 > **Migration target (rust-runtime-migration).** The "Agent Runtime"
 > layer above is being moved into a standalone Rust process supervised
 > by `crony`. After the migration:

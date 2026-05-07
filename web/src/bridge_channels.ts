@@ -199,12 +199,12 @@ export const Channels = {
   "space.list": chan({ req: EmptySchema, res: z.array(SpaceSchema) }),
   "space.create": chan({
     req: z.object({
+      name: z.string().optional(),
       root_path: z.string(),
-      profile_id: z.string().default("default"),
+      profile_id: z.string().optional(),
     }),
     res: SpaceSchema,
   }),
-  "space.open_folder": chan({ req: EmptySchema, res: EmptySchema }),
   "space.switch": chan({
     req: z.object({ space_id: z.string() }),
     res: EmptySchema,
@@ -384,22 +384,12 @@ export const Channels = {
 
   // ── flow run control (legacy FlowRuntime-backed) ───────────────────
   "flow.run.start": chan({
-    req: z.object({
-      flow_id: z.string(),
-      initial_input: z.string().optional(),
-    }),
+    req: z.object({ flow_id: z.string() }),
     res: z.object({ run_id: z.string() }),
   }),
   "flow.run.cancel": chan({
     req: z.object({ run_id: z.string() }),
     res: z.unknown(),
-  }),
-  "flow.save": chan({
-    req: z.object({
-      flow_id: z.string(),
-      graph: z.unknown(),
-    }),
-    res: z.object({ ok: z.boolean(), error: z.string().optional() }),
   }),
 
   // ── agent + doc-type registry reads ───────────────────────────────
@@ -429,6 +419,7 @@ export const Channels = {
   "agent.registry.save": chan({
     req: z.object({
       name: z.string(),
+      kind: z.string().optional().default(""),
       llm: z.string(),
       system_prompt: z.string(),
       memory_namespace: z.string().optional().default(""),
@@ -442,63 +433,40 @@ export const Channels = {
     res: z.object({ ok: z.boolean() }),
   }),
 
-  // space.profile.get and space.profile.set were removed in the
-  // workspace-with-profile change. Use profiles.* channels instead.
-
-  // ── profiles (global named sandbox profiles) ─────────────────────────
-  // Profiles live at ~/.cronymax/profiles/<id>.yaml.
-  // The schema mirrors C++ ProfileRecord.
-  "profiles.list": chan({
+  // ── workspace profile (per-Space sandbox-rule overrides) ──────────
+  // Persisted at <workspace>/.cronymax/space.profile.yaml. Stored as
+  // user intent today; FileBroker enforcement plumbing wires up
+  // separately. Path lists are newline-delimited strings to keep the
+  // bridge codec simple — empty entries are stripped server-side.
+  "space.profile.get": chan({
     req: EmptySchema,
-    res: z.array(
-      z.object({
-        id: z.string(),
-        name: z.string(),
-        allow_network: z.boolean(),
-        extra_read_paths: z.array(z.string()),
-        extra_write_paths: z.array(z.string()),
-        extra_deny_paths: z.array(z.string()),
-      }),
-    ),
-  }),
-  "profiles.create": chan({
-    req: z.object({
-      name: z.string(),
-      allow_network: z.boolean().default(true),
-      extra_read_paths: z.array(z.string()).default([]),
-      extra_write_paths: z.array(z.string()).default([]),
-      extra_deny_paths: z.array(z.string()).default([]),
-    }),
     res: z.object({
-      id: z.string(),
-      name: z.string(),
+      space_id: z.string(),
+      space_name: z.string(),
+      workspace_root: z.string(),
       allow_network: z.boolean(),
       extra_read_paths: z.array(z.string()),
       extra_write_paths: z.array(z.string()),
       extra_deny_paths: z.array(z.string()),
     }),
   }),
-  "profiles.update": chan({
+  "space.profile.set": chan({
     req: z.object({
-      id: z.string(),
-      name: z.string(),
       allow_network: z.boolean(),
-      extra_read_paths: z.array(z.string()).default([]),
-      extra_write_paths: z.array(z.string()).default([]),
-      extra_deny_paths: z.array(z.string()).default([]),
+      extra_read_paths_nl: z.string(),
+      extra_write_paths_nl: z.string(),
+      extra_deny_paths_nl: z.string(),
     }),
-    res: z.object({
-      id: z.string(),
-      name: z.string(),
-      allow_network: z.boolean(),
-      extra_read_paths: z.array(z.string()),
-      extra_write_paths: z.array(z.string()),
-      extra_deny_paths: z.array(z.string()),
-    }),
-  }),
-  "profiles.delete": chan({
-    req: z.object({ id: z.string() }),
     res: z.object({ ok: z.boolean() }),
+  }),
+
+  // ── workspace custom prompts ───────────────────────────────────────
+  // Lists *.prompt.md files from <workspace>/.cronymax/prompts/.
+  "workspace.prompts.list": chan({
+    req: EmptySchema,
+    res: z.object({
+      prompts: z.array(z.object({ name: z.string(), content: z.string() })),
+    }),
   }),
 
   // ── LLM providers (managed list, persisted in kv_config) ──────────
@@ -607,19 +575,58 @@ export const Channels = {
       name: z.string(),
       display_name: z.string(),
       description: z.string(),
-      user_defined: z.boolean(),
     }),
   }),
   "doc_type.save": chan({
     req: z.object({
       name: z.string(),
-      display_name: z.string().optional().default(""),
-      description: z.string().optional().default(""),
+      display_name: z.string(),
+      description: z.string(),
     }),
     res: z.object({ ok: z.boolean() }),
   }),
   "doc_type.delete": chan({
     req: z.object({ name: z.string() }),
+    res: z.object({ ok: z.boolean() }),
+  }),
+
+  // ── named sandbox profiles (stored in ~/.cronymax/profiles/) ─────────
+  "profiles.list": chan({
+    req: EmptySchema,
+    res: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        allow_network: z.boolean(),
+        extra_read_paths: z.array(z.string()),
+        extra_write_paths: z.array(z.string()),
+        extra_deny_paths: z.array(z.string()),
+      }),
+    ),
+  }),
+  "profiles.create": chan({
+    req: z.object({
+      name: z.string(),
+      allow_network: z.boolean(),
+      extra_read_paths: z.array(z.string()),
+      extra_write_paths: z.array(z.string()),
+      extra_deny_paths: z.array(z.string()),
+    }),
+    res: z.object({ ok: z.boolean() }),
+  }),
+  "profiles.update": chan({
+    req: z.object({
+      id: z.string(),
+      name: z.string(),
+      allow_network: z.boolean(),
+      extra_read_paths: z.array(z.string()),
+      extra_write_paths: z.array(z.string()),
+      extra_deny_paths: z.array(z.string()),
+    }),
+    res: z.object({ ok: z.boolean() }),
+  }),
+  "profiles.delete": chan({
+    req: z.object({ id: z.string() }),
     res: z.object({ ok: z.boolean() }),
   }),
 
@@ -683,9 +690,7 @@ export const Events = {
   "agent.task_from_command": AgentTaskFromCommandPayloadSchema,
   "space.created": SpaceSchema,
   "space.deleted": z.object({ space_id: z.string() }),
-  /** Emitted after a native folder picker (space.open_folder) selects a path. */
   "space.folder_picked": z.object({ path: z.string() }),
-  /** Emitted before (loading:true) and after (loading:false) a runtime restart on space switch. */
   "space.switch_loading": z.object({ loading: z.boolean() }),
   // refine-ui-theme-layout: theme broadcast for all panels
   "theme.changed": ThemeChangedPayloadSchema,
@@ -708,7 +713,7 @@ export const FastPathEvents = new Set<keyof typeof Events>([
 
 export type ChannelName = keyof typeof Channels;
 export type EventName = keyof typeof Events;
-export type RequestOf<C extends ChannelName> = z.infer<
+export type RequestOf<C extends ChannelName> = z.input<
   (typeof Channels)[C]["req"]
 >;
 export type ResponseOf<C extends ChannelName> = z.infer<

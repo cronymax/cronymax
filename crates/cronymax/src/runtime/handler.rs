@@ -33,7 +33,7 @@ use crate::capability::shell::LocalShell;
 use crate::capability::submit_document::DocumentSubmitted;
 use crate::flow::definition::FlowDefinition;
 use crate::flow::runtime::{FlowRuntime, InvocationContext, InvocationTrigger};
-use crate::llm::{OpenAiConfig, OpenAiProvider};
+use crate::llm::{copilot_auth, OpenAiConfig, OpenAiProvider};
 use crate::protocol::capabilities::CapabilityResponse;
 use crate::protocol::control::{ControlError, ControlRequest, ControlResponse, ReviewDecision};
 use crate::protocol::dispatch::{Handler, ResponseSink};
@@ -63,6 +63,7 @@ struct FlowRunContext {
     base_url: String,
     api_key: Option<String>,
     model: String,
+    provider_kind: String,
     /// Sandbox policy for capability gates. `None` = permissive (no checks).
     sandbox_policy: Option<Arc<SandboxPolicy>>,
 }
@@ -162,12 +163,40 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
 
         let authority = ctx.authority.clone();
         let base_url = ctx.base_url.clone();
-        let api_key = ctx.api_key.clone();
+        let raw_api_key = ctx.api_key.clone();
+        let is_copilot = ctx.provider_kind == "github_copilot";
+
+        // For GitHub Copilot, exchange the stored GitHub OAuth token for the
+        // short-lived Copilot API token required by api.githubcopilot.com.
+        let (api_key, copilot_mode) = if is_copilot {
+            match raw_api_key.as_deref() {
+                Some(github_token) if !github_token.is_empty() => {
+                    let http = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(30))
+                        .build()
+                        .unwrap_or_default();
+                    match copilot_auth::exchange_for_copilot_token(&http, github_token).await {
+                        Ok(ct) => {
+                            info!(agent_id, "spawn_agent_loop: copilot token exchanged successfully");
+                            (Some(ct.token), true)
+                        }
+                        Err(e) => {
+                            warn!(agent_id, error = %e, "spawn_agent_loop: copilot token exchange failed, attempting with raw token");
+                            (raw_api_key, true)
+                        }
+                    }
+                }
+                _ => (raw_api_key, true),
+            }
+        } else {
+            (raw_api_key, false)
+        };
 
         let llm_cfg = OpenAiConfig {
             base_url: base_url.clone(),
             api_key,
             default_model: model.clone(),
+            copilot_mode,
             ..Default::default()
         };
         let llm = match OpenAiProvider::new(llm_cfg) {
@@ -360,6 +389,11 @@ impl Handler for RuntimeHandler {
                     .filter(|s| !s.is_empty())
                     .unwrap_or("gpt-4o-mini")
                     .to_string();
+                let provider_kind = llm_obj
+                    .and_then(|l| l.get("provider_kind"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("openai_compat")
+                    .to_string();
                 let user_input = payload
                     .get("task")
                     .and_then(|v| v.as_str())
@@ -507,6 +541,7 @@ impl Handler for RuntimeHandler {
                                 base_url: base_url.clone(),
                                 api_key: api_key.clone(),
                                 model: model.clone(),
+                                provider_kind: provider_kind.clone(),
                                 sandbox_policy: self.sandbox_policy.clone(),
                             };
                             self.flow_contexts.lock().insert(flow_run_id, flow_ctx.clone());
@@ -642,11 +677,39 @@ impl Handler for RuntimeHandler {
                         let tools = Arc::new(cap_builder.build());
 
                         let authority = self.authority.clone();
+                        let is_copilot = provider_kind == "github_copilot";
                         tokio::spawn(async move {
+                            // For GitHub Copilot, exchange the stored GitHub OAuth token for
+                            // the short-lived Copilot API token required by the API.
+                            let (effective_api_key, copilot_mode) = if is_copilot {
+                                match api_key.as_deref() {
+                                    Some(github_token) if !github_token.is_empty() => {
+                                        let http = reqwest::Client::builder()
+                                            .timeout(std::time::Duration::from_secs(30))
+                                            .build()
+                                            .unwrap_or_default();
+                                        match copilot_auth::exchange_for_copilot_token(&http, github_token).await {
+                                            Ok(ct) => {
+                                                info!(%run_id, "react_loop: copilot token exchanged successfully");
+                                                (Some(ct.token), true)
+                                            }
+                                            Err(e) => {
+                                                warn!(%run_id, error = %e, "react_loop: copilot token exchange failed, using raw token");
+                                                (api_key, true)
+                                            }
+                                        }
+                                    }
+                                    _ => (api_key, true),
+                                }
+                            } else {
+                                (api_key, false)
+                            };
+
                             let llm_cfg = OpenAiConfig {
                                 base_url: base_url.clone(),
-                                api_key,
+                                api_key: effective_api_key,
                                 default_model: model.clone(),
+                                copilot_mode,
                                 ..Default::default()
                             };
                             info!(%run_id, llm_base_url = %base_url, %model, "react_loop: starting");

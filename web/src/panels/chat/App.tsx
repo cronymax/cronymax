@@ -3,6 +3,7 @@ import {
   useRef,
   useCallback,
   useState,
+  useMemo,
   useLayoutEffect,
   type FormEvent,
   type KeyboardEvent,
@@ -34,6 +35,67 @@ import {
   type Thread,
 } from "./store";
 import { useSelectionTooltip } from "./useSelectionTooltip";
+
+// ── picker types ────────────────────────────────────────────────────────
+
+interface PickerItem {
+  id: string;
+  /** Short label shown in bold */
+  label: string;
+  /** Optional description shown in lighter text */
+  description?: string;
+  /** For slash commands: built-in action name */
+  action?: "clear" | "new";
+  /** For slash prompts: text to insert as user message */
+  content?: string;
+}
+
+interface PickerState {
+  type: "slash" | "at";
+  /** The raw text typed after the trigger character (e.g. "cl" after "/cl") */
+  query: string;
+  /** Caret offset at which the trigger started, so we can splice the replacement */
+  triggerStart: number;
+}
+
+/** Reads custom slash-command prompts stored in localStorage. */
+function loadCustomPrompts(): PickerItem[] {
+  try {
+    const raw = localStorage.getItem("cronymax.custom_prompts");
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as Array<{
+      id?: string;
+      title?: string;
+      content?: string;
+    }>;
+    return arr
+      .filter((x) => x.content)
+      .map((x, i) => ({
+        id: x.id ?? `custom-${i}`,
+        label: x.title ?? `Prompt ${i + 1}`,
+        description: x.content?.slice(0, 60),
+        content: x.content,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/** Built-in slash commands (always shown, not user-configurable). */
+const BUILTIN_COMMANDS: PickerItem[] = [
+  {
+    id: "cmd-clear",
+    label: "clear",
+    description: "Clear chat history",
+    action: "clear",
+  },
+  {
+    id: "cmd-new",
+    label: "new",
+    description: "Start a new chat",
+    action: "new",
+  },
+];
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -403,6 +465,37 @@ export function App() {
   );
   const [commentDraft, setCommentDraft] = useState("");
 
+  // ── slash / @ picker state ─────────────────────────────────────────────
+  const [picker, setPicker] = useState<PickerState | null>(null);
+  const [pickerIdx, setPickerIdx] = useState(0);
+  const [workspacePrompts, setWorkspacePrompts] = useState<PickerItem[]>([]);
+  const [workspaceRoot, setWorkspaceRoot] = useState("");
+  /** Prompt pills attached to the current message (like VS Code slash commands). */
+  const [attachedPrompts, setAttachedPrompts] = useState<
+    { id: string; label: string; content: string }[]
+  >([]);
+
+  // Load workspace prompts + root on mount.
+  useEffect(() => {
+    bridge
+      .send("workspace.prompts.list")
+      .then((res) => {
+        setWorkspacePrompts(
+          res.prompts.map((p) => ({
+            id: `ws-${p.name}`,
+            label: p.name,
+            description: p.content.slice(0, 70).replace(/\n/g, " ").trim(),
+            content: p.content,
+          })),
+        );
+      })
+      .catch(() => undefined);
+    bridge
+      .send("space.profile.get")
+      .then((res) => setWorkspaceRoot(res.workspace_root))
+      .catch(() => undefined);
+  }, []);
+
   // Selection tooltip — freeze when comment input is focused so it doesn't
   // disappear when the browser clears the selection on input focus.
   const selectionInfo = useSelectionTooltip(timelineRef);
@@ -646,19 +739,58 @@ export function App() {
   }, [state.blocks]);
 
   // ── input mode detection + prefix auto-strip ─────────────────────────
-  const onInputChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>) => {
-    const v = e.currentTarget.value;
-    if (v.startsWith("$")) {
-      setInputMode("shell");
-      // Strip the $ (and optional space) so textarea shows only the command
-      e.currentTarget.value = v.startsWith("$ ") ? v.slice(2) : v.slice(1);
-    } else if (v.startsWith("/")) {
-      setInputMode("command");
-      e.currentTarget.value = v.startsWith("/ ") ? v.slice(2) : v.slice(1);
-    } else if (v === "") {
-      setInputMode("chat");
-    }
-  }, []);
+  const onInputChange = useCallback(
+    (e: ChangeEvent<HTMLTextAreaElement>) => {
+      const el = e.currentTarget;
+      const v = el.value;
+      const caret = el.selectionStart ?? v.length;
+
+      // Shell mode: text starts with "$"
+      if (v.startsWith("$")) {
+        setInputMode("shell");
+        el.value = v.startsWith("$ ") ? v.slice(2) : v.slice(1);
+        setPicker(null);
+        return;
+      }
+
+      if (v === "") {
+        setInputMode("chat");
+        setPicker(null);
+        return;
+      }
+
+      // Look for the trigger character that starts the current "word" at cursor.
+      // We search backwards from the caret to find the nearest trigger.
+      const textBeforeCaret = v.slice(0, caret);
+
+      // Find `/` trigger: only at start of a line or the very beginning of input.
+      const slashMatch = textBeforeCaret.match(/(?:^|\n)(\/[^\s]*)$/);
+      if (slashMatch) {
+        const query = slashMatch[1]!.slice(1); // strip the leading "/"
+        const triggerStart = caret - slashMatch[1]!.length;
+        setPicker({ type: "slash", query, triggerStart });
+        setPickerIdx(0);
+        setInputMode("command");
+        return;
+      }
+
+      // Find `@` trigger: at word boundary anywhere in the input.
+      const atMatch = textBeforeCaret.match(/(?:^|[\s,]|^)(@[^\s@]*)$/);
+      if (atMatch) {
+        const query = atMatch[1]!.slice(1); // strip the leading "@"
+        const triggerStart = caret - atMatch[1]!.length;
+        setPicker({ type: "at", query, triggerStart });
+        setPickerIdx(0);
+        if (inputMode !== "shell") setInputMode("chat");
+        return;
+      }
+
+      // No active trigger — close picker and update mode normally
+      setPicker(null);
+      if (inputMode === "command") setInputMode("chat");
+    },
+    [inputMode],
+  );
 
   // ── paste → attach ────────────────────────────────────────────────────
   const onPaste = useCallback(
@@ -725,7 +857,7 @@ export function App() {
 
   // ── send / run ─────────────────────────────────────────────────────────
   const onRun = useCallback(
-    async (rawText: string) => {
+    async (rawText: string, displayText?: string) => {
       if (state.running || !state.activeChatId) return;
       const chatId = state.activeChatId;
 
@@ -828,7 +960,7 @@ export function App() {
       const block: import("./store").ConversationBlock = {
         kind: "conversation",
         id: blockId,
-        userContent: rawText,
+        userContent: displayText ?? rawText,
         attachments: state.attachments.slice(),
         assistantContent: "",
         agentName: speaker || undefined,
@@ -938,6 +1070,25 @@ export function App() {
       });
 
       try {
+        // Inject pinned selection comments into the task body
+        const commentAtts = block.attachments.filter(
+          (a) => a.kind === "comment",
+        );
+        if (commentAtts.length > 0) {
+          const selContext = commentAtts
+            .map((a) => {
+              const txt = a.selectedText ?? a.label;
+              return a.commentText
+                ? `> ${txt}\n[Comment]: ${a.commentText}`
+                : `> ${txt}`;
+            })
+            .join("\n\n");
+          body = `[Referenced selections]\n${selContext}\n\n${body}`;
+        }
+        // Inject workspace CWD
+        if (workspaceRoot) {
+          body = `[Workspace: ${workspaceRoot}]\n\n${body}`;
+        }
         runId = await bridge.send("agent.run", { task: body });
         if (!runId) throw new Error("runtime did not return run_id");
         await bridge
@@ -983,6 +1134,7 @@ export function App() {
       inputMode,
       dispatch,
       ensureChatTerminal,
+      workspaceRoot,
     ],
   );
 
@@ -1025,21 +1177,147 @@ export function App() {
   const onSubmit = useCallback(
     (e: FormEvent<HTMLFormElement>) => {
       e.preventDefault();
-      const v = inputRef.current?.value.trim() || "";
-      if (!v) return;
+      // If the picker is open, submit should commit the selection, not run the message.
+      if (picker) return;
+      const typed = inputRef.current?.value.trim() || "";
+      if (!typed && attachedPrompts.length === 0) return;
       if (inputRef.current) inputRef.current.value = "";
       setInputMode("chat");
-      void onRun(v);
+      // Prepend any attached prompt contents, then the user's typed text.
+      const parts = attachedPrompts.map((p) => p.content);
+      if (typed) parts.push(typed);
+      // Build a concise display label (pill names + typed text, no content dump).
+      const displayParts = attachedPrompts.map((p) => `/${p.label}`);
+      if (typed) displayParts.push(typed);
+      setAttachedPrompts([]);
+      void onRun(parts.join("\n\n"), displayParts.join(" ") || typed);
     },
-    [onRun],
+    [onRun, picker, attachedPrompts],
   );
 
-  const onKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      e.currentTarget.form?.requestSubmit();
+  // ── picker items ────────────────────────────────────────────────────────
+  const pickerItems = useMemo<PickerItem[]>(() => {
+    if (!picker) return [];
+    const q = picker.query.toLowerCase();
+    if (picker.type === "slash") {
+      const custom = loadCustomPrompts();
+      const all = [...BUILTIN_COMMANDS, ...custom, ...workspacePrompts];
+      return all
+        .filter((x) => !q || x.label.toLowerCase().startsWith(q))
+        .slice(0, 8);
+    } else {
+      // "at" type: filter agents
+      return state.agents
+        .filter((a) => !q || a.name.toLowerCase().includes(q))
+        .map((a) => ({
+          id: a.name,
+          label: a.name,
+          description: a.kind ? `kind: ${a.kind}` : undefined,
+        }))
+        .slice(0, 8);
     }
-  }, []);
+  }, [picker, state.agents, workspacePrompts]);
+
+  /** Commit a selected picker item, updating the textarea value. */
+  const commitPickerItem = useCallback(
+    (item: PickerItem) => {
+      const el = inputRef.current;
+      if (!el || !picker) return;
+
+      if (picker.type === "slash") {
+        // Replace the "/query" token with nothing (the action handles the rest)
+        el.value =
+          el.value.slice(0, picker.triggerStart) +
+          el.value.slice(el.selectionStart ?? el.value.length);
+        el.style.height = "auto";
+        el.style.height = Math.min(el.scrollHeight, 200) + "px";
+        setPicker(null);
+        setInputMode("chat");
+        el.focus();
+        if (item.action === "clear") {
+          // Execute the clear command inline
+          dispatch({ type: "clearHistory" });
+          if (state.activeChatId) {
+            persistChatData(state.activeChatId, {
+              blocks: [],
+              terminalTid: state.terminalTid,
+              model: state.model,
+            });
+          }
+        } else if (item.action === "new") {
+          // Focus textarea so user can start a fresh message (new chat
+          // creation is handled by the tab manager on the host side).
+          el.value = "";
+          el.style.height = "auto";
+        } else if (item.content) {
+          // Attach as a pill — don't dump the full content into the textarea.
+          setAttachedPrompts((prev) => {
+            // Deduplicate by id.
+            if (prev.some((p) => p.id === item.id)) return prev;
+            return [
+              ...prev,
+              { id: item.id, label: item.label, content: item.content! },
+            ];
+          });
+        }
+      } else {
+        // "@" picker: splice in "@AgentName "
+        const prefix = el.value.slice(0, picker.triggerStart);
+        const suffix = el.value.slice(el.selectionStart ?? el.value.length);
+        const replacement = `@${item.label} `;
+        el.value = prefix + replacement + suffix;
+        // Move cursor after the inserted mention
+        const newCaret = picker.triggerStart + replacement.length;
+        el.setSelectionRange(newCaret, newCaret);
+        el.style.height = "auto";
+        el.style.height = Math.min(el.scrollHeight, 200) + "px";
+        setPicker(null);
+        el.focus();
+      }
+    },
+    [picker, dispatch, state.activeChatId, state.terminalTid, state.model],
+  );
+
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // When picker is open, intercept navigation keys
+      if (picker && pickerItems.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setPickerIdx((i) => Math.min(i + 1, pickerItems.length - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setPickerIdx((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          const item = pickerItems[pickerIdx];
+          if (item) commitPickerItem(item);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setPicker(null);
+          setInputMode("chat");
+          return;
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          const item = pickerItems[pickerIdx];
+          if (item) commitPickerItem(item);
+          return;
+        }
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        e.currentTarget.form?.requestSubmit();
+      }
+    },
+    [picker, pickerItems, pickerIdx, commitPickerItem],
+  );
 
   const onClear = useCallback(() => {
     dispatch({ type: "clearHistory" });
@@ -1290,124 +1568,193 @@ export function App() {
           onCommentClick={onCommentAttachmentClick}
         />
 
-        {/* Editor card */}
-        <div
-          className={
-            "flex flex-col rounded-xl border bg-cronymax-float transition-colors " +
-            (inputMode === "shell"
-              ? "border-amber-500/70 bg-amber-500/5"
-              : "border-cronymax-border focus-within:border-cronymax-primary/60")
-          }
-        >
-          {/* Prefix badge row (shown when mode ≠ chat) */}
-          {inputMode !== "chat" && (
-            <div className="flex items-center gap-1.5 px-3 pt-2 pb-0">
-              <span
-                className={
-                  "rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold " +
-                  (inputMode === "shell"
-                    ? "bg-amber-500/20 text-amber-300"
-                    : "bg-cronymax-primary/20 text-cronymax-primary")
-                }
-              >
-                {inputMode === "shell" ? "$ shell" : "/ command"}
-              </span>
-              <button
-                type="button"
-                className="text-[10px] text-cronymax-caption hover:text-cronymax-title ml-auto"
-                onClick={() => {
-                  if (inputRef.current) inputRef.current.value = "";
-                  setInputMode("chat");
-                }}
-              >
-                ×
-              </button>
+        {/* Picker + editor wrapper — relative so the picker floats above */}
+        <div className="relative">
+          {/* ── Slash / @ picker ──────────────────────────────────────── */}
+          {picker && pickerItems.length > 0 && (
+            <div className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-lg border border-cronymax-border bg-cronymax-float shadow-lg overflow-hidden">
+              <div className="px-2 pt-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-cronymax-caption">
+                {picker.type === "slash" ? "Commands" : "Agents"}
+              </div>
+              {pickerItems.map((item, idx) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={
+                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition " +
+                    (idx === pickerIdx
+                      ? "bg-cronymax-primary/20 text-cronymax-title"
+                      : "text-cronymax-caption hover:bg-cronymax-border/40 hover:text-cronymax-title")
+                  }
+                  onMouseEnter={() => setPickerIdx(idx)}
+                  onMouseDown={(e) => {
+                    // Use onMouseDown + preventDefault so the textarea doesn't blur
+                    e.preventDefault();
+                    commitPickerItem(item);
+                  }}
+                >
+                  <span className="font-mono font-semibold text-cronymax-primary w-5 text-center shrink-0">
+                    {picker.type === "slash" ? "/" : "@"}
+                  </span>
+                  <span className="font-semibold">{item.label}</span>
+                  {item.description && (
+                    <span className="truncate text-cronymax-caption ml-1">
+                      — {item.description}
+                    </span>
+                  )}
+                </button>
+              ))}
             </div>
           )}
 
-          {/* Textarea */}
-          <textarea
-            ref={inputRef}
-            rows={1}
-            autoFocus
-            placeholder={
-              inputMode === "shell"
-                ? "shell command…"
-                : inputMode === "command"
-                  ? "command…"
-                  : state.chatMode === "flow"
-                    ? "Ask anything… (@AgentName to address one)"
-                    : "Ask anything… ($ for shell, / for commands)"
+          {/* Editor card */}
+          <div
+            className={
+              "flex flex-col rounded-xl border bg-cronymax-float transition-colors " +
+              (inputMode === "shell"
+                ? "border-amber-500/70 bg-amber-500/5"
+                : "border-cronymax-border focus-within:border-cronymax-primary/60")
             }
-            onKeyDown={onKeyDown}
-            onChange={onInputChange}
-            onInput={onTextareaInput}
-            onPaste={onPaste}
-            className="w-full resize-none bg-transparent px-3 py-2.5 text-sm text-cronymax-title outline-none placeholder:text-cronymax-caption"
-          />
+          >
+            {/* Attached prompt pills (VS-Code-style slash command references) */}
+            {attachedPrompts.length > 0 && (
+              <div className="flex flex-wrap gap-1 px-2.5 pt-2 pb-0">
+                {attachedPrompts.map((p) => (
+                  <span
+                    key={p.id}
+                    className="inline-flex items-center gap-1 rounded-md bg-cronymax-primary/15 border border-cronymax-primary/30 px-1.5 py-0.5 text-[11px] font-mono text-cronymax-primary"
+                  >
+                    <span className="opacity-70">/</span>
+                    {p.label}
+                    <button
+                      type="button"
+                      className="ml-0.5 opacity-50 hover:opacity-100 leading-none"
+                      onClick={() =>
+                        setAttachedPrompts((prev) =>
+                          prev.filter((x) => x.id !== p.id),
+                        )
+                      }
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
 
-          {/* Bottom toolbar row */}
-          <div className="flex items-center gap-1.5 px-2 pb-2">
-            {/* Add button */}
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-1 rounded-md border border-cronymax-border bg-cronymax-base px-2 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title hover:bg-cronymax-float transition"
-              title="Add file / image"
-            >
-              <span className="text-sm leading-none">+</span>
-              <span>Add</span>
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              multiple
-              onChange={onFileChange}
+            {/* Prefix badge row (shown when mode ≠ chat) */}
+            {inputMode !== "chat" && (
+              <div className="flex items-center gap-1.5 px-3 pt-2 pb-0">
+                <span
+                  className={
+                    "rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold " +
+                    (inputMode === "shell"
+                      ? "bg-amber-500/20 text-amber-300"
+                      : "bg-cronymax-primary/20 text-cronymax-primary")
+                  }
+                >
+                  {inputMode === "shell" ? "$ shell" : "/ command"}
+                </span>
+                <button
+                  type="button"
+                  className="text-[10px] text-cronymax-caption hover:text-cronymax-title ml-auto"
+                  onClick={() => {
+                    if (inputRef.current) inputRef.current.value = "";
+                    setInputMode("chat");
+                    setPicker(null);
+                    setAttachedPrompts([]);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
+
+            {/* Textarea */}
+            <textarea
+              ref={inputRef}
+              rows={1}
+              autoFocus
+              placeholder={
+                inputMode === "shell"
+                  ? "shell command…"
+                  : inputMode === "command"
+                    ? "command…"
+                    : state.chatMode === "flow"
+                      ? "Ask anything… (@AgentName to address one)"
+                      : "Ask anything… ($ for shell, / for commands)"
+              }
+              onKeyDown={onKeyDown}
+              onChange={onInputChange}
+              onInput={onTextareaInput}
+              onPaste={onPaste}
+              className="w-full resize-none bg-transparent px-3 py-2.5 text-sm text-cronymax-title outline-none placeholder:text-cronymax-caption"
             />
 
-            {/* Model dropdown */}
-            <select
-              value={state.model}
-              onChange={(e) => {
-                dispatch({ type: "setModel", model: e.target.value });
-                persistSelectedModel(e.target.value);
-              }}
-              className="rounded-md border border-cronymax-border bg-cronymax-base px-1.5 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title transition max-w-[120px] truncate"
-              title="LLM model"
-            >
-              <option value="">{state.model || "default"}</option>
-              {state.model && (
-                <option value={state.model}>{state.model}</option>
-              )}
-              <option value="">default</option>
-            </select>
+            {/* Bottom toolbar row */}
+            <div className="flex items-center gap-1.5 px-2 pb-2">
+              {/* Add button */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-1 rounded-md border border-cronymax-border bg-cronymax-base px-2 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title hover:bg-cronymax-float transition"
+                title="Add file / image"
+              >
+                <span className="text-sm leading-none">+</span>
+                <span>Add</span>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                multiple
+                onChange={onFileChange}
+              />
 
-            <div className="flex-1" />
+              {/* Model dropdown */}
+              <select
+                value={state.model}
+                onChange={(e) => {
+                  dispatch({ type: "setModel", model: e.target.value });
+                  persistSelectedModel(e.target.value);
+                }}
+                className="rounded-md border border-cronymax-border bg-cronymax-base px-1.5 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title transition max-w-[120px] truncate"
+                title="LLM model"
+              >
+                <option value="">{state.model || "default"}</option>
+                {state.model && (
+                  <option value={state.model}>{state.model}</option>
+                )}
+                <option value="">default</option>
+              </select>
 
-            {/* Send button */}
-            <button
-              type="submit"
-              disabled={state.running}
-              className="flex items-center justify-center rounded-md bg-cronymax-primary w-7 h-7 text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              title="Send (Enter)"
-            >
-              {state.running ? (
-                <span className="text-xs">…</span>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path
-                    d="M7 1L7 13M1 7L7 1L13 7"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              )}
-            </button>
+              <div className="flex-1" />
+
+              {/* Send button */}
+              <button
+                type="submit"
+                disabled={state.running}
+                className="flex items-center justify-center rounded-md bg-cronymax-primary w-7 h-7 text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Send (Enter)"
+              >
+                {state.running ? (
+                  <span className="text-xs">…</span>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <path
+                      d="M7 1L7 13M1 7L7 1L13 7"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )}
+              </button>
+            </div>
           </div>
         </div>
+        {/* end relative picker wrapper */}
       </form>
     </main>
   );

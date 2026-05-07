@@ -1089,8 +1089,6 @@ function AgentsTab() {
     }
   }, [selected, loadList]);
 
-  const taCls = inputCls + " min-h-[160px] resize-y font-mono";
-
   return (
     <div className="flex h-full">
       <aside className="flex w-[200px] flex-col border-r border-cronymax-border bg-cronymax-float">
@@ -1185,12 +1183,9 @@ function AgentsTab() {
               />
             </Field>
             <Field label="System prompt">
-              <textarea
-                className={taCls}
+              <WysiwygMarkdownField
                 value={draft.system_prompt}
-                onChange={(e) =>
-                  setDraft({ ...draft, system_prompt: e.target.value })
-                }
+                onChange={(v) => setDraft({ ...draft, system_prompt: v })}
               />
             </Field>
             <Field label="Tools (comma-separated; empty = Space defaults)">

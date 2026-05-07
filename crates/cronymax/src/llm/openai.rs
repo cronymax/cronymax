@@ -23,7 +23,7 @@ use tracing::{debug, warn};
 
 use super::stream::UnboundedReceiverStream;
 
-use super::messages::{ChatMessage, FinishReason, LlmRequest, ToolDef};
+use super::messages::{FinishReason, LlmRequest, ToolDef};
 use super::provider::{LlmEvent, LlmProvider, LlmStream};
 
 /// Per-instance configuration. `model` is the *default* model used
@@ -35,6 +35,10 @@ pub struct OpenAiConfig {
     pub api_key: Option<String>,
     pub default_model: String,
     pub request_timeout: Duration,
+    /// When true, add the required GitHub Copilot request headers
+    /// (`Editor-Version`, `Copilot-Integration-Id`, etc.) so the
+    /// `api.githubcopilot.com` endpoint accepts the request.
+    pub copilot_mode: bool,
 }
 
 impl Default for OpenAiConfig {
@@ -44,6 +48,7 @@ impl Default for OpenAiConfig {
             api_key: None,
             default_model: "gpt-4o-mini".into(),
             request_timeout: Duration::from_secs(120),
+            copilot_mode: false,
         }
     }
 }
@@ -82,6 +87,16 @@ impl LlmProvider for OpenAiProvider {
             .json(&body);
         if let Some(key) = &self.config.api_key {
             req = req.bearer_auth(key);
+        }
+        // GitHub Copilot API requires editor identification headers; without
+        // them the endpoint returns 403 "Access to this endpoint is forbidden".
+        if self.config.copilot_mode {
+            req = req
+                .header("Editor-Version", "vscode/1.85.0")
+                .header("Editor-Plugin-Version", "copilot-chat/0.12.0")
+                .header("Copilot-Integration-Id", "vscode-chat")
+                .header("User-Agent", "GitHubCopilotChat/0.12.0")
+                .header("openai-intent", "conversation-panel");
         }
 
         let response = req.send().await?;
@@ -182,10 +197,66 @@ fn parse_chunk(payload: &str, tx: &mpsc::UnboundedSender<LlmEvent>) -> anyhow::R
 
 // ---------- Wire types -----------------------------------------------------
 
+/// Wire shape for a tool call inside an assistant message:
+/// `{ id, type: "function", function: { name, arguments } }`.
+#[derive(Serialize)]
+struct WireToolCall<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: WireToolCallFn<'a>,
+}
+
+#[derive(Serialize)]
+struct WireToolCallFn<'a> {
+    name: &'a str,
+    arguments: &'a str,
+}
+
+impl<'a> From<&'a super::messages::ToolCall> for WireToolCall<'a> {
+    fn from(c: &'a super::messages::ToolCall) -> Self {
+        Self {
+            id: &c.id,
+            kind: "function",
+            function: WireToolCallFn {
+                name: &c.name,
+                arguments: &c.arguments,
+            },
+        }
+    }
+}
+
+/// Wire shape for a chat message — identical to `ChatMessage` except
+/// `tool_calls` uses `WireToolCall` to produce the correct OpenAI format.
+#[derive(Serialize)]
+struct WireChatMessage<'a> {
+    role: super::messages::ChatRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<WireToolCall<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
+}
+
+impl<'a> From<&'a super::messages::ChatMessage> for WireChatMessage<'a> {
+    fn from(m: &'a super::messages::ChatMessage) -> Self {
+        Self {
+            role: m.role,
+            content: m.content.as_deref(),
+            tool_calls: m.tool_calls.iter().map(WireToolCall::from).collect(),
+            tool_call_id: m.tool_call_id.as_deref(),
+            name: m.name.as_deref(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct WireRequest<'a> {
     model: &'a str,
-    messages: &'a [ChatMessage],
+    messages: Vec<WireChatMessage<'a>>,
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<WireTool<'a>>,
@@ -206,7 +277,7 @@ impl<'a> WireRequest<'a> {
         let tool_choice = if tools.is_empty() { None } else { Some("auto") };
         Self {
             model,
-            messages: &req.messages,
+            messages: req.messages.iter().map(WireChatMessage::from).collect(),
             stream: true,
             tools,
             tool_choice,
@@ -214,6 +285,7 @@ impl<'a> WireRequest<'a> {
         }
     }
 }
+
 
 #[derive(Serialize)]
 struct WireTool<'a> {
