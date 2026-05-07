@@ -48,6 +48,12 @@ use cronymax::protocol::transport::{Transport, TransportError};
 /// per gips' macOS guidance; the same string is used on Linux/Windows.
 pub const DEFAULT_SERVICE_NAME: &str = "ai.cronymax.runtime";
 
+/// GIPS service name dedicated to renderer-process clients (built-in
+/// pages only). Separate from `DEFAULT_SERVICE_NAME` so each client
+/// gets its own `GipsTransport` + `ReturnPath` slot, avoiding
+/// non-deterministic event delivery when two clients share one slot.
+pub const RENDERER_SERVICE_NAME: &str = "ai.cronymax.runtime.renderer";
+
 /// Re-export so callers can build credentials policies without
 /// importing `gips` directly.
 pub use gips::ipc::ServiceDescriptor;

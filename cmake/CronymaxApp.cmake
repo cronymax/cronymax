@@ -194,7 +194,16 @@ if(APPLE)
     target_link_libraries(${_helper_target} PRIVATE
       libcef_dll_wrapper
       ${CEF_STANDARD_LIBS}
+      Cronymax::Crony
+      nlohmann_json
     )
+    if(APPLE)
+      target_link_libraries(${_helper_target} PRIVATE
+        "-framework CoreFoundation"
+        "-framework Security"
+        "-framework SystemConfiguration"
+      )
+    endif()
     set_target_properties(${_helper_target} PROPERTIES
       MACOSX_BUNDLE_INFO_PLIST ${_helper_info_plist}
       OUTPUT_NAME              ${_helper_output_name}

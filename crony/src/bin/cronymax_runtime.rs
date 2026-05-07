@@ -7,7 +7,7 @@
 use std::io::{self, Read};
 
 use anyhow::{Context, Result};
-use crony::boundary::GipsTransport;
+use crony::boundary::{GipsTransport, RENDERER_SERVICE_NAME};
 use cronymax::RuntimeConfig;
 
 #[tokio::main(flavor = "multi_thread")]
@@ -29,9 +29,18 @@ async fn main() -> Result<()> {
     // discovers via crony_client_new("ai.cronymax.runtime", ...).
     let transport = GipsTransport::bind_default().context("binding GIPS transport")?;
 
-    // Attach the transport to the runtime authority. The returned JoinHandle
-    // drives the dispatch loop for the lifetime of this variable.
+    // Bind a second service dedicated to renderer-process clients (built-in
+    // pages). Keeping a separate service avoids contention on the single
+    // ReturnPath slot inside GipsTransport when both the browser process and
+    // renderer process are connected simultaneously.
+    let renderer_transport = GipsTransport::bind(RENDERER_SERVICE_NAME)
+        .context("binding renderer GIPS transport")?;
+
+    // Attach both transports to the shared RuntimeAuthority.  Each call
+    // to attach_transport spawns an independent dispatch session; they share
+    // the same subscription bus via the Arc<RuntimeAuthority>.
     let _session = bundle.runtime.attach_transport(transport);
+    let _renderer_session = bundle.runtime.attach_transport(renderer_transport);
 
     tracing::info!(
         version = crony::CRATE_VERSION,

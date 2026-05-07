@@ -5,7 +5,7 @@
  *   Validates payload (req schema) before serializing and validates response
  *   (res schema) before resolving. Errors are surfaced as Error rejections.
  * - `bridge.on(event, handler)` — subscribes to a broadcast event delivered
- *   by C++ via window.__aiDesktopDispatch. Validates payload (event schema)
+ *   by C++ via the internal dispatch hook. Validates payload (event schema)
  *   before invoking handler unless the event is in FastPathEvents.
  *
  * The channel and event names are narrowed to the registry; `payload` and
@@ -32,8 +32,14 @@ declare global {
       onFailure: (errorCode: number, errorMessage: string) => void;
       persistent?: boolean;
     }) => number;
-    __aiDesktopDispatch?: (event: string, payload: unknown) => void;
-    aiDesktop?: typeof aiDesktop;
+    cronymax?: {
+      send(method: string, params?: unknown): Promise<unknown>;
+      subscribe(
+        topic: string,
+        callback: (payload: unknown) => void,
+      ): () => void;
+      reconnect(): void;
+    };
   }
 }
 
@@ -164,15 +170,21 @@ function on<E extends EventName>(
 
 export const bridge = { send, on };
 
-window.__aiDesktopDispatch = (event: string, payload: unknown) => {
+// C++ (bridge_handler.cc, main_window.cc) calls window.__aiDesktopDispatch to
+// deliver broadcast events. Keep the assignment but don't expose it in the
+// Window type — callers inside this module use bridge.on() instead.
+(window as unknown as Record<string, unknown>)["__aiDesktopDispatch"] = (
+  event: string,
+  payload: unknown,
+) => {
   dispatch(event, payload);
 };
 
-// Legacy alias — vanilla panels still call window.aiDesktop.send/on.
-const aiDesktop = {
-  send: (channel: string, payload?: unknown) =>
-    send(channel as ChannelName, payload as never),
-  on: (event: string, handler: AnyEventHandler) =>
-    on(event as EventName, handler as never),
-};
-window.aiDesktop = aiDesktop;
+// Reconnect window.cronymax after a space switch.
+// space.switch_loading is a browser-process-originated broadcast that arrives
+// via __aiDesktopDispatch even while the Rust runtime is restarting.
+on("space.switch_loading", ({ loading }: { loading: boolean }) => {
+  if (!loading && typeof window.cronymax?.reconnect === "function") {
+    window.cronymax.reconnect();
+  }
+});
