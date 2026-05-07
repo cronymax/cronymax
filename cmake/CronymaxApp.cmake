@@ -254,21 +254,21 @@ endif()
 # ---------------------------------------------------------------------------
 
 if(CRONYMAX_BUILD_WEB)
-  find_program(PNPM_EXECUTABLE pnpm)
-  if(NOT PNPM_EXECUTABLE)
+  find_program(BUN_EXECUTABLE bun)
+  if(NOT BUN_EXECUTABLE)
     message(FATAL_ERROR
-      "pnpm not found on PATH. Install pnpm (https://pnpm.io/installation) or "
+      "bun not found on PATH. Install bun (https://bun.sh/docs/installation) or "
       "configure with -DCRONYMAX_BUILD_WEB=OFF to skip the frontend build.")
   endif()
 
-  # Always-run target: pnpm install + pnpm build in web/. The output is the
+  # Always-run target: bun install + bun run build in web/. The output is the
   # entire web/dist/ tree, which is non-trivial to express as BYPRODUCTS, so
   # we use a phony stamp file and force re-run on every cronymax_app build.
   add_custom_target(cronymax_web ALL
-    COMMAND ${PNPM_EXECUTABLE} install --frozen-lockfile
-    COMMAND ${PNPM_EXECUTABLE} build
+    COMMAND ${BUN_EXECUTABLE} install --frozen-lockfile
+    COMMAND ${BUN_EXECUTABLE} run build
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/web"
-    COMMENT "Building cronymax web frontend (pnpm + Vite)"
+    COMMENT "Building cronymax web frontend (bun + Vite)"
     VERBATIM
   )
   add_dependencies(cronymax_app cronymax_web)
@@ -276,8 +276,8 @@ if(CRONYMAX_BUILD_WEB)
   # Optional CI gate: typecheck + lint. Not in ALL — opt in via
   # `cmake --build build --target cronymax_web_check`.
   add_custom_target(cronymax_web_check
-    COMMAND ${PNPM_EXECUTABLE} typecheck
-    COMMAND ${PNPM_EXECUTABLE} lint
+    COMMAND ${BUN_EXECUTABLE} run typecheck
+    COMMAND ${BUN_EXECUTABLE} run lint
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/web"
     COMMENT "Running cronymax web typecheck + lint"
     VERBATIM

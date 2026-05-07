@@ -1,7 +1,7 @@
 # Release workflow — triggered by version tags (v*.*.*).
 #
 # Jobs:
-#   web-build      — ubuntu-latest: typecheck, lint, build web frontend
+#   web-build      — ubuntu-latest: typecheck, lint, build web frontend (bun + Vite)
 #   native-arm64   — macos-15 (Apple Silicon): build .app + package arm64 DMG
 #   native-x86_64  — macos-13 (Intel): build .app + package x86_64 DMG
 #   release        — ubuntu-latest: create GitHub Release, upload both DMGs
@@ -41,28 +41,22 @@ jobs:
         # submodule is large (~400 MB) and not needed for the web build.
         run: git submodule update --init third_party/vscode-codicons
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          version: "10.13.1"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "pnpm"
+          bun-version: "1.3.13"
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: bun install --frozen-lockfile
 
       - name: Typecheck
-        run: pnpm --filter cronymax-web typecheck
+        run: bun --filter cronymax-web run typecheck
 
       - name: Lint
-        run: pnpm --filter cronymax-web lint
+        run: bun --filter cronymax-web run lint
 
       - name: Build
-        run: pnpm --filter cronymax-web build
+        run: bun --filter cronymax-web run build
 
       - name: Upload web dist
         uses: actions/upload-artifact@v4

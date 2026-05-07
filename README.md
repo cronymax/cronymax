@@ -27,15 +27,14 @@ demo:
 
 ### Prerequisites
 
-| Tool       | Version             | Notes                                                                 |
-| ---------- | ------------------- | --------------------------------------------------------------------- |
-| macOS      | 13+ (arm64 tested)  | Linux/Windows not yet wired up                                        |
-| Xcode CLT  | latest              | `xcode-select --install`                                              |
-| CMake      | 3.21+               | `brew install cmake`                                                  |
-| Ninja      | optional            | `brew install ninja` (faster builds)                                  |
-| pnpm       | 10.x                | `brew install pnpm` — required when `CRONYMAX_BUILD_WEB=ON` (default) |
-| Node.js    | 20+                 | `brew install node@20`                                                |
-| CEF binary | 147.0.10 macosarm64 | See[Download CEF](#download-cef) below                                |
+| Tool       | Version             | Notes                                                                |
+| ---------- | ------------------- | -------------------------------------------------------------------- |
+| macOS      | 13+ (arm64 tested)  | Linux/Windows not yet wired up                                       |
+| Xcode CLT  | latest              | `xcode-select --install`                                             |
+| CMake      | 3.21+               | `brew install cmake`                                                 |
+| Ninja      | optional            | `brew install ninja` (faster builds)                                 |
+| bun        | 1.1+                | `brew install bun` — required when `CRONYMAX_BUILD_WEB=ON` (default) |
+| CEF binary | 147.0.10 macosarm64 | See[Download CEF](#download-cef) below                               |
 
 ### Clone
 
@@ -80,11 +79,11 @@ skipped.
 
 ### Install Frontend Dependencies
 
-The CMake build will run `pnpm install --frozen-lockfile` automatically as part
+The CMake build will run `bun install --frozen-lockfile` automatically as part
 of the `cronymax_web` target, but you can prime the cache up-front:
 
 ```sh
-cd web && pnpm install --frozen-lockfile && cd ..
+bun install
 ```
 
 ### Configure & Build the Full App
@@ -99,7 +98,7 @@ cmake --build build --target cronymax_app -j8
 ```
 
 The `cronymax_app` target depends on `cronymax_web`, which runs
-`pnpm install --frozen-lockfile && pnpm build` in `web/` and produces
+`bun install --frozen-lockfile && bun run build` in `web/` and produces
 `web/dist/<panel>/index.html` for every React panel. A separate
 `cronymax_web_sync` target re-copies `web/dist/` into the bundle on every
 build, so frontend-only edits don't require a C++ relink:
@@ -139,15 +138,15 @@ prototype but should be revisited before production hardening.
 
 ## Frontend Development Workflow
 
-The `web/` directory is a standalone pnpm workspace. Common commands (run from
+The `web/` directory is a bun workspace package. Common commands (run from
 `web/`):
 
 ```sh
-pnpm dev         # start Vite dev server on http://localhost:5173
-pnpm build       # tsc -b && vite build → web/dist/
-pnpm typecheck   # tsc -b --noEmit
-pnpm lint        # eslint src/
-pnpm preview     # serve web/dist/ for sanity checks
+bun dev          # start Vite dev server on http://localhost:5173
+bun run build    # tsc -b && vite build → web/dist/
+bun run typecheck  # tsc -b --noEmit
+bun run lint     # eslint src/
+bun run preview  # serve web/dist/ for sanity checks
 ```
 
 ### Hot Reload Inside CEF
@@ -156,7 +155,7 @@ To point the CEF shell at the Vite dev server (instead of the bundled
 `web/dist/`), set `CRONYMAX_DEV=1` before launching:
 
 ```sh
-cd web && pnpm dev &           # leaves Vite running on :5173
+cd web && bun dev &            # leaves Vite running on :5173
 cd ..
 CRONYMAX_DEV=1 ./build/cronymax.app/Contents/MacOS/cronymax
 ```
@@ -167,7 +166,7 @@ across all panels without a full bundle rebuild.
 
 ### Skip the Frontend Build
 
-If pnpm is unavailable or you want to iterate on C++ without rebuilding the
+If bun is unavailable or you want to iterate on C++ without rebuilding the
 React bundle, pass `-DCRONYMAX_BUILD_WEB=OFF`:
 
 ```sh
@@ -226,7 +225,7 @@ The clangd status bar item should show indexing progress and then go idle.
 app/                 C++ sources (flat `cronymax::` namespace)
   browser/             CEF shell, BrowserViews, bridge handler
   sandbox/, workspace/, terminal/, common/, agent/
-web/                 Frontend monorepo (pnpm + Vite)
+web/                 Frontend monorepo (bun + Vite)
   src/panels/<name>/   React tree for each CEF panel
   src/shared/          Bridge, hooks, design tokens, primitives
   <panel>/index.html   Vite entry per panel (Shape A multi-entry)

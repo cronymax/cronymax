@@ -22,7 +22,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CRONYMAX_BUILD_TOOLS "Build local native runtime tools" ON)
 option(CRONYMAX_BUILD_APP   "Build the cronymax CEF desktop shell" OFF)
-option(CRONYMAX_BUILD_WEB   "Run pnpm build in web/ before bundling" ON)
+option(CRONYMAX_BUILD_WEB   "Run bun build in web/ before bundling" ON)
 
 find_package(Threads REQUIRED)
 find_package(SQLite3 REQUIRED)
