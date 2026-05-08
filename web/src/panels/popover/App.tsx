@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { browser } from "@/shells/bridge";
-import { Icon } from "@/shared/components/Icon";
+import { Icon } from "@/components/Icon";
 
 export function App() {
   const [url, setUrl] = useState("");

@@ -23,7 +23,7 @@ import { useTheme } from "@/hooks/useTheme";
 import type { ThemeMode } from "@/types";
 
 import { Flows } from "@/components/FlowEditor";
-import { Icon } from "@/shared/components/Icon";
+import { Icon } from "@/components/Icon";
 import { useStore, type PermissionRequest } from "./store";
 
 import { Editor, rootCtx, defaultValueCtx } from "@milkdown/core";

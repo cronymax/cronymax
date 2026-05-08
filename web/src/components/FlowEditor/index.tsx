@@ -22,7 +22,7 @@ import {
 } from "react";
 import { browser } from "@/shells/bridge";
 import { agentRegistry, flowRun } from "@/shells/runtime";
-import { Icon } from "@/shared/components/Icon";
+import { Icon } from "@/components/Icon";
 import {
   Provider,
   loadAllFlows,
