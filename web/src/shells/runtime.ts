@@ -8,6 +8,14 @@
 
 import { runtime } from "./bridge";
 
+/** Decode a base64-encoded PTY chunk to a proper UTF-8 string. */
+export function b64ToUtf8(b64: string): string {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
 // ---------------------------------------------------------------------------
 // Terminal helpers
 // ---------------------------------------------------------------------------
@@ -212,7 +220,7 @@ export const terminal = {
         const dataObj = pl?.data as Record<string, unknown> | undefined;
         const b64 = dataObj?.data as string | undefined;
         if (!b64) return;
-        onData(atob(b64));
+        onData(b64ToUtf8(b64));
       } catch {
         // Ignore malformed events.
       }

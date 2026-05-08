@@ -40,6 +40,7 @@ import {
   agentRegistry,
   agentRun,
   terminal as rt_terminal,
+  b64ToUtf8,
 } from "@/shells/runtime";
 
 // ── picker types ────────────────────────────────────────────────────────
@@ -764,7 +765,7 @@ export function App() {
         const dataObj = pl?.data as Record<string, unknown> | undefined;
         const b64 = dataObj?.data as string | undefined;
         if (!b64) return;
-        data = atob(b64);
+        data = b64ToUtf8(b64);
       } catch {
         return;
       }

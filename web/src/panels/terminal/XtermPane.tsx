@@ -100,14 +100,15 @@ export function XtermPane({ tid, onCwdChange }: Props) {
   // sequences in the raw stream to extract CWD. Parsing here — rather than
   // via term.parser.registerOscHandler — catches sequences that arrive before
   // the RAF fires and works with any shell/prompt that emits either format.
-  useTerminalOutput(tid, (data) => {
+  useTerminalOutput(tid, (data: Uint8Array) => {
     termRef.current?.write(data);
 
-    // OSC 7: ESC ] 7 ; <uri> BEL-or-ST
-    // URI form: file://[host]/path  or just a bare path
-    const osc7 = /\x1b]7;([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+    // OSC sequences need to be scanned from a decoded string.
+    const text = new TextDecoder().decode(data);
     let m: RegExpExecArray | null;
-    while ((m = osc7.exec(data)) !== null) {
+    // OSC 7: ESC ] 7 ; <uri> BEL-or-ST
+    const osc7 = /\x1b]7;([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+    while ((m = osc7.exec(text)) !== null) {
       const raw = m[1]!;
       try {
         const url = new URL(raw);
@@ -119,7 +120,7 @@ export function XtermPane({ tid, onCwdChange }: Props) {
 
     // OSC 1337 CurrentDir= (iTerm2 / many prompts)
     const osc1337 = /\x1b]1337;CurrentDir=([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
-    while ((m = osc1337.exec(data)) !== null) {
+    while ((m = osc1337.exec(text)) !== null) {
       const path = m[1]!;
       if (path) onCwdChange?.(path);
     }
