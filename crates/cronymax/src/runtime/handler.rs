@@ -131,9 +131,9 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
                 broker.clone(),
                 Arc::clone(policy),
             );
-            cap_builder.register_shell(Arc::new(shell_cap), true);
+            cap_builder.register_shell(Arc::new(shell_cap), false);
         } else {
-            cap_builder.register_shell(Arc::new(LocalShell::new(&ctx.workspace_root)), true);
+            cap_builder.register_shell(Arc::new(LocalShell::new(&ctx.workspace_root)), false);
         }
 
         // Filesystem capability — enforce WorkspaceScope + optional SandboxPolicy.
@@ -663,7 +663,7 @@ impl Handler for RuntimeHandler {
                             .unwrap_or_else(|| "agent".to_owned());
 
                         let mut cap_builder = HostCapabilityDispatcher::builder();
-                        cap_builder.register_shell(Arc::new(LocalShell::new(&workspace_root)), true);
+                        cap_builder.register_shell(Arc::new(LocalShell::new(&workspace_root)), false);
                         cap_builder.register_filesystem(
                             Arc::new(LocalFilesystem),
                             WorkspaceScope::new(&workspace_root),

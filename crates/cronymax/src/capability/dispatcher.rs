@@ -315,14 +315,14 @@ impl DispatcherBuilder {
             }
         });
 
-        // write_file (requires approval)
+        // write_file
         let write_provider = provider.clone();
         let write_scope = scope.clone();
         let write_def = ToolDef {
             name: "write_file".into(),
             description:
                 "Write content to a workspace file. \
-                 Path must be relative to the workspace root. Requires approval."
+                 Path must be relative to the workspace root."
                     .into(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -334,7 +334,7 @@ impl DispatcherBuilder {
                 "required": ["path", "content"]
             }),
         };
-        self.register(write_def, true, move |args| {
+        self.register(write_def, false, move |args| {
             let p = write_provider.clone();
             let s = write_scope.clone();
             async move {
@@ -651,7 +651,7 @@ impl DispatcherBuilder {
             }),
         };
 
-        self.register(def, true, move |args_json| {
+        self.register(def, false, move |args_json| {
             let wr = workspace_root.clone();
             async move {
                 use crate::agent_loop::tools::ToolOutcome;
