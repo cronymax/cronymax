@@ -1812,6 +1812,11 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
   }
 
   PushToView(sidebar_view_, event_name, json_payload);
+  // Also push to the popover content view if one is open (e.g. Settings).
+  // BroadcastToAllPanels only iterates tabs_; the popover is a separate
+  // BrowserView that would otherwise never receive theme.changed / other
+  // global broadcasts.
+  PushToView(popover_view_, event_name, json_payload);
   // Phase 9: per-kind *_view_ singletons are gone. Broadcast to every
   // tab's content browser via the TabManager.
   if (!tabs_) return;

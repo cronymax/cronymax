@@ -148,7 +148,17 @@ void Tab::ApplyTheme(cef_color_t bg_base, cef_color_t bg_float,
                     cef_color_t text_title) {
   text_fg_ = text_title;
   surface_bg_ = bg_float;
+  // A full shell theme switch (Light ↔ Dark ↔ System) must override any
+  // stale page-driven chrome so the card and toolbar adopt the new shell
+  // colors unconditionally.  The page will re-push its preferred chrome on
+  // the next navigation / OnAddressChange event.
+  chrome_override_.clear();
+  // SetDefaultChromeArgb now updates the card too, because chrome_override_
+  // has just been cleared above.
   SetDefaultChromeArgb(bg_base);
+  // Force-clear the toolbar's own per-panel override and apply the new
+  // default to all slot panels (root / leading / middle / trailing).
+  if (toolbar_) toolbar_->SetChromeColor("");
   if (behavior_) behavior_->ApplyThemeColors(text_title, bg_float, bg_base);
 }
 
