@@ -1,18 +1,19 @@
-build/
-build-cef*/
-out/
-/.cef-cache/
 .DS_Store
 *.log
+
+# C++
+build/
+out/
 compile_commands.json
 
-openspec/
-
-# Frontend (Vite + pnpm)
+# Web (Vite + pnpm)
 node_modules/
 web/dist/
 web/.vite/
-# Build artifacts
+
+# Rust
 /target
 **/*.rs.bk
-Cargo.lock
+
+# AI
+openspec/

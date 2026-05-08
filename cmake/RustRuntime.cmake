@@ -60,11 +60,22 @@ if(_cronymax_cargo_profile STREQUAL "release")
   list(APPEND _cronymax_cargo_args --release)
 endif()
 
+# Pass the macOS deployment target to Cargo so Rust-compiled objects match
+# the C++ link target and suppress "built for newer macOS version" warnings.
+set(_cronymax_cargo_build_cmd "${CARGO_EXECUTABLE}" ${_cronymax_cargo_args})
+if(APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(_cronymax_cargo_build_cmd
+    "${CMAKE_COMMAND}" -E env
+    "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}"
+    ${_cronymax_cargo_build_cmd}
+  )
+endif()
+
 ExternalProject_Add(cronymax_rust
   PREFIX            "${CMAKE_BINARY_DIR}/rust-build"
   SOURCE_DIR        "${_cronymax_rust_root}"
   CONFIGURE_COMMAND ""
-  BUILD_COMMAND     "${CARGO_EXECUTABLE}" ${_cronymax_cargo_args}
+  BUILD_COMMAND     ${_cronymax_cargo_build_cmd}
   INSTALL_COMMAND   ""
   BUILD_ALWAYS      TRUE
   USES_TERMINAL_BUILD TRUE

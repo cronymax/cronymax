@@ -21,20 +21,19 @@ demo:
   mode, Monaco source mode, side-by-side / inline diff view, a block-anchored
   comment rail, and one-click suggested-edit acceptance that writes a new
   revision. See [docs/document_workbench.md](docs/document_workbench.md).
-- A `native_probe` CLI `<comment>`that can validate the native runtime`</comment>` without CEF.
+- A `native_probe` CLI `<comment>`that can validate the native runtime `</comment>` without CEF.
 
 ## Getting Started
 
 ### Prerequisites
 
-| Tool       | Version             | Notes                                                                |
-| ---------- | ------------------- | -------------------------------------------------------------------- |
-| macOS      | 13+ (arm64 tested)  | Linux/Windows not yet wired up                                       |
-| Xcode CLT  | latest              | `xcode-select --install`                                             |
-| CMake      | 3.21+               | `brew install cmake`                                                 |
-| Ninja      | optional            | `brew install ninja` (faster builds)                                 |
-| bun        | 1.1+                | `brew install bun` — required when `CRONYMAX_BUILD_WEB=ON` (default) |
-| CEF binary | 147.0.10 macosarm64 | See[Download CEF](#download-cef) below                               |
+| Tool      | Version            | Notes                                                                |
+| --------- | ------------------ | -------------------------------------------------------------------- |
+| macOS     | 13+ (arm64 tested) | Linux/Windows not yet wired up                                       |
+| Xcode CLT | latest             | `xcode-select --install`                                             |
+| CMake     | 3.21+              | `brew install cmake`                                                 |
+| Ninja     | optional           | `brew install ninja` (faster builds)                                 |
+| bun       | 1.1+               | `brew install bun` — required when `CRONYMAX_BUILD_WEB=ON` (default) |
 
 ### Clone
 
@@ -44,38 +43,6 @@ cd cronymax
 # if you forgot --recurse-submodules:
 git submodule update --init
 ```
-
-### CEF distribution
-
-The CEF runtime is assembled at configure time from two pieces:
-
-1. The upstream `chromiumembedded/cef` repo is pinned as a git submodule at
-   `cef/`. It supplies the public headers, `libcef_dll/` wrapper sources,
-   the `cmake/` modules used by `find_package(CEF)`, and `tools/translator.py`
-   (which CMake re-runs to regenerate the `cpptoc/` and `ctocpp/` glue).
-2. A matching prebuilt binary distribution is downloaded once and cached
-   under `.cef-cache/` (gitignored). Only the macOS framework, the
-   translator-resolved `libcef_dll/CMakeLists.txt`, and the GN-generated
-   include headers are extracted into `build/cef-staging/`.
-
-The verified local build uses:
-
-```txt
-CEF:      147.0.10+gd58e84d+chromium-147.0.7727.118
-Platform: macosarm64
-```
-
-Pass the matching binary archive URL via `CRONYMAX_CEF_DIST_URL`:
-
-```sh
-export CRONYMAX_CEF_DIST_URL="https://cef-builds.spotifycdn.com/cef_binary_147.0.10+gd58e84d+chromium-147.0.7727.118_macosarm64.tar.bz2"
-# Optional integrity check:
-# export CRONYMAX_CEF_DIST_SHA256=<sha256-of-archive>
-```
-
-To use an already-extracted binary distribution instead, pass
-`-DCEF_ROOT=/path/to/cef_binary_*` and the submodule/staging steps are
-skipped.
 
 ### Install Frontend Dependencies
 
@@ -88,12 +55,14 @@ bun install
 
 ### Configure & Build the Full App
 
+CEF is downloaded automatically on first configure (cached in `.cef-cache/`,
+gitignored). No manual download or env vars required.
+
 ```sh
 cmake -S . -B build \
   -DCRONYMAX_BUILD_APP=ON \
-  -DPROJECT_ARCH=arm64 \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DCRONYMAX_CEF_DIST_URL="$CRONYMAX_CEF_DIST_URL"
+  -DCRONYMAX_BUILD_WEB=ON \
+  -DCMAKE_BUILD_TYPE=Debug
 cmake --build build --target cronymax_app -j8
 ```
 
@@ -113,6 +82,8 @@ cmake --build build --target cronymax_web_sync -j8
 open build/cronymax.app
 # or
 ./build/cronymax.app/Contents/MacOS/cronymax
+# Add `--use-mock-keychain` to avoid keychain password prompt on mac
+./build/cronymax.app/Contents/MacOS/cronymax --use-mock-keychain
 ```
 
 ### Build Native Runtime Only (no CEF)

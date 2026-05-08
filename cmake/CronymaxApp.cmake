@@ -4,26 +4,7 @@
 # macOS). Included from the top-level CMakeLists.txt when CRONYMAX_BUILD_APP
 # is ON.
 
-# CEF distribution layout. Two modes:
-#
-#   1. (default) Build CEF_ROOT from the in-tree cef/ submodule plus a
-#      downloaded prebuilt framework. Set CRONYMAX_CEF_DIST_URL to a CEF
-#      binary archive matching the submodule commit; the framework is staged
-#      under ${CMAKE_BINARY_DIR}/cef-staging/.
-#
-#   2. (override) Pass -DCEF_ROOT=/path/to/cef_binary_* to point at an
-#      already-extracted upstream binary distribution. The submodule is
-#      ignored in that case.
-if(NOT CEF_ROOT OR NOT EXISTS "${CEF_ROOT}/cmake/FindCEF.cmake")
-  include(${CMAKE_SOURCE_DIR}/cmake/CefSubmodule.cmake)
-endif()
-
-if(NOT EXISTS "${CEF_ROOT}/cmake/FindCEF.cmake")
-  message(FATAL_ERROR
-    "CEF_ROOT does not look like a CEF binary distribution: ${CEF_ROOT}\n"
-    "Either set CRONYMAX_CEF_DIST_URL (uses the cef/ submodule) or pass "
-    "-DCEF_ROOT=/path/to/cef_binary_*.")
-endif()
+include(${CMAKE_SOURCE_DIR}/cmake/CefDist.cmake)
 
 list(APPEND CMAKE_MODULE_PATH "${CEF_ROOT}/cmake")
 find_package(CEF REQUIRED)

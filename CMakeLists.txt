@@ -59,6 +59,13 @@ add_subdirectory(third_party/nlohmann/json)
 # Defines the IMPORTED target `Cronymax::Crony` for downstream linking.
 # Skip with -DCRONYMAX_BUILD_RUST=OFF.
 # ---------------------------------------------------------------------------
+# Set the macOS deployment target before include(RustRuntime) so the value
+# is available when ExternalProject_Add captures the cargo BUILD_COMMAND.
+# 12.0 matches CEF_TARGET_SDK in cef/cmake/cef_variables.cmake.in.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING
+    "Minimum macOS version to target. Must match CEF_TARGET_SDK." FORCE)
+endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(RustRuntime)
 
