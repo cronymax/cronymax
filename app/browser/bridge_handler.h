@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "browser/space_manager.h"
+#include "include/cef_process_message.h"
 #include "include/wrapper/cef_message_router.h"
 #include "runtime/crony_proxy.h"
 
@@ -170,6 +171,14 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   void OnSpaceSwitch(const std::string& old_space_id,
                      const std::string& new_space_id);
 
+  // Route a cronymax.runtime.ctrl process message from the renderer to the
+  // Rust runtime (subscribe / unsubscribe / arbitrary control request).
+  // Called on the browser UI thread from ClientHandler::OnProcessMessageReceived.
+  // Returns true if the message was handled.
+  bool HandleRuntimeProcessMessage(CefRefPtr<CefBrowser> browser,
+                                   CefRefPtr<CefFrame> frame,
+                                   CefRefPtr<CefProcessMessage> message);
+
  private:
   bool HandleTerminal(CefRefPtr<CefBrowser> browser,
                       std::string_view channel,
@@ -270,6 +279,27 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   };
   std::mutex space_subs_mu_;
   std::unordered_map<std::string, SpaceRuntimeSub> space_runtime_subs_;
+
+  // Per-renderer runtime subscriptions forwarded via CEF process messages.
+  // Key: runtime subscription UUID.  Created by HandleRuntimeProcessMessage
+  // when the renderer calls window.cronymax.runtime.subscribe(); torn down on
+  // unsubscribe or browser close.
+  struct RendererSub {
+    int64_t ev_token = -1;
+    std::string runtime_sub_id;
+    CefRefPtr<CefBrowser> browser;
+  };
+  std::mutex renderer_subs_mu_;
+  std::unordered_map<std::string, RendererSub> renderer_subs_;
+
+  // Helpers called on the UI thread to send replies / events back to the renderer.
+  void SendRuntimeReply(CefRefPtr<CefBrowser> browser,
+                        const std::string& corr_id,
+                        const nlohmann::json& response,
+                        bool is_error);
+  void SendRuntimeEvent(CefRefPtr<CefBrowser> browser,
+                        const std::string& sub_id,
+                        const nlohmann::json& event_envelope);
 };
 
 }  // namespace cronymax

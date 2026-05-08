@@ -20,7 +20,8 @@ import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
+import { agentRegistry, flowRun } from "@/shells/runtime";
 import { Icon } from "@/shared/components/Icon";
 import {
   Provider,
@@ -292,20 +293,20 @@ export function FlowEditor() {
 
     // Load agent + doc-type registries from the native bridge.
     // If the registry is empty on first run, auto-seed a default "Chat" agent.
-    bridge
-      .send("agent.registry.list")
+    agentRegistry
+      .list()
       .then(async (res) => {
         let agents = res.agents ?? [];
         if (agents.length === 0) {
           try {
-            await bridge.send("agent.registry.save", {
+            await agentRegistry.save({
               name: "Chat",
               llm: "",
               system_prompt: "You are a helpful assistant.",
               memory_namespace: "",
               tools_csv: "",
             });
-            const refreshed = await bridge.send("agent.registry.list");
+            const refreshed = await agentRegistry.list();
             agents = refreshed.agents ?? [];
           } catch {
             // Seeding failed (e.g. bridge not available); continue with empty catalog.
@@ -317,7 +318,7 @@ export function FlowEditor() {
         // eslint-disable-next-line no-console
         console.warn("[flow] agent.registry.list failed:", err.message);
       });
-    bridge
+    browser
       .send("doc_type.list")
       .then((res) => {
         dispatch({ type: "setDocTypeCatalog", docTypes: res.doc_types ?? [] });
@@ -603,9 +604,7 @@ export function FlowEditor() {
                 type="button"
                 onClick={async () => {
                   try {
-                    await bridge.send("flow.run.cancel", {
-                      run_id: activeRunId,
-                    });
+                    await flowRun.cancel(activeRunId);
                   } catch {
                     // ignore
                   }
@@ -625,9 +624,7 @@ export function FlowEditor() {
                 if (!state.activeFlowName) return;
                 setRunStarting(true);
                 try {
-                  const res = await bridge.send("flow.run.start", {
-                    flow_id: state.activeFlowName,
-                  });
+                  const res = await flowRun.start(state.activeFlowName);
                   setActiveRunId(res.run_id);
                   dispatch({ type: "setRunning", running: true });
                 } catch (err) {

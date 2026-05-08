@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import { bridge } from "@/bridge";
-import type { EventName, EventPayloadOf } from "@/bridge_channels";
+import { browser } from "@/shells/bridge";
+import type { EventName, EventPayloadOf } from "@/shells/browser";
 
 /**
  * Subscribe to a broadcast event from the C++ host. Auto-unsubscribes on
@@ -14,7 +14,7 @@ export function useBridgeEvent<E extends EventName>(
   handlerRef.current = handler;
 
   useEffect(() => {
-    return bridge.on(event, (payload) => {
+    return browser.on(event, (payload) => {
       handlerRef.current(payload);
     });
   }, [event]);

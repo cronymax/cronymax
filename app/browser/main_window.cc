@@ -1782,8 +1782,8 @@ void PushToView(CefRefPtr<CefBrowserView> view,
     return;
   }
   const std::string js =
-      "window.__aiDesktopDispatch && window.__aiDesktopDispatch('" +
-      event_name + "'," + json_payload + ");";
+      "window.cronymax?.browser?.onDispatch?.(" +
+      ("'" + event_name + "'") + "," + json_payload + ");";
   fprintf(stderr, "[PushToView] ev=%s bid=%d ExecuteJavaScript\n",
           event_name.c_str(), browser->GetIdentifier());
   fflush(stderr);

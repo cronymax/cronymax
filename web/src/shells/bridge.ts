@@ -1,13 +1,16 @@
 /**
  * Typed bridge to the C++ host (CEF).
  *
- * - `bridge.send(channel, payload?)` — request/response over window.cefQuery.
+ * - `bridge.send(channel, payload?)` — request/response over window.cronymax.browser.query.
  *   Validates payload (req schema) before serializing and validates response
  *   (res schema) before resolving. Errors are surfaced as Error rejections.
  * - `bridge.on(event, handler)` — subscribes to a broadcast event delivered
  *   by C++ via the internal dispatch hook. Validates payload (event schema)
  *   before invoking handler unless the event is in FastPathEvents.
  *
+ * Terminal I/O (input, run, resize, stop) is routed directly to the Rust
+ * runtime via window.cronymax.runtime process messages; terminal output
+ * is subscribed through the same channel and dispatched as bridge events.
  * The channel and event names are narrowed to the registry; `payload` and
  * the handler argument are inferred from the schemas.
  */
@@ -22,26 +25,7 @@ import {
   type EventPayloadOf,
   type RequestOf,
   type ResponseOf,
-} from "./bridge_channels";
-
-declare global {
-  interface Window {
-    cefQuery?: (opts: {
-      request: string;
-      onSuccess: (response: string) => void;
-      onFailure: (errorCode: number, errorMessage: string) => void;
-      persistent?: boolean;
-    }) => number;
-    cronymax?: {
-      send(method: string, params?: unknown): Promise<unknown>;
-      subscribe(
-        topic: string,
-        callback: (payload: unknown) => void,
-      ): () => void;
-      reconnect(): void;
-    };
-  }
-}
+} from "./browser";
 
 type AnyEventHandler = (payload: unknown) => void;
 const subscribers = new Map<string, Set<AnyEventHandler>>();
@@ -115,11 +99,16 @@ function send<C extends ChannelName>(
   const request = JSON.stringify({ channel, payload: wirePayload });
 
   return new Promise((resolve, reject) => {
-    if (typeof window.cefQuery !== "function") {
-      reject(new Error("cefQuery not available (running outside CEF?)"));
+    const query = window.cronymax?.browser?.query;
+    if (typeof query !== "function") {
+      reject(
+        new Error(
+          "cronymax.browser.query not available (running outside CEF?)",
+        ),
+      );
       return;
     }
-    window.cefQuery({
+    query({
       request,
       onSuccess: (response) => {
         let parsed: unknown = response;
@@ -168,23 +157,45 @@ function on<E extends EventName>(
   };
 }
 
-export const bridge = { send, on };
+// ---------------------------------------------------------------------------
+export const browser = { send, on };
 
-// C++ (bridge_handler.cc, main_window.cc) calls window.__aiDesktopDispatch to
-// deliver broadcast events. Keep the assignment but don't expose it in the
-// Window type — callers inside this module use bridge.on() instead.
-(window as unknown as Record<string, unknown>)["__aiDesktopDispatch"] = (
-  event: string,
-  payload: unknown,
-) => {
-  dispatch(event, payload);
+// Expose window.cronymax.browser so any built-in page can reach the
+// browser-process IPC without importing this module.
+// C++ (App::OnContextCreated) creates window.cronymax and pre-populates
+// .browser.query / .browser.queryCancel; we spread both levels to preserve them.
+window.cronymax = {
+  ...window.cronymax,
+  browser: {
+    ...window.cronymax?.browser,
+    ...browser,
+    // C++ (bridge_handler.cc, main_window.cc) calls this to deliver events.
+    onDispatch: (event: string, payload: unknown) => {
+      dispatch(event, payload);
+    },
+  },
 };
 
-// Reconnect window.cronymax after a space switch.
-// space.switch_loading is a browser-process-originated broadcast that arrives
-// via __aiDesktopDispatch even while the Rust runtime is restarting.
-on("space.switch_loading", ({ loading }: { loading: boolean }) => {
-  if (!loading && typeof window.cronymax?.reconnect === "function") {
-    window.cronymax.reconnect();
-  }
-});
+export type RuntimeControlRequest = Record<string, unknown>;
+export const runtime = {
+  /** Send a one-shot control request; resolves with the raw JSON reply string. */
+  send(req: RuntimeControlRequest): Promise<string> {
+    return (
+      window.cronymax?.runtime?.send?.(req) ??
+      Promise.reject(new Error("cronymax.runtime not available"))
+    );
+  },
+
+  /**
+   * Subscribe to a runtime topic.
+   * Returns an unsubscribe function, or null if the runtime is unavailable.
+   * The callback receives the inner event object JSON string
+   * (i.e. {sequence, emitted_at_ms, payload:{...}}).
+   */
+  subscribe(
+    topic: string,
+    cb: (eventJson: string) => void,
+  ): (() => void) | null {
+    return window.cronymax?.runtime?.subscribe?.(topic, cb) ?? null;
+  },
+};

@@ -1,4 +1,4 @@
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import type { ThreadState } from "../hooks/useEventStream";
 
 interface Props {
@@ -79,7 +79,7 @@ async function sendVerdict(
   const channel =
     verdict === "approve" ? "review.approve" : "review.request_changes";
   try {
-    await bridge.send(channel, {
+    await browser.send(channel, {
       flow: flowId,
       run_id: runId,
       name: thread.doc_path ?? thread.doc_id,

@@ -55,6 +55,13 @@ pub struct Runtime {
     config: RuntimeConfig,
     state: Arc<Mutex<RuntimeState>>,
     authority: RuntimeAuthority,
+    /// Shared PTY session managers, passed to every RuntimeHandler so that
+    /// sessions created via the browser transport are visible to the renderer
+    /// transport (and vice-versa).
+    terminal_managers: Arc<parking_lot::Mutex<std::collections::HashMap<
+        String,
+        crate::terminal::SharedSessionManager,
+    >>>,
 }
 
 /// Handle returned from `Runtime::start`. Today it carries no resources
@@ -85,6 +92,9 @@ impl Runtime {
             config,
             state: Arc::new(Mutex::new(RuntimeState::default())),
             authority,
+            terminal_managers: Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         })
     }
 
@@ -153,10 +163,11 @@ impl Runtime {
                 policy
             });
 
-        let handler = Arc::new(RuntimeHandler::with_policy(
+        let handler = Arc::new(RuntimeHandler::with_policy_and_managers(
             self.authority.clone(),
             self.config.storage.workspace_roots.clone(),
             sandbox_policy,
+            Some(Arc::clone(&self.terminal_managers)),
         ));
         session::spawn_session(transport, handler)
     }

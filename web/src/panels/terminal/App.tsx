@@ -8,7 +8,8 @@
  * $-mode shell blocks.
  */
 import { useEffect, useRef, useCallback, useState } from "react";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
+import { terminal as rt_terminal } from "@/shells/runtime";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { useStore } from "./store";
 import { XtermPane } from "./XtermPane";
@@ -29,7 +30,7 @@ export function App() {
       startedRef.current.add(tid);
       dispatch({ type: "markStarted", tid });
       try {
-        await bridge.send("terminal.start", { id: tid });
+        await rt_terminal.start(tid);
       } catch (err) {
         console.warn("terminal.start failed", err);
         startedRef.current.delete(tid);
@@ -41,7 +42,7 @@ export function App() {
   // ── initial load ─────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    bridge
+    browser
       .send("terminal.list")
       .then(async (res) => {
         if (cancelled) return;
@@ -54,7 +55,7 @@ export function App() {
         } else {
           // No terminals exist yet — create one for this panel.
           try {
-            const newTid = await bridge.send("terminal.new");
+            const newTid = await browser.send("terminal.new");
             const tid =
               typeof newTid === "string"
                 ? newTid
@@ -101,7 +102,7 @@ export function App() {
     const tid = state.activeTid;
     if (!tid) return;
     try {
-      await bridge.send("terminal.stop", { id: tid });
+      await rt_terminal.stop(tid);
     } catch {
       // ignore
     }

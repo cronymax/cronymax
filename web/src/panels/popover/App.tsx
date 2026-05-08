@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import { Icon } from "@/shared/components/Icon";
 
 export function App() {
@@ -8,7 +8,7 @@ export function App() {
 
   // Receive URL updates pushed from C++ when the content view navigates.
   useEffect(() => {
-    return bridge.on("popover_chrome.url_changed", (payload) => {
+    return browser.on("popover_chrome.url_changed", (payload) => {
       setUrl((payload as { url: string }).url);
     });
   }, []);
@@ -19,7 +19,7 @@ export function App() {
     if (!/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//.test(target)) {
       target = "https://" + target;
     }
-    bridge.send("shell.popover_navigate", { url: target });
+    browser.send("shell.popover_navigate", { url: target });
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -65,7 +65,7 @@ export function App() {
       ).map(({ icon, event, title }) => (
         <button
           key={event}
-          onClick={() => bridge.send(event, {})}
+          onClick={() => browser.send(event, {})}
           title={title}
           aria-label={title}
           className="

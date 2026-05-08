@@ -11,7 +11,7 @@
  *
  * Throttled to ≤4 fps via requestAnimationFrame; only emits on change.
  */
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 
 const TAB_ID_QS = "tabId";
 
@@ -185,7 +185,7 @@ export function startThemeSampler(): void {
     const color = effectiveColor();
     if (color === last) return;
     last = color;
-    void bridge.send("tab.set_chrome_theme", { tabId, color });
+    void browser.send("tab.set_chrome_theme", { tabId, color });
   };
   const schedule = () => {
     if (rafScheduled) return;

@@ -1,12 +1,9 @@
 #pragma once
 
-#include <atomic>
 #include <map>
-#include <set>
 #include <string>
-#include <thread>
+#include <utility>
 
-#include "crony.h"
 #include "include/cef_app.h"
 #include "include/cef_v8.h"
 #include "include/wrapper/cef_message_router.h"
@@ -33,52 +30,35 @@ class App : public CefApp, public CefRenderProcessHandler {
                                 CefRefPtr<CefProcessMessage> message) override;
 
  private:
-  // V8 handler classes defined in app.cc need access to bridge fields.
+  // V8 handler classes access private bridge state.
   friend class SendHandler;
   friend class SubscribeHandler;
   friend class UnsubHandler;
-  friend class ReconnectHandler;
 
-  // --- CefMessageRouter ---
   CefRefPtr<CefMessageRouterRendererSide> render_message_router_;
 
-  // --- Runtime bridge ---
-  // Set to true on the render thread to signal the pump thread to exit.
-  std::atomic<bool> pump_stop_{false};
-  // The active GIPS client handle. Null when disconnected. Written only on
-  // the render thread; read by the pump thread (load before each recv call).
-  std::atomic<crony_client_t*> renderer_client_{nullptr};
-  // The pump thread. Receives RuntimeToClient frames and posts them to the
-  // render thread via CefPostTask(TID_RENDERER, ...).
-  std::thread pump_thread_;
+  // Pending control-request Promises: corr_id → {resolve_fn, reject_fn}.
+  // Populated by SendHandler, resolved/rejected in OnProcessMessageReceived.
+  std::map<std::string, std::pair<CefRefPtr<CefV8Value>, CefRefPtr<CefV8Value>>>
+      pending_callbacks_;
 
-  // Topic → set of JS callback persistent refs. Maintained on the render
-  // thread; dispatched to from pump thread via CefPostTask.
-  std::map<std::string, std::set<CefRefPtr<CefV8Value>>> subscribers_;
-  // The V8 context for the main frame; needed to enter context when
-  // dispatching events on the render thread.
+  // Subscribe requests awaiting confirmation: corr_id → JS event callback.
+  std::map<std::string, CefRefPtr<CefV8Value>> pending_sub_callbacks_;
+
+  // Active event subscriptions: runtime subscription UUID → JS callback.
+  std::map<std::string, CefRefPtr<CefV8Value>> subscribers_;
+
+  // Subscribe corr_id → confirmed subscription UUID (used by UnsubHandler).
+  std::map<std::string, std::string> corr_to_sub_id_;
+
+  // V8 context for the active built-in main frame.
   CefRefPtr<CefV8Context> main_context_;
 
-  // Connect to the runtime renderer service, perform Hello/Welcome handshake,
-  // and set renderer_client_. Called on the render thread.
-  bool ConnectRuntimeClient();
-
-  // Start the pump thread. renderer_client_ must be non-null. Called on the
-  // render thread after ConnectRuntimeClient().
-  void StartPumpThread(CefRefPtr<CefFrame> frame);
-
-  // Stop the pump thread, close the client handle, null renderer_client_.
-  // Safe to call when already disconnected.
-  void DisconnectRuntimeClient();
-
-  // Dispatch one raw JSON RuntimeToClient payload to JS subscribers.
-  // Called on the render thread via CefPostTask from the pump thread.
-  void DispatchEvent(const std::string& payload);
+  // Generate a UUID v4 correlation ID. Thread-safe.
+  static std::string MakeId();
 
   IMPLEMENT_REFCOUNTING(App);
   DISALLOW_COPY_AND_ASSIGN(App);
 };
 
 }  // namespace cronymax
-
-

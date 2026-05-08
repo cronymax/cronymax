@@ -7,7 +7,7 @@
  * and then calls space.create.
  */
 import { useCallback, useEffect, useState } from "react";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 
 interface ProfileRecord {
@@ -37,7 +37,7 @@ export function ProfilePickerOverlay() {
   // Fetch profiles when the overlay opens.
   useEffect(() => {
     if (!pendingPath) return;
-    bridge
+    browser
       .send("profiles.list")
       .then((res) => setProfiles(res))
       .catch(() => {
@@ -59,7 +59,7 @@ export function ProfilePickerOverlay() {
     setBusy(true);
     setErr(null);
     try {
-      await bridge.send("space.create", {
+      await browser.send("space.create", {
         root_path: pendingPath,
         profile_id: selectedProfile,
       });

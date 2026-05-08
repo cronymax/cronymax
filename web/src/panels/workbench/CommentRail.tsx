@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 
 import { parseBlockComments } from "./blockIds";
@@ -83,7 +83,7 @@ export function CommentRail({
   const refresh = useCallback(async () => {
     if (!params.runId) return;
     try {
-      const res = (await bridge.send("review.list", {
+      const res = (await browser.send("review.list", {
         flow: params.flow,
         run_id: params.runId,
       })) as ReviewsListResponse;
@@ -250,7 +250,7 @@ function CommentCard(props: {
     setBusy("accept");
     setError(null);
     try {
-      const res = (await bridge.send("document.suggestion.apply", {
+      const res = (await browser.send("document.suggestion.apply", {
         flow: params.flow,
         run_id: params.runId,
         name: params.doc,
@@ -276,7 +276,7 @@ function CommentCard(props: {
       // Append a follow-up comment of body "(suggestion dismissed)" and
       // mark this comment resolved at the current revision (matching
       // the spec for Task 7.3).
-      await bridge.send("review.comment", {
+      await browser.send("review.comment", {
         flow: params.flow,
         run_id: params.runId,
         name: params.doc,
@@ -357,7 +357,7 @@ function ComposerModal(props: {
     setPosting(true);
     setError(null);
     try {
-      await bridge.send("review.comment", {
+      await browser.send("review.comment", {
         flow: params.flow,
         run_id: params.runId,
         name: params.doc,

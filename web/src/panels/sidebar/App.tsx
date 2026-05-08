@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { useDragRegions } from "@/hooks/useDragRegions";
 import { Icon } from "@/shared/components/Icon";
@@ -115,7 +115,7 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const snap = await bridge.send("shell.tabs_list");
+        const snap = await browser.send("shell.tabs_list");
         dispatch({
           type: "setTabs",
           tabs: snap.tabs ?? [],
@@ -145,7 +145,7 @@ export function App() {
   // ── Actions ────────────────────────────────────────────────────────
   const activate = useCallback(async (tab: TabSummary) => {
     try {
-      await bridge.send("shell.tab_switch", { id: tab.id });
+      await browser.send("shell.tab_switch", { id: tab.id });
     } catch (e) {
       console.warn("shell.tab_switch failed", e);
     }
@@ -153,7 +153,7 @@ export function App() {
 
   const close = useCallback(async (tab: TabSummary) => {
     try {
-      await bridge.send("shell.tab_close", { id: tab.id });
+      await browser.send("shell.tab_close", { id: tab.id });
     } catch (e) {
       console.warn("shell.tab_close failed", e);
     }

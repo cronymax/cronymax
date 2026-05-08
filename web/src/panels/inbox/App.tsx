@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { z } from "zod";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import { InboxRowSchema, type AppEvent } from "@/types/events";
 
 type InboxRow = z.infer<typeof InboxRowSchema>;
@@ -31,7 +31,7 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await bridge.send("inbox.list", {
+      const res = await browser.send("inbox.list", {
         state: stateRef.current,
         limit: 200,
       });
@@ -50,8 +50,8 @@ export function App() {
 
   // Refresh when relevant new events arrive.
   useEffect(() => {
-    void bridge.send("events.subscribe", {}).catch(() => {});
-    const off = bridge.on("event", (payload) => {
+    void browser.send("events.subscribe", {}).catch(() => {});
+    const off = browser.on("event", (payload) => {
       const e = payload as AppEvent;
       if (NEEDS_ACTION_KINDS.has(e.kind)) {
         void refresh();
@@ -62,7 +62,7 @@ export function App() {
 
   async function markRead(id: string) {
     try {
-      await bridge.send("inbox.read", { event_id: id });
+      await browser.send("inbox.read", { event_id: id });
       void refresh();
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -72,7 +72,7 @@ export function App() {
 
   async function snooze(id: string, ms: number) {
     try {
-      await bridge.send("inbox.snooze", {
+      await browser.send("inbox.snooze", {
         event_id: id,
         snooze_until: Date.now() + ms,
       });

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 
 import { stripBlockComments } from "./blockIds";
 import type { WorkbenchParams } from "./url";
@@ -46,7 +46,7 @@ export function DiffView({ params }: { params: WorkbenchParams }) {
         let from = params.from ?? 0;
         let to = params.to ?? 0;
         if (!from || !to) {
-          const listed = (await bridge.send("document.list", {
+          const listed = (await browser.send("document.list", {
             flow: params.flow,
           })) as DocumentListResponse;
           const entry = listed.docs.find((d) => d.name === params.doc);
@@ -63,12 +63,12 @@ export function DiffView({ params }: { params: WorkbenchParams }) {
           to = to || latest;
         }
         const [a, b] = await Promise.all([
-          bridge.send("document.read", {
+          browser.send("document.read", {
             flow: params.flow,
             name: params.doc,
             revision: from,
           }) as Promise<DocumentReadResponse>,
-          bridge.send("document.read", {
+          browser.send("document.read", {
             flow: params.flow,
             name: params.doc,
             revision: to,

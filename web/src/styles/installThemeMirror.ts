@@ -1,4 +1,4 @@
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import type { ThemeMode, ThemeResolved } from "@/types";
 
 /**
@@ -27,14 +27,14 @@ export function installThemeMirror(): void {
   if (installed) return;
   installed = true;
 
-  bridge
+  browser
     .send("theme.get")
     .then((res) => applyAttribute(res.mode, res.resolved))
     .catch(() => {
       // No-op: keep CSS defaults if the host is unavailable (storybook).
     });
 
-  bridge.on("theme.changed", (payload) => {
+  browser.on("theme.changed", (payload) => {
     applyAttribute(payload.mode, payload.resolved);
   });
 }

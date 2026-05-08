@@ -1,27 +1,56 @@
 #include "renderer/app.h"
 
-#include <chrono>
-#include <functional>
+#include <mutex>
+#include <random>
 #include <string>
-#include <thread>
 
-#include "include/base/cef_callback.h"
-#include "include/cef_task.h"
+#include "include/cef_process_message.h"
 #include "include/wrapper/cef_closure_task.h"
 
-// JSON parsing for Hello/Welcome handshake and event dispatch.
+// JSON serialisation for runtime control requests.
 #include "nlohmann/json.hpp"
 
 namespace cronymax {
 
-// GIPS service name that renderer clients connect to.
-static constexpr char kRendererServiceName[] = "ai.cronymax.runtime.renderer";
-
-// How long to poll for the renderer service before giving up.
-static constexpr auto kHandshakeTimeout = std::chrono::seconds(10);
+// CEF process-message names used on the renderer↔browser runtime channel.
+// Renderer sends control requests; browser replies and pushes events.
+static constexpr char kMsgCtrl[]      = "cronymax.runtime.ctrl";
+static constexpr char kMsgCtrlReply[] = "cronymax.runtime.ctrl.reply";
+static constexpr char kMsgEvent[]     = "cronymax.runtime.event";
 
 // ---------------------------------------------------------------------------
-// V8 handler: window.cronymax.send(method, params) → Promise
+// UUID v4 generator — used for correlation IDs
+// ---------------------------------------------------------------------------
+
+// static
+std::string App::MakeId() {
+  // RFC 4122 §4.4 — version 4 UUID from random bytes.
+  static std::mutex rng_mu;
+  static std::mt19937_64 rng{std::random_device{}()};
+  uint8_t b[16];
+  {
+    std::lock_guard<std::mutex> g(rng_mu);
+    uint64_t hi = rng(), lo = rng();
+    for (int i = 0; i < 8; ++i) b[i]     = static_cast<uint8_t>(hi >> (56 - 8 * i));
+    for (int i = 0; i < 8; ++i) b[8 + i] = static_cast<uint8_t>(lo >> (56 - 8 * i));
+  }
+  b[6] = (b[6] & 0x0f) | 0x40;  // version 4
+  b[8] = (b[8] & 0x3f) | 0x80;  // variant 10xx
+  char buf[37];
+  std::snprintf(buf, sizeof(buf),
+    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+    b[0],b[1],b[2],b[3], b[4],b[5], b[6],b[7],
+    b[8],b[9], b[10],b[11],b[12],b[13],b[14],b[15]);
+  return buf;
+}
+
+// ---------------------------------------------------------------------------
+// V8 handler: window.cronymax.runtime.send(request) → Promise<string>
+//
+// `request` must be a ControlRequest object with a `kind` field.  The handler
+// serialises it to JSON, wraps it in a cronymax.runtime.ctrl process message,
+// and returns a Promise that resolves/rejects when the matching ctrl.reply
+// message arrives from the browser process.
 // ---------------------------------------------------------------------------
 
 class SendHandler : public CefV8Handler {
@@ -35,7 +64,7 @@ class SendHandler : public CefV8Handler {
                CefString& exception) override;
 
  private:
-  App* app_;  // not owned; outlived by V8 context
+  App* app_;
   IMPLEMENT_REFCOUNTING(SendHandler);
 };
 
@@ -44,113 +73,124 @@ bool SendHandler::Execute(const CefString& /*name*/,
                           const CefV8ValueList& arguments,
                           CefRefPtr<CefV8Value>& retval,
                           CefString& exception) {
-  // Resolve/reject callbacks are captured into the Promise.
-  auto context = CefV8Context::GetCurrentContext();
-
-  crony_client_t* c = app_->renderer_client_.load();
-  if (!c) {
-    // Bridge not ready: return a rejected Promise.
-    auto global = context->GetGlobal();
-    auto promise_ctor = global->GetValue("Promise");
-    if (promise_ctor && promise_ctor->IsFunction()) {
-      CefRefPtr<CefV8Value> reject_fn;
-      // Build Promise.reject(new Error("bridge not ready"))
-      auto error_ctor = global->GetValue("Error");
-      CefV8ValueList error_args;
-      error_args.push_back(CefV8Value::CreateString("__runtimeBridge: not connected"));
-      auto err_obj = error_ctor->ExecuteFunction(nullptr, error_args);
-      CefV8ValueList reject_args;
-      reject_args.push_back(err_obj ? err_obj : CefV8Value::CreateString("bridge not ready"));
-      auto reject_method = promise_ctor->GetValue("reject");
-      if (reject_method && reject_method->IsFunction()) {
-        retval = reject_method->ExecuteFunctionWithContext(context, promise_ctor, reject_args);
-        return true;
-      }
-    }
-    exception = "__runtimeBridge: not connected";
+  if (arguments.empty() || !arguments[0]->IsObject()) {
+    exception = "cronymax.runtime.send: expected a ControlRequest object";
     return true;
   }
 
-  std::string method;
-  std::string params_json = "{}";
-  if (!arguments.empty() && arguments[0]->IsString()) {
-    method = arguments[0]->GetStringValue().ToString();
-  }
-  if (arguments.size() > 1) {
-    // Serialise params via JavaScript's JSON.stringify (handles any V8 value).
+  auto context = CefV8Context::GetCurrentContext();
+
+  // Serialise the ControlRequest object to JSON via JSON.stringify.
+  std::string request_json;
+  {
     auto json_obj = context->GetGlobal()->GetValue("JSON");
     if (json_obj && json_obj->IsObject()) {
       auto stringify_fn = json_obj->GetValue("stringify");
       if (stringify_fn && stringify_fn->IsFunction()) {
         CefV8ValueList sargs;
-        sargs.push_back(arguments[1]);
+        sargs.push_back(arguments[0]);
         auto result =
             stringify_fn->ExecuteFunctionWithContext(context, json_obj, sargs);
-        if (result && result->IsString()) {
-          params_json = result->GetStringValue().ToString();
-        }
+        if (result && result->IsString())
+          request_json = result->GetStringValue().ToString();
       }
     }
   }
-
-  // Build ClientToRuntime envelope: {"tag":"invoke","method":..,"params":..}
-  nlohmann::json env;
-  env["tag"] = "invoke";
-  env["method"] = method;
-  auto parsed_params =
-      nlohmann::json::parse(params_json, nullptr, /*allow_exceptions=*/false);
-  env["params"] = parsed_params.is_discarded() ? nlohmann::json(nullptr)
-                                               : parsed_params;
-  std::string payload = env.dump();
-
-  // Send synchronously (crony_client_send is fast for small JSON payloads).
-  char* err = nullptr;
-  int rc = crony_client_send(
-      c,
-      reinterpret_cast<const uint8_t*>(payload.data()),
-      payload.size(),
-      &err);
-  if (rc != CRONY_OK) {
-    std::string msg = err ? err : "send error";
-    crony_string_free(err);
-    exception = "cronymax: send failed: " + msg;
+  if (request_json.empty()) {
+    exception = "cronymax.runtime.send: failed to serialise request";
     return true;
   }
 
-  // For now return undefined; async response arrives via the pump thread
-  // and is dispatched to subscribers. Full Promise resolution (correlating
-  // request/response IDs) can be added incrementally.
-  retval = CefV8Value::CreateUndefined();
+  const std::string corr_id = App::MakeId();
+
+  // Create a JS Promise so the caller can await the reply.
+  CefRefPtr<CefV8Value> eval_retval;
+  CefRefPtr<CefV8Exception> eval_exc;
+  bool eval_ok = context->Eval(
+      "(function(){var r,j;"
+      "var p=new Promise(function(res,rej){r=res;j=rej;});"
+      "return[p,r,j];})()",
+      CefString(), 0, eval_retval, eval_exc);
+  if (!eval_ok || !eval_retval || !eval_retval->IsArray()) {
+    exception = "cronymax.runtime.send: failed to create Promise";
+    return true;
+  }
+  auto promise_val = eval_retval->GetValue(0);
+  auto resolve_fn  = eval_retval->GetValue(1);
+  auto reject_fn   = eval_retval->GetValue(2);
+
+  // Register before sending to avoid a race with the reply.
+  app_->pending_callbacks_[corr_id] = {resolve_fn, reject_fn};
+
+  // Send ctrl process message: args[0]=corr_id, args[1]=request_json.
+  auto msg = CefProcessMessage::Create(kMsgCtrl);
+  auto args = msg->GetArgumentList();
+  args->SetString(0, corr_id);
+  args->SetString(1, request_json);
+  context->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
+
+  retval = promise_val;
   return true;
 }
 
 // ---------------------------------------------------------------------------
-// V8 handler: window.cronymax.subscribe(topic, cb) → unsub fn
+// V8 handler: window.cronymax.runtime.subscribe(topic, cb) → unsub fn
+//
+// Sends a Subscribe control request to the runtime. When the Subscribed
+// response arrives, the callback is registered under the returned
+// subscription UUID. Returns an unsubscribe function immediately.
 // ---------------------------------------------------------------------------
 
-// UnsubHandler is at file scope (not a local class) so that the
-// friend class declaration in App can grant it private access.
+// ---------------------------------------------------------------------------
+// V8 handler: unsubscribe function returned by subscribe()
+// ---------------------------------------------------------------------------
+
 class UnsubHandler : public CefV8Handler {
  public:
-  UnsubHandler(App* app, std::string topic, CefRefPtr<CefV8Value> cb)
-      : app_(app), topic_(std::move(topic)), cb_(std::move(cb)) {}
+  UnsubHandler(App* app, std::string corr_id)
+      : app_(app), corr_id_(std::move(corr_id)) {}
+
   bool Execute(const CefString&, CefRefPtr<CefV8Value>, const CefV8ValueList&,
                CefRefPtr<CefV8Value>&, CefString&) override {
-    auto it = app_->subscribers_.find(topic_);
-    if (it != app_->subscribers_.end()) {
-      it->second.erase(cb_);
-      if (it->second.empty()) {
-        app_->subscribers_.erase(it);
-      }
+    auto sub_it = app_->corr_to_sub_id_.find(corr_id_);
+    if (sub_it == app_->corr_to_sub_id_.end()) {
+      // Subscribe reply not yet received — cancel the pending entry.
+      app_->pending_sub_callbacks_.erase(corr_id_);
+      return true;
+    }
+    const std::string sub_id = sub_it->second;
+    app_->subscribers_.erase(sub_id);
+    app_->corr_to_sub_id_.erase(sub_it);
+
+    // Tell the browser process to unsubscribe from the runtime.
+    auto context = CefV8Context::GetCurrentContext();
+    if (context && context->GetFrame()) {
+      nlohmann::json req;
+      req["kind"]         = "unsubscribe";
+      req["subscription"] = sub_id;
+      auto msg = CefProcessMessage::Create(kMsgCtrl);
+      auto args = msg->GetArgumentList();
+      args->SetString(0, App::MakeId());  // one-way; no reply needed
+      args->SetString(1, req.dump());
+      context->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
     }
     return true;
   }
+
  private:
   App* app_;
-  std::string topic_;
-  CefRefPtr<CefV8Value> cb_;
+  std::string corr_id_;
   IMPLEMENT_REFCOUNTING(UnsubHandler);
 };
+
+// ---------------------------------------------------------------------------
+// V8 handler: window.cronymax.runtime.subscribe(topic, callback) → unsub fn
+//
+// Sends a subscribe control request to the browser process via process
+// message.  Returns an unsubscribe function immediately; once the browser
+// confirms the subscription, subsequent runtime events for that topic are
+// delivered to `callback`.
+// ---------------------------------------------------------------------------
 
 class SubscribeHandler : public CefV8Handler {
  public:
@@ -172,47 +212,36 @@ bool SubscribeHandler::Execute(const CefString& /*name*/,
                                const CefV8ValueList& arguments,
                                CefRefPtr<CefV8Value>& retval,
                                CefString& exception) {
-  if (arguments.size() < 2 || !arguments[0]->IsString() || !arguments[1]->IsFunction()) {
-    exception = "cronymax.subscribe: expected (topic: string, callback: function)";
+  if (arguments.size() < 2 ||
+      !arguments[0]->IsString() ||
+      !arguments[1]->IsFunction()) {
+    exception =
+        "cronymax.runtime.subscribe: expected (topic: string, callback: function)";
     return true;
   }
 
-  std::string topic = arguments[0]->GetStringValue().ToString();
-  CefRefPtr<CefV8Value> callback = arguments[1];
+  const std::string topic    = arguments[0]->GetStringValue().ToString();
+  const CefRefPtr<CefV8Value> callback = arguments[1];
+  const std::string corr_id = App::MakeId();
 
-  app_->subscribers_[topic].insert(callback);
+  app_->pending_sub_callbacks_[corr_id] = callback;
 
+  // Send subscribe request to browser: args[0]=corr_id, args[1]=request_json.
+  nlohmann::json req;
+  req["kind"]  = "subscribe";
+  req["topic"] = topic;
+  auto msg = CefProcessMessage::Create(kMsgCtrl);
+  auto args = msg->GetArgumentList();
+  args->SetString(0, corr_id);
+  args->SetString(1, req.dump());
+  CefV8Context::GetCurrentContext()->GetFrame()->SendProcessMessage(
+      PID_BROWSER, msg);
+
+  // Return unsubscribe function immediately.
   retval = CefV8Value::CreateFunction(
-      "unsubscribe", new UnsubHandler(app_, topic, callback));
+      "unsubscribe", new UnsubHandler(app_, corr_id));
   return true;
 }
-
-// ---------------------------------------------------------------------------
-// V8 handler: window.cronymax.reconnect()
-// ---------------------------------------------------------------------------
-
-class ReconnectHandler : public CefV8Handler {
- public:
-  ReconnectHandler(App* app, CefRefPtr<CefFrame> frame)
-      : app_(app), frame_(frame) {}
-
-  bool Execute(const CefString& name,
-               CefRefPtr<CefV8Value> object,
-               const CefV8ValueList& arguments,
-               CefRefPtr<CefV8Value>& retval,
-               CefString& exception) override {
-    app_->DisconnectRuntimeClient();
-    // connect + pump run in background; render thread is not blocked.
-    app_->StartPumpThread(frame_);
-    retval = CefV8Value::CreateUndefined();
-    return true;
-  }
-
- private:
-  App* app_;
-  CefRefPtr<CefFrame> frame_;
-  IMPLEMENT_REFCOUNTING(ReconnectHandler);
-};
 
 // ---------------------------------------------------------------------------
 // App implementation
@@ -237,36 +266,62 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                                  CefRefPtr<CefV8Context> context) {
   render_message_router_->OnContextCreated(browser, frame, context);
 
-  // Inject window.cronymax only into built-in main frames.
+  // Move cefQuery / cefQueryCancel from the window global into
+  // window.cronymax.browser.query / .queryCancel, then delete the originals
+  // so that only the cronymax namespace is exposed to JS.
+  {
+    CefRefPtr<CefV8Value> global = context->GetGlobal();
+    CefRefPtr<CefV8Value> cronymax_obj = global->GetValue("cronymax");
+    if (!cronymax_obj || !cronymax_obj->IsObject()) {
+      cronymax_obj = CefV8Value::CreateObject(nullptr, nullptr);
+      global->SetValue("cronymax", cronymax_obj, V8_PROPERTY_ATTRIBUTE_NONE);
+    }
+    CefRefPtr<CefV8Value> browser_obj = cronymax_obj->GetValue("browser");
+    if (!browser_obj || !browser_obj->IsObject()) {
+      browser_obj = CefV8Value::CreateObject(nullptr, nullptr);
+      cronymax_obj->SetValue("browser", browser_obj, V8_PROPERTY_ATTRIBUTE_NONE);
+    }
+    auto query_fn = global->GetValue("cefQuery");
+    if (query_fn && query_fn->IsFunction()) {
+      browser_obj->SetValue("query", query_fn, V8_PROPERTY_ATTRIBUTE_NONE);
+    }
+    auto cancel_fn = global->GetValue("cefQueryCancel");
+    if (cancel_fn && cancel_fn->IsFunction()) {
+      browser_obj->SetValue("queryCancel", cancel_fn, V8_PROPERTY_ATTRIBUTE_NONE);
+    }
+  }
+
+  // Inject window.cronymax.runtime only into built-in main frames.
   if (!frame->IsMain()) return;
   if (!IsBuiltinUrl(frame->GetURL())) return;
 
   main_context_ = context;
 
-  // Kick off connect + pump entirely in a background thread so the render
-  // thread returns immediately and the page can paint.
-  StartPumpThread(frame);
-
-  // Build window.cronymax = { send, subscribe, reconnect }
+  // Ensure window.cronymax exists; bridge.ts adds .browser to the same object.
   CefRefPtr<CefV8Value> global = context->GetGlobal();
-  CefRefPtr<CefV8Value> bridge = CefV8Value::CreateObject(nullptr, nullptr);
+  CefRefPtr<CefV8Value> cronymax_obj = global->GetValue("cronymax");
+  if (!cronymax_obj || !cronymax_obj->IsObject()) {
+    cronymax_obj = CefV8Value::CreateObject(nullptr, nullptr);
+    global->SetValue("cronymax", cronymax_obj, V8_PROPERTY_ATTRIBUTE_NONE);
+  }
 
-  bridge->SetValue(
+  // Build window.cronymax.runtime = { send, subscribe }
+  // Both functions communicate with the Rust runtime via CEF process messages
+  // (cronymax.runtime.ctrl) rather than a GIPS connection.  This sidesteps
+  // the macOS sandbox restriction on Mach bootstrap lookups in renderer procs.
+  CefRefPtr<CefV8Value> runtime_obj = CefV8Value::CreateObject(nullptr, nullptr);
+
+  runtime_obj->SetValue(
       "send",
       CefV8Value::CreateFunction("send", new SendHandler(this)),
       V8_PROPERTY_ATTRIBUTE_NONE);
 
-  bridge->SetValue(
+  runtime_obj->SetValue(
       "subscribe",
       CefV8Value::CreateFunction("subscribe", new SubscribeHandler(this)),
       V8_PROPERTY_ATTRIBUTE_NONE);
 
-  bridge->SetValue(
-      "reconnect",
-      CefV8Value::CreateFunction("reconnect", new ReconnectHandler(this, frame)),
-      V8_PROPERTY_ATTRIBUTE_NONE);
-
-  global->SetValue("cronymax", bridge, V8_PROPERTY_ATTRIBUTE_NONE);
+  cronymax_obj->SetValue("runtime", runtime_obj, V8_PROPERTY_ATTRIBUTE_NONE);
 }
 
 void App::OnContextReleased(CefRefPtr<CefBrowser> browser,
@@ -276,177 +331,106 @@ void App::OnContextReleased(CefRefPtr<CefBrowser> browser,
 
   if (frame->IsMain()) {
     subscribers_.clear();
+    pending_callbacks_.clear();
+    pending_sub_callbacks_.clear();
+    corr_to_sub_id_.clear();
     main_context_ = nullptr;
-    DisconnectRuntimeClient();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Bridge — process message dispatch (render thread)
+//
+// cronymax.runtime.ctrl.reply  args[0]=corr_id, args[1]=response_json,
+//                               args[2]=is_error (bool)
+// cronymax.runtime.event        args[0]=sub_id, args[1]=event_envelope_json
+// ---------------------------------------------------------------------------
 
 bool App::OnProcessMessageReceived(
     CefRefPtr<CefBrowser> browser,
     CefRefPtr<CefFrame> frame,
     CefProcessId source_process,
     CefRefPtr<CefProcessMessage> message) {
+
+  const std::string name = message->GetName().ToString();
+
+  // ── Control reply ────────────────────────────────────────────────────────
+  if (name == kMsgCtrlReply) {
+    auto msg_args    = message->GetArgumentList();
+    const std::string corr_id  = msg_args->GetString(0).ToString();
+    const std::string resp_str = msg_args->GetString(1).ToString();
+    const bool is_error        = msg_args->GetBool(2);
+
+    auto j = nlohmann::json::parse(resp_str, nullptr, false);
+    if (j.is_discarded()) j = nlohmann::json::object();
+
+    const std::string kind = is_error ? std::string{} : j.value("kind", "");
+
+    // Subscribe confirmation: move callback to active subscribers map.
+    auto sub_pending = pending_sub_callbacks_.find(corr_id);
+    if (sub_pending != pending_sub_callbacks_.end()) {
+      if (!is_error && kind == "subscribed") {
+        const std::string sub_id = j.value("subscription", std::string{});
+        if (!sub_id.empty()) {
+          subscribers_[sub_id] = sub_pending->second;
+          corr_to_sub_id_[corr_id] = sub_id;
+        }
+      }
+      pending_sub_callbacks_.erase(sub_pending);
+      return true;
+    }
+
+    // Regular request/response — resolve or reject the Promise.
+    auto cb_it = pending_callbacks_.find(corr_id);
+    if (cb_it == pending_callbacks_.end()) return true;
+
+    auto [resolve_fn, reject_fn] = cb_it->second;
+    pending_callbacks_.erase(cb_it);
+
+    if (!main_context_) return true;
+    main_context_->Enter();
+    CefV8ValueList v8args;
+    if (is_error) {
+      const std::string msg =
+          j.value("message", j.value("error", nlohmann::json{}).value("message",
+                                                                       "runtime error"));
+      v8args.push_back(CefV8Value::CreateString(msg));
+      reject_fn->ExecuteFunctionWithContext(main_context_, nullptr, v8args);
+    } else {
+      v8args.push_back(CefV8Value::CreateString(resp_str));
+      resolve_fn->ExecuteFunctionWithContext(main_context_, nullptr, v8args);
+    }
+    main_context_->Exit();
+    return true;
+  }
+
+  // ── Runtime event ────────────────────────────────────────────────────────
+  if (name == kMsgEvent) {
+    auto msg_args           = message->GetArgumentList();
+    const std::string sub_id    = msg_args->GetString(0).ToString();
+    const std::string event_str = msg_args->GetString(1).ToString();
+
+    auto it = subscribers_.find(sub_id);
+    if (it == subscribers_.end() || !it->second || !it->second->IsFunction())
+      return true;
+
+    // Pass the inner event object (sequence, emitted_at_ms, payload) to the
+    // JS callback — same shape the caller expects from a real GIPS event.
+    auto j = nlohmann::json::parse(event_str, nullptr, false);
+    const auto& event_obj = j.is_discarded() ? j : j.value("event", j);
+
+    if (!main_context_) return true;
+    main_context_->Enter();
+    CefV8ValueList v8args;
+    v8args.push_back(CefV8Value::CreateString(event_obj.dump()));
+    it->second->ExecuteFunctionWithContext(main_context_, nullptr, v8args);
+    main_context_->Exit();
+    return true;
+  }
+
   return render_message_router_->OnProcessMessageReceived(
       browser, frame, source_process, message);
 }
 
-// ---------------------------------------------------------------------------
-// Bridge — connect
-// ---------------------------------------------------------------------------
-
-bool App::ConnectRuntimeClient() {
-  const auto deadline = std::chrono::steady_clock::now() + kHandshakeTimeout;
-  crony_client_t* c = nullptr;
-  while (!c && std::chrono::steady_clock::now() < deadline) {
-    // Bail early if DisconnectRuntimeClient() was called while we were polling.
-    if (pump_stop_.load()) return false;
-    char* err = nullptr;
-    c = crony_client_new(kRendererServiceName, &err);
-    if (!c) {
-      crony_string_free(err);
-      std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    }
-  }
-  if (!c) return false;
-
-  // Send Hello.
-  nlohmann::json hello;
-  hello["tag"] = "hello";
-  hello["protocol"]["major"] = 0;
-  hello["protocol"]["minor"] = 1;
-  hello["protocol"]["patch"] = 0;
-  hello["client_name"] = "cronymax-renderer";
-  hello["client_version"] = "0.0.0";
-  std::string hello_str = hello.dump();
-
-  char* err = nullptr;
-  int rc = crony_client_send(
-      c,
-      reinterpret_cast<const uint8_t*>(hello_str.data()),
-      hello_str.size(),
-      &err);
-  if (rc != CRONY_OK) {
-    crony_string_free(err);
-    crony_client_close(c);
-    return false;
-  }
-
-  // Receive Welcome.
-  uint8_t* buf = nullptr;
-  size_t len = 0;
-  err = nullptr;
-  rc = crony_client_recv(c, &buf, &len, &err);
-  if (rc != CRONY_OK) {
-    crony_string_free(err);
-    crony_client_close(c);
-    return false;
-  }
-  std::string resp(reinterpret_cast<char*>(buf), len);
-  crony_bytes_free(buf, len);
-
-  auto j = nlohmann::json::parse(resp, nullptr, /*allow_exceptions=*/false);
-  if (j.is_discarded() || j.value("tag", "") != "welcome") {
-    crony_client_close(c);
-    return false;
-  }
-
-  renderer_client_.store(c);
-  return true;
-}
-
-// ---------------------------------------------------------------------------
-// Bridge — pump thread
-// ---------------------------------------------------------------------------
-
-void App::StartPumpThread(CefRefPtr<CefFrame> frame) {
-  pump_stop_.store(false);
-  pump_thread_ = std::thread([this, frame]() {
-    // Connect phase: runs off the render thread so it can block freely.
-    if (!ConnectRuntimeClient()) return;
-
-    // Pump phase.
-    while (!pump_stop_.load()) {
-      crony_client_t* c = renderer_client_.load();
-      if (!c) break;
-
-      uint8_t* buf = nullptr;
-      size_t len = 0;
-      char* err = nullptr;
-      int rc = crony_client_try_recv(c, &buf, &len, &err);
-
-      if (rc == CRONY_ERR_CLOSED || pump_stop_.load()) {
-        crony_string_free(err);
-        renderer_client_.store(nullptr);
-        break;
-      }
-      if (rc == CRONY_ERR_WOULD_BLOCK) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        continue;
-      }
-      if (rc != CRONY_OK) {
-        crony_string_free(err);
-        if (pump_stop_.load()) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        continue;
-      }
-
-      std::string payload(reinterpret_cast<char*>(buf), len);
-      crony_bytes_free(buf, len);
-
-      // Marshal dispatch to the render thread.
-      CefPostTask(TID_RENDERER,
-                  base::BindOnce(&App::DispatchEvent,
-                                 base::Unretained(this), payload));
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Bridge — disconnect
-// ---------------------------------------------------------------------------
-
-void App::DisconnectRuntimeClient() {
-  pump_stop_.store(true);
-  crony_client_t* c = renderer_client_.exchange(nullptr);
-  if (c) {
-    crony_client_close(c);
-  }
-  if (pump_thread_.joinable()) {
-    pump_thread_.join();
-  }
-  pump_stop_.store(false);
-}
-
-// ---------------------------------------------------------------------------
-// Bridge — event dispatch (render thread)
-// ---------------------------------------------------------------------------
-
-void App::DispatchEvent(const std::string& payload) {
-  if (!main_context_) return;
-
-  auto j = nlohmann::json::parse(payload, nullptr, /*allow_exceptions=*/false);
-  if (j.is_discarded()) return;
-  // RuntimeToClient events carry a "topic" field.
-  std::string topic = j.value("topic", "");
-  if (topic.empty()) return;
-
-  auto it = subscribers_.find(topic);
-  if (it == subscribers_.end() || it->second.empty()) return;
-
-  main_context_->Enter();
-
-  // Pass the raw JSON payload string to each subscriber callback.
-  CefV8ValueList args;
-  args.push_back(CefV8Value::CreateString(payload));
-  for (auto& cb : it->second) {
-    if (cb->IsFunction()) {
-      cb->ExecuteFunctionWithContext(main_context_, nullptr, args);
-    }
-  }
-
-  main_context_->Exit();
-}
-
 }  // namespace cronymax
-
 

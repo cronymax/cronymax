@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { bridge } from "@/bridge";
+import { flowRun } from "@/shells/runtime";
 import { useEventStream } from "./hooks/useEventStream";
 import { TextBubble } from "./components/TextBubble";
 import { DocumentCard } from "./components/DocumentCard";
@@ -45,9 +45,7 @@ export function App() {
             className="rounded bg-red-700/60 px-2 py-1 text-xs hover:bg-red-700"
             onClick={async () => {
               try {
-                await bridge.send("flow.run.cancel", {
-                  run_id: state.run.run_id!,
-                });
+                await flowRun.cancel(state.run.run_id!);
               } catch (err) {
                 // eslint-disable-next-line no-console
                 console.error("[channel] flow.run.cancel failed", err);

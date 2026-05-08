@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { bridge } from "@/bridge";
-import type { ChannelName, RequestOf, ResponseOf } from "@/bridge_channels";
+import { browser } from "@/shells/bridge";
+import type { ChannelName, RequestOf, ResponseOf } from "@/shells/browser";
 
 export interface BridgeQueryResult<T> {
   data: T | undefined;
@@ -29,7 +29,7 @@ export function useBridgeQuery<C extends ChannelName>(
     let cancelled = false;
     setLoading(true);
     setError(undefined);
-    bridge
+    browser
       .send(channel, payload as RequestOf<C>)
       .then((res) => {
         if (cancelled) return;

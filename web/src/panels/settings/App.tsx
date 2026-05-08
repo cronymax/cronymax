@@ -16,7 +16,8 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
+import { agentRegistry, docType, agentRun } from "@/shells/runtime";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { useTheme } from "@/hooks/useTheme";
 import type { ThemeMode } from "@/types";
@@ -478,7 +479,7 @@ function ProvidersTab() {
   const load = useCallback(async () => {
     setMsg(null);
     try {
-      const res = await bridge.send("llm.providers.get");
+      const res = await browser.send("llm.providers.get");
       const list = parseProviders(res.raw);
       setProviders(list);
       setActiveId(res.active_id);
@@ -504,7 +505,7 @@ function ProvidersTab() {
 
   const persist = useCallback(
     async (next: LlmProvider[], nextActive: string) => {
-      await bridge.send("llm.providers.set", {
+      await browser.send("llm.providers.set", {
         raw: JSON.stringify(next),
         active_id: nextActive,
       });
@@ -575,7 +576,7 @@ function ProvidersTab() {
       try {
         await persist(providers, p.id);
         setActiveId(p.id);
-        await bridge.send("llm.config.set", {
+        await browser.send("llm.config.set", {
           base_url: p.base_url,
           api_key: p.api_key,
         });
@@ -635,7 +636,7 @@ function ProvidersTab() {
       /* ok */
     }
     try {
-      await bridge.send("shell.popover_open", { url: dc.verification_uri });
+      await browser.send("shell.popover_open", { url: dc.verification_uri });
     } catch {
       try {
         window.open(dc.verification_uri, "_blank", "noopener,noreferrer");
@@ -905,7 +906,7 @@ function AgentsTab() {
   );
 
   useEffect(() => {
-    bridge.send("llm.providers.get").then((res) => {
+    browser.send("llm.providers.get").then((res) => {
       try {
         const list = JSON.parse(res.raw || "[]") as LlmProvider[];
         const p = list.find((x) => x.id === res.active_id) ?? list[0] ?? null;
@@ -918,7 +919,7 @@ function AgentsTab() {
 
   const loadList = useCallback(async () => {
     try {
-      let res = await bridge.send("agent.registry.list");
+      let res = await agentRegistry.list();
       const existingNames = new Set(
         (res.agents ?? []).map((a: AgentSummary) => a.name),
       );
@@ -996,10 +997,8 @@ function AgentsTab() {
         (a) => a && !existingNames.has(a.name),
       );
       if (missing.length > 0) {
-        await Promise.all(
-          missing.map((a) => bridge.send("agent.registry.save", a)),
-        );
-        res = await bridge.send("agent.registry.list");
+        await Promise.all(missing.map((a) => agentRegistry.save(a)));
+        res = await agentRegistry.list();
       }
       setAgents(res.agents ?? []);
     } catch (err) {
@@ -1009,7 +1008,7 @@ function AgentsTab() {
 
   const loadDetail = useCallback(async (name: string) => {
     try {
-      const res = await bridge.send("agent.registry.load", { name });
+      const res = await agentRegistry.load(name);
       setDraft({
         name: res.name,
         llm: res.llm,
@@ -1054,7 +1053,7 @@ function AgentsTab() {
     setBusy(true);
     setError(null);
     try {
-      await bridge.send("agent.registry.save", {
+      await agentRegistry.save({
         name: draft.name,
         llm: draft.llm,
         system_prompt: draft.system_prompt,
@@ -1078,7 +1077,7 @@ function AgentsTab() {
     setBusy(true);
     setError(null);
     try {
-      await bridge.send("agent.registry.delete", { name: selected });
+      await agentRegistry.delete(selected);
       await loadList();
       setSelected(null);
       setDraft(null);
@@ -1448,7 +1447,7 @@ function NewProfileForm({ onCreated }: { onCreated: () => void }) {
       initial={blank}
       isDefault={false}
       onSave={async (r) => {
-        await bridge.send("profiles.create", {
+        await browser.send("profiles.create", {
           name: r.name,
           allow_network: r.allow_network,
           extra_read_paths: r.extra_read_paths,
@@ -1472,7 +1471,7 @@ function ProfilesTab() {
   const reload = useCallback(async () => {
     setMsg(null);
     try {
-      const res = await bridge.send("profiles.list");
+      const res = await browser.send("profiles.list");
       setProfiles(res);
     } catch (e) {
       setMsg(`load failed: ${(e as Error).message}`);
@@ -1486,7 +1485,7 @@ function ProfilesTab() {
   const handleSave = async (r: ProfileRecord) => {
     setBusy(true);
     try {
-      await bridge.send("profiles.update", {
+      await browser.send("profiles.update", {
         id: r.id,
         name: r.name,
         allow_network: r.allow_network,
@@ -1504,7 +1503,7 @@ function ProfilesTab() {
   const handleDelete = async (id: string) => {
     setBusy(true);
     try {
-      await bridge.send("profiles.delete", { id });
+      await browser.send("profiles.delete", { id });
       setExpandedId(null);
       await reload();
     } finally {
@@ -1676,8 +1675,8 @@ function DocTypesTab() {
 
   const loadList = useCallback(async () => {
     try {
-      const res = await bridge.send("doc_type.list");
-      setDocTypes(res.doc_types ?? []);
+      const res = await docType.list();
+      setDocTypes((res.doc_types ?? []) as DocTypeSummary[]);
     } catch (err) {
       setError(`doc_type.list: ${(err as Error).message}`);
     }
@@ -1694,7 +1693,11 @@ function DocTypesTab() {
     // Show name/display immediately while description loads
     setDraft({ name: dt.name, display_name: dt.display_name, description: "" });
     try {
-      const res = await bridge.send("doc_type.load", { name: dt.name });
+      const res = (await docType.load(dt.name)) as {
+        name: string;
+        display_name: string;
+        description: string;
+      };
       setDraft({
         name: res.name,
         display_name: res.display_name,
@@ -1723,11 +1726,11 @@ function DocTypesTab() {
     setBusy(true);
     setError(null);
     try {
-      await bridge.send("doc_type.save", {
-        name: draft.name,
-        display_name: draft.display_name || draft.name,
-        description: draft.description,
-      });
+      await docType.save(
+        draft.name,
+        draft.display_name || draft.name,
+        draft.description,
+      );
       await loadList();
       setSelected(draft.name);
       setCreating(false);
@@ -1745,7 +1748,7 @@ function DocTypesTab() {
     setBusy(true);
     setError(null);
     try {
-      await bridge.send("doc_type.delete", { name: selected });
+      await docType.delete(selected);
       await loadList();
       setSelected(null);
       setDraft(null);
@@ -1951,7 +1954,7 @@ function RunnerTab() {
 
   const loadSpaces = useCallback(async () => {
     try {
-      const spaces = await bridge.send("space.list");
+      const spaces = await browser.send("space.list");
       dispatch({ type: "setSpaces", spaces });
     } catch (e) {
       console.warn("space.list failed", e);
@@ -1967,7 +1970,7 @@ function RunnerTab() {
   const switchSpace = useCallback(
     async (id: string) => {
       try {
-        await bridge.send("space.switch", { space_id: id });
+        await browser.send("space.switch", { space_id: id });
         dispatch({ type: "setActiveSpace", id });
       } catch (e) {
         console.warn("space.switch failed", e);
@@ -1981,7 +1984,7 @@ function RunnerTab() {
       // eslint-disable-next-line no-alert
       if (!confirm(`Delete space "${name}"?`)) return;
       try {
-        await bridge.send("space.delete", { space_id: id });
+        await browser.send("space.delete", { space_id: id });
         await loadSpaces();
       } catch (e) {
         console.warn("space.delete failed", e);
@@ -1995,7 +1998,7 @@ function RunnerTab() {
     const root = prompt("Root path:", "/");
     if (!root) return;
     try {
-      await bridge.send("space.create", {
+      await browser.send("space.create", {
         root_path: root,
         profile_id: "default",
       });
@@ -2016,16 +2019,16 @@ function RunnerTab() {
 
     let runId = "";
     try {
-      runId = await bridge.send("agent.run", { task: text });
+      runId = await agentRun(text);
       if (!runId) throw new Error("runtime did not return run_id");
-      await bridge.send("events.subscribe", { run_id: runId }).catch(() => {});
+      await browser.send("events.subscribe", { run_id: runId }).catch(() => {});
     } catch (err) {
       dispatch({ type: "appendResult", chunk: "\n" + (err as Error).message });
       dispatch({ type: "setStatus", status: "failed" });
       return;
     }
 
-    const off = bridge.on("event", (raw: unknown) => {
+    const off = browser.on("event", (raw: unknown) => {
       const ev = raw as Record<string, unknown> | null;
       if (!ev) return;
       if (ev.tag === "event") {
@@ -2213,7 +2216,7 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const provRes = await bridge.send("llm.providers.get");
+        const provRes = await browser.send("llm.providers.get");
         const providers = JSON.parse(provRes.raw || "[]") as Array<{
           id: string;
           base_url?: string;
@@ -2247,7 +2250,7 @@ export function App() {
       const perm = state.permission;
       if (!perm) return;
       if (perm.requestId) {
-        bridge
+        browser
           .send("permission.respond", {
             request_id: perm.requestId,
             decision: allow ? "allow" : "deny",
@@ -2261,7 +2264,7 @@ export function App() {
   );
 
   const onClose = useCallback(() => {
-    bridge.send("shell.popover_close").catch(() => {});
+    browser.send("shell.popover_close").catch(() => {});
   }, []);
 
   return (

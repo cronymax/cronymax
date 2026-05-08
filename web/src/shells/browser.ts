@@ -19,8 +19,6 @@ import {
   SpaceSchema,
   TerminalRowSchema,
   TerminalIdPayloadSchema,
-  TerminalInputPayloadSchema,
-  TerminalOutputPayloadSchema,
   TerminalExitPayloadSchema,
   TerminalListResponseSchema,
   TerminalBlockSchema,
@@ -32,7 +30,6 @@ import {
   PermissionRespondPayloadSchema,
   LlmConfigSchema,
   LlmConfigSetPayloadSchema,
-  AgentRunPayloadSchema,
   BrowserTabSchema,
   TabIdPayloadSchema,
   TabCreatedSchema,
@@ -68,8 +65,7 @@ import {
   InboxListRes,
   InboxStateChangeReq,
   InboxSnoozeReq,
-  TerminalRunPayloadSchema,
-} from "./types";
+} from "../types";
 
 interface ChannelDef<Req extends z.ZodTypeAny, Res extends z.ZodTypeAny> {
   req: Req;
@@ -154,9 +150,6 @@ export const Channels = {
   "terminal.new": chan({ req: EmptySchema, res: TerminalRowSchema }),
   "terminal.switch": chan({ req: TerminalIdPayloadSchema, res: EmptySchema }),
   "terminal.close": chan({ req: TerminalIdPayloadSchema, res: EmptySchema }),
-  "terminal.start": chan({ req: TerminalIdPayloadSchema, res: EmptySchema }),
-  "terminal.stop": chan({ req: TerminalIdPayloadSchema, res: EmptySchema }),
-  "terminal.input": chan({ req: TerminalInputPayloadSchema, res: EmptySchema }),
   "terminal.restart": chan({ req: EmptySchema, res: EmptySchema }),
   "terminal.blocks_load": chan({
     req: TerminalBlocksLoadPayloadSchema,
@@ -166,21 +159,12 @@ export const Channels = {
     req: TerminalBlockSavePayloadSchema,
     res: EmptySchema,
   }),
-  "terminal.run": chan({
-    req: TerminalRunPayloadSchema,
-    res: EmptySchema,
-  }),
-  "terminal.resize": chan({
-    req: z.object({ id: z.string(), cols: z.number(), rows: z.number() }),
-    res: EmptySchema,
-  }),
 
   // ── agent ──────────────────────────────────────────────────────────
   "agent.task_from_command": chan({
     req: AgentTaskFromCommandPayloadSchema,
     res: EmptySchema,
   }),
-  "agent.run": chan({ req: AgentRunPayloadSchema, res: z.string() }),
   "tool.exec": chan({
     req: ToolExecPayloadSchema,
     res: ToolExecResultSchema,
@@ -382,56 +366,8 @@ export const Channels = {
     }),
   }),
 
-  // ── flow run control (legacy FlowRuntime-backed) ───────────────────
-  "flow.run.start": chan({
-    req: z.object({ flow_id: z.string() }),
-    res: z.object({ run_id: z.string() }),
-  }),
-  "flow.run.cancel": chan({
-    req: z.object({ run_id: z.string() }),
-    res: z.unknown(),
-  }),
-
-  // ── agent + doc-type registry reads ───────────────────────────────
-  "agent.registry.list": chan({
-    req: EmptySchema,
-    res: z.object({
-      agents: z.array(
-        z.object({
-          name: z.string(),
-          kind: z.string(),
-          llm: z.string(),
-        }),
-      ),
-    }),
-  }),
-  "agent.registry.load": chan({
-    req: z.object({ name: z.string() }),
-    res: z.object({
-      name: z.string(),
-      kind: z.string(),
-      llm: z.string(),
-      system_prompt: z.string(),
-      memory_namespace: z.string().optional().default(""),
-      tools: z.array(z.string()).optional().default([]),
-    }),
-  }),
-  "agent.registry.save": chan({
-    req: z.object({
-      name: z.string(),
-      kind: z.string().optional().default(""),
-      llm: z.string(),
-      system_prompt: z.string(),
-      memory_namespace: z.string().optional().default(""),
-      /** Comma-separated tool names; empty for the Space default set. */
-      tools_csv: z.string().optional().default(""),
-    }),
-    res: z.object({ ok: z.boolean() }),
-  }),
-  "agent.registry.delete": chan({
-    req: z.object({ name: z.string() }),
-    res: z.object({ ok: z.boolean() }),
-  }),
+  // ── flow run control ────────────────────────────────────────────────
+  // flow.run.cancel is handled via the direct runtime IPC path (flowRun.cancel()).
 
   // ── workspace profile (per-Space sandbox-rule overrides) ──────────
   // Persisted at <workspace>/.cronymax/space.profile.yaml. Stored as
@@ -568,27 +504,7 @@ export const Channels = {
         }),
       ),
     }),
-  }),
-  "doc_type.load": chan({
-    req: z.object({ name: z.string() }),
-    res: z.object({
-      name: z.string(),
-      display_name: z.string(),
-      description: z.string(),
-    }),
-  }),
-  "doc_type.save": chan({
-    req: z.object({
-      name: z.string(),
-      display_name: z.string(),
-      description: z.string(),
-    }),
-    res: z.object({ ok: z.boolean() }),
-  }),
-  "doc_type.delete": chan({
-    req: z.object({ name: z.string() }),
-    res: z.object({ ok: z.boolean() }),
-  }),
+  }), // doc_type.load/save/delete handled via direct runtime IPC (docType.*())
 
   // ── named sandbox profiles (stored in ~/.cronymax/profiles/) ─────────
   "profiles.list": chan({
@@ -630,41 +546,7 @@ export const Channels = {
     res: z.object({ ok: z.boolean() }),
   }),
 
-  // ── flow read (legacy FlowRegistry-backed) ────────────────────────
-  "flow.list": chan({
-    req: EmptySchema,
-    res: z.object({
-      flows: z.array(
-        z.object({
-          id: z.string(),
-          name: z.string(),
-          edge_count: z.number().int().nonnegative(),
-          agents: z.array(z.string()),
-        }),
-      ),
-    }),
-  }),
-  "flow.load": chan({
-    req: z.object({ id: z.string() }),
-    res: z.object({
-      id: z.string(),
-      name: z.string(),
-      description: z.string().optional().default(""),
-      max_review_rounds: z.number().int().nonnegative().optional(),
-      on_review_exhausted: z.string().optional(),
-      reviewer_enabled: z.boolean().optional(),
-      reviewer_timeout_secs: z.number().int().nonnegative().optional(),
-      agents: z.array(z.string()),
-      edges: z.array(
-        z.object({
-          from: z.string(),
-          to: z.string(),
-          port: z.string(),
-          requires_human_approval: z.boolean().optional().default(false),
-        }),
-      ),
-    }),
-  }),
+  // ── flow read — handled via direct runtime IPC (flow.list(), flow.load()) ─
 } as const;
 
 /** ── inbound (broadcast) event payloads ──────────────────────────── */
@@ -672,7 +554,6 @@ export const Events = {
   "terminal.created": TerminalRowSchema,
   "terminal.removed": TerminalIdPayloadSchema,
   "terminal.switched": TerminalIdPayloadSchema,
-  "terminal.output": TerminalOutputPayloadSchema,
   "terminal.exit": TerminalExitPayloadSchema,
   "terminal.restart_requested": EmptySchema,
   "popover.url_changed": z.object({ url: z.string() }),
@@ -706,10 +587,7 @@ export const Events = {
  *  "event" is fast-pathed because it carries both legacy AppEvent payloads
  *  AND runtime-protocol envelopes { tag:"event", subscription, event:{...} }
  *  which do not match AppEventSchema.  Each handler guards its own shape. */
-export const FastPathEvents = new Set<keyof typeof Events>([
-  "terminal.output",
-  "event",
-]);
+export const FastPathEvents = new Set<keyof typeof Events>(["event"]);
 
 export type ChannelName = keyof typeof Channels;
 export type EventName = keyof typeof Events;

@@ -248,8 +248,10 @@ pub struct RuntimeHandler {
         Mutex<HashMap<CorrelationId, tokio::sync::oneshot::Sender<CapabilityResponse>>>,
     /// Per-workspace PTY session managers (Phase 4).
     /// Keyed by workspace_root string so each workspace gets its own manager.
+    /// Wrapped in Arc so the map can be shared across multiple RuntimeHandler
+    /// instances that serve different transports (browser vs renderer).
     terminal_managers:
-        Mutex<HashMap<String, crate::terminal::SharedSessionManager>>,
+        Arc<Mutex<HashMap<String, crate::terminal::SharedSessionManager>>>,
 }
 
 impl RuntimeHandler {
@@ -263,6 +265,18 @@ impl RuntimeHandler {
         workspace_roots: Vec<PathBuf>,
         sandbox_policy: Option<SandboxPolicy>,
     ) -> Self {
+        Self::with_policy_and_managers(authority, workspace_roots, sandbox_policy, None)
+    }
+
+    /// Construct with an explicit sandbox policy and an optional shared terminal
+    /// managers map. Pass the same `Arc` to multiple handlers to let them all
+    /// access the same PTY sessions regardless of which transport created them.
+    pub fn with_policy_and_managers(
+        authority: RuntimeAuthority,
+        workspace_roots: Vec<PathBuf>,
+        sandbox_policy: Option<SandboxPolicy>,
+        terminal_managers: Option<Arc<Mutex<HashMap<String, crate::terminal::SharedSessionManager>>>>,
+    ) -> Self {
         Self {
             authority,
             workspace_roots,
@@ -271,7 +285,8 @@ impl RuntimeHandler {
             fanout: Mutex::new(HashMap::new()),
             flow_contexts: Mutex::new(HashMap::new()),
             pending_capabilities: Mutex::new(HashMap::new()),
-            terminal_managers: Mutex::new(HashMap::new()),
+            terminal_managers: terminal_managers
+                .unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new()))),
         }
     }
 

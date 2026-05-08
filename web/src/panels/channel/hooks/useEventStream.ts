@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useReducer, useRef } from "react";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import type { AppEvent } from "@/types/events";
 
 export interface Scope {
@@ -171,7 +171,7 @@ export function useEventStream(scope: Scope) {
 
     (async () => {
       try {
-        const res = await bridge.send("events.list", {
+        const res = await browser.send("events.list", {
           flow_id: scope.flow_id,
           run_id: scope.run_id,
           limit: 200,
@@ -190,7 +190,7 @@ export function useEventStream(scope: Scope) {
       }
 
       try {
-        await bridge.send("events.subscribe", {
+        await browser.send("events.subscribe", {
           flow_id: scope.flow_id,
           run_id: scope.run_id,
         });
@@ -199,7 +199,7 @@ export function useEventStream(scope: Scope) {
       }
     })();
 
-    const off = bridge.on("event", (payload) => {
+    const off = browser.on("event", (payload) => {
       const e = payload as AppEvent;
       if (!inScope(e, scopeRef.current)) return;
       dispatch({ type: "appended", event: e });

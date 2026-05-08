@@ -11,7 +11,7 @@ import {
   type ClipboardEvent,
 } from "react";
 import { Streamdown } from "streamdown";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import {
   useStore,
   loadChatData,
@@ -35,6 +35,12 @@ import {
   type Thread,
 } from "./store";
 import { useSelectionTooltip } from "./useSelectionTooltip";
+import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
+import {
+  agentRegistry,
+  agentRun,
+  terminal as rt_terminal,
+} from "@/shells/runtime";
 
 // ── picker types ────────────────────────────────────────────────────────
 
@@ -481,7 +487,7 @@ export function App() {
 
   // Load workspace prompts + root + provider models on mount.
   useEffect(() => {
-    bridge
+    browser
       .send("workspace.prompts.list")
       .then((res) => {
         setWorkspacePrompts(
@@ -494,12 +500,12 @@ export function App() {
         );
       })
       .catch(() => undefined);
-    bridge
+    browser
       .send("space.profile.get")
       .then((res) => setWorkspaceRoot(res.workspace_root))
       .catch(() => undefined);
     // Load model list from configured providers
-    bridge
+    browser
       .send("llm.providers.get")
       .then(async ({ raw }) => {
         if (!raw) return;
@@ -610,17 +616,17 @@ export function App() {
   // ── agent catalog ─────────────────────────────────────────────────────
   const refreshAgents = useCallback(async () => {
     try {
-      let res = await bridge.send("agent.registry.list");
+      let res = await agentRegistry.list();
       let names = (res.agents ?? []).map((a) => a.name);
       if (names.length === 0) {
-        await bridge.send("agent.registry.save", {
+        await agentRegistry.save({
           name: "Chat",
           llm: "",
           system_prompt: "You are a helpful assistant.",
           memory_namespace: "",
           tools_csv: "",
         });
-        res = await bridge.send("agent.registry.list");
+        res = await agentRegistry.list();
         names = (res.agents ?? []).map((a) => a.name);
       }
       const selected = loadSelectedAgent(names);
@@ -638,17 +644,17 @@ export function App() {
       // so check whether it's still present in the C++ process before reusing.
       if (currentTid) {
         try {
-          const { items } = await bridge.send("terminal.list");
+          const { items } = await browser.send("terminal.list");
           if (items.some((t) => t.id === currentTid)) return currentTid;
         } catch {
           // Fall through to create a new terminal.
         }
       }
       try {
-        const newTid = await bridge.send("terminal.new");
+        const newTid = await browser.send("terminal.new");
         const tid =
           typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
-        await bridge.send("terminal.start", { id: tid });
+        await rt_terminal.start(tid);
         dispatch({ type: "setTerminalTid", tid });
         // Persist immediately
         const { data } = loadChatData(chatId);
@@ -667,7 +673,7 @@ export function App() {
       // Ask the native shell which tab we are, so we can restore the same
       // chatId that was bound to this tab in a previous session.
       try {
-        const tabInfo = await bridge.send("shell.this_tab_id");
+        const tabInfo = await browser.send("shell.this_tab_id");
         if (tabInfo?.meta?.chat_id) {
           // Seed sessionStorage so ensureChat() picks up the persisted chatId.
           sessionStorage.setItem("cronymax_chat_tab_id", tabInfo.meta.chat_id);
@@ -680,7 +686,7 @@ export function App() {
 
       // Register this tab's chatId with the native shell so it survives
       // the next app restart (no-op if already registered with same value).
-      void bridge
+      void browser
         .send("shell.tab_set_meta", { key: "chat_id", value: id })
         .catch(() => {});
 
@@ -735,26 +741,33 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch, refreshAgents]);
 
-  // Use refs so the listener always reads latest values without re-subscribing
+  // Use refs so the listener always reads latest values without re-subscribing.
   const runningBlockIdRef = useRef<string | null>(null);
-  const terminalTidRef = useRef<string | null>(null);
   runningBlockIdRef.current = state.runningBlockId;
-  terminalTidRef.current = state.terminalTid;
 
-  // ── terminal.output → ShellBlock accumulation ─────────────────────────
-  // Subscribe once (stable); read live values from refs to avoid stale closures.
-  useEffect(() => {
-    const off = bridge.on("terminal.output", (raw: unknown) => {
-      const p = raw as { id?: string; data?: string } | null;
-      if (!p || !p.id || !p.data) return;
-      if (p.id !== terminalTidRef.current) return;
+  // ── terminal output → ShellBlock accumulation ──────────────────────────
+  // Topic-scoped to the active terminal; auto-resubscribes on space switch.
+  useRuntimeEvent(
+    state.terminalTid ? `terminal:${state.terminalTid}` : "",
+    (eventJson: string) => {
       const blockId = runningBlockIdRef.current;
       if (!blockId) return;
 
       const info = shellSentinelRef.current.get(blockId);
       if (!info) return;
 
-      let data = p.data;
+      let data: string;
+      try {
+        const ev = JSON.parse(eventJson) as Record<string, unknown>;
+        const pl = ev?.payload as Record<string, unknown> | undefined;
+        if (pl?.kind !== "raw") return;
+        const dataObj = pl?.data as Record<string, unknown> | undefined;
+        const b64 = dataObj?.data as string | undefined;
+        if (!b64) return;
+        data = atob(b64);
+      } catch {
+        return;
+      }
 
       // Phase 1: waiting for start marker — discard all preamble
       // (shell prompts, echoed command line, etc.)
@@ -802,10 +815,8 @@ export function App() {
         chunk: data,
         now: Date.now(),
       });
-    });
-    return off;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dispatch]);
+    },
+  );
 
   // ── auto scroll ──────────────────────────────────────────────────────
   useLayoutEffect(() => {
@@ -976,16 +987,15 @@ export function App() {
         dispatch({ type: "setRunningBlockId", id: blockId });
         dispatch({ type: "setRunning", running: true });
         dispatch({ type: "clearPinnedComments" });
-        // Eagerly update refs so the terminal.output listener is ready
-        // immediately — before React re-renders and updates from state.
+        // Eagerly update the block-id ref so the runtime event handler is
+        // ready immediately — before React re-renders and updates from state.
         runningBlockIdRef.current = blockId;
-        terminalTidRef.current = tid;
 
         // Bracket the command with start/end markers so preamble (prompt, echo)
         // is automatically discarded. Single-quoted start (no expansion needed).
         const wrapped = `echo '${startMarker}'; ${command}; _ec=$?; echo "${endMarker}:$_ec"`;
         try {
-          await bridge.send("terminal.run", { id: tid, command: wrapped });
+          await rt_terminal.run(tid, wrapped);
         } catch {
           dispatch({
             type: "finalizeShellBlock",
@@ -1056,7 +1066,7 @@ export function App() {
       const seenSeqs = new Set<number>();
       let runId = "";
 
-      const off = bridge.on("event", (raw: unknown) => {
+      const off = browser.on("event", (raw: unknown) => {
         const ev = raw as Record<string, unknown> | null;
         if (!ev) return;
 
@@ -1164,9 +1174,9 @@ export function App() {
         if (workspaceRoot) {
           body = `[Workspace: ${workspaceRoot}]\n\n${body}`;
         }
-        runId = await bridge.send("agent.run", { task: body });
+        runId = await agentRun(body);
         if (!runId) throw new Error("runtime did not return run_id");
-        await bridge
+        await browser
           .send("events.subscribe", { run_id: runId })
           .catch(() => {});
       } catch (err) {

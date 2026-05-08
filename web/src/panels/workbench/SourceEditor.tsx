@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 
 import { BLOCK_MARKER_REGEX } from "./blockIds";
 import type { WorkbenchParams } from "./url";
@@ -50,7 +50,7 @@ export function SourceEditor({ params }: { params: WorkbenchParams }) {
     let cancelled = false;
     setContent(null);
     setError(null);
-    void bridge
+    void browser
       .send("document.read", { flow: params.flow, name: params.doc })
       .then((res) => {
         if (cancelled) return;
@@ -74,7 +74,7 @@ export function SourceEditor({ params }: { params: WorkbenchParams }) {
     const text = ed.getValue();
     setStatus({ state: "saving", message: "Saving…" });
     try {
-      const res = (await bridge.send("document.submit", {
+      const res = (await browser.send("document.submit", {
         flow: params.flow,
         name: params.doc,
         content: text,

@@ -5,7 +5,7 @@ import {
   type WorkbenchMode,
   type WorkbenchParams,
 } from "./url";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 
 import { CommentRail } from "./CommentRail";
@@ -72,7 +72,7 @@ function RailHost({ params }: { params: WorkbenchParams }) {
   const refresh = useCallback(async () => {
     if (!params.flow || !params.doc) return;
     try {
-      const res = (await bridge.send("document.read", {
+      const res = (await browser.send("document.read", {
         flow: params.flow,
         name: params.doc,
       })) as { content: string };

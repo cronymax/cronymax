@@ -11,7 +11,7 @@ import { gfm } from "@milkdown/preset-gfm";
 import { nord } from "@milkdown/theme-nord";
 import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
 
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 
 import {
   assignMissingBlockIds,
@@ -115,7 +115,7 @@ export function Editor({ params }: { params: WorkbenchParams }) {
     let cancelled = false;
     setInitial(null);
     setError(null);
-    void bridge
+    void browser
       .send("document.read", { flow: params.flow, name: params.doc })
       .then((res) => {
         if (cancelled) return;
@@ -140,7 +140,7 @@ export function Editor({ params }: { params: WorkbenchParams }) {
       // Mint markers for any blocks the user added that don't have one.
       // Idempotent on existing markers — see web/test/blockids.test.ts.
       const content = assignMissingBlockIds(raw);
-      const res = (await bridge.send("document.submit", {
+      const res = (await browser.send("document.submit", {
         flow: params.flow,
         name: params.doc,
         content,

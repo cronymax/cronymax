@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { bridge } from "@/bridge";
+import { browser } from "@/shells/bridge";
 import { useBridgeEvent } from "./useBridgeEvent";
 import type { ThemeMode, ThemeResolved } from "@/types";
 
@@ -40,7 +40,7 @@ export function useTheme(): UseThemeResult {
 
   useEffect(() => {
     let cancelled = false;
-    bridge
+    browser
       .send("theme.get")
       .then((res) => {
         if (cancelled) return;
@@ -63,7 +63,7 @@ export function useTheme(): UseThemeResult {
   });
 
   function setMode(next: ThemeMode) {
-    bridge.send("theme.set", { mode: next }).catch(() => {
+    browser.send("theme.set", { mode: next }).catch(() => {
       // Ignore — the broadcast is the authoritative update.
     });
   }

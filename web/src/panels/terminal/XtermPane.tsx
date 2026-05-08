@@ -2,15 +2,15 @@
  * XtermPane — mounts an xterm.js Terminal into a React ref.
  *
  * Wires:
- *   terminal.output  →  xterm.write (raw bytes, no stripping)
- *   xterm.onData     →  terminal.input
- *   ResizeObserver   →  fitAddon.fit() + terminal.resize
+ *   terminal:<tid> runtime event  →  xterm.write (raw bytes, no stripping)
+ *   xterm.onData                  →  terminal.input
+ *   ResizeObserver                →  fitAddon.fit() + terminal.resize
  */
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { bridge } from "@/bridge";
-import { useBridgeEvent } from "@/hooks/useBridgeEvent";
+import { terminal } from "@/shells/runtime";
+import { useTerminalOutput } from "@/hooks/useTerminalOutput";
 
 interface Props {
   tid: string;
@@ -53,13 +53,7 @@ export function XtermPane({ tid, onCwdChange }: Props) {
       term.open(container);
       try {
         fit.fit();
-        bridge
-          .send("terminal.resize", {
-            id: tid,
-            cols: term.cols,
-            rows: term.rows,
-          })
-          .catch(() => {});
+        terminal.resize(tid, term.cols, term.rows);
       } catch {
         /* ignore */
       }
@@ -72,7 +66,7 @@ export function XtermPane({ tid, onCwdChange }: Props) {
 
     // Input: xterm → pty
     const disposeData = term.onData((data) => {
-      bridge.send("terminal.input", { id: tid, data }).catch(() => {});
+      terminal.input(tid, data);
     });
 
     // Resize: container → fit → pty
@@ -81,7 +75,7 @@ export function XtermPane({ tid, onCwdChange }: Props) {
       try {
         fitRef.current.fit();
         const { cols, rows } = termRef.current;
-        bridge.send("terminal.resize", { id: tid, cols, rows }).catch(() => {});
+        terminal.resize(tid, cols, rows);
       } catch {
         // ignore if terminal unmounted
       }
@@ -106,10 +100,7 @@ export function XtermPane({ tid, onCwdChange }: Props) {
   // sequences in the raw stream to extract CWD. Parsing here — rather than
   // via term.parser.registerOscHandler — catches sequences that arrive before
   // the RAF fires and works with any shell/prompt that emits either format.
-  useBridgeEvent("terminal.output", (p) => {
-    if (!p?.id || p.id !== tid) return;
-    const data = p.data as string | undefined;
-    if (!data) return;
+  useTerminalOutput(tid, (data) => {
     termRef.current?.write(data);
 
     // OSC 7: ESC ] 7 ; <uri> BEL-or-ST
