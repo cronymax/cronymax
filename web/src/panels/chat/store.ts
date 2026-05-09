@@ -68,6 +68,43 @@ export interface Thread {
   expanded: boolean;
 }
 
+export type TraceEntry =
+  | {
+      kind: "assistant_turn";
+      turnId: number;
+      text: string;
+      finishReason: string;
+      ts: number;
+    }
+  | {
+      kind: "tool_start";
+      toolCallId: string;
+      tool: string;
+      args: unknown;
+      ts: number;
+    }
+  | {
+      kind: "tool_done";
+      toolCallId: string;
+      tool: string;
+      result: unknown;
+      terminal: boolean;
+      ts: number;
+    }
+  | {
+      kind: "approval_request";
+      reviewId: string;
+      tool: string;
+      args: unknown;
+      ts: number;
+    }
+  | {
+      kind: "approval_resolved";
+      reviewId: string;
+      decision: "approve" | "reject";
+      ts: number;
+    };
+
 export interface ConversationBlock {
   kind: "conversation";
   id: string;
@@ -78,7 +115,7 @@ export interface ConversationBlock {
   /** Streamed assistant response */
   assistantContent: string;
   agentName?: string;
-  traceContent: string;
+  traceEntries: TraceEntry[];
   /** "running" while streaming, "ok" or "fail" after final run_status */
   status: "running" | "ok" | "fail";
   comments: Comment[];
@@ -133,6 +170,13 @@ export interface State {
   selectedFlow: string;
   /** One-time migration notice when old v1 history was detected */
   migrationNotice: string | null;
+  /** Non-null when the running agent is waiting for a tool approval decision */
+  awaitingApproval: {
+    runId: string;
+    reviewId: string;
+    toolName: string;
+    args: unknown;
+  } | null;
 }
 
 export type Action =
@@ -147,7 +191,7 @@ export type Action =
     }
   | { type: "createBlock"; block: Block }
   | { type: "setAssistantContent"; id: string; content: string }
-  | { type: "appendToTrace"; id: string; chunk: string }
+  | { type: "appendTraceEntry"; id: string; entry: TraceEntry }
   | {
       type: "finalizeBlock";
       id: string;
@@ -176,6 +220,14 @@ export type Action =
   | { type: "setFlows"; flows: string[]; selected: string }
   | { type: "setSelectedFlow"; name: string }
   | { type: "clearMigrationNotice" }
+  | {
+      type: "setAwaitingApproval";
+      runId: string;
+      reviewId: string;
+      toolName: string;
+      args: unknown;
+    }
+  | { type: "clearAwaitingApproval" }
   | { type: "clearHistory" };
 
 // ── Shell output processor ────────────────────────────────────────────
@@ -210,6 +262,7 @@ const initial: State = {
   flows: [],
   selectedFlow: "",
   migrationNotice: null,
+  awaitingApproval: null,
 };
 
 // ── Reducer ────────────────────────────────────────────────────────────
@@ -240,12 +293,12 @@ function reducer(state: State, action: Action): State {
       return { ...state, blocks: next };
     }
 
-    case "appendToTrace": {
+    case "appendTraceEntry": {
       const idx = state.blocks.findIndex((b) => b.id === action.id);
       if (idx < 0) return state;
       const blk = state.blocks[idx] as ConversationBlock;
       const next = state.blocks.slice();
-      next[idx] = { ...blk, traceContent: blk.traceContent + action.chunk };
+      next[idx] = { ...blk, traceEntries: [...blk.traceEntries, action.entry] };
       return { ...state, blocks: next };
     }
 
@@ -383,6 +436,20 @@ function reducer(state: State, action: Action): State {
     case "clearMigrationNotice":
       return { ...state, migrationNotice: null };
 
+    case "setAwaitingApproval":
+      return {
+        ...state,
+        awaitingApproval: {
+          runId: action.runId,
+          reviewId: action.reviewId,
+          toolName: action.toolName,
+          args: action.args,
+        },
+      };
+
+    case "clearAwaitingApproval":
+      return { ...state, awaitingApproval: null };
+
     case "clearHistory":
       return { ...state, blocks: [], activeView: { kind: "main" } };
 
@@ -399,6 +466,7 @@ export const { Provider, useStore } = createPanelStore<State, Action>(
 // ── localStorage helpers ───────────────────────────────────────────────
 
 const chatsListKey = "chats";
+const chatStorageKeyV3 = (id: string) => `chat_history_v3:${id}`;
 const chatStorageKeyV2 = (id: string) => `chat_history_v2:${id}`;
 const chatStorageKeyV1 = (id: string) => `chat_history:${id}`;
 
@@ -425,12 +493,35 @@ export function loadChatData(id: string): {
   data: PersistedChatData;
   migrationNotice: string | undefined;
 } {
-  // Try v2 first
+  // Try v3 first
+  try {
+    const raw = localStorage.getItem(chatStorageKeyV3(id));
+    if (raw) {
+      const parsed = JSON.parse(raw) as PersistedChatData;
+      return { data: parsed, migrationNotice: undefined };
+    }
+  } catch {
+    /* fall through to v2 */
+  }
+
+  // Try v2 — strip traceContent, inject traceEntries: [], migrate to v3
   try {
     const raw = localStorage.getItem(chatStorageKeyV2(id));
     if (raw) {
       const parsed = JSON.parse(raw) as PersistedChatData;
-      return { data: parsed, migrationNotice: undefined };
+      const migrated: PersistedChatData = {
+        ...parsed,
+        blocks: parsed.blocks.map((b) => {
+          if (b.kind !== "conversation") return b;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const { traceContent: _tc, ...rest } = b as any;
+          void _tc;
+          return { ...rest, traceEntries: [] } as ConversationBlock;
+        }),
+      };
+      localStorage.setItem(chatStorageKeyV3(id), JSON.stringify(migrated));
+      localStorage.removeItem(chatStorageKeyV2(id));
+      return { data: migrated, migrationNotice: undefined };
     }
   } catch {
     /* fall through to v1 */
@@ -458,7 +549,7 @@ export function loadChatData(id: string): {
             attachments: [],
             assistantContent: m.content,
             agentName: m.agentName,
-            traceContent: "",
+            traceEntries: [],
             status: "ok",
             comments: [],
             createdAt: Date.now(),
@@ -495,7 +586,7 @@ export function persistChatData(id: string, data: PersistedChatData): void {
         return b;
       }),
     };
-    localStorage.setItem(chatStorageKeyV2(id), JSON.stringify(safe));
+    localStorage.setItem(chatStorageKeyV3(id), JSON.stringify(safe));
   } catch {
     /* ignore quota */
   }

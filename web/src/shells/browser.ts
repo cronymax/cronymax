@@ -314,18 +314,20 @@ export const Channels = {
   }),
   "review.approve": chan({
     req: z.object({
-      flow: z.string(),
-      run_id: z.string(),
-      name: z.string(),
+      flow: z.string().optional(),
+      run_id: z.string().optional(),
+      name: z.string().optional(),
+      review_id: z.string().optional(),
       body: z.string().optional(),
     }),
     res: z.unknown(),
   }),
   "review.request_changes": chan({
     req: z.object({
-      flow: z.string(),
-      run_id: z.string(),
-      name: z.string(),
+      flow: z.string().optional(),
+      run_id: z.string().optional(),
+      name: z.string().optional(),
+      review_id: z.string().optional(),
       body: z.string().optional(),
     }),
     res: z.unknown(),

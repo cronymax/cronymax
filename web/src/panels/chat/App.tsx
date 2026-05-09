@@ -29,6 +29,8 @@ import {
   type Attachment,
   type Thread,
 } from "./store";
+import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
+import { TraceViewer } from "./TraceViewer";
 import { useSelectionTooltip } from "./useSelectionTooltip";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import {
@@ -212,11 +214,7 @@ function ConversationBlockView({
       </div>
 
       {/* Trace */}
-      {block.traceContent && (
-        <div className="py-1 font-mono text-[11px] text-cronymax-caption whitespace-pre-wrap">
-          {block.traceContent}
-        </div>
-      )}
+      <TraceViewer entries={block.traceEntries} startExpanded={isStreaming} />
 
       {/* Assistant response */}
       {(block.assistantContent || block.status === "running") && (
@@ -1039,7 +1037,7 @@ export function App() {
         attachments: state.attachments.slice(),
         assistantContent: "",
         agentName: speaker || undefined,
-        traceContent: speaker ? `▶ ${speaker} running…` : "▶ running…",
+        traceEntries: [],
         status: "running",
         comments: [],
         createdAt: Date.now(),
@@ -1053,6 +1051,10 @@ export function App() {
       let assistantText = "";
       const seenSeqs = new Set<number>();
       let runId = "";
+
+      // Track pending review info from awaiting_review status so we can
+      // pair it with the arriving PermissionRequest event.
+      let pendingReviewId: string | null = null;
 
       const off = browser.on("event", (raw: unknown) => {
         const ev = raw as Record<string, unknown> | null;
@@ -1090,12 +1092,7 @@ export function App() {
               status === "failed" ||
               status === "cancelled"
             ) {
-              const finalStatus = status === "succeeded" ? "ok" : "fail";
-              dispatch({
-                type: "appendToTrace",
-                id: blockId,
-                chunk: status === "succeeded" ? "\n✓ done" : `\n✗ ${status}`,
-              });
+              dispatch({ type: "clearAwaitingApproval" });
               if (!assistantText) {
                 assistantText =
                   status === "succeeded" ? "(completed)" : "(no output)";
@@ -1108,7 +1105,7 @@ export function App() {
               dispatch({
                 type: "finalizeBlock",
                 id: blockId,
-                status: finalStatus,
+                status: status === "succeeded" ? "ok" : "fail",
                 agentName: speaker || undefined,
               });
 
@@ -1120,13 +1117,143 @@ export function App() {
               dispatch({ type: "setRunning", running: false });
               dispatch({ type: "setRunningBlockId", id: null });
               inputRef.current?.focus();
+            } else if (status === "awaiting_review") {
+              // Agent is waiting for approval — store the review_id if available
+              const rid = pl.review_id as string | undefined;
+              if (rid) pendingReviewId = rid;
+              // Don't finalize or stop running — just await PermissionRequest event
+            } else if (status === "running") {
+              // Resumed after approval was granted
+              dispatch({ type: "clearAwaitingApproval" });
+            }
+          } else if (kind === "permission_request") {
+            // Tool approval request: read trust and decide automatically or ask user
+            const reviewId =
+              (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
+            const req =
+              (pl.request as Record<string, unknown> | undefined) ?? {};
+            const toolName =
+              (req.tool_name as string | undefined) ??
+              (pl.tool_name as string | undefined) ??
+              "";
+            const args = req.args ?? pl.args ?? {};
+            const category = toolName.split("_")[0] ?? toolName;
+
+            // Read trust level for this category from localStorage
+            const trustMap = loadTrustMap();
+            const trust = trustMap[category] ?? "ask";
+
+            if (trust === "autopilot") {
+              browser
+                .send("review.approve", { review_id: reviewId })
+                .catch(() => undefined);
+            } else if (trust === "bypass") {
+              browser
+                .send("review.request_changes", { review_id: reviewId })
+                .catch(() => undefined);
+            } else {
+              // "ask" — show the approval card
+              dispatch({
+                type: "setAwaitingApproval",
+                runId,
+                reviewId,
+                toolName,
+                args,
+              });
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "approval_request",
+                  reviewId,
+                  tool: toolName,
+                  args,
+                  ts: Date.now(),
+                },
+              });
+            }
+          } else if (kind === "trace") {
+            // Structured trace events from the runtime
+            const trace =
+              (pl.trace as Record<string, unknown> | undefined) ?? pl;
+            const traceKind = trace.kind as string | undefined;
+
+            if (traceKind === "assistant_turn") {
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "assistant_turn",
+                  // Rust emits "turn" (not "turn_id")
+                  turnId:
+                    (trace.turn as number | undefined) ??
+                    (trace.turn_id as number | undefined) ??
+                    0,
+                  text: (trace.text as string | undefined) ?? "",
+                  finishReason:
+                    (trace.finish_reason as string | undefined) ?? "",
+                  ts: Date.now(),
+                },
+              });
+            } else if (traceKind === "tool_start") {
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "tool_start",
+                  toolCallId: (trace.tool_call_id as string | undefined) ?? "",
+                  tool: (trace.tool as string | undefined) ?? "",
+                  // Rust emits "arguments" (not "args")
+                  args: trace.arguments ?? trace.args ?? {},
+                  ts: Date.now(),
+                },
+              });
+            } else if (traceKind === "tool_done") {
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "tool_done",
+                  toolCallId: (trace.tool_call_id as string | undefined) ?? "",
+                  tool: (trace.tool as string | undefined) ?? "",
+                  result: trace.result ?? {},
+                  terminal: (trace.terminal as boolean | undefined) ?? false,
+                  ts: Date.now(),
+                },
+              });
+            } else if (traceKind === "review_resolved") {
+              const resolvedId = (trace.review_id as string | undefined) ?? "";
+              const decision =
+                (trace.decision as string | undefined) === "approve"
+                  ? "approve"
+                  : "reject";
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "approval_resolved",
+                  reviewId: resolvedId,
+                  decision,
+                  ts: Date.now(),
+                },
+              });
             }
           } else if (kind === "log") {
-            dispatch({
-              type: "appendToTrace",
-              id: blockId,
-              chunk: `\n→ ${pl.message ?? ""}`,
-            });
+            // Legacy log events — emit as tool_start-like trace entries for visibility
+            const message = (pl.message as string | undefined) ?? "";
+            if (message) {
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "tool_start",
+                  toolCallId: "",
+                  tool: "log",
+                  args: { message },
+                  ts: Date.now(),
+                },
+              });
+            }
           }
           return;
         }
@@ -1135,9 +1262,15 @@ export function App() {
         if (ev.kind === "error") {
           const pl2 = (ev.payload as Record<string, unknown> | undefined) ?? {};
           dispatch({
-            type: "appendToTrace",
+            type: "appendTraceEntry",
             id: blockId,
-            chunk: `\n✗ ${pl2.message ?? "error"}`,
+            entry: {
+              kind: "tool_start",
+              toolCallId: "",
+              tool: "error",
+              args: { message: pl2.message ?? "error" },
+              ts: Date.now(),
+            },
           });
         }
       });
@@ -1175,10 +1308,25 @@ export function App() {
           status: "fail",
         });
         dispatch({
-          type: "appendToTrace",
+          type: "appendTraceEntry",
           id: blockId,
-          chunk: "\n✗ Failed to start: " + (err as Error).message,
+          entry: {
+            kind: "tool_start",
+            toolCallId: "",
+            tool: "error",
+            args: {
+              message:
+                "Failed to start: " +
+                (err instanceof Error
+                  ? err.message
+                  : typeof err === "string"
+                    ? err
+                    : String(err)),
+            },
+            ts: Date.now(),
+          },
         });
+        dispatch({ type: "clearAwaitingApproval" });
         dispatch({ type: "setRunning", running: false });
         dispatch({ type: "setRunningBlockId", id: null });
         return;
@@ -1581,6 +1729,18 @@ export function App() {
 
       {/* ── Copilot-like composer ──────────────────────────────────── */}
       <form onSubmit={onSubmit} className="px-3 pb-3 pt-1">
+        {/* Approval card — shown when agent awaits tool review */}
+        {state.awaitingApproval && (
+          <ApprovalCard
+            runId={state.awaitingApproval.runId}
+            reviewId={state.awaitingApproval.reviewId}
+            toolName={state.awaitingApproval.toolName}
+            args={state.awaitingApproval.args}
+            onAllow={() => dispatch({ type: "clearAwaitingApproval" })}
+            onDeny={() => dispatch({ type: "clearAwaitingApproval" })}
+          />
+        )}
+
         {/* Attachment tray sits above the editor box */}
         <AttachmentTray
           attachments={state.attachments}
@@ -1695,12 +1855,15 @@ export function App() {
               ref={inputRef}
               rows={1}
               autoFocus
+              disabled={!!state.awaitingApproval}
               placeholder={
-                inputMode === "shell"
-                  ? "shell command…"
-                  : inputMode === "command"
-                    ? "command…"
-                    : "Ask anything… (@AgentName to address one, $ for shell, / for commands)"
+                state.awaitingApproval
+                  ? "Waiting for tool approval…"
+                  : inputMode === "shell"
+                    ? "shell command…"
+                    : inputMode === "command"
+                      ? "command…"
+                      : "Ask anything… (@AgentName to address one, $ for shell, / for commands)"
               }
               onKeyDown={onKeyDown}
               onChange={onInputChange}

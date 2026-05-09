@@ -45,7 +45,7 @@ use crate::sandbox::shell_gate::PolicyShell;
 use uuid::Uuid;
 
 use super::authority::{AuthorityError, RuntimeAuthority, SubscribeOutcome};
-use super::state::{PermissionState, RunId, ReviewId, SpaceId};
+use super::state::{PermissionState, RunId, ReviewId, Space, SpaceId};
 
 // ── Shared context for one flow run ──────────────────────────────────────────
 
@@ -443,6 +443,13 @@ impl Handler for RuntimeHandler {
                     .to_string();
 
                 info!(%base_url, %model, has_key = api_key.is_some(), "start_run: LLM config");
+                // Auto-register the space if not already known to the authority.
+                // The C++ host injects space_id from SpaceManager; the authority
+                // requires an explicit upsert before it can track runs.
+                let _ = self.authority.upsert_space(Space {
+                    id: space,
+                    name: space.to_string(),
+                });
                 match self.authority.start_run(space, None, payload) {
                     Ok(run_id) => {
                         info!(%run_id, "start_run: created run, setting up fan-out");
