@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     // Attach both transports to the shared RuntimeAuthority.  Each call
     // to attach_transport spawns an independent dispatch session; they share
     // the same subscription bus via the Arc<RuntimeAuthority>.
-    let _session = bundle.runtime.attach_transport(transport);
+    let browser_session = bundle.runtime.attach_transport(transport);
     let _renderer_session = bundle.runtime.attach_transport(renderer_transport);
 
     tracing::info!(
@@ -48,7 +48,26 @@ async fn main() -> Result<()> {
         "crony up; awaiting shutdown signal"
     );
 
-    wait_for_shutdown().await;
+    // Race the shutdown signal against the browser transport session.
+    // When the session exits (e.g. idle timeout → host assumed disconnected)
+    // we exit immediately so the C++ supervisor can respawn a fresh crony.
+    tokio::select! {
+        _ = wait_for_shutdown() => {
+            tracing::info!("shutdown signal received");
+        }
+        result = browser_session => {
+            match result {
+                Ok(Ok(())) => tracing::warn!("browser transport session ended cleanly; exiting"),
+                Ok(Err(e)) => tracing::warn!("browser transport session error: {e}; exiting"),
+                Err(e) => tracing::warn!("browser transport task panicked: {e}; exiting"),
+            }
+            // Force-exit immediately so background threads (PTY I/O, spawn_blocking
+            // tasks, etc.) cannot delay process termination.  The C++ supervisor
+            // detects the exit via waitpid and respawns a fresh crony.
+            // stdout/stderr are flushed by libc's atexit handlers.
+            std::process::exit(0);
+        }
+    }
 
     crony::lifecycle::shutdown();
     tracing::info!("crony exited cleanly");

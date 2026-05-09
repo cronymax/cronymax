@@ -145,9 +145,20 @@ class RuntimeProxy {
     capability_handler_ = std::move(h);
   }
 
+  // Optional callback fired (on the supervisor thread) just before the runtime
+  // is respawned after a crash/disconnect. Use to clear stale renderer state.
+  void SetRestartCallback(std::function<void()> cb) {
+    restart_cb_ = std::move(cb);
+  }
+
  private:
   // Called by the RuntimeBridge pump for every received message.
   void OnPayload(const std::string& json_payload);
+
+  // Drain all pending_ callbacks with a "runtime restarted" error.
+  // Called when the supervisor detects the runtime child has exited and is
+  // about to respawn — prevents hung Promises on the renderer side.
+  void HandleBridgeRestarting();
 
   // Dispatch helpers.
   void HandleControlReply(const nlohmann::json& msg);
@@ -185,6 +196,9 @@ class RuntimeProxy {
   // Capability handler.
   std::mutex cap_mu_;
   CapabilityHandler capability_handler_;
+
+  // Optional restart callback (fires on supervisor thread before respawn).
+  std::function<void()> restart_cb_;
 };
 
 }  // namespace cronymax

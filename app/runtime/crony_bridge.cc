@@ -746,6 +746,11 @@ void RuntimeBridge::SupervisorLoop() {
         }
         if (pump_thread_.joinable()) pump_thread_.join();
 
+        // Notify subscribers (e.g. RuntimeProxy) that the runtime is about to
+        // restart.  RuntimeProxy::HandleBridgeRestarting() drains its pending_
+        // callbacks with errors so renderer Promises reject instead of hanging.
+        DispatchPayload(R"({"tag":"bridge_restarting"})");
+
         if (!supervisor_stop_.load()) {
           SpawnAndHandshake();
         }

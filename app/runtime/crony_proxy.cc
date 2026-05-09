@@ -255,6 +255,8 @@ void RuntimeProxy::OnPayload(const std::string& json_payload) {
     HandleEvent(msg);
   } else if (tag == "capability_call") {
     HandleCapabilityCall(msg);
+  } else if (tag == "bridge_restarting") {
+    HandleBridgeRestarting();
   }
   // "welcome" / "goodbye" / others: no action needed here; RuntimeBridge
   // has already handled the handshake.
@@ -302,6 +304,45 @@ void RuntimeProxy::HandleControlReply(const nlohmann::json& msg) {
   if (entry.cb) {
     entry.cb(response, is_error);
   }
+}
+
+// ---------------------------------------------------------------------------
+// HandleBridgeRestarting
+//
+// Called (via the sentinel payload "bridge_restarting") by RuntimeBridge's
+// supervisor thread just before spawning a new crony child. Drains all
+// in-flight pending_ callbacks with an error so that renderer Promises
+// reject immediately rather than hanging forever.  Also fires restart_cb_
+// so that BridgeHandler can clear stale renderer subscriptions.
+// ---------------------------------------------------------------------------
+
+void RuntimeProxy::HandleBridgeRestarting() {
+  std::unordered_map<std::string, PendingEntry> pending_snapshot;
+  {
+    std::lock_guard lock(pending_mu_);
+    pending_snapshot = std::move(pending_);
+    pending_.clear();
+  }
+
+  const nlohmann::json err_resp = {
+      {"kind", "err"},
+      {"error", {{"code", "runtime_restarted"},
+                 {"message", "runtime restarted; retrying"}}}};
+
+  for (auto& [id, entry] : pending_snapshot) {
+    if (entry.sync_done) {
+      std::lock_guard sl(*entry.sync_mu);
+      *entry.sync_result = err_resp;
+      *entry.sync_error  = true;
+      *entry.sync_done   = true;
+      entry.sync_cv->notify_all();
+    } else if (entry.cb) {
+      entry.cb(err_resp, /*is_error=*/true);
+    }
+  }
+
+  // Notify the bridge handler (or whoever registered) to clear stale state.
+  if (restart_cb_) restart_cb_();
 }
 
 // ---------------------------------------------------------------------------

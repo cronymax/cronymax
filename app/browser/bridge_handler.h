@@ -154,7 +154,26 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   // the legacy in-process runtime.
   void SetRuntimeProxy(RuntimeProxy* proxy) {
     runtime_proxy_ = proxy;
-    if (proxy) SetupCapabilityHandler();
+    if (proxy) {
+      SetupCapabilityHandler();
+      // When the supervisor restarts crony, clear stale renderer subscriptions
+      // so their event tokens don't accumulate and never fire again.
+      proxy->SetRestartCallback([this]() {
+        std::unordered_map<std::string, RendererSub> dead_subs;
+        {
+          std::lock_guard lock(renderer_subs_mu_);
+          dead_subs = std::move(renderer_subs_);
+          renderer_subs_.clear();
+        }
+        // Unsubscribe event tokens from the proxy outside the lock to avoid
+        // lock-ordering issues.
+        for (auto& [sub_id, sub] : dead_subs) {
+          if (runtime_proxy_ && sub.ev_token >= 0) {
+            runtime_proxy_->UnsubscribeEvents(sub.ev_token);
+          }
+        }
+      });
+    }
   }
 
   // refine-ui-theme-layout: register theme callbacks (called by

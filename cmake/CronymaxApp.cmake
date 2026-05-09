@@ -220,13 +220,18 @@ if(CRONYMAX_RUNTIME_BINARY)
     set(_cronymax_runtime_dest
       "$<TARGET_FILE_DIR:cronymax_app>/crony${CMAKE_EXECUTABLE_SUFFIX}")
   endif()
-  add_custom_command(TARGET cronymax_app POST_BUILD
+  # Use a dedicated custom target (not POST_BUILD on cronymax_app) so the
+  # copy runs whenever cronymax_rust is rebuilt — even if no C++ file changed
+  # and cronymax_app itself is not re-linked.
+  add_custom_target(cronymax_bundle_crony ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "${CRONYMAX_RUNTIME_BINARY}"
       "${_cronymax_runtime_dest}"
+    DEPENDS cronymax_rust
     COMMENT "Bundling crony binary"
     VERBATIM
   )
+  add_dependencies(cronymax_app cronymax_bundle_crony)
 endif()
 
 # ---------------------------------------------------------------------------

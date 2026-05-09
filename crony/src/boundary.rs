@@ -208,7 +208,10 @@ impl Transport for GipsTransport {
         // Timeout so a stale runtime self-terminates when the C++ host
         // disappears (e.g. crash) without sending a clean Goodbye.  The
         // supervisor on the C++ side detects child exit and respawns.
-        const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+        // Use a generous timeout (30 min) so normal app idle doesn't
+        // trigger a false disconnect; the C++ side sends a Goodbye on
+        // clean shutdown, so a crash is the main case we guard against.
+        const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
         match tokio::time::timeout(IDLE_TIMEOUT, rx.recv()).await {
             Ok(Some(msg)) => Ok(msg),
             Ok(None) => Err(TransportError::Closed),
