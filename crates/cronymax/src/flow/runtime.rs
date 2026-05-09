@@ -1,25 +1,26 @@
 //! Flow run state machine, persistence, and event emission.
 //!
-//! [`FlowRuntime`] owns the active runs for one Space. It mirrors the
-//! state-management responsibilities of `app/flow/FlowRuntime` but lives
-//! entirely in Rust — no C++ delegation required.
+//! [`FlowRuntime`] owns the active runs for one Space. All routing is driven
+//! by the precomputed [`FlowGraph`] in the [`FlowDefinition`], not by a
+//! separate `Router` module.
 //!
-//! ## Lifecycle
+//! ## Node-centric model
 //!
-//! * [`FlowRuntime::start_run()`] creates a new `FlowRunState`, persists it,
-//!   emits `RunStarted`, and returns the run-id.
-//! * Agents advance the run by calling [`FlowRuntime::complete_run()`] /
-//!   [`FlowRuntime::cancel_run()`].
-//! * On startup, [`FlowRuntime::rehydrate_from_disk()`] scans existing
-//!   `state.json` files and transitions any `Running` runs to `Paused`
-//!   (matches the C++ contract — the user must explicitly resume).
+//! * Each node's ports advance through: `Pending → InReview → Approved` (or
+//!   `Pending → AwaitingOwner` for human-owner nodes).
+//! * **AND-join gate**: a downstream node activates only when ALL its
+//!   `required_inputs` reach `Approved`.
+//! * **Implicit re-invocation**: after any port is approved, if the producing
+//!   node still has `Pending` output ports, it is re-invoked automatically.
+//! * **Auto-approve**: an output with `reviewers: []` skips `InReview` and
+//!   goes straight to `Approved`, immediately triggering downstream checks.
 //!
 //! ## Persistence
 //!
 //! Each run is stored at:
 //! `<workspace>/.cronymax/flows/<flow_id>/runs/<run_id>/state.json`
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -28,8 +29,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::workspace_layout::WorkspaceLayout;
+use crate::flow::definition::{FlowDefinition, FlowGraph};
 use crate::flow::trace::{TraceEvent, TraceKind, TraceWriter};
-use crate::flow::definition::FlowDefinition;
 
 // ── FlowRunStatus ─────────────────────────────────────────────────────────────
 
@@ -63,21 +64,23 @@ impl FlowRunStatus {
 pub struct FlowRunDocumentEntry {
     pub name: String,
     pub doc_type: String,
-    pub producer_agent: String,
+    pub producer_node: String,
     pub current_revision: u32,
 }
 
 // ── Port completion tracking ──────────────────────────────────────────────────
 
-/// Lifecycle state of a single port for one agent in a run.
+/// Lifecycle state of a single port for one node in a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum PortStatus {
-    /// The agent has not yet submitted this document.
+    /// The node has not yet submitted this document.
     Pending,
-    /// The document has been submitted and is under review.
+    /// The document has been submitted and is under review by agents/humans.
     InReview,
-    /// The document has been approved (review passed or waived).
+    /// The node is a human-owner node waiting for the user to submit content.
+    AwaitingOwner,
+    /// The document has been approved (review passed or auto-approved).
     Approved,
 }
 
@@ -87,20 +90,21 @@ impl Default for PortStatus {
     }
 }
 
-/// Trigger that caused an agent invocation.
+/// Trigger that caused a node invocation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InvocationTrigger {
-    /// `"initial"` | `"on_approved_reschedule"` | `"patch_cycle"`
+    /// `"initial"` | `"and_join"` | `"cycle_retrigger"` | `"implicit_reinvoke"` |
+    /// `"rejected_requeue"` | `"human_submit"`
     pub kind: String,
     /// Port that was approved, triggering this invocation (absent for initial).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_port: Option<String>,
-    /// Document path for the approved document (absent for initial).
+    /// Producing node whose approval fired this trigger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approved_doc: Option<String>,
+    pub from_node: Option<String>,
 }
 
-/// Record of one invocation of an agent within a run.
+/// Record of one invocation of a node within a run.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InvocationRecord {
     pub invocation_id: String,
@@ -108,18 +112,18 @@ pub struct InvocationRecord {
     pub started_at: String,
 }
 
-/// Per-agent port state within a run.
+/// Per-node port state within a run.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct RunAgentState {
+pub struct NodeRunState {
     /// Port name → current status. Absent entries default to `PENDING`.
     #[serde(default)]
-    pub ports: std::collections::HashMap<String, PortStatus>,
-    /// Ordered history of invocations for this agent.
+    pub ports: HashMap<String, PortStatus>,
+    /// Ordered history of invocations for this node.
     #[serde(default)]
     pub invocations: Vec<InvocationRecord>,
-    /// Per-edge cycle counters keyed by `"<from_agent>:<port>"`.
+    /// Per-port submission cycle counters.
     #[serde(default)]
-    pub edge_cycles: std::collections::HashMap<String, u32>,
+    pub port_cycles: HashMap<String, u32>,
 }
 
 // ── InvocationContext ─────────────────────────────────────────────────────────
@@ -127,35 +131,32 @@ pub struct RunAgentState {
 /// A brief reference to an approved document available in the current run.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AvailableDoc {
-    /// Workspace-relative path to the document.
     pub path: String,
     pub doc_type: String,
     pub revision: u32,
 }
 
 /// Context envelope injected as the first system message when FlowRuntime
-/// re-invokes an agent via `on_approved_reschedule` or after a patch cycle.
-///
-/// The `system_message` field contains a pre-rendered natural-language string
-/// that the agent loop prepends to the initial message history so that the LLM
-/// sees it without any change to the `AgentRuntime` interface.
+/// invokes a node's agent.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InvocationContext {
+    /// The node being invoked.
+    pub node_id: String,
+    /// The agent owner of this node.
+    pub owner: String,
     pub trigger: InvocationTrigger,
     /// All documents approved so far in this Run that the agent may reference.
     pub available_docs: Vec<AvailableDoc>,
-    /// Next pending ports for the producing agent, in declaration order.
+    /// Next pending ports for the node, in YAML declaration order.
     pub pending_ports: Vec<String>,
     /// Pre-rendered system message to prepend to the agent's initial history.
     pub system_message: String,
 }
 
 impl InvocationContext {
-    /// Build an `InvocationContext` for a re-invocation of `agent` after
-    /// `approved_port` was approved. `pending_ports` must be provided in
-    /// flow.yaml declaration order.
     pub fn build(
-        agent: &str,
+        node_id: &str,
+        owner: &str,
         trigger: InvocationTrigger,
         available_docs: Vec<AvailableDoc>,
         pending_ports: Vec<String>,
@@ -183,11 +184,26 @@ impl InvocationContext {
                 .join("\n")
         };
 
-        let trigger_context = match trigger.approved_port.as_deref() {
-            Some(port) => format!(
-                "The document `{port}` submitted by `{agent}` has been approved."
+        let trigger_context = match (trigger.kind.as_str(), trigger.approved_port.as_deref()) {
+            ("and_join", Some(port)) => format!(
+                "All required inputs for node `{node_id}` have been approved. \
+                 Last approval: `{port}` from node `{}`.",
+                trigger.from_node.as_deref().unwrap_or("?")
             ),
-            None => format!("Agent `{agent}` is being invoked for the first time in this run."),
+            ("cycle_retrigger", Some(port)) => format!(
+                "Node `{node_id}` has been re-triggered by the cycle input `{port}` \
+                 from node `{}`.",
+                trigger.from_node.as_deref().unwrap_or("?")
+            ),
+            ("implicit_reinvoke", Some(port)) => format!(
+                "Your output `{port}` was approved. You still have pending ports — \
+                 please continue with the next task."
+            ),
+            ("rejected_requeue", Some(port)) => format!(
+                "Your submission for port `{port}` was rejected with change requests. \
+                 Please revise and resubmit."
+            ),
+            _ => format!("Node `{node_id}` ({owner}) is being invoked."),
         };
 
         let system_message = format!(
@@ -203,6 +219,8 @@ impl InvocationContext {
         );
 
         InvocationContext {
+            node_id: node_id.to_owned(),
+            owner: owner.to_owned(),
             trigger,
             available_docs,
             pending_ports,
@@ -221,14 +239,15 @@ pub struct FlowRunState {
     pub status: FlowRunStatus,
     pub started_at: String,
     pub ended_at: Option<String>,
-    pub agents_in_flight: Vec<String>,
+    pub nodes_in_flight: Vec<String>,
     pub documents: Vec<FlowRunDocumentEntry>,
     pub failure_reason: Option<String>,
     pub initial_input: String,
-    /// Per-agent port-completion map. Absent for runs that predate this
-    /// schema extension — treated as all ports PENDING.
-    #[serde(default)]
-    pub agents: std::collections::HashMap<String, RunAgentState>,
+    /// Per-node port-completion map. Keyed by node ID (e.g. `"rd-design"`).
+    /// `#[serde(alias = "agents")]` provides backward compat for pre-migration
+    /// state.json files.
+    #[serde(default, alias = "agents")]
+    pub node_states: HashMap<String, NodeRunState>,
 }
 
 impl FlowRunState {
@@ -239,11 +258,11 @@ impl FlowRunState {
             status: FlowRunStatus::Running,
             started_at: utc_now_iso(),
             ended_at: None,
-            agents_in_flight: vec![],
+            nodes_in_flight: vec![],
             documents: vec![],
             failure_reason: None,
             initial_input,
-            agents: std::collections::HashMap::new(),
+            node_states: HashMap::new(),
         }
     }
 }
@@ -272,7 +291,6 @@ impl std::fmt::Debug for FlowRuntime {
 }
 
 impl FlowRuntime {
-    /// Create a new `FlowRuntime` for the given workspace.
     pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
         Self {
             layout: WorkspaceLayout::new(workspace_root),
@@ -282,204 +300,426 @@ impl FlowRuntime {
         }
     }
 
-    /// Attach an event emitter (wired by the Space manager).
     pub fn set_event_emitter(&self, cb: EventEmitter) {
         *self.event_emitter.write() = Some(cb);
     }
 
     // ── Run lifecycle ─────────────────────────────────────────────────────
 
-    /// Start a new run. Returns the run-id on success.
+    /// Start a new run. Seeds the `__chat__` node, auto-approves its
+    /// `initial-brief` output, and triggers AND-join for all entry nodes.
+    ///
+    /// Returns `(run_id, initial_invocations)` — the caller should schedule
+    /// a ReactLoop for each entry in `initial_invocations`.
     pub async fn start_run(
         &self,
-        flow_id: &str,
+        flow: &FlowDefinition,
         initial_input: &str,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<(String, Vec<InvocationContext>)> {
+        let flow_id = &flow.name;
         let run_id = format!("run-{}", Uuid::new_v4().as_simple());
-        let state = FlowRunState::new(run_id.clone(), flow_id.to_owned(), initial_input.to_owned());
+        let mut state =
+            FlowRunState::new(run_id.clone(), flow_id.clone(), initial_input.to_owned());
 
-        // Persist immediately.
+        // Seed the implicit __chat__ node: create its NodeRunState and mark
+        // initial-brief as Approved immediately (no review needed for the seed).
+        let mut chat_state = NodeRunState::default();
+        chat_state
+            .ports
+            .insert("initial-brief".to_owned(), PortStatus::Approved);
+        state
+            .node_states
+            .insert("__chat__".to_owned(), chat_state);
+
+        // Persist and register.
         self.persist_run(&state).await?;
-
-        // Attach a trace writer.
         let trace_path = self.layout.run_trace_file(flow_id, &run_id);
         let trace_writer = Arc::new(TraceWriter::new(trace_path));
         let mut start_evt = TraceEvent::now(TraceKind::RunStarted);
         start_evt.run_id = run_id.clone();
         trace_writer.append(start_evt);
-        self.trace_writers.write().insert(run_id.clone(), trace_writer);
-
-        // Register in memory.
+        self.trace_writers
+            .write()
+            .insert(run_id.clone(), trace_writer);
         self.runs
             .write()
             .insert(run_id.clone(), Arc::new(RwLock::new(state)));
 
         self.emit("flow.run.changed", &run_id);
-        Ok(run_id)
+
+        // Fire AND-join for all entry nodes (which all have __chat__/initial-brief
+        // as their sole required input, now satisfied).
+        let graph = flow.graph();
+        let contexts = self
+            .fire_and_join_for("__chat__", "initial-brief", &run_id, flow, graph)
+            .await?;
+
+        Ok((run_id, contexts))
     }
 
-    /// Cancel a run. No-op if the run is already in a terminal state.
     pub async fn cancel_run(&self, run_id: &str) -> anyhow::Result<()> {
-        self.transition_run(run_id, FlowRunStatus::Cancelled, None).await
+        self.transition_run(run_id, FlowRunStatus::Cancelled, None)
+            .await
     }
 
-    /// Mark a run as successfully completed.
     pub async fn complete_run(&self, run_id: &str) -> anyhow::Result<()> {
-        self.transition_run(run_id, FlowRunStatus::Completed, None).await
+        self.transition_run(run_id, FlowRunStatus::Completed, None)
+            .await
     }
 
-    /// Mark a run as failed with a reason.
-    pub async fn fail_run(
-        &self,
-        run_id: &str,
-        reason: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn fail_run(&self, run_id: &str, reason: &str) -> anyhow::Result<()> {
         self.transition_run(run_id, FlowRunStatus::Failed, Some(reason.to_owned()))
             .await
     }
 
-    // ── Document approval handler ─────────────────────────────────────────
+    // ── AND-join gate ─────────────────────────────────────────────────────
 
-    /// Called when a document of `port` produced by `producing_agent` is
-    /// approved (either by the review pipeline or directly by a human).
+    /// Returns `true` if all required inputs for `node_id` have `Approved`
+    /// status in the given run state.
+    pub fn is_node_ready(
+        &self,
+        node_id: &str,
+        state: &FlowRunState,
+        graph: &FlowGraph,
+    ) -> bool {
+        graph.required_inputs_for(node_id).iter().all(|(from_node, port)| {
+            state
+                .node_states
+                .get(from_node.as_str())
+                .and_then(|ns| ns.ports.get(port.as_str()))
+                .copied()
+                .unwrap_or_default()
+                == PortStatus::Approved
+        })
+    }
+
+    /// Check AND-join for all nodes awaiting `(producing_node, port)` and
+    /// schedule those that are now ready. Returns their invocation contexts.
+    async fn fire_and_join_for(
+        &self,
+        producing_node: &str,
+        port: &str,
+        run_id: &str,
+        flow: &FlowDefinition,
+        graph: &FlowGraph,
+    ) -> anyhow::Result<Vec<InvocationContext>> {
+        let mut contexts = Vec::new();
+        let awaiting = graph.nodes_awaiting(producing_node, port);
+        for candidate_id in awaiting {
+            let state = match self.get_run(run_id) {
+                Some(s) => s,
+                None => continue,
+            };
+            if !self.is_node_ready(candidate_id, &state, graph) {
+                continue;
+            }
+            // Node is ready.
+            let node = match flow.node(candidate_id) {
+                Some(n) => n,
+                None => continue,
+            };
+            let trigger = InvocationTrigger {
+                kind: "and_join".into(),
+                approved_port: Some(port.to_owned()),
+                from_node: Some(producing_node.to_owned()),
+            };
+            if node.owner == "human" {
+                // Human-owner node: set all output ports to AwaitingOwner.
+                for output in &node.outputs {
+                    self.mark_port_status_unchecked(
+                        run_id,
+                        candidate_id,
+                        &output.port,
+                        PortStatus::AwaitingOwner,
+                    )
+                    .await?;
+                }
+                self.emit("flow.run.human_input_required", run_id);
+                tracing::info!(run_id, node_id = candidate_id, "human node activated");
+            } else {
+                // Agent node: schedule via ReactLoop.
+                if let Some(ctx) = self
+                    .schedule_node_with_context(run_id, candidate_id, trigger, flow)
+                    .await?
+                {
+                    contexts.push(ctx);
+                }
+            }
+        }
+        Ok(contexts)
+    }
+
+    // ── Document submission ───────────────────────────────────────────────
+
+    /// Called when a node submits a document via the `submit_document` tool.
     ///
-    /// Responsibilities:
-    /// 1. Mark the port as `Approved` in `state.json`.
-    /// 2. If the triggering edge has `on_approved_reschedule: true`, and the
-    ///    agent still has pending ports, build an `InvocationContext` and
-    ///    return it so the caller can schedule a new agent invocation.
-    /// 3. If the port is already `Approved` (idempotency guard on restart),
-    ///    return `None` without re-scheduling.
+    /// Steps:
+    /// 1. Check cycle limit (increment counter).
+    /// 2. Write reviews.json entry.
+    /// 3. If `reviewers` is empty → auto-approve immediately; fire AND-join
+    ///    checks + implicit re-invocation. Otherwise → mark `InReview`.
     ///
-    /// Returns `Some(InvocationContext)` if the agent should be re-invoked,
-    /// `None` otherwise.
+    /// Returns invocation contexts for any newly activated downstream nodes.
+    pub async fn on_document_submitted(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        port: &str,
+        body: &str,
+        flow: &FlowDefinition,
+        sha256: &str,
+        revision: u32,
+    ) -> anyhow::Result<Vec<InvocationContext>> {
+        // 1. Cycle-limit check.
+        if let Some(action) =
+            self.check_cycle_limit(run_id, node_id, port, flow).await?
+        {
+            anyhow::bail!(
+                "cycle limit exceeded on node {node_id} port {port}; action={action}"
+            );
+        }
+
+        // 2. Persist the doc submission in reviews.json.
+        if let Some(flow_id) = self.get_run(run_id).map(|s| s.flow_id.clone()) {
+            let _ = self
+                .upsert_review_state(
+                    &flow_id,
+                    run_id,
+                    port,
+                    node_id,
+                    sha256,
+                    revision,
+                    "IN_REVIEW",
+                )
+                .await;
+        }
+
+        // Emit trace.
+        if let Some(tw) = self.trace_writers.read().get(run_id) {
+            let mut evt = TraceEvent::now(TraceKind::DocumentSubmitted);
+            evt.run_id = run_id.to_owned();
+            evt.agent_id = node_id.to_owned();
+            tw.append(evt);
+        }
+
+        // Suppress unused-variable lint — body may be used for routing in future.
+        let _ = body;
+
+        // 3. Auto-approve if no reviewers, otherwise mark InReview.
+        let has_reviewers = flow
+            .output(node_id, port)
+            .map(|o| !o.reviewers.is_empty())
+            .unwrap_or(false);
+
+        if !has_reviewers {
+            // Auto-approve path.
+            let contexts = self
+                .on_document_approved(run_id, node_id, port, flow)
+                .await?;
+            self.emit("flow.run.changed", run_id);
+            return Ok(contexts);
+        }
+
+        // Mark InReview and wait for reviewer to call on_document_approved.
+        self.mark_port_status(run_id, node_id, port, PortStatus::InReview)
+            .await?;
+        self.emit("flow.run.changed", run_id);
+        Ok(vec![])
+    }
+
+    // ── Document approval ─────────────────────────────────────────────────
+
+    /// Called when a reviewer (human or agent) approves a document.
+    ///
+    /// Steps:
+    /// 1. Idempotency guard.
+    /// 2. Mark `Approved` in state.
+    /// 3. Fire AND-join for all nodes awaiting this port.
+    /// 4. Fire cycle retrigger for all nodes retriggered by this port.
+    /// 5. Implicit re-invocation: if the producing node still has `Pending`
+    ///    output ports, re-invoke it.
+    ///
+    /// Returns invocation contexts for all newly activated/re-invoked nodes.
     pub async fn on_document_approved(
         &self,
         run_id: &str,
-        producing_agent: &str,
+        node_id: &str,
+        port: &str,
+        flow: &FlowDefinition,
+    ) -> anyhow::Result<Vec<InvocationContext>> {
+        // 1. Idempotency guard.
+        if self.port_status(run_id, node_id, port) == PortStatus::Approved {
+            tracing::debug!(run_id, node_id, port, "already APPROVED, skipping");
+            return Ok(vec![]);
+        }
+
+        // 2. Mark Approved.
+        self.mark_port_status(run_id, node_id, port, PortStatus::Approved)
+            .await?;
+
+        // Update reviews.json.
+        if let Some(flow_id) = self.get_run(run_id).map(|s| s.flow_id.clone()) {
+            let _ = self
+                .upsert_review_state(&flow_id, run_id, port, node_id, "", 0, "APPROVED")
+                .await;
+        }
+
+        let graph = flow.graph();
+        let mut all_contexts = Vec::new();
+
+        // 3. AND-join checks for downstream nodes.
+        let mut and_join_ctxs = self
+            .fire_and_join_for(node_id, port, run_id, flow, graph)
+            .await?;
+        all_contexts.append(&mut and_join_ctxs);
+
+        // 4. Cycle retrigger for cyclic routes.
+        let retriggered: Vec<String> = graph
+            .nodes_retriggered_by(node_id, port)
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for retrigger_id in retriggered {
+            let node = match flow.node(&retrigger_id) {
+                Some(n) => n,
+                None => continue,
+            };
+            if node.owner == "human" {
+                // Human nodes re-set to AwaitingOwner.
+                for output in &node.outputs {
+                    self.mark_port_status_unchecked(
+                        run_id,
+                        &retrigger_id,
+                        &output.port,
+                        PortStatus::AwaitingOwner,
+                    )
+                    .await?;
+                }
+                self.emit("flow.run.human_input_required", run_id);
+            } else {
+                let trigger = InvocationTrigger {
+                    kind: "cycle_retrigger".into(),
+                    approved_port: Some(port.to_owned()),
+                    from_node: Some(node_id.to_owned()),
+                };
+                if let Some(ctx) = self
+                    .schedule_node_with_context(run_id, &retrigger_id, trigger, flow)
+                    .await?
+                {
+                    all_contexts.push(ctx);
+                }
+            }
+        }
+
+        // 5. Implicit re-invocation: does the producing node still have Pending ports?
+        let producing_node = match flow.node(node_id) {
+            Some(n) => n,
+            None => {
+                self.emit("flow.run.changed", run_id);
+                return Ok(all_contexts);
+            }
+        };
+        if producing_node.owner != "human" {
+            let state = match self.get_run(run_id) {
+                Some(s) => s,
+                None => {
+                    self.emit("flow.run.changed", run_id);
+                    return Ok(all_contexts);
+                }
+            };
+            let node_state = state.node_states.get(node_id);
+            let approved_ports: HashSet<String> = node_state
+                .map(|ns| {
+                    ns.ports
+                        .iter()
+                        .filter(|(_, &s)| s == PortStatus::Approved)
+                        .map(|(p, _)| p.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let pending: Vec<&str> = flow.pending_ports_for(node_id, &approved_ports);
+            if !pending.is_empty() {
+                let trigger = InvocationTrigger {
+                    kind: "implicit_reinvoke".into(),
+                    approved_port: Some(port.to_owned()),
+                    from_node: None,
+                };
+                if let Some(ctx) = self
+                    .schedule_node_with_context(run_id, node_id, trigger, flow)
+                    .await?
+                {
+                    all_contexts.push(ctx);
+                }
+            }
+        }
+
+        self.emit("flow.run.changed", run_id);
+        Ok(all_contexts)
+    }
+
+    /// Called when a reviewer rejects a document. Resets the port to `Pending`
+    /// and re-invokes the producing node.
+    pub async fn on_rejected_requeue(
+        &self,
+        run_id: &str,
+        node_id: &str,
         port: &str,
         flow: &FlowDefinition,
     ) -> anyhow::Result<Option<InvocationContext>> {
-        // Idempotency guard: if already APPROVED, skip.
-        if self.port_status(run_id, producing_agent, port) == PortStatus::Approved {
-            tracing::debug!(
-                run_id, producing_agent, port,
-                "on_document_approved: port already APPROVED, skipping"
-            );
-            return Ok(None);
-        }
+        // Reset port to Pending (bypass downgrade guard).
+        self.mark_port_status_unchecked(run_id, node_id, port, PortStatus::Pending)
+            .await?;
 
-        // Mark port as APPROVED.
-        self.mark_port_status(run_id, producing_agent, port, PortStatus::Approved).await?;
-
-        // Update reviews.json: mark doc as APPROVED.
+        // Update reviews.json.
         if let Some(flow_id) = self.get_run(run_id).map(|s| s.flow_id.clone()) {
-            if let Err(e) = self
-                .upsert_review_state(&flow_id, run_id, port, producing_agent, "", 0, "APPROVED")
-                .await
-            {
-                tracing::warn!(run_id, error = %e, "on_document_approved: failed to update reviews.json");
-            }
+            let _ = self
+                .upsert_review_state(&flow_id, run_id, port, node_id, "", 0, "CHANGES_REQUESTED")
+                .await;
         }
 
-        // Check if any edge from this agent for this port has on_approved_reschedule.
-        let should_reschedule = flow
-            .edges
-            .iter()
-            .any(|e| e.from_agent == producing_agent && e.port == port && e.on_approved_reschedule);
-
-        if !should_reschedule {
-            return Ok(None);
-        }
-
-        // Find the next PENDING port for the producing agent in declaration order.
-        let state = match self.get_run(run_id) {
-            Some(s) => s,
-            None => return Ok(None),
+        let trigger = InvocationTrigger {
+            kind: "rejected_requeue".into(),
+            approved_port: Some(port.to_owned()),
+            from_node: None,
         };
-        let agent_state = state.agents.get(producing_agent);
-        let next_pending = flow
-            .edges
-            .iter()
-            .filter(|e| e.from_agent == producing_agent)
-            .map(|e| e.port.as_str())
-            .find(|p| {
-                let status = agent_state
-                    .and_then(|a| a.ports.get(*p))
-                    .copied()
-                    .unwrap_or_default();
-                status == PortStatus::Pending
-            });
+        let ctx = self
+            .schedule_node_with_context(run_id, node_id, trigger, flow)
+            .await?;
 
-        match next_pending {
-            None => {
-                // All ports complete — agent is done.
-                tracing::info!(
-                    run_id, producing_agent,
-                    "all ports complete after approval of '{port}', agent done"
-                );
-                Ok(None)
-            }
-            Some(next_port) => {
-                let trigger = InvocationTrigger {
-                    kind: "on_approved_reschedule".into(),
-                    approved_port: Some(port.to_owned()),
-                    approved_doc: None,
-                };
-                let ctx = self
-                    .schedule_agent_with_context(run_id, producing_agent, trigger, flow)
-                    .await?;
-                tracing::info!(
-                    run_id, producing_agent, next_port,
-                    "rescheduling agent after approval of '{port}'"
-                );
-                Ok(ctx)
-            }
-        }
+        self.emit("flow.run.changed", run_id);
+        Ok(ctx)
     }
 
-    // ── max_cycles enforcement ────────────────────────────────────────────
+    // ── Cycle-limit enforcement ───────────────────────────────────────────
 
-    /// Called when a document is routed on an edge that has `max_cycles`.
-    /// Increments the cycle counter and returns the appropriate action if
-    /// the limit is reached.
-    ///
-    /// Returns `None` if the submission is within the allowed cycle count.
-    /// Returns `Some(action)` where action is `"escalate_to_human"` or
-    /// `"halt"` if the limit has been exceeded.
+    /// Increment the cycle counter for `(node_id, port)` and return the
+    /// on-exhausted action if the limit is now exceeded.
     pub async fn check_cycle_limit(
         &self,
         run_id: &str,
-        from_agent: &str,
+        node_id: &str,
         port: &str,
         flow: &FlowDefinition,
     ) -> anyhow::Result<Option<String>> {
-        // Find the edge to get max_cycles config.
-        let edge = flow
-            .edges
-            .iter()
-            .find(|e| e.from_agent == from_agent && e.port == port);
-        let (max_cycles, on_exhausted) = match edge {
-            Some(e) => match e.max_cycles {
+        let (max_cycles, on_exhausted) = match flow.output(node_id, port) {
+            Some(o) => match o.max_cycles {
                 Some(m) if m > 0 => (
                     m,
-                    e.on_cycle_exhausted
+                    o.on_cycle_exhausted
                         .clone()
                         .unwrap_or_else(|| "halt".into()),
                 ),
-                _ => return Ok(None), // no limit configured
+                _ => return Ok(None),
             },
             None => return Ok(None),
         };
 
-        let new_count = self
-            .increment_edge_cycles(run_id, from_agent, port)
-            .await?;
-
+        let new_count = self.increment_port_cycles(run_id, node_id, port).await?;
         if new_count > max_cycles {
             tracing::warn!(
-                run_id, from_agent, port, max_cycles, new_count,
-                "cycle limit exceeded on edge"
+                run_id, node_id, port, max_cycles, new_count,
+                "cycle limit exceeded"
             );
             Ok(Some(on_exhausted))
         } else {
@@ -487,251 +727,68 @@ impl FlowRuntime {
         }
     }
 
-    // ── Document-submission routing ───────────────────────────────────────
-
-    /// Called when an agent submits a document via the `submit_document` tool.
-    ///
-    /// Responsibilities:
-    /// 1. Check cycle limits — if exceeded, returns `Err` with the
-    ///    on-exhausted action string (caller should fail or halt the run).
-    /// 2. Mark the producing agent's port as `InReview` in `state.json`.
-    /// 3. Update `reviews.json` — creates/upserts the doc entry with status
-    ///    `IN_REVIEW`, appends a revision record with the SHA-256 digest.
-    /// 4. Call [`Router::route()`] to discover downstream agents.
-    /// 5. For each downstream agent: call [`schedule_agent_with_context()`]
-    ///    and collect the resulting `InvocationContext` values.
-    ///
-    /// Returns `Vec<(agent_id, Option<InvocationContext>)>` — the caller
-    /// (supervision task in `RuntimeHandler`) spawns a `ReactLoop` for each
-    /// entry whose context is `Some`.
-    pub async fn on_document_submitted(
-        &self,
-        run_id: &str,
-        producing_agent: &str,
-        doc_type: &str,
-        body: &str,
-        flow: &FlowDefinition,
-        sha256: &str,
-        revision: u32,
-    ) -> anyhow::Result<Vec<(String, Option<InvocationContext>)>> {
-        // 1. Cycle-limit check (increments counter in state.json).
-        if let Some(action) = self.check_cycle_limit(run_id, producing_agent, doc_type, flow).await? {
-            anyhow::bail!(
-                "cycle limit exceeded on edge {producing_agent}:{doc_type}; action={action}"
-            );
-        }
-
-        // 2. Transition the producing agent's port to InReview.
-        self.mark_port_status(run_id, producing_agent, doc_type, PortStatus::InReview)
-            .await?;
-
-        // 3. Persist the doc submission in reviews.json.
-        if let Some(flow_id) = self.get_run(run_id).map(|s| s.flow_id.clone()) {
-            if let Err(e) = self
-                .upsert_review_state(
-                    &flow_id,
-                    run_id,
-                    doc_type,
-                    producing_agent,
-                    sha256,
-                    revision,
-                    "IN_REVIEW",
-                )
-                .await
-            {
-                tracing::warn!(run_id, error = %e, "on_document_submitted: failed to write reviews.json");
-            }
-        }
-
-        // Emit doc-submitted trace event.
-        if let Some(tw) = self.trace_writers.read().get(run_id) {
-            let mut evt = TraceEvent::now(TraceKind::DocumentSubmitted);
-            evt.run_id = run_id.to_owned();
-            evt.agent_id = producing_agent.to_owned();
-            tw.append(evt);
-        }
-
-        // 4. Route the submission to downstream agents.
-        let decision = crate::flow::router::Router::route(flow, producing_agent, doc_type, body);
-
-        for unknown in &decision.unknown_mentions {
-            tracing::warn!(run_id, %unknown, "on_document_submitted: unknown @mention ignored");
-        }
-
-        // 5. Schedule each downstream agent.
-        let mut results = Vec::new();
-        for target in decision.targets {
-            let trigger = InvocationTrigger {
-                kind: "document_submitted".into(),
-                approved_port: Some(doc_type.to_owned()),
-                approved_doc: None,
-            };
-            let ctx = self
-                .schedule_agent_with_context(run_id, &target.agent, trigger, flow)
-                .await?;
-            results.push((target.agent, ctx));
-        }
-
-        self.emit("flow.run.changed", run_id);
-        Ok(results)
-    }
-
-    /// Called when a `ResolveReview` with `decision=Rejected` is received for
-    /// a flow document. Re-queues the producing agent by transitioning its
-    /// port back to `Pending` and emitting a new `InvocationContext`.
-    ///
-    /// Returns `Some(InvocationContext)` if the agent should be re-invoked,
-    /// `None` if the run state is unknown or all ports are already approved.
-    pub async fn on_rejected_requeue(
-        &self,
-        run_id: &str,
-        producing_agent: &str,
-        port: &str,
-        flow: &FlowDefinition,
-    ) -> anyhow::Result<Option<InvocationContext>> {
-        // Reset port to Pending so the agent can re-submit.
-        // mark_port_status guards against downgrades from Approved → Pending,
-        // but we need to allow InReview → Pending here. We write directly.
-        let state_snapshot = {
-            let runs = self.runs.read();
-            let run = runs
-                .get(run_id)
-                .ok_or_else(|| anyhow::anyhow!("run '{run_id}' not found"))?;
-            let mut s = run.write();
-            let agent_state = s.agents.entry(producing_agent.to_owned()).or_default();
-            agent_state.ports.insert(port.to_owned(), PortStatus::Pending);
-            s.clone()
-        };
-        self.persist_run(&state_snapshot).await?;
-
-        // Update reviews.json: mark as CHANGES_REQUESTED so reviewers and the
-        // UI can see the rejection before the agent re-submits.
-        if let Some(flow_id) = self.get_run(run_id).map(|s| s.flow_id.clone()) {
-            if let Err(e) = self
-                .upsert_review_state(
-                    &flow_id,
-                    run_id,
-                    port,
-                    producing_agent,
-                    "",
-                    0,
-                    "CHANGES_REQUESTED",
-                )
-                .await
-            {
-                tracing::warn!(run_id, error = %e, "on_rejected_requeue: failed to update reviews.json");
-            }
-        }
-
-        // Schedule the agent with a rejection trigger.
-        let trigger = InvocationTrigger {
-            kind: "rejected_requeue".into(),
-            approved_port: Some(port.to_owned()),
-            approved_doc: None,
-        };
-        let ctx = self
-            .schedule_agent_with_context(run_id, producing_agent, trigger, flow)
-            .await?;
-
-        self.emit("flow.run.changed", run_id);
-        Ok(ctx)
-    }
-
-    // ── Reviewer set resolution ───────────────────────────────────────────
-
-    /// Resolve the reviewer agent set for a given edge.
-    ///
-    /// If the edge declares `reviewer_agents`, that list is used verbatim
-    /// (override semantics). Otherwise the flow-level reviewer set
-    /// (`flow.reviewer_enabled` agents) is used.
-    ///
-    /// An explicitly empty `reviewer_agents: []` disables LLM reviewers
-    /// for that edge.
-    pub fn resolve_reviewers<'a>(
-        edge_reviewer_agents: &'a [String],
-        flow_level_reviewers: &'a [String],
-        has_per_edge_override: bool,
-    ) -> &'a [String] {
-        if has_per_edge_override {
-            edge_reviewer_agents
-        } else {
-            flow_level_reviewers
-        }
-    }
-
     // ── InvocationContext builder ─────────────────────────────────────────
 
-    /// Build an `InvocationContext` for a re-invocation of `agent`.
-    ///
-    /// `flow` is used to determine the declaration order of the agent's edges,
-    /// which establishes the canonical `pending_ports` ordering.
     pub fn build_invocation_context(
         &self,
         run_id: &str,
-        agent: &str,
+        node_id: &str,
         trigger: InvocationTrigger,
         flow: &FlowDefinition,
     ) -> Option<InvocationContext> {
         let state = self.get_run(run_id)?;
+        let node = flow.node(node_id)?;
 
-        // Collect available docs from the run's document list.
         let available_docs: Vec<AvailableDoc> = state
             .documents
             .iter()
             .map(|d| AvailableDoc {
-                path: format!(
-                    ".cronymax/flows/{}/docs/{}.md",
-                    state.flow_id, d.name
-                ),
+                path: format!(".cronymax/flows/{}/docs/{}.md", state.flow_id, d.name),
                 doc_type: d.doc_type.clone(),
                 revision: d.current_revision,
             })
             .collect();
 
-        // Determine pending ports by walking the agent's edges in declaration order.
-        let agent_state = state.agents.get(agent);
-        let pending_ports: Vec<String> = flow
-            .edges
-            .iter()
-            .filter(|e| e.from_agent == agent)
-            .map(|e| e.port.clone())
-            .filter(|port| {
-                let status = agent_state
-                    .and_then(|a| a.ports.get(port))
-                    .copied()
-                    .unwrap_or_default();
-                status == PortStatus::Pending
+        let node_state = state.node_states.get(node_id);
+        let approved_ports: HashSet<String> = node_state
+            .map(|ns| {
+                ns.ports
+                    .iter()
+                    .filter(|(_, &s)| s == PortStatus::Approved)
+                    .map(|(p, _)| p.clone())
+                    .collect()
             })
+            .unwrap_or_default();
+
+        let pending_ports: Vec<String> = flow
+            .pending_ports_for(node_id, &approved_ports)
+            .into_iter()
+            .map(|s| s.to_owned())
             .collect();
 
         Some(InvocationContext::build(
-            agent,
+            node_id,
+            &node.owner,
             trigger,
             available_docs,
             pending_ports,
         ))
     }
 
-    /// Record a new invocation, emit a trace event, and return the
-    /// `InvocationContext` that should be prepended as a system message.
-    ///
-    /// Callers (the document-approval handler) use this to get the context
-    /// string, then pass it to the agent scheduler.
-    pub async fn schedule_agent_with_context(
+    pub async fn schedule_node_with_context(
         &self,
         run_id: &str,
-        agent: &str,
+        node_id: &str,
         trigger: InvocationTrigger,
         flow: &FlowDefinition,
     ) -> anyhow::Result<Option<InvocationContext>> {
-        let ctx = self.build_invocation_context(run_id, agent, trigger.clone(), flow);
-        let inv_id = self.record_invocation(run_id, agent, trigger).await?;
+        let ctx = self.build_invocation_context(run_id, node_id, trigger.clone(), flow);
+        let inv_id = self.record_invocation(run_id, node_id, trigger).await?;
 
-        // Emit agent.scheduled trace event.
         if let Some(tw) = self.trace_writers.read().get(run_id) {
             let mut evt = TraceEvent::now(TraceKind::AgentScheduled);
             evt.run_id = run_id.to_owned();
-            evt.agent_id = agent.to_owned();
+            evt.agent_id = node_id.to_owned();
             evt.invocation_id = Some(inv_id);
             if let Some(c) = &ctx {
                 evt.pending_ports = c.pending_ports.clone();
@@ -745,14 +802,12 @@ impl FlowRuntime {
 
     // ── Port-completion state ─────────────────────────────────────────────
 
-    /// Atomically update a port's status for an agent and persist `state.json`.
-    ///
-    /// Idempotent: calling with the same status twice is a no-op.
-    /// Prevents downgrade (e.g., APPROVED → PENDING is ignored with a warning).
+    /// Atomically update a port's status for a node and persist.
+    /// Prevents downgrade from `Approved`.
     pub async fn mark_port_status(
         &self,
         run_id: &str,
-        agent: &str,
+        node_id: &str,
         port: &str,
         new_status: PortStatus,
     ) -> anyhow::Result<()> {
@@ -762,42 +817,62 @@ impl FlowRuntime {
                 .get(run_id)
                 .ok_or_else(|| anyhow::anyhow!("run '{run_id}' not found"))?;
             let mut s = run.write();
-            let agent_state = s.agents.entry(agent.to_owned()).or_default();
-            let current = agent_state.ports.get(port).copied().unwrap_or_default();
-            // Prevent downgrade.
+            let ns = s.node_states.entry(node_id.to_owned()).or_default();
+            let current = ns.ports.get(port).copied().unwrap_or_default();
             if current == PortStatus::Approved && new_status != PortStatus::Approved {
                 tracing::warn!(
-                    run_id, agent, port,
+                    run_id, node_id, port,
                     "ignoring attempt to downgrade port from APPROVED to {:?}",
                     new_status
                 );
                 return Ok(());
             }
             if current == new_status {
-                return Ok(()); // idempotent no-op
+                return Ok(());
             }
-            agent_state.ports.insert(port.to_owned(), new_status);
+            ns.ports.insert(port.to_owned(), new_status);
             s.clone()
         };
         self.persist_run(&state_snapshot).await
     }
 
-    /// Append an invocation record for an agent and persist `state.json`.
-    pub async fn record_invocation(
+    /// Like `mark_port_status` but bypasses the downgrade guard.
+    /// Used for rejection requeue (InReview → Pending) and human node resets.
+    async fn mark_port_status_unchecked(
         &self,
         run_id: &str,
-        agent: &str,
-        trigger: InvocationTrigger,
-    ) -> anyhow::Result<String> {
-        let invocation_id = format!("inv-{}", uuid::Uuid::new_v4().as_simple());
+        node_id: &str,
+        port: &str,
+        new_status: PortStatus,
+    ) -> anyhow::Result<()> {
         let state_snapshot = {
             let runs = self.runs.read();
             let run = runs
                 .get(run_id)
                 .ok_or_else(|| anyhow::anyhow!("run '{run_id}' not found"))?;
             let mut s = run.write();
-            let agent_state = s.agents.entry(agent.to_owned()).or_default();
-            agent_state.invocations.push(InvocationRecord {
+            let ns = s.node_states.entry(node_id.to_owned()).or_default();
+            ns.ports.insert(port.to_owned(), new_status);
+            s.clone()
+        };
+        self.persist_run(&state_snapshot).await
+    }
+
+    pub async fn record_invocation(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        trigger: InvocationTrigger,
+    ) -> anyhow::Result<String> {
+        let invocation_id = format!("inv-{}", Uuid::new_v4().as_simple());
+        let state_snapshot = {
+            let runs = self.runs.read();
+            let run = runs
+                .get(run_id)
+                .ok_or_else(|| anyhow::anyhow!("run '{run_id}' not found"))?;
+            let mut s = run.write();
+            let ns = s.node_states.entry(node_id.to_owned()).or_default();
+            ns.invocations.push(InvocationRecord {
                 invocation_id: invocation_id.clone(),
                 trigger,
                 started_at: utc_now_iso(),
@@ -808,23 +883,20 @@ impl FlowRuntime {
         Ok(invocation_id)
     }
 
-    /// Increment the cycle counter on an edge (keyed `"<from_agent>:<port>"`).
-    /// Returns the new cycle count after incrementing.
-    pub async fn increment_edge_cycles(
+    pub async fn increment_port_cycles(
         &self,
         run_id: &str,
-        from_agent: &str,
+        node_id: &str,
         port: &str,
     ) -> anyhow::Result<u32> {
-        let key = format!("{from_agent}:{port}");
         let (new_count, state_snapshot) = {
             let runs = self.runs.read();
             let run = runs
                 .get(run_id)
                 .ok_or_else(|| anyhow::anyhow!("run '{run_id}' not found"))?;
             let mut s = run.write();
-            let agent_state = s.agents.entry(from_agent.to_owned()).or_default();
-            let count = agent_state.edge_cycles.entry(key).or_insert(0);
+            let ns = s.node_states.entry(node_id.to_owned()).or_default();
+            let count = ns.port_cycles.entry(port.to_owned()).or_insert(0);
             *count += 1;
             let new = *count;
             (new, s.clone())
@@ -833,16 +905,16 @@ impl FlowRuntime {
         Ok(new_count)
     }
 
-    /// Return the current port status for an agent (defaults to `Pending`).
-    pub fn port_status(&self, run_id: &str, agent: &str, port: &str) -> PortStatus {
+    /// Return the current port status for a node (defaults to `Pending`).
+    pub fn port_status(&self, run_id: &str, node_id: &str, port: &str) -> PortStatus {
         self.runs
             .read()
             .get(run_id)
             .and_then(|r| {
                 r.read()
-                    .agents
-                    .get(agent)
-                    .and_then(|a| a.ports.get(port))
+                    .node_states
+                    .get(node_id)
+                    .and_then(|ns| ns.ports.get(port))
                     .copied()
             })
             .unwrap_or_default()
@@ -850,12 +922,10 @@ impl FlowRuntime {
 
     // ── Lookups ───────────────────────────────────────────────────────────
 
-    /// Look up a run by ID.
     pub fn get_run(&self, run_id: &str) -> Option<FlowRunState> {
         self.runs.read().get(run_id).map(|r| r.read().clone())
     }
 
-    /// All runs, sorted by run-id.
     pub fn list_runs(&self) -> Vec<FlowRunState> {
         let mut runs: Vec<_> = self
             .runs
@@ -867,16 +937,13 @@ impl FlowRuntime {
         runs
     }
 
-    /// Returns a reference to the trace writer for a run (if active).
     pub fn trace_writer(&self, run_id: &str) -> Option<Arc<TraceWriter>> {
         self.trace_writers.read().get(run_id).cloned()
     }
 
     // ── Rehydration ───────────────────────────────────────────────────────
 
-    /// Scan `<workspace>/.cronymax/flows/*/runs/*/state.json` and reload
-    /// any run that was `Running` as `Paused`. Returns the number of paused
-    /// runs discovered.
+    /// Scan existing `state.json` files and reload. Running → Paused.
     pub async fn rehydrate_from_disk(&self) -> usize {
         let flows_dir = self.layout.flows_dir();
         let mut count = 0;
@@ -887,17 +954,19 @@ impl FlowRuntime {
         };
 
         while let Ok(Some(flow_entry)) = flows.next_entry().await {
-            if !flow_entry.metadata().await.map(|m| m.is_dir()).unwrap_or(false) {
+            if !flow_entry
+                .metadata()
+                .await
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+            {
                 continue;
             }
-            let flow_id = flow_entry.file_name().to_string_lossy().into_owned();
             let runs_dir = flow_entry.path().join("runs");
-
             let mut runs = match tokio::fs::read_dir(&runs_dir).await {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-
             while let Ok(Some(run_entry)) = runs.next_entry().await {
                 let state_file = run_entry.path().join("state.json");
                 if !state_file.exists() {
@@ -910,13 +979,13 @@ impl FlowRuntime {
                             let _ = self.persist_run(&state).await;
                             count += 1;
                         }
-                        self.runs
-                            .write()
-                            .insert(state.run_id.clone(), Arc::new(RwLock::new(state)));
+                        self.runs.write().insert(
+                            state.run_id.clone(),
+                            Arc::new(RwLock::new(state)),
+                        );
                     }
                 }
             }
-            drop(flow_id); // silence warning
         }
 
         count
@@ -937,7 +1006,7 @@ impl FlowRuntime {
                 .ok_or_else(|| anyhow::anyhow!("run '{run_id}' not found"))?;
             let mut s = run.write();
             if s.status.is_terminal() {
-                return Ok(()); // idempotent
+                return Ok(());
             }
             s.status = new_status;
             if new_status.is_terminal() {
@@ -951,7 +1020,6 @@ impl FlowRuntime {
 
         self.persist_run(&state_snapshot).await?;
 
-        // Append trace event.
         if let Some(tw) = self.trace_writers.read().get(run_id) {
             let kind = match new_status {
                 FlowRunStatus::Completed => TraceKind::RunCompleted,
@@ -969,9 +1037,7 @@ impl FlowRuntime {
     }
 
     async fn persist_run(&self, state: &FlowRunState) -> anyhow::Result<()> {
-        let path = self
-            .layout
-            .run_state_file(&state.flow_id, &state.run_id);
+        let path = self.layout.run_state_file(&state.flow_id, &state.run_id);
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -981,31 +1047,12 @@ impl FlowRuntime {
     }
 
     /// Write or update `reviews.json` for a run document.
-    ///
-    /// The on-disk format is compatible with C++ `ReviewsState`:
-    /// ```json
-    /// {
-    ///   "docs": {
-    ///     "<doc_name>": {
-    ///       "current_revision": 1,
-    ///       "status": "IN_REVIEW",
-    ///       "round_count": 1,
-    ///       "revisions": [{"rev": 1, "submitted_at": "...", "submitted_by": "agent", "sha": "..."}],
-    ///       "comments": []
-    ///     }
-    ///   }
-    /// }
-    /// ```
-    ///
-    /// When `revision` is 0 the revisions array is not modified (status-only
-    /// update for approve / reject transitions). When `revision` > 0 a new
-    /// revision record is appended and `current_revision` is updated.
     async fn upsert_review_state(
         &self,
         flow_id: &str,
         run_id: &str,
         doc_name: &str,
-        agent: &str,
+        node_id: &str,
         sha256: &str,
         revision: u32,
         status: &str,
@@ -1015,60 +1062,57 @@ impl FlowRuntime {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        // Read existing reviews.json or start fresh.
         let mut reviews: serde_json::Value = if reviews_path.exists() {
-            let raw = tokio::fs::read_to_string(&reviews_path).await.unwrap_or_default();
-            serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({"docs": {}}))
+            let raw = tokio::fs::read_to_string(&reviews_path)
+                .await
+                .unwrap_or_default();
+            serde_json::from_str(&raw)
+                .unwrap_or_else(|_| serde_json::json!({"docs": {}}))
         } else {
             serde_json::json!({"docs": {}})
         };
 
-        // Ensure the "docs" key is an object.
         if !reviews.get("docs").map(|v| v.is_object()).unwrap_or(false) {
             reviews["docs"] = serde_json::json!({});
         }
 
-        let docs = reviews["docs"].as_object_mut()
+        let docs = reviews["docs"]
+            .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("reviews.json: docs is not an object"))?;
 
-        let entry = docs.entry(doc_name).or_insert_with(|| serde_json::json!({
-            "current_revision": 0,
-            "status": "DRAFT",
-            "round_count": 0,
-            "revisions": [],
-            "comments": []
-        }));
+        let entry = docs
+            .entry(doc_name)
+            .or_insert_with(|| serde_json::json!({
+                "current_revision": 0,
+                "status": "DRAFT",
+                "round_count": 0,
+                "revisions": [],
+                "comments": []
+            }));
 
-        // Append a new revision record when the caller provides one.
         if revision > 0 {
             entry["current_revision"] = serde_json::json!(revision);
-
             let revisions = entry["revisions"]
                 .as_array_mut()
                 .ok_or_else(|| anyhow::anyhow!("reviews.json: revisions is not an array"))?;
             revisions.push(serde_json::json!({
                 "rev": revision,
                 "submitted_at": utc_now_iso(),
-                "submitted_by": agent,
+                "submitted_by": node_id,
                 "sha": sha256,
             }));
-
-            // Increment round_count when a new revision is submitted for review.
             if status == "IN_REVIEW" {
                 if let Some(count) = entry["round_count"].as_u64() {
                     entry["round_count"] = serde_json::json!(count + 1);
                 }
             }
         }
-
         entry["status"] = serde_json::json!(status);
 
-        // Atomic write: write to .tmp then rename.
         let json = serde_json::to_string_pretty(&reviews)?;
         let tmp_path = reviews_path.with_extension("tmp");
         tokio::fs::write(&tmp_path, json).await?;
         tokio::fs::rename(&tmp_path, &reviews_path).await?;
-
         Ok(())
     }
 
@@ -1081,7 +1125,6 @@ impl FlowRuntime {
 }
 
 fn utc_now_iso() -> String {
-    // chrono isn't a dep; use a simple Unix timestamp string.
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -1094,22 +1137,132 @@ fn utc_now_iso() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn make_simple_flow() -> FlowDefinition {
+        let yaml = r#"
+name: test-flow
+agents:
+  pm: agents/pm.agent.yaml
+  rd: agents/rd.agent.yaml
+  critic: agents/critic.agent.yaml
+
+nodes:
+  - id: pm-design
+    owner: pm
+    outputs:
+      - port: prd
+        reviewers: [human, critic]
+        routes_to: rd-design
+
+  - id: rd-design
+    owner: rd
+    outputs:
+      - port: tech-spec
+        reviewers: [human]
+      - port: code-description
+        reviewers: [human]
+"#;
+        FlowDefinition::load_from_str(yaml, Path::new("t.yaml")).unwrap()
+    }
+
+    fn make_cycles_flow() -> FlowDefinition {
+        let yaml = r#"
+name: cycles-test
+agents:
+  qa: agents/qa.agent.yaml
+  rd: agents/rd.agent.yaml
+
+nodes:
+  - id: qa-testing
+    owner: qa
+    outputs:
+      - port: bug-report
+        routes_to: rd-patch
+        max_cycles: 5
+        on_cycle_exhausted: escalate_to_human
+      - port: test-report
+        reviewers: [human]
+
+  - id: rd-patch
+    owner: rd
+    outputs:
+      - port: patch-note
+        routes_to: qa-testing
+"#;
+        FlowDefinition::load_from_str(yaml, Path::new("t.yaml")).unwrap()
+    }
+
+    fn make_auto_approve_flow() -> FlowDefinition {
+        let yaml = r#"
+name: auto-flow
+agents:
+  rd: agents/rd.agent.yaml
+  qa: agents/qa.agent.yaml
+
+nodes:
+  - id: rd-impl
+    owner: rd
+    outputs:
+      - port: submit-for-testing
+        routes_to: qa-testing
+
+  - id: qa-testing
+    owner: qa
+    outputs:
+      - port: test-report
+        reviewers: [human]
+"#;
+        FlowDefinition::load_from_str(yaml, Path::new("t.yaml")).unwrap()
+    }
 
     #[tokio::test]
     async fn start_and_get_run() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("feature-dev", "Build the login page").await.unwrap();
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "Build the login page").await.unwrap();
         let state = rt.get_run(&run_id).unwrap();
         assert_eq!(state.status, FlowRunStatus::Running);
-        assert_eq!(state.flow_id, "feature-dev");
+        assert_eq!(state.flow_id, "test-flow");
+    }
+
+    #[tokio::test]
+    async fn start_run_chat_auto_approved() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rt = FlowRuntime::new(dir.path());
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "hello").await.unwrap();
+        // __chat__ node's initial-brief should be APPROVED.
+        assert_eq!(
+            rt.port_status(&run_id, "__chat__", "initial-brief"),
+            PortStatus::Approved
+        );
+    }
+
+    #[tokio::test]
+    async fn start_run_activates_entry_nodes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rt = FlowRuntime::new(dir.path());
+        let flow = make_simple_flow();
+        let (run_id, contexts) = rt.start_run(&flow, "hello").await.unwrap();
+        // pm-design is the entry node → should have an invocation context.
+        assert!(
+            contexts.iter().any(|c| c.node_id == "pm-design"),
+            "pm-design should be activated on start_run, got: {:?}",
+            contexts.iter().map(|c| &c.node_id).collect::<Vec<_>>()
+        );
+        // rd-design is not an entry node → should NOT be activated yet.
+        assert!(!contexts.iter().any(|c| c.node_id == "rd-design"));
+        let _ = run_id;
     }
 
     #[tokio::test]
     async fn complete_run_terminal() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("f", "input").await.unwrap();
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "input").await.unwrap();
         rt.complete_run(&run_id).await.unwrap();
         let state = rt.get_run(&run_id).unwrap();
         assert_eq!(state.status, FlowRunStatus::Completed);
@@ -1120,9 +1273,10 @@ mod tests {
     async fn cancel_run_idempotent() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("f", "input").await.unwrap();
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "input").await.unwrap();
         rt.cancel_run(&run_id).await.unwrap();
-        rt.cancel_run(&run_id).await.unwrap(); // second call is no-op
+        rt.cancel_run(&run_id).await.unwrap();
         assert_eq!(
             rt.get_run(&run_id).unwrap().status,
             FlowRunStatus::Cancelled
@@ -1133,213 +1287,267 @@ mod tests {
     async fn state_json_persisted_to_disk() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("f", "hi").await.unwrap();
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
         let layout = WorkspaceLayout::new(dir.path());
-        let path = layout.run_state_file("f", &run_id);
+        let path = layout.run_state_file("test-flow", &run_id);
         assert!(path.exists(), "state.json should be written immediately");
     }
 
     #[tokio::test]
     async fn rehydrate_restores_running_as_paused() {
         let dir = tempfile::TempDir::new().unwrap();
-
-        // Simulate a previously running run on disk.
+        let flow = make_simple_flow();
         let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("f", "hi").await.unwrap();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
         drop(rt);
 
-        // New runtime instance — should rehydrate.
         let rt2 = FlowRuntime::new(dir.path());
         let paused = rt2.rehydrate_from_disk().await;
         assert_eq!(paused, 1);
-        assert_eq!(
-            rt2.get_run(&run_id).unwrap().status,
-            FlowRunStatus::Paused
-        );
+        assert_eq!(rt2.get_run(&run_id).unwrap().status, FlowRunStatus::Paused);
     }
 
     #[tokio::test]
     async fn port_status_defaults_to_pending() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("f", "hi").await.unwrap();
-        // No port set yet — should default to Pending.
-        assert_eq!(rt.port_status(&run_id, "rd", "tech-spec"), PortStatus::Pending);
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
+        // rd-design hasn't been touched yet.
+        assert_eq!(
+            rt.port_status(&run_id, "rd-design", "tech-spec"),
+            PortStatus::Pending
+        );
     }
 
     #[tokio::test]
     async fn mark_port_status_round_trip() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("f", "hi").await.unwrap();
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
 
-        rt.mark_port_status(&run_id, "rd", "tech-spec", PortStatus::InReview).await.unwrap();
-        assert_eq!(rt.port_status(&run_id, "rd", "tech-spec"), PortStatus::InReview);
+        rt.mark_port_status(&run_id, "rd-design", "tech-spec", PortStatus::InReview)
+            .await
+            .unwrap();
+        assert_eq!(
+            rt.port_status(&run_id, "rd-design", "tech-spec"),
+            PortStatus::InReview
+        );
 
-        rt.mark_port_status(&run_id, "rd", "tech-spec", PortStatus::Approved).await.unwrap();
-        assert_eq!(rt.port_status(&run_id, "rd", "tech-spec"), PortStatus::Approved);
+        rt.mark_port_status(&run_id, "rd-design", "tech-spec", PortStatus::Approved)
+            .await
+            .unwrap();
+        assert_eq!(
+            rt.port_status(&run_id, "rd-design", "tech-spec"),
+            PortStatus::Approved
+        );
     }
 
     #[tokio::test]
     async fn mark_port_status_no_downgrade() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("f", "hi").await.unwrap();
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
 
-        rt.mark_port_status(&run_id, "rd", "prd", PortStatus::Approved).await.unwrap();
-        // Attempt to downgrade — should be ignored.
-        rt.mark_port_status(&run_id, "rd", "prd", PortStatus::Pending).await.unwrap();
-        assert_eq!(rt.port_status(&run_id, "rd", "prd"), PortStatus::Approved);
+        rt.mark_port_status(&run_id, "pm-design", "prd", PortStatus::Approved)
+            .await
+            .unwrap();
+        rt.mark_port_status(&run_id, "pm-design", "prd", PortStatus::Pending)
+            .await
+            .unwrap();
+        assert_eq!(
+            rt.port_status(&run_id, "pm-design", "prd"),
+            PortStatus::Approved
+        );
     }
 
     #[tokio::test]
     async fn port_state_survives_rehydration() {
         let dir = tempfile::TempDir::new().unwrap();
+        let flow = make_simple_flow();
         let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("f", "hi").await.unwrap();
-        rt.mark_port_status(&run_id, "rd", "tech-spec", PortStatus::Approved).await.unwrap();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
+        rt.mark_port_status(&run_id, "rd-design", "tech-spec", PortStatus::Approved)
+            .await
+            .unwrap();
         drop(rt);
 
         let rt2 = FlowRuntime::new(dir.path());
         rt2.rehydrate_from_disk().await;
-        assert_eq!(rt2.port_status(&run_id, "rd", "tech-spec"), PortStatus::Approved);
+        assert_eq!(
+            rt2.port_status(&run_id, "rd-design", "tech-spec"),
+            PortStatus::Approved
+        );
     }
 
     #[tokio::test]
     async fn record_invocation_appended() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("f", "hi").await.unwrap();
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
         let trigger = InvocationTrigger {
             kind: "initial".into(),
             approved_port: None,
-            approved_doc: None,
+            from_node: None,
         };
-        let inv_id = rt.record_invocation(&run_id, "pm", trigger).await.unwrap();
-        assert!(inv_id.starts_with("inv-"));
-        let state = rt.get_run(&run_id).unwrap();
-        let agent_state = state.agents.get("pm").unwrap();
-        assert_eq!(agent_state.invocations.len(), 1);
-        assert_eq!(agent_state.invocations[0].trigger.kind, "initial");
-    }
-
-    #[tokio::test]
-    async fn increment_edge_cycles_counts() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let rt = FlowRuntime::new(dir.path());
-        let run_id = rt.start_run("f", "hi").await.unwrap();
-        assert_eq!(rt.increment_edge_cycles(&run_id, "qa", "bug-report").await.unwrap(), 1);
-        assert_eq!(rt.increment_edge_cycles(&run_id, "qa", "bug-report").await.unwrap(), 2);
-        assert_eq!(rt.increment_edge_cycles(&run_id, "qa", "bug-report").await.unwrap(), 3);
-    }
-
-    // ── on_approved_reschedule tests ──────────────────────────────────────
-
-    fn make_reschedule_flow() -> FlowDefinition {
-        let yaml = r#"
-name: resched-test
-agents: [rd, qa, critic]
-edges:
-  - from: rd
-    to: qa
-    port: tech-spec
-    on_approved_reschedule: true
-    reviewer_agents: [critic, qa-critic]
-  - from: rd
-    port: code-description
-    on_approved_reschedule: true
-    reviewer_agents: [critic]
-  - from: rd
-    to: qa
-    port: submit-for-testing
-"#;
-        FlowDefinition::load_from_str(yaml, std::path::Path::new("t.yaml")).unwrap()
-    }
-
-    #[tokio::test]
-    async fn on_document_approved_reschedules_to_next_pending() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let rt = FlowRuntime::new(dir.path());
-        let flow = make_reschedule_flow();
-        let run_id = rt.start_run("resched-test", "hi").await.unwrap();
-
-        // Approve tech-spec — expect reschedule with next port = code-description.
-        let ctx = rt
-            .on_document_approved(&run_id, "rd", "tech-spec", &flow)
+        let inv_id = rt
+            .record_invocation(&run_id, "pm-design", trigger)
             .await
             .unwrap();
-        assert!(ctx.is_some(), "should reschedule after tech-spec approval");
-        let ctx = ctx.unwrap();
-        assert_eq!(ctx.pending_ports.first().map(|s| s.as_str()), Some("code-description"));
-        assert_eq!(ctx.trigger.approved_port.as_deref(), Some("tech-spec"));
+        assert!(inv_id.starts_with("inv-"));
+        let state = rt.get_run(&run_id).unwrap();
+        let ns = state.node_states.get("pm-design").unwrap();
+        // There should be at least one invocation (start_run fires one).
+        assert!(ns.invocations.iter().any(|r| r.trigger.kind == "initial"));
     }
 
     #[tokio::test]
-    async fn on_document_approved_idempotent_when_already_approved() {
+    async fn increment_port_cycles_counts() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
-        let flow = make_reschedule_flow();
-        let run_id = rt.start_run("resched-test", "hi").await.unwrap();
+        let flow = make_cycles_flow();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
+        assert_eq!(
+            rt.increment_port_cycles(&run_id, "qa-testing", "bug-report")
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            rt.increment_port_cycles(&run_id, "qa-testing", "bug-report")
+                .await
+                .unwrap(),
+            2
+        );
+    }
 
-        rt.on_document_approved(&run_id, "rd", "tech-spec", &flow).await.unwrap();
-        // Second call should be a no-op.
-        let ctx = rt.on_document_approved(&run_id, "rd", "tech-spec", &flow).await.unwrap();
-        assert!(ctx.is_none(), "second approval should be idempotent");
+    // ── AND-join gate tests ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn is_node_ready_false_with_partial_inputs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rt = FlowRuntime::new(dir.path());
+        // Use cycles flow where qa-testing needs __chat__/initial-brief.
+        let flow = make_cycles_flow();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
+        let state = rt.get_run(&run_id).unwrap();
+        let graph = flow.graph();
+
+        // rd-patch requires qa-testing/bug-report — not yet approved.
+        assert!(
+            !rt.is_node_ready("rd-patch", &state, graph),
+            "rd-patch should not be ready without bug-report approved"
+        );
     }
 
     #[tokio::test]
-    async fn on_document_approved_no_pending_ports_returns_none() {
+    async fn is_node_ready_true_when_all_satisfied() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
-        let flow = make_reschedule_flow();
-        let run_id = rt.start_run("resched-test", "hi").await.unwrap();
+        let flow = make_cycles_flow();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
+        // Manually approve qa-testing/bug-report.
+        rt.mark_port_status(&run_id, "qa-testing", "bug-report", PortStatus::Approved)
+            .await
+            .unwrap();
+        let state = rt.get_run(&run_id).unwrap();
+        let graph = flow.graph();
+        assert!(
+            rt.is_node_ready("rd-patch", &state, graph),
+            "rd-patch should be ready once bug-report is approved"
+        );
+    }
 
-        // Pre-approve all of rd's ports.
-        for port in &["tech-spec", "code-description", "submit-for-testing"] {
-            rt.mark_port_status(&run_id, "rd", port, PortStatus::Approved).await.unwrap();
-        }
-        // Now artificially reset tech-spec to Pending to test the flow
-        // (skip — we'll just verify that if all are already approved, None is returned
-        // by testing submit-for-testing which has no on_approved_reschedule).
-        let yaml = r#"
-name: no-resched
-agents: [rd, qa]
-edges:
-  - from: rd
-    to: qa
-    port: submit-for-testing
-"#;
-        let flow2 = FlowDefinition::load_from_str(yaml, std::path::Path::new("t.yaml")).unwrap();
-        let run2 = rt.start_run("no-resched", "x").await.unwrap();
-        let ctx = rt.on_document_approved(&run2, "rd", "submit-for-testing", &flow2).await.unwrap();
-        assert!(ctx.is_none(), "edge without on_approved_reschedule should not reschedule");
+    // ── Auto-approve (empty reviewers) test ───────────────────────────────
+
+    #[tokio::test]
+    async fn auto_approve_activates_downstream_and_join() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rt = FlowRuntime::new(dir.path());
+        let flow = make_auto_approve_flow();
+        let (run_id, start_ctxs) = rt.start_run(&flow, "hi").await.unwrap();
+
+        // rd-impl is the entry node.
+        assert!(start_ctxs.iter().any(|c| c.node_id == "rd-impl"));
+
+        // Submit submit-for-testing (no reviewers → auto-approve).
+        let ctxs = rt
+            .on_document_submitted(
+                &run_id,
+                "rd-impl",
+                "submit-for-testing",
+                "done",
+                &flow,
+                "sha",
+                1,
+            )
+            .await
+            .unwrap();
+
+        // Port should be APPROVED.
+        assert_eq!(
+            rt.port_status(&run_id, "rd-impl", "submit-for-testing"),
+            PortStatus::Approved
+        );
+
+        // qa-testing only needs rd-impl/submit-for-testing → should be activated.
+        assert!(
+            ctxs.iter().any(|c| c.node_id == "qa-testing"),
+            "qa-testing should be activated after submit-for-testing auto-approved, got: {:?}",
+            ctxs.iter().map(|c| &c.node_id).collect::<Vec<_>>()
+        );
+    }
+
+    // ── Implicit re-invocation test ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn implicit_reinvoke_when_pending_ports_remain() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rt = FlowRuntime::new(dir.path());
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
+
+        // Approve rd-design's tech-spec; code-description is still pending.
+        // Since tech-spec has reviewers, we call on_document_approved directly.
+        rt.mark_port_status(&run_id, "rd-design", "tech-spec", PortStatus::InReview)
+            .await
+            .unwrap();
+        let ctxs = rt
+            .on_document_approved(&run_id, "rd-design", "tech-spec", &flow)
+            .await
+            .unwrap();
+
+        // rd-design should be re-invoked (code-description is still pending).
+        assert!(
+            ctxs.iter().any(|c| c.node_id == "rd-design"),
+            "rd-design should be re-invoked due to pending code-description, got: {:?}",
+            ctxs.iter().map(|c| &c.node_id).collect::<Vec<_>>()
+        );
+        let reinvoke_ctx = ctxs.iter().find(|c| c.node_id == "rd-design").unwrap();
+        assert!(
+            reinvoke_ctx.pending_ports.contains(&"code-description".to_owned()),
+            "pending_ports should include code-description"
+        );
     }
 
     // ── max_cycles tests ──────────────────────────────────────────────────
-
-    fn make_cycles_flow() -> FlowDefinition {
-        let yaml = r#"
-name: cycles-test
-agents: [qa, rd]
-edges:
-  - from: qa
-    to: rd
-    port: bug-report
-    max_cycles: 5
-    on_cycle_exhausted: escalate_to_human
-"#;
-        FlowDefinition::load_from_str(yaml, std::path::Path::new("t.yaml")).unwrap()
-    }
 
     #[tokio::test]
     async fn check_cycle_limit_returns_none_within_limit() {
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
         let flow = make_cycles_flow();
-        let run_id = rt.start_run("cycles-test", "x").await.unwrap();
+        let (run_id, _) = rt.start_run(&flow, "x").await.unwrap();
 
         for _ in 0..5 {
-            let action = rt.check_cycle_limit(&run_id, "qa", "bug-report", &flow).await.unwrap();
+            let action = rt
+                .check_cycle_limit(&run_id, "qa-testing", "bug-report", &flow)
+                .await
+                .unwrap();
             assert!(action.is_none(), "within limit should return None");
         }
     }
@@ -1349,40 +1557,17 @@ edges:
         let dir = tempfile::TempDir::new().unwrap();
         let rt = FlowRuntime::new(dir.path());
         let flow = make_cycles_flow();
-        let run_id = rt.start_run("cycles-test", "x").await.unwrap();
+        let (run_id, _) = rt.start_run(&flow, "x").await.unwrap();
 
-        // Exhaust the limit.
         for _ in 0..5 {
-            rt.check_cycle_limit(&run_id, "qa", "bug-report", &flow).await.unwrap();
+            rt.check_cycle_limit(&run_id, "qa-testing", "bug-report", &flow)
+                .await
+                .unwrap();
         }
-        // 6th submission should return escalate_to_human.
-        let action = rt.check_cycle_limit(&run_id, "qa", "bug-report", &flow).await.unwrap();
+        let action = rt
+            .check_cycle_limit(&run_id, "qa-testing", "bug-report", &flow)
+            .await
+            .unwrap();
         assert_eq!(action.as_deref(), Some("escalate_to_human"));
-    }
-
-    // ── per-edge reviewer_agents tests ────────────────────────────────────
-
-    #[test]
-    fn resolve_reviewers_uses_per_edge_when_set() {
-        let edge_reviewers: Vec<String> = vec!["qa-critic".into()];
-        let flow_reviewers: Vec<String> = vec!["critic".into()];
-        let result = FlowRuntime::resolve_reviewers(&edge_reviewers, &flow_reviewers, true);
-        assert_eq!(result, &["qa-critic"]);
-    }
-
-    #[test]
-    fn resolve_reviewers_uses_flow_level_when_no_override() {
-        let edge_reviewers: Vec<String> = vec![];
-        let flow_reviewers: Vec<String> = vec!["critic".into()];
-        let result = FlowRuntime::resolve_reviewers(&edge_reviewers, &flow_reviewers, false);
-        assert_eq!(result, &["critic"]);
-    }
-
-    #[test]
-    fn resolve_reviewers_empty_override_disables_llm_reviewers() {
-        let edge_reviewers: Vec<String> = vec![];
-        let flow_reviewers: Vec<String> = vec!["critic".into()];
-        let result = FlowRuntime::resolve_reviewers(&edge_reviewers, &flow_reviewers, true);
-        assert!(result.is_empty());
     }
 }

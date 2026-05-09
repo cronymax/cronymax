@@ -20,8 +20,7 @@ import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { browser } from "@/shells/bridge";
-import { agentRegistry, flowRun } from "@/shells/runtime";
+import { agentRegistry, docType, flow, flowRun } from "@/shells/runtime";
 import { Icon } from "@/components/Icon";
 import {
   Provider,
@@ -32,6 +31,7 @@ import {
   migrateLegacy,
   syncLegacyKey,
   useStore,
+  flowSpecFromDef,
   SEED_CHAT_FLOW,
   SEED_SOFTWARE_DEV_CYCLE_FLOW,
   leadNodeId,
@@ -291,6 +291,45 @@ export function FlowEditor() {
       dispatch({ type: "setFlow", spec: { nodes: [], edges: [] } });
     }
 
+    // Merge workspace flows from the native runtime (async).
+    // Flows already in localStorage are kept as-is; workspace-only flows
+    // are converted from their YAML definition and added to localStorage.
+    flow
+      .list()
+      .then(async (res) => {
+        const wsFlows =
+          (res as { flows?: { id: string; name: string; builtin?: boolean }[] })
+            .flows ?? [];
+        const current = loadAllFlows();
+        let changed = false;
+        for (const meta of wsFlows) {
+          if (meta.builtin) continue; // skip bundle presets
+          if (current[meta.id]) continue; // workspace copy already in localStorage
+          try {
+            const def = (await flow.load(meta.id)) as Parameters<
+              typeof flowSpecFromDef
+            >[0];
+            current[meta.id] = flowSpecFromDef(def);
+            changed = true;
+          } catch {
+            // Ignore unloadable flows
+          }
+        }
+        if (changed) {
+          saveAllFlows(current);
+          const allNames = Object.keys(current).sort();
+          const currentActive = getActiveFlowName();
+          dispatch({
+            type: "setFlowNames",
+            names: allNames,
+            active: currentActive || allNames[0] || "",
+          });
+        }
+      })
+      .catch(() => {
+        /* runtime not available (web preview mode) */
+      });
+
     // Load agent + doc-type registries from the native bridge.
     // If the registry is empty on first run, auto-seed a default "Chat" agent.
     agentRegistry
@@ -318,10 +357,18 @@ export function FlowEditor() {
         // eslint-disable-next-line no-console
         console.warn("[flow] agent.registry.list failed:", err.message);
       });
-    browser
-      .send("doc_type.list")
+    docType
+      .list()
       .then((res) => {
-        dispatch({ type: "setDocTypeCatalog", docTypes: res.doc_types ?? [] });
+        dispatch({
+          type: "setDocTypeCatalog",
+          docTypes:
+            (res.doc_types as Array<{
+              name: string;
+              display_name: string;
+              user_defined: boolean;
+            }>) ?? [],
+        });
       })
       .catch((err: Error) => {
         // eslint-disable-next-line no-console
@@ -567,9 +614,9 @@ export function FlowEditor() {
             type="button"
             onClick={() => setAgentPickerOpen(true)}
             className={btnCls}
-            title="Add an agent node"
+            title="Add a node"
           >
-            + Agent
+            + Node
           </button>
           <span className="mx-1 h-4 w-px bg-cronymax-border" />
           <button

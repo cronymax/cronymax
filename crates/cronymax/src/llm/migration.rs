@@ -128,6 +128,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn setup(dir: &Path, legacy_json: &str) -> (PathBuf, PathBuf) {

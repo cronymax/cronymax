@@ -231,10 +231,88 @@ function sanitizeEdges(edges: GraphEdge[], nodeIds: Set<number>): GraphEdge[] {
   );
 }
 
+/**
+ * Ensure the Chat agent is always node id=1 (the non-deletable lead node).
+ *
+ * If the lead node (smallest id) already has `config.agent_name === "Chat"`,
+ * the spec is returned unchanged. Otherwise all existing node ids are shifted
+ * by +1, their x-positions are shifted right by NODE_X_STEP, and a Chat node
+ * is prepended at id=1.
+ */
+const NODE_X_STEP_INTERNAL = 300;
+const NODE_Y_CHAT = 120;
+
+function ensureChatLeadNode(spec: FlowSpec): FlowSpec {
+  const nodes = spec.nodes ?? [];
+  if (nodes.length === 0) {
+    // Empty flow → just the Chat node
+    return {
+      nodes: [
+        {
+          id: 1,
+          type: "agent",
+          name: "Chat",
+          x: 80,
+          y: NODE_Y_CHAT,
+          produces: [],
+          config: { agent_name: "Chat" },
+        },
+      ],
+      edges: spec.edges ?? [],
+    };
+  }
+  const sorted = [...nodes].sort((a, b) => a.id - b.id);
+  const lead = sorted[0]!;
+  if ((lead.config?.agent_name ?? lead.name) === "Chat") {
+    // Chat is already the lead node — ensure there's an edge from Chat to the
+    // first non-Chat workflow node (may be missing in flows loaded from
+    // localStorage that were saved before this requirement was added).
+    const firstWorkflow = sorted[1];
+    if (!firstWorkflow) return spec;
+    const edges = spec.edges ?? [];
+    const hasLeadEdge = edges.some(
+      (e) => e.from_id === lead.id && e.to_id === firstWorkflow.id,
+    );
+    if (hasLeadEdge) return spec;
+    return {
+      ...spec,
+      edges: [{ from_id: lead.id, to_id: firstWorkflow.id }, ...edges],
+    };
+  }
+  // Shift every existing node id and x position to make room for Chat at id=1.
+  const idShift = lead.id === 1 ? 1 : 0; // only shift when id=1 would collide
+  const chatNode: GraphNode = {
+    id: 1,
+    type: "agent",
+    name: "Chat",
+    x: lead.x === 80 ? 80 : lead.x - NODE_X_STEP_INTERNAL,
+    y: NODE_Y_CHAT,
+    produces: [],
+    config: { agent_name: "Chat" },
+  };
+  const shiftedNodes: GraphNode[] = nodes.map((n) => ({
+    ...n,
+    id: n.id + idShift,
+    x: idShift ? n.x + NODE_X_STEP_INTERNAL : n.x,
+  }));
+  const shiftedEdges: GraphEdge[] = (spec.edges ?? []).map((e) => ({
+    ...e,
+    from_id: e.from_id + idShift,
+    to_id: e.to_id + idShift,
+  }));
+  // Add edge from Chat (id=1) to the first workflow node.
+  const firstWorkflowId = lead.id + idShift;
+  const chatEdge: GraphEdge = { from_id: 1, to_id: firstWorkflowId };
+  return {
+    nodes: [chatNode, ...shiftedNodes],
+    edges: [chatEdge, ...shiftedEdges],
+  };
+}
+
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case "setFlow": {
-      const migrated = migrateFlowSpec(action.spec);
+      const migrated = ensureChatLeadNode(migrateFlowSpec(action.spec));
       const ns = sanitizeNodes(migrated.nodes ?? []);
       const ids = new Set(ns.map((n) => n.id));
       const es = sanitizeEdges(migrated.edges ?? [], ids);
@@ -456,12 +534,23 @@ export const SEED_CHAT_FLOW: FlowSpec = {
 // absent (including for users who already have other flows). Users can
 // freely edit or delete it.
 export const SEED_SOFTWARE_DEV_CYCLE_FLOW: FlowSpec = {
+  // Chat is always id=1 (the non-deletable lead node).
+  // PM/RD/QA are id=2/3/4 respectively.
   nodes: [
     {
       id: 1,
       type: "agent",
-      name: "pm",
+      name: "Chat",
       x: 80,
+      y: 120,
+      produces: [],
+      config: { agent_name: "Chat" },
+    },
+    {
+      id: 2,
+      type: "agent",
+      name: "pm",
+      x: 380,
       y: 120,
       produces: [{ doc_type: "prd", reviewers: "critic" }],
       config: {
@@ -469,10 +558,10 @@ export const SEED_SOFTWARE_DEV_CYCLE_FLOW: FlowSpec = {
       },
     },
     {
-      id: 2,
+      id: 3,
       type: "agent",
       name: "rd",
-      x: 380,
+      x: 680,
       y: 120,
       produces: [
         { doc_type: "tech-spec", reviewers: "critic,qa-critic" },
@@ -483,10 +572,10 @@ export const SEED_SOFTWARE_DEV_CYCLE_FLOW: FlowSpec = {
       },
     },
     {
-      id: 3,
+      id: 4,
       type: "agent",
       name: "qa",
-      x: 680,
+      x: 980,
       y: 120,
       produces: [
         { doc_type: "test-report", reviewers: "critic" },
@@ -499,15 +588,15 @@ export const SEED_SOFTWARE_DEV_CYCLE_FLOW: FlowSpec = {
   ],
   edges: [
     // PM → RD: PRD after human + critic approval
-    { from_id: 1, to_id: 2, port: "prd", requires_human_approval: true },
+    { from_id: 2, to_id: 3, port: "prd", requires_human_approval: true },
     // RD → QA: tech-spec after human + critic + qa-critic approval
-    { from_id: 2, to_id: 3, port: "tech-spec", requires_human_approval: true },
+    { from_id: 3, to_id: 4, port: "tech-spec", requires_human_approval: true },
     // RD → QA: submit-for-testing handoff (no gate)
-    { from_id: 2, to_id: 3, port: "submit-for-testing" },
+    { from_id: 3, to_id: 4, port: "submit-for-testing" },
     // QA → RD: bug reports (max 5 fix cycles)
-    { from_id: 3, to_id: 2, port: "bug-report" },
+    { from_id: 4, to_id: 3, port: "bug-report" },
     // RD → QA: patch notes after each fix
-    { from_id: 2, to_id: 3, port: "patch-note" },
+    { from_id: 3, to_id: 4, port: "patch-note" },
   ],
 };
 
@@ -519,4 +608,136 @@ export function leadNodeId(nodes: GraphNode[]): number | null {
   let lead = nodes[0]!;
   for (const n of nodes) if (n.id < lead.id) lead = n;
   return lead.id;
+}
+
+// ── Convert a runtime flow definition (from flow_load IPC) to a FlowSpec ──
+//
+// Used when the flow editor discovers workspace flows that aren't in
+// localStorage yet. Nodes are arranged left-to-right in the order they
+// appear in the YAML definition.
+
+interface RuntimeFlowNode {
+  id: string;
+  owner: string;
+  outputs?: Array<{
+    port: string;
+    routes_to?: string | null;
+    reviewers?: string[];
+  }>;
+}
+
+interface RuntimeFlowDef {
+  id: string;
+  name: string;
+  agents: string[];
+  /** Current-schema nodes (preferred). */
+  nodes?: RuntimeFlowNode[];
+  /** Legacy edges (fallback). */
+  edges?: Array<{
+    from: string;
+    to: string;
+    port: string;
+    requires_human_approval?: boolean;
+  }>;
+}
+
+const NODE_X_STEP = 300;
+const NODE_Y_BASE = 120;
+
+/**
+ * The Chat node is always injected as node id=1 (the lead node) so that
+ * workspace flows loaded from YAML still expose a chat entry point.
+ * All YAML-defined nodes are offset to start from id=2.
+ */
+const CHAT_LEAD_NODE: GraphNode = {
+  id: 1,
+  type: "agent",
+  name: "Chat",
+  x: 80,
+  y: NODE_Y_BASE,
+  produces: [],
+  config: { agent_name: "Chat" },
+};
+
+/** Convert a runtime flow definition to a visual `FlowSpec` with auto-layout. */
+export function flowSpecFromDef(def: RuntimeFlowDef): FlowSpec {
+  // All YAML-defined nodes are offset by +1 so that the injected Chat lead
+  // node always occupies id=1 (the lead slot).
+  const ID_OFFSET = 1;
+
+  if (def.nodes && def.nodes.length > 0) {
+    // Current node-centric schema
+    const nodeIdToNum = new Map<string, number>();
+    const yamlNodes: GraphNode[] = def.nodes.map((n, i) => {
+      const numId = i + 1 + ID_OFFSET;
+      nodeIdToNum.set(n.id, numId);
+      const produces: ProducesEntry[] = (n.outputs ?? [])
+        .filter((o) => o.reviewers && o.reviewers.length > 0)
+        .map((o) => ({
+          doc_type: o.port,
+          reviewers: (o.reviewers ?? []).filter((r) => r !== "human").join(","),
+        }));
+      return {
+        id: numId,
+        type: "agent" as const,
+        name: n.id,
+        // Chat is at x=80; YAML nodes start one step further right.
+        x: 80 + (i + 1) * NODE_X_STEP,
+        y: NODE_Y_BASE,
+        produces,
+        config: { agent_name: n.owner },
+      };
+    });
+    const graphEdges: GraphEdge[] = [];
+    for (const n of def.nodes) {
+      const fromNum = nodeIdToNum.get(n.id);
+      if (fromNum == null) continue;
+      for (const o of n.outputs ?? []) {
+        if (o.routes_to) {
+          const toNum = nodeIdToNum.get(o.routes_to);
+          if (toNum != null) {
+            graphEdges.push({ from_id: fromNum, to_id: toNum, port: o.port });
+          }
+        }
+      }
+    }
+    return {
+      nodes: [{ ...CHAT_LEAD_NODE }, ...yamlNodes],
+      edges: [{ from_id: 1, to_id: 1 + ID_OFFSET }, ...graphEdges],
+    };
+  }
+
+  // Legacy edge schema: use agent list as nodes
+  const agents = def.agents ?? [];
+  const agentToNum = new Map<string, number>();
+  const yamlNodes: GraphNode[] = agents.map((agentId, i) => {
+    const numId = i + 1 + ID_OFFSET;
+    agentToNum.set(agentId, numId);
+    return {
+      id: numId,
+      type: "agent" as const,
+      name: agentId,
+      x: 80 + (i + 1) * NODE_X_STEP,
+      y: NODE_Y_BASE,
+      produces: [],
+      config: { agent_name: agentId },
+    };
+  });
+  const graphEdges: GraphEdge[] = (def.edges ?? []).flatMap((e) => {
+    const from_id = agentToNum.get(e.from);
+    const to_id = agentToNum.get(e.to);
+    if (from_id == null || to_id == null) return [];
+    return [
+      {
+        from_id,
+        to_id,
+        port: e.port,
+        requires_human_approval: e.requires_human_approval,
+      },
+    ];
+  });
+  return {
+    nodes: [{ ...CHAT_LEAD_NODE }, ...yamlNodes],
+    edges: [{ from_id: 1, to_id: 1 + ID_OFFSET }, ...graphEdges],
+  };
 }

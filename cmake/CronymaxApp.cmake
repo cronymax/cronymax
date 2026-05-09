@@ -299,20 +299,20 @@ add_custom_command(TARGET cronymax_app POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E rm -rf
     "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/builtin-doc-types"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/builtin-doc-types"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.cronymax/doc-types"
     "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/builtin-doc-types"
   COMMENT "Bundling built-in doc-type schemas into cronymax.app"
   VERBATIM
 )
 
-# Built-in agent definitions (e.g. the `critic` reviewer). Copied alongside
-# the doc-type schemas so the AgentRegistry can merge them with workspace
-# overrides under <workspace>/.cronymax/agents/.
+# Built-in agent definitions. Copied alongside the doc-type schemas so the
+# AgentRegistry can merge them with workspace overrides under
+# <workspace>/.cronymax/agents/.
 add_custom_command(TARGET cronymax_app POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E rm -rf
     "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/builtin-agents"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/builtin-agents"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.cronymax/agents"
     "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/builtin-agents"
   COMMENT "Bundling built-in agent definitions into cronymax.app"
   VERBATIM
@@ -326,7 +326,7 @@ add_custom_command(TARGET cronymax_app POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E rm -rf
     "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/builtin-flows"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/examples/flows"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.cronymax/flows"
     "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/builtin-flows"
   COMMENT "Bundling built-in preset flows into cronymax.app"
   VERBATIM

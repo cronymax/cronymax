@@ -14,6 +14,7 @@ pub use agent_registry::{AgentDef, AgentRegistry};
 pub use doc_type_registry::{DocTypeRegistry, DocTypeSchema};
 pub use file_broker::FileBroker;
 pub use flow_yaml::{
-    load_flow_agents, load_flow_yaml, parse_flow_yaml, FlowYamlDoc, FlowYamlEdge,
+    load_flow_agents, load_flow_yaml, parse_flow_yaml,
+    FlowYamlDoc, FlowYamlEdge, FlowYamlNode, FlowYamlNodeOutput,
 };
 pub use layout::WorkspaceLayout;

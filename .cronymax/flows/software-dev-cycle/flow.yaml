@@ -1,0 +1,70 @@
+# Full PM → RD → QA software development cycle with review gates.
+#
+# Flow summary:
+#   1. PM produces a prototype (human approval gate).
+#   2. PM is re-invoked to produce a PRD (human + critic approval).
+#   3. RD receives the PRD and produces a tech-spec (human + critic + qa-critic).
+#   4. RD is re-invoked to implement and produce a code-description (human + critic).
+#   5. RD is re-invoked to produce a submit-for-testing handoff to QA.
+#   6. QA receives the tech-spec and submit-for-testing (AND-join gate).
+#   7. QA produces test-cases (reviewed by rd + critic).
+#   8. QA files bug-reports back to RD (max 5 cycles).
+#   9. RD patches and sends patch-notes back to QA.
+#  10. QA produces a final test-report (human + critic approval).
+name: software-dev-cycle
+description: |
+  Full PM → RD → QA software development cycle with review gates and
+  automated bug-fix cycling. Demonstrates implicit re-invocation for
+  multi-phase agents, per-output reviewer configuration, and max_cycles
+  enforcement on the bug-report → patch-note loop.
+
+agents:
+  pm: agents/pm.agent.yaml
+  rd: agents/rd.agent.yaml
+  qa: agents/qa.agent.yaml
+  qa-critic: agents/qa-critic.agent.yaml
+  critic: agents/critic.agent.yaml
+
+nodes:
+  - id: pm-design
+    owner: pm
+    outputs:
+      - port: prototype
+        reviewers: [human]
+      - port: prd
+        routes_to: rd-design
+        reviewers: [human, critic]
+
+  - id: rd-design
+    owner: rd
+    outputs:
+      - port: tech-spec
+        routes_to: qa-testing
+        reviewers: [human, critic, qa-critic]
+      - port: code-description
+        reviewers: [human, critic]
+      - port: submit-for-testing
+        routes_to: qa-testing
+
+  - id: qa-testing
+    owner: qa
+    outputs:
+      - port: test-cases
+        reviewers: [rd, critic]
+      - port: bug-report
+        routes_to: rd-patch
+        max_cycles: 5
+        on_cycle_exhausted: escalate_to_human
+      - port: test-report
+        reviewers: [human, critic]
+
+  - id: rd-patch
+    owner: rd
+    outputs:
+      - port: patch-note
+        routes_to: qa-testing
+
+max_review_rounds: 3
+on_review_exhausted: halt
+reviewer_timeout_secs: 120
+reviewer_enabled: true

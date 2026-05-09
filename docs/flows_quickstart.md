@@ -10,22 +10,24 @@ A Space is a workspace folder; cronymax stores every Flow's state under
 `<space>/.cronymax/flows/`. Open the app and create a new Space, or reuse
 an existing one.
 
-## 2. Drop in the example assets
+## 2. Pick a preset flow
 
-Copy the bundled example into the Space's `.cronymax/` directory:
+The bundled preset flows live in `.cronymax/flows/` and are automatically
+available in the app's Settings / Flows dropdown. To use one in your own Space,
+copy it into the Space's `.cronymax/` directory:
 
 ```bash
-cp -R assets/examples/agents      <space>/.cronymax/agents/
-cp -R assets/examples/doc_types   <space>/.cronymax/doc_types/
-cp -R assets/examples/flows       <space>/.cronymax/flows/
+cp -R .cronymax/agents      <space>/.cronymax/agents/
+cp -R .cronymax/doc-types   <space>/.cronymax/doc-types/
+cp -R .cronymax/flows       <space>/.cronymax/flows/
 ```
 
 You should now have:
 
 ```
 .cronymax/
-  agents/{product,architect,critic}.agent.yaml
-  doc_types/{prd,tech-spec}.doc-type.yaml
+  agents/{pm,rd,qa,critic,...}.agent.yaml
+  doc-types/{prd,tech-spec,...}.yaml
   flows/simple-prd-to-spec/flow.yaml
 ```
 

@@ -32,7 +32,7 @@ use crate::capability::notify::NullNotify;
 use crate::capability::shell::LocalShell;
 use crate::capability::submit_document::DocumentSubmitted;
 use crate::flow::definition::FlowDefinition;
-use crate::flow::runtime::{FlowRuntime, InvocationContext, InvocationTrigger};
+use crate::flow::runtime::{FlowRuntime, InvocationContext};
 use crate::llm::{copilot_auth, OpenAiConfig, OpenAiProvider};
 use crate::protocol::capabilities::CapabilityResponse;
 use crate::protocol::control::{ControlError, ControlRequest, ControlResponse, ReviewDecision};
@@ -488,51 +488,17 @@ impl Handler for RuntimeHandler {
                         // Optionally create a FlowRuntime + initial context
                         // when the request carries a `flow_id`.
                         let (entry_system_prompt, maybe_flow_ctx) = if let Some(ref fid) = flow_id_opt {
-                            let flow_rt = Arc::new(FlowRuntime::new(&workspace_root));
-                            let flow_run_id = match flow_rt.start_run(fid, &initial_input).await {
-                                Ok(id) => id,
-                                Err(e) => {
-                                    warn!(flow_id = %fid, error = %e, "start_run: FlowRuntime::start_run failed");
-                                    let _ = self.authority.fail_run(run_id, e.to_string());
-                                    return ControlResponse::Err {
-                                        error: ControlError::Internal { message: e.to_string() },
-                                    };
-                                }
-                            };
-                            info!(%run_id, %flow_run_id, flow_id = %fid, "start_run: flow run created");
-
-                            // Load the flow definition to schedule the entry agent.
+                            // Load the flow definition first (required by start_run).
                             let flow_def_path = workspace_root
                                 .join(".cronymax")
                                 .join("flows")
                                 .join(fid)
                                 .join("flow.yaml");
 
-                            let entry_sys = match tokio::fs::read_to_string(&flow_def_path).await {
+                            let flow_def_opt = match tokio::fs::read_to_string(&flow_def_path).await {
                                 Ok(yaml) => {
                                     match FlowDefinition::load_from_str(&yaml, &flow_def_path) {
-                                        Ok(flow_def) => {
-                                            // Schedule the entry agent (first agent in the flow).
-                                            if let Some(entry_agent) = flow_def.agents.iter().next().cloned() {
-                                                let trigger = InvocationTrigger {
-                                                    kind: "initial".into(),
-                                                    approved_port: None,
-                                                    approved_doc: None,
-                                                };
-                                                match flow_rt.schedule_agent_with_context(
-                                                    &flow_run_id, &entry_agent, trigger, &flow_def,
-                                                ).await {
-                                                    Ok(Some(ctx)) => {
-                                                        info!(entry_agent, "start_run: entry agent scheduled");
-                                                        Some(ctx.system_message)
-                                                    }
-                                                    _ => None,
-                                                }
-                                            } else {
-                                                warn!(flow_id = %fid, "start_run: flow has no agents");
-                                                None
-                                            }
-                                        }
+                                        Ok(d) => Some(d),
                                         Err(e) => {
                                             warn!(flow_id = %fid, error = %e, "start_run: failed to parse flow.yaml");
                                             None
@@ -544,6 +510,33 @@ impl Handler for RuntimeHandler {
                                     None
                                 }
                             };
+
+                            let flow_rt = Arc::new(FlowRuntime::new(&workspace_root));
+
+                            let (flow_run_id, entry_contexts) = match flow_def_opt {
+                                Some(ref flow_def) => {
+                                    match flow_rt.start_run(flow_def, &initial_input).await {
+                                        Ok((frid, ctxs)) => {
+                                            info!(%run_id, flow_run_id = %frid, flow_id = %fid, "start_run: flow run created");
+                                            (frid, ctxs)
+                                        }
+                                        Err(e) => {
+                                            warn!(flow_id = %fid, error = %e, "start_run: FlowRuntime::start_run failed");
+                                            let _ = self.authority.fail_run(run_id, e.to_string());
+                                            return ControlResponse::Err {
+                                                error: ControlError::Internal { message: e.to_string() },
+                                            };
+                                        }
+                                    }
+                                }
+                                None => {
+                                    warn!(flow_id = %fid, "start_run: no flow definition available, running without flow context");
+                                    (String::new(), vec![])
+                                }
+                            };
+
+                            // The first entry context becomes the entry agent's system prompt.
+                            let entry_sys = entry_contexts.first().map(|c| c.system_message.clone());
 
                             let flow_ctx = FlowRunContext {
                                 authority: self.authority.clone(),
@@ -560,6 +553,13 @@ impl Handler for RuntimeHandler {
                                 sandbox_policy: self.sandbox_policy.clone(),
                             };
                             self.flow_contexts.lock().insert(flow_run_id, flow_ctx.clone());
+
+                            // Spawn ReactLoops for additional entry nodes (if any).
+                            for ctx in entry_contexts.into_iter().skip(1) {
+                                let agent_id = ctx.owner.clone();
+                                spawn_agent_loop(flow_ctx.clone(), agent_id, ctx);
+                            }
+
                             (entry_sys, Some(flow_ctx))
                         } else {
                             (None, None)
@@ -617,15 +617,15 @@ impl Handler for RuntimeHandler {
                                         &evt.sha256,
                                         evt.revision,
                                     ).await {
-                                        Ok(targets) => {
-                                            for (agent_id, ctx_opt) in targets {
-                                                if let Some(inv_ctx) = ctx_opt {
-                                                    info!(
-                                                        agent_id,
-                                                        "supervision: spawning downstream agent"
-                                                    );
-                                                    spawn_agent_loop(fctx.clone(), agent_id, inv_ctx);
-                                                }
+                                        Ok(contexts) => {
+                                            for inv_ctx in contexts {
+                                                let agent_id = inv_ctx.owner.clone();
+                                                info!(
+                                                    agent_id,
+                                                    node_id = %inv_ctx.node_id,
+                                                    "supervision: spawning downstream agent"
+                                                );
+                                                spawn_agent_loop(fctx.clone(), agent_id, inv_ctx);
                                             }
                                         }
                                         Err(e) => {
@@ -859,12 +859,12 @@ impl Handler for RuntimeHandler {
                                 port,
                                 &flow_def,
                             ).await {
-                                Ok(Some(inv_ctx)) => {
-                                    info!(producing_agent, port, "resolve_review: rescheduling after approval");
-                                    spawn_agent_loop(fctx, producing_agent.to_owned(), inv_ctx);
-                                }
-                                Ok(None) => {
-                                    info!(producing_agent, port, "resolve_review: approval, no reschedule needed");
+                                Ok(contexts) => {
+                                    for inv_ctx in contexts {
+                                        let agent_id = inv_ctx.owner.clone();
+                                        info!(agent_id, node_id = %inv_ctx.node_id, "resolve_review: scheduling after approval");
+                                        spawn_agent_loop(fctx.clone(), agent_id, inv_ctx);
+                                    }
                                 }
                                 Err(e) => {
                                     warn!(error = %e, "resolve_review: on_document_approved failed");
@@ -878,8 +878,9 @@ impl Handler for RuntimeHandler {
                                 &flow_def,
                             ).await {
                                 Ok(Some(inv_ctx)) => {
-                                    info!(producing_agent, port, "resolve_review: requeueing after rejection");
-                                    spawn_agent_loop(fctx, producing_agent.to_owned(), inv_ctx);
+                                    let agent_id = inv_ctx.owner.clone();
+                                    info!(agent_id, node_id = %inv_ctx.node_id, "resolve_review: requeueing after rejection");
+                                    spawn_agent_loop(fctx.clone(), agent_id, inv_ctx);
                                 }
                                 Ok(None) => {
                                     info!(producing_agent, port, "resolve_review: rejection, no requeue needed");
@@ -952,6 +953,21 @@ impl Handler for RuntimeHandler {
                 let mut flows: Vec<serde_json::Value> = Vec::new();
                 let mut local_ids = std::collections::HashSet::new();
 
+                // Helper: build a flow summary entry from a parsed doc.
+                fn flow_summary(doc: &crate::workspace::FlowYamlDoc, builtin: bool) -> serde_json::Value {
+                    let agents: Vec<&str> = doc.agents.iter().map(|a| a.id.as_str()).collect();
+                    let node_count = if doc.nodes.is_empty() { doc.edges.len() } else { doc.nodes.len() };
+                    serde_json::json!({
+                        "id": doc.id,
+                        "name": doc.name,
+                        "node_count": node_count,
+                        // kept for back-compat with older frontends
+                        "edge_count": doc.edges.len(),
+                        "agents": agents,
+                        "builtin": builtin,
+                    })
+                }
+
                 // Scan workspace-local flows first.
                 if let Ok(mut rd) = tokio::fs::read_dir(layout.flows_dir()).await {
                     while let Ok(Some(entry)) = rd.next_entry().await {
@@ -959,14 +975,7 @@ impl Handler for RuntimeHandler {
                         let id = entry.file_name().to_string_lossy().to_string();
                         let flow_yaml_path = entry.path().join("flow.yaml");
                         if let Some(doc) = load_flow_yaml(&flow_yaml_path, &id).await {
-                            let agents: Vec<_> = doc.agents.iter().map(|a| &a.id).collect();
-                            flows.push(serde_json::json!({
-                                "id": id,
-                                "name": doc.name,
-                                "edge_count": doc.edges.len(),
-                                "agents": agents,
-                                "builtin": false,
-                            }));
+                            flows.push(flow_summary(&doc, false));
                             local_ids.insert(id);
                         }
                     }
@@ -981,14 +990,7 @@ impl Handler for RuntimeHandler {
                             if local_ids.contains(&id) { continue; }
                             let flow_yaml_path = entry.path().join("flow.yaml");
                             if let Some(doc) = load_flow_yaml(&flow_yaml_path, &id).await {
-                                let agents: Vec<_> = doc.agents.iter().map(|a| &a.id).collect();
-                                flows.push(serde_json::json!({
-                                    "id": id,
-                                    "name": doc.name,
-                                    "edge_count": doc.edges.len(),
-                                    "agents": agents,
-                                    "builtin": true,
-                                }));
+                                flows.push(flow_summary(&doc, true));
                             }
                         }
                     }
@@ -1003,7 +1005,7 @@ impl Handler for RuntimeHandler {
                 let path = layout.flow_file(&flow_id);
                 match load_flow_yaml(&path, &flow_id).await {
                     Some(doc) => {
-                        let agents: Vec<_> = doc.agents.iter().map(|a| &a.id).collect();
+                        let agents: Vec<&str> = doc.agents.iter().map(|a| a.id.as_str()).collect();
                         let edges: Vec<serde_json::Value> = doc.edges.iter().map(|e| {
                             serde_json::json!({
                                 "from": e.from,
@@ -1014,6 +1016,22 @@ impl Handler for RuntimeHandler {
                                 "reviewer_agents": e.reviewer_agents,
                                 "max_cycles": e.max_cycles,
                                 "on_cycle_exhausted": e.on_cycle_exhausted,
+                            })
+                        }).collect();
+                        let nodes: Vec<serde_json::Value> = doc.nodes.iter().map(|n| {
+                            let outputs: Vec<serde_json::Value> = n.outputs.iter().map(|o| {
+                                serde_json::json!({
+                                    "port": o.port,
+                                    "routes_to": o.routes_to,
+                                    "reviewers": o.reviewers,
+                                    "max_cycles": o.max_cycles,
+                                    "on_cycle_exhausted": o.on_cycle_exhausted,
+                                })
+                            }).collect();
+                            serde_json::json!({
+                                "id": n.id,
+                                "owner": n.owner,
+                                "outputs": outputs,
                             })
                         }).collect();
                         ControlResponse::Data {
@@ -1027,6 +1045,7 @@ impl Handler for RuntimeHandler {
                                 "reviewer_timeout_secs": doc.reviewer_timeout_secs,
                                 "agents": agents,
                                 "edges": edges,
+                                "nodes": nodes,
                             }),
                         }
                     }

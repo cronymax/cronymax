@@ -204,6 +204,7 @@ mod tests {
                 filter: None,
             },
             host_protocol: host,
+            sandbox: None,
         }
     }
 

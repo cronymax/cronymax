@@ -129,10 +129,8 @@ export interface State {
   /** Selected model for new runs */
   model: string;
   agents: AgentSummary[];
-  selectedAgent: string;
   flows: string[];
   selectedFlow: string;
-  chatMode: "agent" | "flow";
   /** One-time migration notice when old v1 history was detected */
   migrationNotice: string | null;
 }
@@ -174,11 +172,9 @@ export type Action =
   | { type: "unpinComment"; commentId: string }
   | { type: "setModel"; model: string }
   | { type: "setActiveView"; view: ActiveView }
-  | { type: "setAgents"; agents: AgentSummary[]; selected: string }
-  | { type: "setSelectedAgent"; name: string }
+  | { type: "setAgents"; agents: AgentSummary[] }
   | { type: "setFlows"; flows: string[]; selected: string }
   | { type: "setSelectedFlow"; name: string }
-  | { type: "setChatMode"; mode: "agent" | "flow" }
   | { type: "clearMigrationNotice" }
   | { type: "clearHistory" };
 
@@ -211,10 +207,8 @@ const initial: State = {
   activeView: { kind: "main" },
   model: "",
   agents: [],
-  selectedAgent: "",
   flows: [],
   selectedFlow: "",
-  chatMode: "agent",
   migrationNotice: null,
 };
 
@@ -378,20 +372,13 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         agents: action.agents,
-        selectedAgent: action.selected,
       };
-
-    case "setSelectedAgent":
-      return { ...state, selectedAgent: action.name };
 
     case "setFlows":
       return { ...state, flows: action.flows, selectedFlow: action.selected };
 
     case "setSelectedFlow":
       return { ...state, selectedFlow: action.name };
-
-    case "setChatMode":
-      return { ...state, chatMode: action.mode };
 
     case "clearMigrationNotice":
       return { ...state, migrationNotice: null };

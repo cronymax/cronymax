@@ -9,7 +9,6 @@ agents:
   - product
   - architect
   - coder
-  - critic
 
 edges:
   - from: product

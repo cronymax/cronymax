@@ -487,7 +487,7 @@ Each stage is independently demoable. Stage 1 alone is a credible CLI-flavored p
 
 Stage 1 ships the YAML loaders and validators below. See
 [`docs/flows_quickstart.md`](flows_quickstart.md) for a hand-on walkthrough
-and [`assets/examples/`](../assets/examples/) for working samples.
+and [`.cronymax/`](.cronymax/) for working samples.
 
 ### `<name>.agent.yaml`
 

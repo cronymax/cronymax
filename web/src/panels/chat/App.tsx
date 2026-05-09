@@ -21,13 +21,8 @@ import {
   loadFlowsList,
   loadSavedGraph,
   persistSelectedFlow,
-  loadSelectedAgent,
-  persistSelectedAgent,
-  loadChatMode,
-  persistChatMode,
   loadSelectedModel,
   persistSelectedModel,
-  type ChatMode,
   type Block,
   type ConversationBlock,
   type ShellBlock,
@@ -618,7 +613,7 @@ export function App() {
   const refreshAgents = useCallback(async () => {
     try {
       let res = await agentRegistry.list();
-      let names = (res.agents ?? []).map((a) => a.name);
+      const names = (res.agents ?? []).map((a) => a.name);
       if (names.length === 0) {
         await agentRegistry.save({
           name: "Chat",
@@ -628,10 +623,9 @@ export function App() {
           tools_csv: "",
         });
         res = await agentRegistry.list();
-        names = (res.agents ?? []).map((a) => a.name);
+        names.splice(0, names.length, ...(res.agents ?? []).map((a) => a.name));
       }
-      const selected = loadSelectedAgent(names);
-      dispatch({ type: "setAgents", agents: res.agents ?? [], selected });
+      dispatch({ type: "setAgents", agents: res.agents ?? [] });
       setAgentLoadError(null);
     } catch (err) {
       setAgentLoadError((err as Error).message);
@@ -704,7 +698,6 @@ export function App() {
       });
       const { flows, selected } = loadFlowsList();
       dispatch({ type: "setFlows", flows, selected });
-      dispatch({ type: "setChatMode", mode: loadChatMode() });
       void refreshAgents();
       void ensureChatTerminal(data.terminalTid, id);
     };
@@ -1030,16 +1023,12 @@ export function App() {
       let speaker = "";
       let body = rawText;
       const agentNames = state.agents.map((a) => a.name);
-      if (state.chatMode === "agent") {
-        speaker = state.selectedAgent;
+      const parsed = parseMention(rawText, agentNames);
+      if (parsed.agent) {
+        speaker = parsed.agent;
+        body = parsed.body;
       } else {
-        const parsed = parseMention(rawText, agentNames);
-        if (parsed.agent) {
-          speaker = parsed.agent;
-          body = parsed.body;
-        } else {
-          speaker = leadAgentOfFlow(state.selectedFlow) || agentNames[0] || "";
-        }
+        speaker = leadAgentOfFlow(state.selectedFlow) || agentNames[0] || "";
       }
 
       const blockId = crypto.randomUUID();
@@ -1050,9 +1039,7 @@ export function App() {
         attachments: state.attachments.slice(),
         assistantContent: "",
         agentName: speaker || undefined,
-        traceContent: speaker
-          ? `▶ ${speaker} (${state.chatMode}) running…`
-          : "▶ running…",
+        traceContent: speaker ? `▶ ${speaker} running…` : "▶ running…",
         status: "running",
         comments: [],
         createdAt: Date.now(),
@@ -1213,8 +1200,6 @@ export function App() {
       state.activeChatId,
       state.terminalTid,
       state.selectedFlow,
-      state.selectedAgent,
-      state.chatMode,
       state.agents,
       state.attachments,
       inputMode,
@@ -1434,75 +1419,24 @@ export function App() {
       <header className="flex items-center gap-3 border-b border-cronymax-border bg-cronymax-float px-3 py-2 text-sm">
         <span className="flex-1 truncate font-semibold">{state.chatName}</span>
 
-        {/* Mode toggle */}
-        <div className="flex overflow-hidden rounded border border-cronymax-border text-xs">
-          {(
-            [
-              { id: "agent", label: "Agent" },
-              { id: "flow", label: "Flow" },
-            ] as const
-          ).map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              onClick={() => {
-                const mode = m.id as ChatMode;
-                dispatch({ type: "setChatMode", mode });
-                persistChatMode(mode);
-              }}
-              className={
-                "px-2 py-0.5 transition " +
-                (state.chatMode === m.id
-                  ? "bg-cronymax-primary text-white"
-                  : "text-cronymax-caption hover:text-cronymax-title")
-              }
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-
-        {state.chatMode === "agent" ? (
-          <label className="flex items-center gap-1 text-xs text-cronymax-caption">
-            Agent:
-            <select
-              value={state.selectedAgent}
-              onChange={(e) => {
-                dispatch({ type: "setSelectedAgent", name: e.target.value });
-                persistSelectedAgent(e.target.value);
-              }}
-              className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs text-cronymax-title"
-            >
-              {state.agents.length === 0 && (
-                <option value="">(no agents)</option>
-              )}
-              {state.agents.map((a) => (
-                <option key={a.name} value={a.name}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <label className="flex items-center gap-1 text-xs text-cronymax-caption">
-            Flow:
-            <select
-              value={state.selectedFlow}
-              onChange={(e) => {
-                dispatch({ type: "setSelectedFlow", name: e.target.value });
-                persistSelectedFlow(e.target.value);
-              }}
-              className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs text-cronymax-title"
-            >
-              {state.flows.length === 0 && <option value="">(no flows)</option>}
-              {state.flows.map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+        <label className="flex items-center gap-1 text-xs text-cronymax-caption">
+          Flow:
+          <select
+            value={state.selectedFlow}
+            onChange={(e) => {
+              dispatch({ type: "setSelectedFlow", name: e.target.value });
+              persistSelectedFlow(e.target.value);
+            }}
+            className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs text-cronymax-title"
+          >
+            {state.flows.length === 0 && <option value="">(no flows)</option>}
+            {state.flows.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <button
           type="button"
@@ -1766,9 +1700,7 @@ export function App() {
                   ? "shell command…"
                   : inputMode === "command"
                     ? "command…"
-                    : state.chatMode === "flow"
-                      ? "Ask anything… (@AgentName to address one)"
-                      : "Ask anything… ($ for shell, / for commands)"
+                    : "Ask anything… (@AgentName to address one, $ for shell, / for commands)"
               }
               onKeyDown={onKeyDown}
               onChange={onInputChange}
