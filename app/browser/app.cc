@@ -1,4 +1,4 @@
-#include "browser/desktop_app.h"
+#include "browser/app.h"
 
 #include "browser/main_window.h"
 #include "include/wrapper/cef_helpers.h"
@@ -9,14 +9,14 @@
 
 namespace cronymax {
 
-DesktopApp::DesktopApp() {
+App::App() {
   CefMessageRouterConfig config;
   config.js_query_function = "cefQuery";
   config.js_cancel_function = "cefQueryCancel";
   render_message_router_ = CefMessageRouterRendererSide::Create(config);
 }
 
-void DesktopApp::OnContextInitialized() {
+void App::OnContextInitialized() {
   CEF_REQUIRE_UI_THREAD();
 #if defined(__APPLE__)
   // unified-icons: rasterise every vendored Codicons SVG into a CefImage
@@ -27,8 +27,8 @@ void DesktopApp::OnContextInitialized() {
   MainWindow::Create();
 }
 
-void DesktopApp::OnBeforeCommandLineProcessing(
-    const CefString& /*process_type*/,
+void App::OnBeforeCommandLineProcessing(
+    const CefString & /*process_type*/,
     CefRefPtr<CefCommandLine> command_line) {
   // ES module imports are CORS-gated. From a file:// origin Chromium has
   // no Origin header so every `import "./other.js"` is rejected, which
@@ -40,25 +40,24 @@ void DesktopApp::OnBeforeCommandLineProcessing(
     command_line->AppendSwitch("disable-web-security");
 }
 
-void DesktopApp::OnContextCreated(CefRefPtr<CefBrowser> browser,
-                                  CefRefPtr<CefFrame> frame,
-                                  CefRefPtr<CefV8Context> context) {
+void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
+                           CefRefPtr<CefFrame> frame,
+                           CefRefPtr<CefV8Context> context) {
   render_message_router_->OnContextCreated(browser, frame, context);
 }
 
-void DesktopApp::OnContextReleased(CefRefPtr<CefBrowser> browser,
-                                   CefRefPtr<CefFrame> frame,
-                                   CefRefPtr<CefV8Context> context) {
+void App::OnContextReleased(CefRefPtr<CefBrowser> browser,
+                            CefRefPtr<CefFrame> frame,
+                            CefRefPtr<CefV8Context> context) {
   render_message_router_->OnContextReleased(browser, frame, context);
 }
 
-bool DesktopApp::OnProcessMessageReceived(
-    CefRefPtr<CefBrowser> browser,
-    CefRefPtr<CefFrame> frame,
-    CefProcessId source_process,
-    CefRefPtr<CefProcessMessage> message) {
+bool App::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
+                                   CefRefPtr<CefFrame> frame,
+                                   CefProcessId source_process,
+                                   CefRefPtr<CefProcessMessage> message) {
   return render_message_router_->OnProcessMessageReceived(
       browser, frame, source_process, message);
 }
 
-}  // namespace cronymax
+} // namespace cronymax

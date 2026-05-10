@@ -2,7 +2,7 @@
 
 #import <Cocoa/Cocoa.h>
 
-#include "browser/desktop_app.h"
+#include "browser/app.h"
 #include "include/cef_application_mac.h"
 #include "include/cef_command_line.h"
 #include "include/wrapper/cef_helpers.h"
@@ -69,8 +69,8 @@ int main(int argc, char* argv[]) {
     // and without an opaque GPU clear color showing through.
     settings.background_color = 0x00000000;
 
-    CefRefPtr<cronymax::DesktopApp> app(
-        new cronymax::DesktopApp());
+    CefRefPtr<cronymax::App> app(
+        new cronymax::App());
 
     if (!CefInitialize(main_args, settings, app.get(), nullptr)) {
       return CefGetExitCode();

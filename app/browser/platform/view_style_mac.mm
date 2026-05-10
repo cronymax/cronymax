@@ -4,7 +4,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
-#include "browser/mac_view_style.h"
+#include "browser/platform/view_style.h"
 
 // ---------------------------------------------------------------------------
 // Popover drop-shadow NSView
@@ -98,9 +98,6 @@
 
 static char kPopoverShadowOwnerKey;
 static char kPopoverScrimKey;
-// Forward declaration so ShowPopoverScrim (defined earlier in the file) can
-// reference the tag without depending on the definition order.
-static constexpr NSInteger kCornerPunchTagFwd = 0x43524E58;  // "CRNX"
 
 namespace cronymax {
 
@@ -296,13 +293,7 @@ void ShowPopoverScrim(void* main_window_nsview_ptr,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   }
 
-  // Insert the scrim as topmost.  Corner punch views (kCornerPunchTagFwd)
-  // intentionally stay BELOW the scrim: the scrim covers the entire card
-  // area, so punch views don't need to be visible while the scrim is shown.
-  // Raising them above the scrim would make their bg-body-colored squares
-  // visible as artifacts at the card corners on top of the overlay.
-  // When the scrim is hidden (popover closed), punch views are naturally
-  // the topmost non-scrim views and work correctly.
+  // Insert the scrim as the topmost NSView so it sits above the card content.
   [scrim removeFromSuperview];
   [wc addSubview:scrim positioned:NSWindowAbove relativeTo:nil];
 
@@ -532,10 +523,12 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
 
 }  // namespace cronymax
 
-// Solid NSView placed at each corner of the floating card.
-// It paints the window chrome color, then cuts a quarter-circle via a
-// CAShapeLayer mask so the card's corner appears rounded.
-// Which corner: 0=BL 1=BR 2=TR 3=TL  (NSView y=0 at bottom, not flipped).
+// ---------------------------------------------------------------------------
+// CronymaxCornerPunchView — paints bg_body color with a quarter-circle cutout
+// so the card's corners appear visually rounded even though CEF's IOSurface
+// composites above AppKit.  Four of these are placed at the card corners in
+// the window root NSView (BridgedContentView).
+// ---------------------------------------------------------------------------
 @interface CronymaxCornerPunchView : NSView {
   NSInteger _tag;
 }
@@ -556,26 +549,20 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
   self.layer.backgroundColor = self.punchColor
       ? self.punchColor.CGColor
       : NSColor.blackColor.CGColor;
-  // Install a circular cutout via CAShapeLayer mask.
-  CGFloat s  = self.bounds.size.width;   // width == height == radius
-  CGFloat r  = self.punchRadius;
+  CGFloat s = self.bounds.size.width;
+  CGFloat r = self.punchRadius;
   CGMutablePathRef path = CGPathCreateMutable();
-  // Full square.
   CGPathAddRect(path, NULL, CGRectMake(0, 0, s, s));
-  // Subtract a quarter-circle whose center is at the inward corner.
-  // punchCorner: 0=BL,1=BR,2=TR,3=TL in NSView (y=0 at bottom).
-  // In CALayer (y=0 at bottom, same as NSView on non-flipped view):
   CGPoint center;
+  // punchCorner: 0=BL,1=BR,2=TR,3=TL in NSView (y=0 at bottom).
   switch (self.punchCorner) {
-    case 0:  center = CGPointMake(s, s); break;  // BL → arc center at BR of patch
-    case 1:  center = CGPointMake(0, s); break;  // BR → arc center at BL of patch
-    case 2:  center = CGPointMake(0, 0); break;  // TR → arc center at TL of patch
-    case 3:  center = CGPointMake(s, 0); break;  // TL → arc center at TR of patch
+    case 0:  center = CGPointMake(s, s); break;
+    case 1:  center = CGPointMake(0, s); break;
+    case 2:  center = CGPointMake(0, 0); break;
+    case 3:  center = CGPointMake(s, 0); break;
     default: center = CGPointMake(0, 0); break;
   }
-  CGPathAddArc(path, NULL, center.x, center.y, r,
-               0, 2 * M_PI, 0);  // Full circle, but only r-sized view is clipped
-  // Use even-odd fill rule to cut the circle from the square.
+  CGPathAddArc(path, NULL, center.x, center.y, r, 0, 2 * M_PI, 0);
   CAShapeLayer* mask = [CAShapeLayer layer];
   mask.path = path;
   mask.fillRule = kCAFillRuleEvenOdd;
@@ -584,10 +571,9 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
 }
 @end
 
-namespace cronymax {
-
-// A tag value so we can find and remove previously installed punch views.
 static constexpr NSInteger kCornerPunchTag = 0x43524E58;  // "CRNX"
+
+namespace cronymax {
 
 void StyleContentBrowserView(void* window_nsview_ptr,
                              double radius,
@@ -596,32 +582,24 @@ void StyleContentBrowserView(void* window_nsview_ptr,
   if (!window_nsview_ptr) return;
   NSView* root = (__bridge NSView*)window_nsview_ptr;
 
-  // Remove any previously installed punch views.
+  // Remove previously installed punch views.
   NSMutableArray* old = [NSMutableArray array];
   for (NSView* sv in root.subviews) {
     if (sv.tag == kCornerPunchTag) [old addObject:sv];
   }
   for (NSView* sv in old) [sv removeFromSuperview];
 
-  // card_rect is in Chromium/CefRect coordinates: y grows down, y=0 at top
-  // of the window content area. NSView default (non-flipped): y=0 at bottom.
-  CGFloat rootH  = root.bounds.size.height;
-  CGFloat cardX  = card_rect.x;
-  CGFloat cardY  = card_rect.y;      // y from top
-  CGFloat cardW  = card_rect.width;
-  CGFloat cardH  = card_rect.height;
-  CGFloat r      = (CGFloat)radius;
-
-  // Build fill color.
-  NSColor* fill = ColorFromArgb(bg_argb);
-
-  // 4 corner positions in NSView (y=0 at bottom) coordinates:
-  // Bottom-left  (NSView): (cardX, rootH - cardY - cardH)
-  // Bottom-right (NSView): (cardX + cardW - r, rootH - cardY - cardH)
-  // Top-right    (NSView): (cardX + cardW - r, rootH - cardY - r)
-  // Top-left     (NSView): (cardX,             rootH - cardY - r)
-  CGFloat nsCardBottom = rootH - cardY - cardH;  // y=0 at bottom
-  CGFloat nsCardTop    = rootH - cardY;           // y=0 at bottom, top edge
+  // card_rect uses CEF coordinates: y grows down, y=0 at top of content area.
+  // NSView (non-flipped): y=0 at bottom.
+  CGFloat rootH        = root.bounds.size.height;
+  CGFloat cardX        = card_rect.x;
+  CGFloat cardY        = card_rect.y;
+  CGFloat cardW        = card_rect.width;
+  CGFloat cardH        = card_rect.height;
+  CGFloat r            = (CGFloat)radius;
+  NSColor* fill        = ColorFromArgb(bg_argb);
+  CGFloat nsCardBottom = rootH - cardY - cardH;
+  CGFloat nsCardTop    = rootH - cardY;
 
   struct { CGFloat x, y; int corner; } patches[4] = {
     { cardX,              nsCardBottom,     0 },  // BL
@@ -638,17 +616,6 @@ void StyleContentBrowserView(void* window_nsview_ptr,
     v.tag         = kCornerPunchTag;
     v.frame       = NSMakeRect(patches[i].x, patches[i].y, r, r);
     [root addSubview:v];
-  }
-
-  // Punch views are inserted via addSubview: which places them topmost.
-  // If a scrim is already present (popover is open), re-raise it above the
-  // newly added punch views so punch views stay below the scrim.
-  // Both the scrim and punch views live in root (the main window contentView).
-  CronymaxPopoverScrimView* existingScrim =
-      objc_getAssociatedObject(root, &kPopoverScrimKey);
-  if (existingScrim && existingScrim.superview == root) {
-    [existingScrim removeFromSuperview];
-    [root addSubview:existingScrim positioned:NSWindowAbove relativeTo:nil];
   }
 }
 
@@ -668,6 +635,9 @@ void AddContentCardShadow(void* bv_nsview_ptr) {
     hl.shadowOffset = CGSizeMake(0, -6);
   }
 }
+
+// StyleContentFrame is an inline no-op in view_style.h: corner punch views
+// installed by StyleContentBrowserView already cover content_frame_'s corners.
 
 void MakeBrowserViewTransparent(void* nsview_ptr) {
   if (!nsview_ptr) return;

@@ -1,6 +1,6 @@
 // Copyright (c) 2026.
 
-#include "browser/tab_toolbar.h"
+#include "browser/tab/tab_toolbar.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -12,7 +12,7 @@ namespace {
 
 constexpr cef_color_t kDefaultChromeArgb = 0xFF131F1D;
 
-cef_color_t ParseCssColorOrDefault(const std::string& css,
+cef_color_t ParseCssColorOrDefault(const std::string &css,
                                    cef_color_t fallback) {
   if (css.empty()) {
     return fallback;
@@ -34,7 +34,7 @@ cef_color_t ParseCssColorOrDefault(const std::string& css,
   return fallback;
 }
 
-}  // namespace
+} // namespace
 
 TabToolbar::TabToolbar() = default;
 
@@ -46,7 +46,8 @@ CefRefPtr<CefPanel> TabToolbar::Build() {
   root_box.between_child_spacing = 6;
   root_box.cross_axis_alignment = CEF_AXIS_ALIGNMENT_CENTER;
   root_layout_ = root_->SetToBoxLayout(root_box);
-  if (default_chrome_argb_ == 0) default_chrome_argb_ = kDefaultChromeArgb;
+  if (default_chrome_argb_ == 0)
+    default_chrome_argb_ = kDefaultChromeArgb;
   root_->SetBackgroundColor(default_chrome_argb_);
 
   leading_ = CefPanel::CreatePanel(nullptr);
@@ -73,7 +74,7 @@ CefRefPtr<CefPanel> TabToolbar::Build() {
   return root_;
 }
 
-void TabToolbar::SetChromeColor(const std::string& css_color_or_empty) {
+void TabToolbar::SetChromeColor(const std::string &css_color_or_empty) {
   if (!root_) {
     return;
   }
@@ -81,21 +82,28 @@ void TabToolbar::SetChromeColor(const std::string& css_color_or_empty) {
   const cef_color_t color =
       ParseCssColorOrDefault(css_color_or_empty, default_chrome_argb_);
   root_->SetBackgroundColor(color);
-  if (leading_)  leading_->SetBackgroundColor(color);
-  if (middle_)   middle_->SetBackgroundColor(color);
-  if (trailing_) trailing_->SetBackgroundColor(color);
+  if (leading_)
+    leading_->SetBackgroundColor(color);
+  if (middle_)
+    middle_->SetBackgroundColor(color);
+  if (trailing_)
+    trailing_->SetBackgroundColor(color);
 }
 
 void TabToolbar::SetDefaultChromeArgb(cef_color_t argb) {
-  if (argb == 0) return;
+  if (argb == 0)
+    return;
   default_chrome_argb_ = argb;
   if (!root_ || !current_override_.empty()) {
     return;
   }
   root_->SetBackgroundColor(default_chrome_argb_);
-  if (leading_)  leading_->SetBackgroundColor(default_chrome_argb_);
-  if (middle_)   middle_->SetBackgroundColor(default_chrome_argb_);
-  if (trailing_) trailing_->SetBackgroundColor(default_chrome_argb_);
+  if (leading_)
+    leading_->SetBackgroundColor(default_chrome_argb_);
+  if (middle_)
+    middle_->SetBackgroundColor(default_chrome_argb_);
+  if (trailing_)
+    trailing_->SetBackgroundColor(default_chrome_argb_);
 }
 
-}  // namespace cronymax
+} // namespace cronymax

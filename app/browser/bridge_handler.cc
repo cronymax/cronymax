@@ -430,22 +430,17 @@ bool BridgeHandler::HandleSpace(CefRefPtr<CefBrowser> browser,
   }
 
   if (channel == "space.open_folder") {
-    // Trigger a native folder picker. On selection the host emits
-    // `space.folder_picked` with {path} so the frontend can show the
-    // ProfilePickerOverlay before calling space.create.
+    // Trigger a native folder picker. On selection open the workspace-picker
+    // popover so the profile selector appears centered in the full window.
     if (!shell_cbs_.run_file_dialog) {
       callback->Failure(501, "folder picker not available");
       return true;
     }
-    // run_file_dialog is expected to call back with the selected path, or
-    // empty string on cancel. It must emit space.folder_picked via broadcast_event.
     shell_cbs_.run_file_dialog(
         [this, browser = browser](const std::string& path) {
           if (path.empty()) return;  // cancelled
-          if (shell_cbs_.broadcast_event) {
-            const std::string evt =
-                nlohmann::json{{"path", path}}.dump();
-            shell_cbs_.broadcast_event("space.folder_picked", evt);
+          if (shell_cbs_.open_workspace_picker) {
+            shell_cbs_.open_workspace_picker(path);
           }
         });
     callback->Success("ok");

@@ -5,18 +5,18 @@
 
 namespace cronymax {
 
-class DesktopApp : public CefApp,
-                   public CefBrowserProcessHandler,
-                   public CefRenderProcessHandler {
- public:
-  DesktopApp();
+class App : public CefApp,
+            public CefBrowserProcessHandler,
+            public CefRenderProcessHandler {
+public:
+  App();
 
   // Inject Chromium command-line switches into every process. Required so
   // that file:// pages can load ES module imports from sibling files (the
   // module loader is CORS-gated by spec; without this switch the renderer
   // refuses to fetch ../assets/*.js, leaving panels mounted with no JS).
   void OnBeforeCommandLineProcessing(
-      const CefString& process_type,
+      const CefString &process_type,
       CefRefPtr<CefCommandLine> command_line) override;
 
   CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override {
@@ -38,11 +38,11 @@ class DesktopApp : public CefApp,
                                 CefProcessId source_process,
                                 CefRefPtr<CefProcessMessage> message) override;
 
- private:
+private:
   CefRefPtr<CefMessageRouterRendererSide> render_message_router_;
 
-  IMPLEMENT_REFCOUNTING(DesktopApp);
-  DISALLOW_COPY_AND_ASSIGN(DesktopApp);
+  IMPLEMENT_REFCOUNTING(App);
+  DISALLOW_COPY_AND_ASSIGN(App);
 };
 
-}  // namespace cronymax
+} // namespace cronymax

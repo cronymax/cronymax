@@ -17,16 +17,40 @@ add_subdirectory("${CEF_LIBCEF_DLL_WRAPPER_PATH}"
 # ---------------------------------------------------------------------------
 
 set(CRONYMAX_APP_SRCS
+  app/browser/app.cc
+  app/browser/app.h
   app/browser/app_delegate.cc
   app/browser/app_delegate.h
   app/browser/bridge_handler.cc
   app/browser/bridge_handler.h
   app/browser/client_handler.cc
   app/browser/client_handler.h
-  app/browser/desktop_app.cc
-  app/browser/desktop_app.h
   app/browser/main_window.cc
   app/browser/main_window.h
+  # Refactor 2: generic ObserverList (header-only)
+  app/common/observer_list.h
+  # native-views-mvc models/ (view-semantic renames of shell_*)
+  app/browser/models/view_observer.h
+  app/browser/models/view_context.h
+  app/browser/models/view_model.h
+  app/browser/models/view_model.cc
+  app/browser/models/view_dispatcher.h
+  app/browser/models/view_dispatcher.cc
+  # native-views-mvc Phase 6: PopoverOverlay (fixed overlay slots)
+  app/browser/views/popover_overlay.h
+  app/browser/views/popover_overlay.cc
+  # native-views-mvc Phase 7: PopoverCtrl (owns popover lifecycle)
+  app/browser/views/popover_ctrl.h
+  app/browser/views/popover_ctrl.cc
+  # native-views-mvc Phase 8: ContentView (card management + observer)
+  app/browser/views/content_view.h
+  app/browser/views/content_view.cc
+  # native-views-mvc Phase 9: TitleBarView (title bar + drag region)
+  app/browser/views/view_helpers.h
+  app/browser/views/titlebar_view.h
+  app/browser/views/titlebar_view.cc
+  app/browser/views/sidebar_view.h
+  app/browser/views/sidebar_view.cc
   app/browser/profile_store.cc
   app/browser/profile_store.h
   app/browser/space_manager.cc
@@ -35,26 +59,25 @@ set(CRONYMAX_APP_SRCS
   app/browser/icon_data.h
   app/browser/icon_registry.h
   app/browser/icon_registry.cc
-  # arc-style-tab-cards (Phase 1 skeleton)
-  app/browser/tab.cc
-  app/browser/tab.h
-  app/browser/tab_behavior.h
-  app/browser/tab_toolbar.cc
-  app/browser/tab_toolbar.h
-  app/browser/tab_manager.cc
-  app/browser/tab_manager.h
-  # arc-style-tab-cards (Phase 3+ behaviors)
-  app/browser/tab_behaviors/simple_tab_behavior.cc
-  app/browser/tab_behaviors/simple_tab_behavior.h
-  app/browser/tab_behaviors/web_tab_behavior.cc
-  app/browser/tab_behaviors/web_tab_behavior.h
+  # tab module
+  app/browser/tab/tab.cc
+  app/browser/tab/tab.h
+  app/browser/tab/tab_behavior.h
+  app/browser/tab/tab_toolbar.cc
+  app/browser/tab/tab_toolbar.h
+  app/browser/tab/tab_manager.cc
+  app/browser/tab/tab_manager.h
+  app/browser/tab/simple_tab_behavior.cc
+  app/browser/tab/simple_tab_behavior.h
+  app/browser/tab/web_tab_behavior.cc
+  app/browser/tab/web_tab_behavior.h
 )
 
 if(APPLE)
   list(APPEND CRONYMAX_APP_SRCS
     app/browser/main_mac.mm
-    app/browser/mac_view_style.h
-    app/browser/mac_view_style.mm
+    app/browser/platform/view_style.h
+    app/browser/platform/view_style_mac.mm
     # workspace-with-profile: native NSOpenPanel folder picker.
     app/browser/mac_folder_picker.h
     app/browser/mac_folder_picker.mm
@@ -62,7 +85,10 @@ if(APPLE)
     app/browser/icon_registry_mac.mm
   )
 else()
-  list(APPEND CRONYMAX_APP_SRCS app/browser/main.cc)
+  list(APPEND CRONYMAX_APP_SRCS
+    app/browser/main.cc
+    app/browser/platform/view_style_win.cc
+  )
 endif()
 
 # ---------------------------------------------------------------------------

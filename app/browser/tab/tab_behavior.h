@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "browser/tab.h"
+#include "browser/tab/tab.h"
 #include "include/views/cef_view.h"
 
 namespace cronymax {
@@ -14,7 +14,7 @@ namespace cronymax {
 class TabToolbar;
 
 class TabBehavior {
- public:
+public:
   virtual ~TabBehavior() = default;
 
   virtual TabKind Kind() const = 0;
@@ -29,16 +29,16 @@ class TabBehavior {
   // toolbar. Implementations populate `leading`, `middle`, `trailing` slots.
   // Only called when HasToolbar() returns true.
   // `context` outlives the behavior.
-  virtual void BuildToolbar(TabToolbar* toolbar, TabContext* context) = 0;
+  virtual void BuildToolbar(TabToolbar *toolbar, TabContext *context) = 0;
 
   // Construct the content view (typically a CefBrowserView). Called once
   // during Tab::Build. The returned view becomes the only child of the
   // tab's content host (FillLayout).
-  virtual CefRefPtr<CefView> BuildContent(TabContext* context) = 0;
+  virtual CefRefPtr<CefView> BuildContent(TabContext *context) = 0;
 
   // Apply a renderer-pushed toolbar state. Default no-op so behaviors that
   // don't push state (or haven't been migrated yet) need not override.
-  virtual void ApplyToolbarState(const ToolbarState& /*state*/) {}
+  virtual void ApplyToolbarState(const ToolbarState & /*state*/) {}
 
   // Called whenever the shell theme changes so the behavior can adapt any
   // hardcoded widget colors. `text_fg` is the readable foreground color
@@ -57,4 +57,4 @@ class TabBehavior {
   virtual int BrowserId() const { return 0; }
 };
 
-}  // namespace cronymax
+} // namespace cronymax

@@ -14,7 +14,7 @@
 namespace cronymax {
 
 class TabToolbar {
- public:
+public:
   // Fixed visual height of the toolbar strip in DIPs.
   static constexpr int kHeight = 24;
 
@@ -30,10 +30,10 @@ class TabToolbar {
 
   // Replace the toolbar background (chrome theme application). Empty string
   // restores the current default theme color.
-  void SetChromeColor(const std::string& css_color_or_empty);
+  void SetChromeColor(const std::string &css_color_or_empty);
   void SetDefaultChromeArgb(cef_color_t argb);
 
- private:
+private:
   cef_color_t default_chrome_argb_ = 0;
   std::string current_override_;
   CefRefPtr<CefPanel> root_;
@@ -43,4 +43,4 @@ class TabToolbar {
   CefRefPtr<CefPanel> trailing_;
 };
 
-}  // namespace cronymax
+} // namespace cronymax

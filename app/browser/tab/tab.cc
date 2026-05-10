@@ -1,23 +1,27 @@
 // Copyright (c) 2026.
 
-#include "browser/tab.h"
+#include "browser/tab/tab.h"
 
 #include <cassert>
 #include <utility>
 
-#include "browser/tab_behavior.h"
-#include "browser/tab_toolbar.h"
+#include "browser/tab/tab_behavior.h"
+#include "browser/tab/tab_toolbar.h"
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_fill_layout.h"
 
 namespace cronymax {
 
-const char* TabKindToString(TabKind kind) {
+const char *TabKindToString(TabKind kind) {
   switch (kind) {
-    case TabKind::kWeb:      return "web";
-    case TabKind::kChat:     return "chat";
-    case TabKind::kTerminal: return "terminal";
-    case TabKind::kSettings:    return "settings";
+  case TabKind::kWeb:
+    return "web";
+  case TabKind::kChat:
+    return "chat";
+  case TabKind::kTerminal:
+    return "terminal";
+  case TabKind::kSettings:
+    return "settings";
   }
   return "unknown";
 }
@@ -38,14 +42,14 @@ constexpr cef_color_t kDefaultCardBgArgb = 0xFF131F1D;
 // the pale shell text color.
 static cef_color_t TextColorForBg(cef_color_t bg) {
   const float r = ((bg >> 16) & 0xFF) / 255.0f;
-  const float g = ((bg >>  8) & 0xFF) / 255.0f;
-  const float b = ((bg >>  0) & 0xFF) / 255.0f;
+  const float g = ((bg >> 8) & 0xFF) / 255.0f;
+  const float b = ((bg >> 0) & 0xFF) / 255.0f;
   const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-  return lum > 0.45f ? static_cast<cef_color_t>(0xFF13201E)   // dark text
-                     : static_cast<cef_color_t>(0xFFE8F2F0);  // light text
+  return lum > 0.45f ? static_cast<cef_color_t>(0xFF13201E)  // dark text
+                     : static_cast<cef_color_t>(0xFFE8F2F0); // light text
 }
 
-cef_color_t ParseCssColorOrDefault(const std::string& css,
+cef_color_t ParseCssColorOrDefault(const std::string &css,
                                    cef_color_t fallback) {
   if (css.empty()) {
     return fallback;
@@ -64,14 +68,15 @@ cef_color_t ParseCssColorOrDefault(const std::string& css,
   }
   return fallback;
 }
-}  // namespace
+} // namespace
 
 void Tab::Build() {
   assert(!built_ && "Tab::Build called twice");
   built_ = true;
 
   card_ = CefPanel::CreatePanel(nullptr);
-  if (default_chrome_argb_ == 0) default_chrome_argb_ = kDefaultCardBgArgb;
+  if (default_chrome_argb_ == 0)
+    default_chrome_argb_ = kDefaultCardBgArgb;
   card_->SetBackgroundColor(default_chrome_argb_);
   CefBoxLayoutSettings card_box;
   card_box.horizontal = false;
@@ -99,7 +104,7 @@ void Tab::Build() {
   }
 }
 
-void Tab::OnToolbarState(const ToolbarState& state) {
+void Tab::OnToolbarState(const ToolbarState &state) {
   if (state.kind != kind_) {
     // Caller is responsible for the kind/tab mismatch check; reject silently.
     return;
@@ -109,11 +114,9 @@ void Tab::OnToolbarState(const ToolbarState& state) {
   }
 }
 
-void Tab::SetToolbarState(const ToolbarState& state) {
-  OnToolbarState(state);
-}
+void Tab::SetToolbarState(const ToolbarState &state) { OnToolbarState(state); }
 
-void Tab::SetChromeTheme(const std::string& css_color_or_empty) {
+void Tab::SetChromeTheme(const std::string &css_color_or_empty) {
   chrome_override_ = css_color_or_empty;
   const cef_color_t toolbar_bg =
       ParseCssColorOrDefault(css_color_or_empty, default_chrome_argb_);
@@ -134,7 +137,8 @@ void Tab::SetChromeTheme(const std::string& css_color_or_empty) {
 }
 
 void Tab::SetDefaultChromeArgb(cef_color_t argb) {
-  if (argb == 0) return;
+  if (argb == 0)
+    return;
   default_chrome_argb_ = argb;
   if (toolbar_) {
     toolbar_->SetDefaultChromeArgb(argb);
@@ -145,7 +149,7 @@ void Tab::SetDefaultChromeArgb(cef_color_t argb) {
 }
 
 void Tab::ApplyTheme(cef_color_t bg_base, cef_color_t bg_float,
-                    cef_color_t text_title) {
+                     cef_color_t text_title) {
   text_fg_ = text_title;
   surface_bg_ = bg_float;
   // A full shell theme switch (Light ↔ Dark ↔ System) must override any
@@ -158,16 +162,16 @@ void Tab::ApplyTheme(cef_color_t bg_base, cef_color_t bg_float,
   SetDefaultChromeArgb(bg_base);
   // Force-clear the toolbar's own per-panel override and apply the new
   // default to all slot panels (root / leading / middle / trailing).
-  if (toolbar_) toolbar_->SetChromeColor("");
-  if (behavior_) behavior_->ApplyThemeColors(text_title, bg_float, bg_base);
+  if (toolbar_)
+    toolbar_->SetChromeColor("");
+  if (behavior_)
+    behavior_->ApplyThemeColors(text_title, bg_float, bg_base);
 }
 
 void Tab::RequestClose() {
   // Hooked up by TabManager in a later phase. Intentional no-op for now.
 }
 
-int Tab::browser_id() const {
-  return behavior_ ? behavior_->BrowserId() : 0;
-}
+int Tab::browser_id() const { return behavior_ ? behavior_->BrowserId() : 0; }
 
-}  // namespace cronymax
+} // namespace cronymax

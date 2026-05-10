@@ -36,40 +36,40 @@ enum class TabKind {
   kSettings,
 };
 
-const char* TabKindToString(TabKind kind);
+const char *TabKindToString(TabKind kind);
 
 // Opaque toolbar-state payload. Concrete schemas (per kind) land in Phase 2
 // when the bridge channels are added; the skeleton just carries the wire
 // JSON so behaviors can decide how to parse it.
 struct ToolbarState {
   TabKind kind;
-  std::string raw_json;  // JSON-encoded payload from `tab.set_toolbar_state`
+  std::string raw_json; // JSON-encoded payload from `tab.set_toolbar_state`
 };
 
 // Narrow interface a TabBehavior uses to talk back to its owning tab.
 // Defined separately so behaviors do not hold a Tab* and cannot reach
 // outside this contract.
 class TabContext {
- public:
+public:
   virtual ~TabContext() = default;
 
-  virtual const TabId& tab_id() const = 0;
+  virtual const TabId &tab_id() const = 0;
   // Update the toolbar widgets to reflect `state`. Called by Tab when a
   // bridge push lands; behaviors may also call this to seed defaults.
-  virtual void SetToolbarState(const ToolbarState& state) = 0;
+  virtual void SetToolbarState(const ToolbarState &state) = 0;
   // Apply a chrome color (CSS-string parseable, or empty for default).
-  virtual void SetChromeTheme(const std::string& css_color_or_empty) = 0;
+  virtual void SetChromeTheme(const std::string &css_color_or_empty) = 0;
   // Request that the owning TabManager close this tab.
   virtual void RequestClose() = 0;
 };
 
 class Tab : public TabContext {
- public:
+public:
   Tab(TabId id, TabKind kind, std::unique_ptr<TabBehavior> behavior);
   ~Tab() override;
 
-  Tab(const Tab&) = delete;
-  Tab& operator=(const Tab&) = delete;
+  Tab(const Tab &) = delete;
+  Tab &operator=(const Tab &) = delete;
 
   // Build the card view tree (toolbar + content). Idempotent — calling more
   // than once is a programmer error and is asserted in debug.
@@ -77,7 +77,7 @@ class Tab : public TabContext {
 
   // Bridge entrypoint: a renderer pushed toolbar state for this tab.
   // The Tab forwards to the behavior's ApplyToolbarState.
-  void OnToolbarState(const ToolbarState& state);
+  void OnToolbarState(const ToolbarState &state);
 
   // Apply the full theme chrome for this tab — updates the default card/
   // toolbar background (bg_base) and the behavior's widget colors (fg from
@@ -88,37 +88,38 @@ class Tab : public TabContext {
 
   TabKind kind() const { return kind_; }
   CefRefPtr<CefPanel> card() const { return card_; }
-  TabBehavior* behavior() const { return behavior_.get(); }
+  TabBehavior *behavior() const { return behavior_.get(); }
   // Convenience: returns the underlying browser identifier for browser-backed
   // kinds (currently web), or 0 otherwise. Forwards to the behavior.
   int browser_id() const;
 
   // TabContext.
-  const TabId& tab_id() const override { return id_; }
-  void SetToolbarState(const ToolbarState& state) override;
-  void SetChromeTheme(const std::string& css_color_or_empty) override;
+  const TabId &tab_id() const override { return id_; }
+  void SetToolbarState(const ToolbarState &state) override;
+  void SetChromeTheme(const std::string &css_color_or_empty) override;
   void RequestClose() override;
 
   void SetDefaultChromeArgb(cef_color_t argb);
 
   // Arbitrary string key-value metadata (e.g. "chat_id" for chat tabs).
-  void SetMeta(const std::string& key, const std::string& value) {
+  void SetMeta(const std::string &key, const std::string &value) {
     meta_[key] = value;
   }
-  std::string GetMeta(const std::string& key) const {
+  std::string GetMeta(const std::string &key) const {
     auto it = meta_.find(key);
     return it != meta_.end() ? it->second : std::string{};
   }
-  const std::map<std::string, std::string>& meta() const { return meta_; }
+  const std::map<std::string, std::string> &meta() const { return meta_; }
 
- private:
+private:
   TabId id_;
   TabKind kind_;
   std::unique_ptr<TabBehavior> behavior_;
 
   bool built_ = false;
 
-  // Card root: vertical box layout, child[0] = toolbar host, child[1] = content host.
+  // Card root: vertical box layout, child[0] = toolbar host, child[1] = content
+  // host.
   CefRefPtr<CefPanel> card_;
   CefRefPtr<CefBoxLayout> card_layout_;
 
@@ -139,4 +140,4 @@ class Tab : public TabContext {
   std::map<std::string, std::string> meta_;
 };
 
-}  // namespace cronymax
+} // namespace cronymax

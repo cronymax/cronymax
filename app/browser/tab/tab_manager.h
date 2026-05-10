@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "browser/tab.h"
+#include "browser/tab/tab.h"
 
 namespace cronymax {
 
@@ -23,9 +23,9 @@ class ClientHandler;
 // Per-kind opaque parameters for Open(). Concrete fields are added per kind
 // in later phases (e.g. WebOpenParams.url).
 struct OpenParams {
-  std::string title;          // optional display label
-  std::string url;            // web tabs only; ignored otherwise
-  std::string raw_json;       // free-form per-kind extras (TBD)
+  std::string title;    // optional display label
+  std::string url;      // web tabs only; ignored otherwise
+  std::string raw_json; // free-form per-kind extras (TBD)
   // native-title-bar: explicit display name override. When empty AND the
   // kind is in the auto-numbered set ({kTerminal, kChat}), TabManager::Open
   // assigns "<KindDisplayName> N".
@@ -39,24 +39,24 @@ struct OpenParams {
 struct TabSummary {
   TabId id;
   TabKind kind;
-  std::string display_name;   // pulled from behavior in later phases
-  std::map<std::string, std::string> meta;  // arbitrary per-tab metadata
+  std::string display_name; // pulled from behavior in later phases
+  std::map<std::string, std::string> meta; // arbitrary per-tab metadata
 };
 
 class TabBehavior;
 
 class TabManager {
- public:
+public:
   TabManager();
   ~TabManager();
 
-  TabManager(const TabManager&) = delete;
-  TabManager& operator=(const TabManager&) = delete;
+  TabManager(const TabManager &) = delete;
+  TabManager &operator=(const TabManager &) = delete;
 
   // Inject the shared ClientHandler so per-kind behaviors (web, etc.) can
   // create CefBrowserViews bound to the app's single Client. Optional in
   // unit tests; required for any kind that hosts a browser.
-  void SetClientHandler(ClientHandler* client_handler) {
+  void SetClientHandler(ClientHandler *client_handler) {
     client_handler_ = client_handler;
   }
 
@@ -76,39 +76,39 @@ class TabManager {
 
   // Create a new tab of `kind`. Returns the new tab's id. Phase 1 returns
   // empty string for kinds that have no behavior factory yet.
-  TabId Open(TabKind kind, const OpenParams& params);
+  TabId Open(TabKind kind, const OpenParams &params);
 
   // Returns existing singleton id when present, else creates a new one.
   // `out_created` is set to true iff a new tab was created. Asserts the
   // kind has been registered as a singleton.
-  TabId FindOrCreateSingleton(TabKind kind, bool* out_created = nullptr);
+  TabId FindOrCreateSingleton(TabKind kind, bool *out_created = nullptr);
 
   // Activate `id`. In Phase 1 this only updates `active_tab_id_`; the
   // host-panel swap is wired in later phases.
-  void Activate(const TabId& id);
+  void Activate(const TabId &id);
 
   // Close `id`. Removes from storage and clears any singleton index entry.
   // No-op if `id` is unknown.
-  void Close(const TabId& id);
+  void Close(const TabId &id);
 
-  Tab* Get(const TabId& id);
-  const Tab* Get(const TabId& id) const;
+  Tab *Get(const TabId &id);
+  const Tab *Get(const TabId &id) const;
 
   // Convenience: active tab pointer or nullptr.
-  Tab* Active();
+  Tab *Active();
   // Find a tab by underlying browser identifier (web kind only). Returns
   // nullptr if no tab hosts a browser with this id.
-  Tab* FindByBrowserId(int browser_id);
+  Tab *FindByBrowserId(int browser_id);
 
   std::vector<TabSummary> Snapshot() const;
 
   // Set/get arbitrary metadata on a tab (e.g. "chat_id" for chat tabs).
   // No-op / empty if the tab doesn't exist.
-  void SetTabMeta(const TabId& id, const std::string& key,
-                  const std::string& value);
-  std::string GetTabMeta(const TabId& id, const std::string& key) const;
+  void SetTabMeta(const TabId &id, const std::string &key,
+                  const std::string &value);
+  std::string GetTabMeta(const TabId &id, const std::string &key) const;
 
-  const TabId& active_tab_id() const { return active_tab_id_; }
+  const TabId &active_tab_id() const { return active_tab_id_; }
   size_t size() const { return tabs_.size(); }
 
   // Phase 2: emitter hook. Fired after Open / Activate / Close mutate state.
@@ -117,11 +117,11 @@ class TabManager {
   using ChangeCallback = std::function<void()>;
   void SetOnChange(ChangeCallback cb) { on_change_ = std::move(cb); }
 
- private:
+private:
   // Construct the per-kind behavior. Returns nullptr for kinds whose
   // behavior class has not yet been added (Phases 3-8).
   std::unique_ptr<TabBehavior> MakeBehavior(TabKind kind,
-                                            const OpenParams& params);
+                                            const OpenParams &params);
 
   TabId NewId();
 
@@ -132,7 +132,7 @@ class TabManager {
   std::map<TabKind, std::string> kind_content_urls_;
   uint64_t next_id_seq_ = 1;
   ChangeCallback on_change_;
-  ClientHandler* client_handler_ = nullptr;
+  ClientHandler *client_handler_ = nullptr;
 };
 
-}  // namespace cronymax
+} // namespace cronymax
