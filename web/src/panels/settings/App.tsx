@@ -119,6 +119,8 @@ interface LlmProvider {
   base_url: string;
   api_key: string;
   default_model: string;
+  /** Default reasoning_effort for runs against this provider. Empty = none. */
+  reasoning_effort?: string;
 }
 
 const KIND_PRESETS: Record<
@@ -452,6 +454,9 @@ function parseProviders(raw: string): LlmProvider[] {
         base_url: String(x.base_url ?? ""),
         api_key: String(x.api_key ?? ""),
         default_model: String(x.default_model ?? ""),
+        reasoning_effort: typeof x.reasoning_effort === "string"
+          ? x.reasoning_effort
+          : "",
       }));
   } catch {
     return [];
@@ -830,6 +835,23 @@ function ProvidersTab() {
                 onChange={(v) => setDraft({ ...draft, default_model: v })}
                 provider={draft}
               />
+            </Field>
+            <Field label="Reasoning effort">
+              <select
+                className={inputCls}
+                value={draft.reasoning_effort ?? ""}
+                onChange={(e) =>
+                  setDraft({ ...draft, reasoning_effort: e.target.value })
+                }
+                title="Default reasoning_effort for OpenAI gpt-5 / o-series. Per-message chat dropdown can override."
+              >
+                <option value="">none (use model default)</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
             </Field>
 
             {msg && <p className="mb-3 text-xs text-cronymax-caption">{msg}</p>}

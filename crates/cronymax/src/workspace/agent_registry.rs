@@ -32,6 +32,9 @@ pub struct AgentDef {
     pub memory_namespace: String,
     #[serde(default)]
     pub tools: Vec<String>,
+    /// OpenAI reasoning_effort hint. Empty = use model default.
+    #[serde(default)]
+    pub reasoning_effort: String,
 }
 
 fn default_worker() -> String { "worker".to_owned() }
@@ -50,13 +53,15 @@ struct RawAgentYaml {
     memory_namespace: String,
     #[serde(default)]
     tools: Vec<String>,
+    #[serde(default)]
+    reasoning_effort: String,
 }
 
 fn parse_agent_yaml(yaml: &str) -> Option<AgentDef> {
     let raw: RawAgentYaml = serde_yml::from_str(yaml).ok()?;
     if raw.name.is_empty() { return None; }
 
-    let (llm, llm_provider, llm_model) = match &raw.llm {
+    let (llm, llm_provider, llm_model, nested_effort) = match &raw.llm {
         serde_yml::Value::Mapping(m) => {
             let provider = m.get("provider")
                 .and_then(|v| v.as_str())
@@ -66,10 +71,25 @@ fn parse_agent_yaml(yaml: &str) -> Option<AgentDef> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned();
-            (model.clone(), provider, model)
+            let effort = m.get("reasoning_effort")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            (model.clone(), provider, model, effort)
         }
-        serde_yml::Value::String(s) => (s.clone(), String::new(), s.clone()),
-        _ => (String::new(), String::new(), String::new()),
+        serde_yml::Value::String(s) => (s.clone(), String::new(), s.clone(), String::new()),
+        _ => (String::new(), String::new(), String::new(), String::new()),
+    };
+
+    // Top-level `reasoning_effort:` wins over `llm.reasoning_effort`.
+    let reasoning_effort = if !raw.reasoning_effort.is_empty() {
+        raw.reasoning_effort.trim().to_ascii_lowercase()
+    } else {
+        nested_effort.trim().to_ascii_lowercase()
+    };
+    let reasoning_effort = match reasoning_effort.as_str() {
+        "minimal" | "low" | "medium" | "high" | "xhigh" => reasoning_effort,
+        _ => String::new(),
     };
 
     let kind = if raw.kind == "reviewer" { "reviewer".to_owned() } else { "worker".to_owned() };
@@ -88,6 +108,7 @@ fn parse_agent_yaml(yaml: &str) -> Option<AgentDef> {
         system_prompt: raw.system_prompt,
         memory_namespace,
         tools: raw.tools,
+        reasoning_effort,
     })
 }
 

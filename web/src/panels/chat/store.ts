@@ -716,3 +716,31 @@ export function persistSelectedModel(model: string): void {
     /* ignore */
   }
 }
+
+/** Reasoning-effort override chosen in the chat toolbar. Empty = "use default". */
+export type ReasoningEffort =
+  | ""
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
+
+export function loadReasoningEffort(): ReasoningEffort {
+  const v = localStorage.getItem("chat_reasoning_effort") || "";
+  return v === "minimal" ||
+    v === "low" ||
+    v === "medium" ||
+    v === "high" ||
+    v === "xhigh"
+    ? v
+    : "";
+}
+
+export function persistReasoningEffort(v: ReasoningEffort): void {
+  try {
+    localStorage.setItem("chat_reasoning_effort", v);
+  } catch {
+    /* ignore */
+  }
+}

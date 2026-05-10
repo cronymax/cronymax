@@ -34,6 +34,48 @@ export interface AgentDetail extends AgentEntry {
   system_prompt: string;
   memory_namespace: string;
   tools: string[];
+  /** OpenAI reasoning_effort hint (`minimal` | `low` | `medium` | `high`). */
+  reasoning_effort?: string;
+}
+
+/** Per-message LLM overrides for an agent run (chat-UI selections, etc.). */
+export interface AgentRunOptions {
+  /** OpenAI reasoning_effort. Empty/undefined = don't override. */
+  reasoning_effort?: string;
+  /** Override the active provider's default model. */
+  model?: string;
+}
+
+export interface AgentSaveFields {
+  name: string;
+  llm?: string;
+  system_prompt?: string;
+  memory_namespace?: string;
+  tools_csv?: string;
+  reasoning_effort?: string;
+}
+
+/**
+ * Serialise structured agent fields into the YAML text the Rust runtime
+ * expects in `ControlRequest::AgentRegistrySave { yaml }`. JSON is a valid
+ * subset of YAML 1.2, so JSON.stringify produces a parser-safe document
+ * regardless of escape sequences in the system prompt.
+ */
+function buildAgentYaml(fields: AgentSaveFields): string {
+  const tools = (fields.tools_csv ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const obj: Record<string, unknown> = {
+    name: fields.name,
+    kind: "worker",
+    llm: fields.llm ?? "",
+    system_prompt: fields.system_prompt ?? "",
+    memory_namespace: fields.memory_namespace ?? "",
+    tools,
+  };
+  if (fields.reasoning_effort) obj.reasoning_effort = fields.reasoning_effort;
+  return JSON.stringify(obj, null, 2) + "\n";
 }
 
 export const agentRegistry = {
@@ -45,8 +87,12 @@ export const agentRegistry = {
     const raw = await runtime.send({ kind: "agent_registry_load", name });
     return JSON.parse(raw) as AgentDetail;
   },
-  async save(fields: Record<string, unknown>): Promise<{ ok: boolean }> {
-    const raw = await runtime.send({ kind: "agent_registry_save", ...fields });
+  async save(fields: AgentSaveFields): Promise<{ ok: boolean }> {
+    const raw = await runtime.send({
+      kind: "agent_registry_save",
+      name: fields.name,
+      yaml: buildAgentYaml(fields),
+    });
     return JSON.parse(raw) as { ok: boolean };
   },
   async delete(name: string): Promise<{ ok: boolean }> {
@@ -145,11 +191,22 @@ export const flowRun = {
 
 /**
  * Start an agent run for a given task string.
- * The browser process injects LLM config and workspace context.
+ * The browser process injects LLM config and workspace context. Per-message
+ * overrides in `opts` (model, reasoning_effort) are forwarded through
+ * `payload.llm.*` and merged with the active provider record on the C++
+ * side — caller-supplied values win.
  * Returns the run_id assigned by the Rust runtime.
  */
-export async function agentRun(task: string): Promise<string> {
-  const raw = await runtime.send({ kind: "start_run", payload: { task } });
+export async function agentRun(
+  task: string,
+  opts: AgentRunOptions = {},
+): Promise<string> {
+  const payload: Record<string, unknown> = { task };
+  const llm: Record<string, unknown> = {};
+  if (opts.reasoning_effort) llm.reasoning_effort = opts.reasoning_effort;
+  if (opts.model) llm.model = opts.model;
+  if (Object.keys(llm).length > 0) payload.llm = llm;
+  const raw = await runtime.send({ kind: "start_run", payload });
   const res = JSON.parse(raw) as { run_id?: string };
   if (!res.run_id) throw new Error("runtime did not return run_id");
   return res.run_id;

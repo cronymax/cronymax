@@ -123,6 +123,10 @@ pub struct LlmRequest {
     /// Sampling temperature (`None` lets the provider apply its own
     /// default).
     pub temperature: Option<f32>,
+    /// OpenAI reasoning_effort hint for gpt-5 / o-series models
+    /// (`minimal` | `low` | `medium` | `high`). `None` means "don't
+    /// send the field" — let the model use its default.
+    pub reasoning_effort: Option<String>,
 }
 
 impl LlmRequest {
@@ -132,6 +136,7 @@ impl LlmRequest {
             messages,
             tools: Vec::new(),
             temperature: None,
+            reasoning_effort: None,
         }
     }
 

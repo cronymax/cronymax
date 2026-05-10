@@ -23,6 +23,9 @@ import {
   persistSelectedFlow,
   loadSelectedModel,
   persistSelectedModel,
+  loadReasoningEffort,
+  persistReasoningEffort,
+  type ReasoningEffort,
   type Block,
   type ConversationBlock,
   type ShellBlock,
@@ -464,6 +467,12 @@ export function App() {
     "chat",
   );
   const [commentDraft, setCommentDraft] = useState("");
+  /** Per-chat reasoning_effort override. "" = use agent/provider default. */
+  const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(
+    () => loadReasoningEffort(),
+  );
+  const reasoningEffortRef = useRef(reasoningEffort);
+  reasoningEffortRef.current = reasoningEffort;
 
   // ── slash / @ picker state ─────────────────────────────────────────────
   const [picker, setPicker] = useState<PickerState | null>(null);
@@ -1051,6 +1060,10 @@ export function App() {
       let assistantText = "";
       const seenSeqs = new Set<number>();
       let runId = "";
+      // Last error surfaced via a "trace.error" event from the runtime
+      // (e.g. LLM HTTP failure). Used as the assistantText fallback when
+      // the run terminates without producing any tokens.
+      let lastErrorMessage = "";
 
       // Track pending review info from awaiting_review status so we can
       // pair it with the arriving PermissionRequest event.
@@ -1094,8 +1107,22 @@ export function App() {
             ) {
               dispatch({ type: "clearAwaitingApproval" });
               if (!assistantText) {
-                assistantText =
-                  status === "succeeded" ? "(completed)" : "(no output)";
+                // Prefer a concrete failure reason if the runtime
+                // surfaced one (RunStatus.detail.message or a prior
+                // trace.error). Fall back to the generic placeholder.
+                const detail =
+                  (pl.detail as Record<string, unknown> | undefined) ?? {};
+                const detailMsg =
+                  typeof detail.message === "string" ? detail.message : "";
+                if (status === "succeeded") {
+                  assistantText = "(completed)";
+                } else if (detailMsg) {
+                  assistantText = `(${status}) ${detailMsg}`;
+                } else if (lastErrorMessage) {
+                  assistantText = `(${status}) ${lastErrorMessage}`;
+                } else {
+                  assistantText = "(no output)";
+                }
                 dispatch({
                   type: "setAssistantContent",
                   id: blockId,
@@ -1221,6 +1248,27 @@ export function App() {
                   ts: Date.now(),
                 },
               });
+            } else if (traceKind === "error") {
+              // Emitted by the agent loop when the LLM stream itself
+              // fails (HTTP error, timeout, etc.). Stash the message so
+              // the run_status handler can surface it in place of
+              // "(no output)", and add a visible trace entry too.
+              const msg = (trace.message as string | undefined) ?? "";
+              if (msg) lastErrorMessage = msg;
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "tool_start",
+                  toolCallId: "",
+                  tool: "error",
+                  args: {
+                    where: (trace.where as string | undefined) ?? "",
+                    message: msg || "error",
+                  },
+                  ts: Date.now(),
+                },
+              });
             } else if (traceKind === "review_resolved") {
               const resolvedId = (trace.review_id as string | undefined) ?? "";
               const decision =
@@ -1295,7 +1343,13 @@ export function App() {
         if (workspaceRoot) {
           body = `[Workspace: ${workspaceRoot}]\n\n${body}`;
         }
-        runId = await agentRun(body);
+        // Per-message overrides from the chat toolbar; `""` is dropped so
+        // the agent/provider default kicks in.
+        const runOpts: { reasoning_effort?: string; model?: string } = {};
+        if (reasoningEffortRef.current)
+          runOpts.reasoning_effort = reasoningEffortRef.current;
+        if (state.model) runOpts.model = state.model;
+        runId = await agentRun(body, runOpts);
         if (!runId) throw new Error("runtime did not return run_id");
         await browser
           .send("events.subscribe", { run_id: runId })
@@ -1912,6 +1966,25 @@ export function App() {
                     ))}
                   </optgroup>
                 ))}
+              </select>
+
+              {/* Reasoning effort (gpt-5 / o-series). Empty = "use default". */}
+              <select
+                value={reasoningEffort}
+                onChange={(e) => {
+                  const v = e.target.value as ReasoningEffort;
+                  setReasoningEffortState(v);
+                  persistReasoningEffort(v);
+                }}
+                className="rounded-md border border-cronymax-border bg-cronymax-base px-1.5 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title transition"
+                title="Reasoning effort (OpenAI gpt-5 / o-series)"
+              >
+                <option value="">think: default</option>
+                <option value="minimal">think: minimal</option>
+                <option value="low">think: low</option>
+                <option value="medium">think: medium</option>
+                <option value="high">think: high</option>
+                <option value="xhigh">think: xhigh</option>
               </select>
 
               <div className="flex-1" />

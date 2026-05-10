@@ -52,6 +52,12 @@ pub struct AgentDef {
     /// tool set registered for the run. Non-empty means only the listed
     /// tool names will be available.
     pub tools: Vec<String>,
+
+    /// OpenAI reasoning_effort hint (`minimal` | `low` | `medium` | `high`).
+    /// Empty means "don't send the field" — let the model use its default.
+    /// Read from a top-level `reasoning_effort:` YAML key, or from
+    /// `llm.reasoning_effort` when the structured form is used.
+    pub reasoning_effort: String,
 }
 
 /// The two legal agent kinds.
@@ -89,6 +95,9 @@ struct RawAgentDef {
     memory_namespace: String,
     #[serde(default)]
     tools: Vec<String>,
+    /// Top-level shorthand: `reasoning_effort: high`.
+    #[serde(default)]
+    reasoning_effort: String,
 }
 
 impl RawAgentDef {
@@ -102,9 +111,9 @@ impl RawAgentDef {
 
         // The `llm` field can be:
         //   - a plain string: `llm: gpt-4o`
-        //   - a mapping: `llm: {provider: copilot, model: gpt-4o}`
-        let (llm_provider, llm_model) = match &self.llm {
-            Some(serde_yml::Value::String(s)) => (String::new(), s.clone()),
+        //   - a mapping: `llm: {provider: copilot, model: gpt-4o, reasoning_effort: high}`
+        let (llm_provider, llm_model, llm_reasoning) = match &self.llm {
+            Some(serde_yml::Value::String(s)) => (String::new(), s.clone(), String::new()),
             Some(serde_yml::Value::Mapping(map)) => {
                 let provider = map
                     .get("provider")
@@ -116,9 +125,22 @@ impl RawAgentDef {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_owned();
-                (provider, model)
+                let reasoning = map
+                    .get("reasoning_effort")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+                (provider, model, reasoning)
             }
-            _ => (String::new(), String::new()),
+            _ => (String::new(), String::new(), String::new()),
+        };
+
+        // Top-level `reasoning_effort:` wins over `llm.reasoning_effort`
+        // when both are set, since it's the more obvious place for users.
+        let reasoning_effort = if !self.reasoning_effort.is_empty() {
+            normalize_effort(&self.reasoning_effort)
+        } else {
+            normalize_effort(&llm_reasoning)
         };
 
         AgentDef {
@@ -129,7 +151,22 @@ impl RawAgentDef {
             system_prompt: self.system_prompt,
             memory_namespace: self.memory_namespace,
             tools: self.tools,
+            reasoning_effort,
         }
+    }
+}
+
+/// Lowercase + reject anything outside the OpenAI-supported set so we
+/// don't forward typos to the API. Empty/unknown -> empty string.
+///
+/// As of GPT-5 the API accepts `minimal | low | medium | high | xhigh`
+/// (plus `none`, which we represent as empty here). gpt-5.1 doesn't
+/// accept `minimal`/`xhigh` but we leave that to the API to reject so
+/// we don't have to track per-model support tables.
+fn normalize_effort(s: &str) -> String {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "minimal" | "low" | "medium" | "high" | "xhigh" => s.trim().to_ascii_lowercase(),
+        _ => String::new(),
     }
 }
 

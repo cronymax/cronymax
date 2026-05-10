@@ -64,6 +64,9 @@ struct FlowRunContext {
     api_key: Option<String>,
     model: String,
     provider_kind: String,
+    /// OpenAI reasoning_effort hint inherited from the start_run payload
+    /// (`payload.llm.reasoning_effort`). Per-agent YAML can override this.
+    reasoning_effort: Option<String>,
     /// Sandbox policy for capability gates. `None` = permissive (no checks).
     sandbox_policy: Option<Arc<SandboxPolicy>>,
 }
@@ -207,12 +210,20 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
                 return;
             }
         };
+        // Per-agent yaml takes precedence over the flow-run default
+        // (which itself came from payload.llm.reasoning_effort).
+        let effective_effort = if !agent_def.reasoning_effort.is_empty() {
+            Some(agent_def.reasoning_effort.clone())
+        } else {
+            ctx.reasoning_effort.clone()
+        };
         let cfg = LoopConfig {
             model: model.clone(),
             system_prompt: Some(system_message.clone()),
             user_input: "Continue with your assigned task as described above.".to_owned(),
             max_turns: 20,
             temperature: None,
+            reasoning_effort: effective_effort,
             llm: Arc::new(llm),
             tools,
         };
@@ -409,6 +420,14 @@ impl Handler for RuntimeHandler {
                     .and_then(|v| v.as_str())
                     .unwrap_or("openai_compat")
                     .to_string();
+                // Optional OpenAI reasoning_effort: minimal/low/medium/high.
+                // Source: payload.llm.reasoning_effort, set by the host from
+                // either the active provider record or a per-message UI override.
+                let reasoning_effort: Option<String> = llm_obj
+                    .and_then(|l| l.get("reasoning_effort"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .filter(|s| matches!(s.as_str(), "minimal" | "low" | "medium" | "high" | "xhigh"));
                 let user_input = payload
                     .get("task")
                     .and_then(|v| v.as_str())
@@ -557,6 +576,7 @@ impl Handler for RuntimeHandler {
                                 api_key: api_key.clone(),
                                 model: model.clone(),
                                 provider_kind: provider_kind.clone(),
+                                reasoning_effort: reasoning_effort.clone(),
                                 sandbox_policy: self.sandbox_policy.clone(),
                             };
                             self.flow_contexts.lock().insert(flow_run_id, flow_ctx.clone());
@@ -700,6 +720,7 @@ impl Handler for RuntimeHandler {
 
                         let authority = self.authority.clone();
                         let is_copilot = provider_kind == "github_copilot";
+                        let chat_reasoning_effort = reasoning_effort.clone();
                         tokio::spawn(async move {
                             // For GitHub Copilot, exchange the stored GitHub OAuth token for
                             // the short-lived Copilot API token required by the API.
@@ -746,12 +767,20 @@ impl Handler for RuntimeHandler {
                                     return;
                                 }
                             };
+                            // Chat without a flow / authored system prompt
+                                // gets a small default so the model has a clear
+                                // "you may stop now" condition. Without this,
+                                // gpt-4o-class models often keep calling tools
+                                // until max_turns hits.
+                                let chat_system_prompt = effective_system_prompt
+                                    .or_else(|| Some(default_chat_system_prompt()));
                             let cfg = LoopConfig {
                                 model,
-                                system_prompt: effective_system_prompt,
+                                system_prompt: chat_system_prompt,
                                 user_input,
                                 max_turns: 20,
                                 temperature: None,
+                                reasoning_effort: chat_reasoning_effort,
                                 llm: Arc::new(llm),
                                 tools,
                             };
@@ -1187,6 +1216,7 @@ impl Handler for RuntimeHandler {
                             "system_prompt": d.system_prompt,
                             "memory_namespace": d.memory_namespace,
                             "tools": d.tools,
+                            "reasoning_effort": d.reasoning_effort,
                         }),
                     },
                     None => ControlResponse::Err {
@@ -1540,6 +1570,20 @@ impl RuntimeHandler {
 }
 
 /// Base64-encode bytes for terminal output events.
+/// Minimal default system prompt for ad-hoc chat (no flow, no authored
+/// agent yaml). Without this, agentic models like gpt-4o keep calling
+/// tools until max_turns runs out because nothing tells them when the
+/// task is "done enough" to write a final answer.
+fn default_chat_system_prompt() -> String {
+    [
+        "You are a helpful coding assistant operating inside a developer's workspace.",
+        "You may use the provided tools (shell, filesystem, etc.) to investigate the project, but only when the user's request actually requires it.",
+        "Use the minimum number of tool calls needed. As soon as you have enough information to answer, stop calling tools and reply to the user with a concise summary.",
+        "If the request is purely conversational, answer directly without invoking any tool.",
+    ]
+    .join(" ")
+}
+
 fn base64_encode(data: &[u8]) -> String {
     // Simple base64 without dependencies — use the alphabet directly.
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

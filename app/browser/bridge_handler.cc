@@ -980,15 +980,19 @@ bool BridgeHandler::HandleRuntimeProcessMessage(
           req["payload"]["workspace_root"] = wroot;
 
         // Agent run: payload.task present, but no payload.flow_id.
-        // Inject LLM config from the active provider so the Rust runtime
-        // can call the correct inference endpoint.
+        // Build the LLM config block from the active provider so the Rust
+        // runtime can call the correct inference endpoint. If the renderer
+        // already pre-populated payload.llm with overrides (e.g. a per-message
+        // `reasoning_effort` chosen in the chat UI, or a model picker
+        // selection), per-field renderer values win — we only fill in what's
+        // missing.
         if (req["payload"].contains("task") &&
-            !req["payload"].contains("flow_id") &&
-            !req["payload"].contains("llm")) {
+            !req["payload"].contains("flow_id")) {
           std::string base_url      = "https://api.openai.com/v1";
           std::string api_key;
           std::string model         = "gpt-4o-mini";
           std::string provider_kind = "openai_compat";
+          std::string reasoning_effort;
           // Prefer new-style provider list; fall back to legacy LlmConfig.
           const std::string providers_raw =
               space_manager_->store().GetKv("llm.providers");
@@ -1010,6 +1014,10 @@ bool BridgeHandler::HandleRuntimeProcessMessage(
                   if (!pm.empty()) model = pm;
                   const std::string pk = p.value("kind", std::string{});
                   if (!pk.empty()) provider_kind = pk;
+                  if (const auto it = p.find("reasoning_effort");
+                      it != p.end() && it->is_string()) {
+                    reasoning_effort = it->get<std::string>();
+                  }
                   break;
                 }
               }
@@ -1019,12 +1027,17 @@ bool BridgeHandler::HandleRuntimeProcessMessage(
             if (!llm_cfg.base_url.empty()) base_url = llm_cfg.base_url;
             api_key = llm_cfg.api_key;
           }
-          req["payload"]["llm"] = {
-              {"base_url",      base_url},
-              {"api_key",       api_key},
-              {"model",         model},
-              {"provider_kind", provider_kind},
-          };
+          // Ensure payload.llm exists, then merge: bridge defaults first,
+          // renderer-provided fields take precedence.
+          if (!req["payload"].contains("llm") || !req["payload"]["llm"].is_object())
+            req["payload"]["llm"] = nlohmann::json::object();
+          auto& llm = req["payload"]["llm"];
+          if (!llm.contains("base_url"))      llm["base_url"]      = base_url;
+          if (!llm.contains("api_key"))       llm["api_key"]       = api_key;
+          if (!llm.contains("model"))         llm["model"]         = model;
+          if (!llm.contains("provider_kind")) llm["provider_kind"] = provider_kind;
+          if (!llm.contains("reasoning_effort") && !reasoning_effort.empty())
+            llm["reasoning_effort"] = reasoning_effort;
         }
       }
     }

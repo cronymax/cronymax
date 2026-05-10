@@ -34,7 +34,16 @@ pub struct OpenAiConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub default_model: String,
-    pub request_timeout: Duration,
+    /// Cap on TCP+TLS handshake time. Stays short — handshake should
+    /// complete in seconds; if it doesn't, something is wrong (DNS,
+    /// network, TLS).
+    pub connect_timeout: Duration,
+    /// Cap on time **between** body bytes once streaming starts. NOT
+    /// the total request lifetime — reasoning models (gpt-5 high/xhigh)
+    /// can legitimately stream for many minutes, and a total `timeout`
+    /// would kill them mid-response. As long as tokens keep arriving
+    /// faster than this interval, the request runs to completion.
+    pub read_timeout: Duration,
     /// When true, add the required GitHub Copilot request headers
     /// (`Editor-Version`, `Copilot-Integration-Id`, etc.) so the
     /// `api.githubcopilot.com` endpoint accepts the request.
@@ -47,7 +56,8 @@ impl Default for OpenAiConfig {
             base_url: "https://api.openai.com/v1".into(),
             api_key: None,
             default_model: "gpt-4o-mini".into(),
-            request_timeout: Duration::from_secs(120),
+            connect_timeout: Duration::from_secs(30),
+            read_timeout: Duration::from_secs(120),
             copilot_mode: false,
         }
     }
@@ -63,8 +73,13 @@ pub struct OpenAiProvider {
 
 impl OpenAiProvider {
     pub fn new(config: OpenAiConfig) -> anyhow::Result<Self> {
+        // Intentionally NOT setting `.timeout()` — that's a total
+        // request-lifetime cap that would break long streaming
+        // responses from reasoning models. We rely on connect + read
+        // (between-bytes) timeouts instead.
         let http = reqwest::Client::builder()
-            .timeout(config.request_timeout)
+            .connect_timeout(config.connect_timeout)
+            .read_timeout(config.read_timeout)
             .build()?;
         Ok(Self { config, http })
     }
@@ -114,6 +129,25 @@ impl LlmProvider for OpenAiProvider {
     }
 }
 
+/// Walk reqwest's error source chain — the top-level `Display` is
+/// usually a generic phrase like "error decoding response body" while
+/// the actual cause (e.g. `unexpected end of file`, `connection reset`,
+/// `invalid gzip header`) is one or two `source()` hops deeper.
+fn format_reqwest_chain(e: &reqwest::Error) -> String {
+    use std::error::Error;
+    let mut out = e.to_string();
+    let mut src: Option<&dyn Error> = e.source();
+    while let Some(s) = src {
+        let msg = s.to_string();
+        if !out.contains(&msg) {
+            out.push_str(": ");
+            out.push_str(&msg);
+        }
+        src = s.source();
+    }
+    out
+}
+
 async fn pump(response: reqwest::Response, tx: mpsc::UnboundedSender<LlmEvent>) {
     let mut bytes = response.bytes_stream();
     let mut buf = String::new();
@@ -122,7 +156,7 @@ async fn pump(response: reqwest::Response, tx: mpsc::UnboundedSender<LlmEvent>) 
             Ok(c) => c,
             Err(e) => {
                 let _ = tx.send(LlmEvent::Error {
-                    message: format!("stream io: {e}"),
+                    message: format!("stream io: {}", format_reqwest_chain(&e)),
                 });
                 return;
             }
@@ -264,6 +298,10 @@ struct WireRequest<'a> {
     tool_choice: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// OpenAI reasoning_effort for gpt-5 / o-series. Skipped if absent so
+    /// non-reasoning models don't choke on the unknown field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
 }
 
 impl<'a> WireRequest<'a> {
@@ -282,6 +320,7 @@ impl<'a> WireRequest<'a> {
             tools,
             tool_choice,
             temperature: req.temperature,
+            reasoning_effort: req.reasoning_effort.as_deref(),
         }
     }
 }
