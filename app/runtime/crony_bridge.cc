@@ -716,8 +716,10 @@ void RuntimeBridge::SupervisorLoop() {
       int status = 0;
       pid_t result = waitpid(pid, &status, WNOHANG);
       if (result == pid) {
-        std::lock_guard lock(mu_);
-        child_pid_ = -1;
+        {
+          std::lock_guard lock(mu_);
+          child_pid_ = -1;
+        }
 #endif
         // Child exited while we're still meant to be running.
         if (supervisor_stop_.load()) break;
