@@ -15,11 +15,13 @@
 
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <string>
 
 #include "browser/tab/tab.h"
 #include "browser/tab/tab_behavior.h"
+#include "include/base/cef_weak_ptr.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_label_button.h"
 #include "include/views/cef_textfield.h"
@@ -31,15 +33,15 @@ class TabToolbar;
 
 class WebTabBehavior : public TabBehavior {
 public:
-  WebTabBehavior(ClientHandler *client_handler, std::string initial_url);
+  WebTabBehavior(ClientHandler *client_handler, std::string initial_url,
+                 ThemeContext *theme_ctx);
   ~WebTabBehavior() override;
 
   TabKind Kind() const override { return TabKind::kWeb; }
   void BuildToolbar(TabToolbar *toolbar, TabContext *context) override;
   CefRefPtr<CefView> BuildContent(TabContext *context) override;
   void ApplyToolbarState(const ToolbarState &state) override;
-  void ApplyThemeColors(cef_color_t text_fg, cef_color_t surface_bg,
-                        cef_color_t toolbar_bg) override;
+  void ApplyTheme(const ThemeChrome &chrome) override;
   int BrowserId() const override { return browser_id_; }
 
   // Programmatic navigation API used by MainWindow shell callbacks.
@@ -69,9 +71,11 @@ private:
   void NavigateToCurrentField();
   void UpdateRefreshStopGlyph();
 
+  void RegisterBrowserListener();
+
+  TabContext *context_ = nullptr;
+  ThemeContext *theme_ctx_ = nullptr;
   ClientHandler *client_handler_;
-  TabContext *context_ =
-      nullptr; // back-pointer to owning Tab (safe: Tab outlives behavior)
   std::string initial_url_;
   std::string current_url_;
   std::string current_title_;
@@ -88,6 +92,8 @@ private:
   CefRefPtr<CefLabelButton> refresh_btn_;
   CefRefPtr<CefTextfield> url_field_;
   CefRefPtr<CefLabelButton> new_btn_;
+
+  base::WeakPtrFactory<WebTabBehavior> weak_factory_;
 };
 
 } // namespace cronymax

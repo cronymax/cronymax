@@ -50,7 +50,7 @@ namespace cronymax {
 template <typename EventT>
 class ViewObserver {
  public:
-  virtual void OnEvent(const EventT& event) = 0;
+  virtual void OnViewObserved(const EventT& event) = 0;
 
  protected:
   virtual ~ViewObserver() = default;
@@ -77,7 +77,7 @@ class ViewObserverList {
 
   // Dispatch the event to all registered observers.
   void Notify(const EventT& event) {
-    list_.Notify(&ViewObserver<EventT>::OnEvent, event);
+    list_.Notify(&ViewObserver<EventT>::OnViewObserved, event);
   }
 
  private:

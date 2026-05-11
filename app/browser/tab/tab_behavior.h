@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "browser/models/theme_aware_view.h"
 #include "browser/tab/tab.h"
 #include "include/views/cef_view.h"
 
@@ -13,7 +14,7 @@ namespace cronymax {
 
 class TabToolbar;
 
-class TabBehavior {
+class TabBehavior : public ThemeAwareView {
 public:
   virtual ~TabBehavior() = default;
 
@@ -40,15 +41,11 @@ public:
   // don't push state (or haven't been migrated yet) need not override.
   virtual void ApplyToolbarState(const ToolbarState & /*state*/) {}
 
-  // Called whenever the shell theme changes so the behavior can adapt any
-  // hardcoded widget colors. `text_fg` is the readable foreground color
-  // (text_title token), `surface_bg` is the float-surface background
-  // (bg_float token), `toolbar_bg` is the toolbar panel background
-  // (bg_base token — use this as the button background to blend with the
-  // toolbar panel). Default no-op for behaviors that have no widgets.
-  virtual void ApplyThemeColors(cef_color_t /*text_fg*/,
-                                cef_color_t /*surface_bg*/,
-                                cef_color_t /*toolbar_bg*/ = 0) {}
+  // Called whenever the shell theme changes so the behavior can update any
+  // hardcoded widget colors. Default no-op for behaviors with no owned widgets.
+  // Implementations should also handle page-driven chrome calls (SetChromeTheme
+  // may call this with a synthesized ThemeChrome derived from the page color).
+  void ApplyTheme(const ThemeChrome& /*chrome*/) override {}
 
   // Optional: return the CEF browser identifier for this behavior's primary
   // browser, or 0 if it does not host a browser yet (or is not a browser-

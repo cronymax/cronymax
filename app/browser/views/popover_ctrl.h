@@ -3,6 +3,7 @@
 #include <functional>
 #include <string>
 
+#include "browser/models/theme_aware_view.h"
 #include "browser/models/view_context.h"
 #include "browser/views/popover_overlay.h"
 #include "include/views/cef_label_button.h"
@@ -24,7 +25,7 @@ namespace cronymax {
 //
 // The class does NOT call AddOverlayView — slots were pre-allocated by
 // BuildOverlaySlots() and passed in via |overlay|.
-class PopoverCtrl {
+class PopoverCtrl : public ThemeAwareView {
 public:
   // Callbacks that let PopoverCtrl call back into MainWindow without taking
   // a MainWindow* dependency.
@@ -56,7 +57,7 @@ public:
   void UpdateVisibility();
 
   // Forward theme change to overlay chrome strip widgets.
-  void ApplyTheme(const ThemeChrome &chrome);
+  void ApplyTheme(const ThemeChrome &chrome) override;
 
   // True while a popover is open (Show was called, Close has not been called).
   bool IsOpen() const { return is_open_; }
@@ -84,7 +85,6 @@ private:
   // Pure — reads main_win_ and is_compact_ only.
   CefRect ComputePopoverRect() const;
 
-  ThemeContext *theme_ctx_;
   PopoverOverlay *overlay_;
   CefRefPtr<CefWindow> main_win_;
   Host host_;

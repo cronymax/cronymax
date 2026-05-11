@@ -70,7 +70,7 @@ cef_color_t ParseCssColorOrDefault(const std::string &css,
 }
 } // namespace
 
-void Tab::Build() {
+void Tab::Build(ThemeContext *theme_ctx) {
   assert(!built_ && "Tab::Build called twice");
   built_ = true;
 
@@ -85,8 +85,9 @@ void Tab::Build() {
   // Toolbar (web tabs only — builtin panels have no native toolbar).
   if (behavior_->HasToolbar()) {
     toolbar_ = std::make_unique<TabToolbar>();
-    toolbar_->SetDefaultChromeArgb(default_chrome_argb_);
-    CefRefPtr<CefPanel> toolbar_root = toolbar_->Build();
+    // Build registers the toolbar with the theme context directly so it
+    // receives ApplyTheme calls on shell theme changes without indirection.
+    CefRefPtr<CefPanel> toolbar_root = toolbar_->Build(theme_ctx);
     card_->AddChildView(toolbar_root);
     card_layout_->SetFlexForView(toolbar_root, 0);
     behavior_->BuildToolbar(toolbar_.get(), this);
@@ -102,6 +103,10 @@ void Tab::Build() {
   if (content) {
     content_host_->AddChildView(content);
   }
+
+  // Subscribe the tab to theme updates via ThemeAwareView.
+  if (theme_ctx)
+    Register(theme_ctx);
 }
 
 void Tab::OnToolbarState(const ToolbarState &state) {
@@ -131,41 +136,26 @@ void Tab::SetChromeTheme(const std::string &css_color_or_empty) {
   // site), the shell's dark-mode light text would be invisible — derive an
   // appropriate text color from the toolbar luminance instead.
   if (behavior_) {
-    const cef_color_t effective_fg = TextColorForBg(toolbar_bg);
-    behavior_->ApplyThemeColors(effective_fg, surface_bg_, toolbar_bg);
+    // Synthesize a ThemeChrome from the page-driven toolbar color so the
+    // behavior updates its widget colors to match the page's chrome.
+    ThemeChrome page_chrome;
+    page_chrome.bg_base = toolbar_bg;
+    page_chrome.bg_float = surface_bg_;
+    page_chrome.bg_body = toolbar_bg;
+    page_chrome.text_title = TextColorForBg(toolbar_bg);
+    behavior_->ApplyTheme(page_chrome);
   }
 }
 
-void Tab::SetDefaultChromeArgb(cef_color_t argb) {
-  if (argb == 0)
-    return;
-  default_chrome_argb_ = argb;
-  if (toolbar_) {
-    toolbar_->SetDefaultChromeArgb(argb);
-  }
-  if (card_ && chrome_override_.empty()) {
-    card_->SetBackgroundColor(default_chrome_argb_);
-  }
-}
-
-void Tab::ApplyTheme(cef_color_t bg_base, cef_color_t bg_float,
-                     cef_color_t text_title) {
-  text_fg_ = text_title;
-  surface_bg_ = bg_float;
-  // A full shell theme switch (Light ↔ Dark ↔ System) must override any
-  // stale page-driven chrome so the card and toolbar adopt the new shell
-  // colors unconditionally.  The page will re-push its preferred chrome on
-  // the next navigation / OnAddressChange event.
+void Tab::ApplyTheme(const ThemeChrome &chrome) {
+  text_fg_ = chrome.text_title;
+  surface_bg_ = chrome.bg_float;
+  // Keep default_chrome_argb_ in sync for SetChromeTheme fallback.
+  default_chrome_argb_ = chrome.bg_base;
+  // A full shell theme switch clears any stale page-driven chrome override.
   chrome_override_.clear();
-  // SetDefaultChromeArgb now updates the card too, because chrome_override_
-  // has just been cleared above.
-  SetDefaultChromeArgb(bg_base);
-  // Force-clear the toolbar's own per-panel override and apply the new
-  // default to all slot panels (root / leading / middle / trailing).
-  if (toolbar_)
-    toolbar_->SetChromeColor("");
-  if (behavior_)
-    behavior_->ApplyThemeColors(text_title, bg_float, bg_base);
+  if (card_)
+    card_->SetBackgroundColor(chrome.bg_base);
 }
 
 void Tab::RequestClose() {

@@ -6,18 +6,13 @@
 
 #include "browser/client_handler.h"
 #include "browser/models/view_context.h"
-#include "include/base/cef_bind.h"
-#include "include/base/cef_callback.h"
 #include "include/views/cef_browser_view_delegate.h"
-#include "include/wrapper/cef_closure_task.h"
-
-#if defined(__APPLE__)
-#include "browser/platform/view_style.h"
-#endif
 
 namespace cronymax {
 
 namespace {
+
+constexpr cef_color_t kBrowserViewFallbackBg = 0xFF0E1716;
 
 // Fixed-width delegate for the sidebar browser view.
 class SidebarBrowserViewDelegate : public CefBrowserViewDelegate {
@@ -37,36 +32,29 @@ private:
 
 } // namespace
 
-SidebarView::SidebarView(ResourceContext *resource_ctx,
+SidebarView::SidebarView(ResourceContext *resource_ctx, ThemeContext *theme_ctx,
                          CefRefPtr<ClientHandler> client_handler)
-    : resource_ctx_(resource_ctx), client_handler_(std::move(client_handler)) {}
+    : resource_ctx_(resource_ctx), theme_ctx_(theme_ctx),
+      client_handler_(std::move(client_handler)) {}
 
 SidebarView::~SidebarView() = default;
 
 CefRefPtr<CefBrowserView> SidebarView::Build() {
   CefBrowserSettings settings;
-  settings.background_color =
-      0x00000000; // transparent — AppKit vibrancy shows through
-
+  settings.background_color = theme_ctx_
+                                  ? theme_ctx_->GetCurrentChrome().bg_body
+                                  : kBrowserViewFallbackBg;
   browser_view_ = CefBrowserView::CreateBrowserView(
       client_handler_, resource_ctx_->ResourceUrl("panels/sidebar/index.html"),
       settings, nullptr, nullptr, new SidebarBrowserViewDelegate());
 
-#if defined(__APPLE__)
-  // Clear the sidebar NSView's opaque chrome fill so AppKit vibrancy shows
-  // through. Deferred so the underlying NSView is realized first.
-  CefPostTask(TID_UI,
-              base::BindOnce(
-                  [](CefRefPtr<CefBrowserView> v) {
-                    auto b = v->GetBrowser();
-                    if (!b)
-                      return;
-                    MakeBrowserViewTransparent(b->GetHost()->GetWindowHandle());
-                  },
-                  browser_view_));
-#endif
-
+  Register(theme_ctx_);
   return browser_view_;
+}
+
+void SidebarView::ApplyTheme(const ThemeChrome &chrome) {
+  if (browser_view_)
+    browser_view_->SetBackgroundColor(chrome.bg_body);
 }
 
 void SidebarView::SetVisible(bool visible) {

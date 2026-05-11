@@ -25,9 +25,6 @@ class ViewModel {
   ViewModel();
   ~ViewModel() = default;
 
-  // ── TabManager ──────────────────────────────────────────────────────────
-  std::unique_ptr<TabManager> tabs_;
-
   // ── SpaceManager ────────────────────────────────────────────────────────
   SpaceManager space_manager_;
 
@@ -36,10 +33,18 @@ class ViewModel {
   ThemeChrome current_chrome_{};
 
   // ── Observer lists ──────────────────────────────────────────────────────
+  // NOTE: tabs_ is declared AFTER these lists so C++ destruction (reverse
+  // order) destroys tabs_ first — allowing Tab::~ThemeAwareView() to safely
+  // call RemoveThemeObserver() while theme_observers is still alive.
   ViewObserverList<ThemeChanged>     theme_observers;
   ViewObserverList<SpaceChanged>     space_observers;
   ViewObserverList<TabsChanged>      tabs_observers;
   ViewObserverList<ActiveTabChanged> active_tab_observers;
+
+  // ── TabManager ──────────────────────────────────────────────────────────
+  // Declared last so it is destroyed first, ensuring Tab ThemeAwareView
+  // unsubscriptions happen before theme_observers is torn down.
+  std::unique_ptr<TabManager> tabs_;
 
   // ── Theme helpers ────────────────────────────────────────────────────────
   static ThemeChrome ChromeFor(const std::string& resolved);

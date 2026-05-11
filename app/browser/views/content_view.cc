@@ -14,9 +14,10 @@ namespace {
 constexpr double kContentCornerRadius = 10.0;
 } // namespace
 
-ContentView::ContentView(TabsContext *tabs, CefRefPtr<CefWindow> main_win,
-                         Host host)
-    : tabs_(tabs), main_win_(std::move(main_win)), host_(std::move(host)) {
+ContentView::ContentView(TabsContext *tabs, ThemeContext *theme_ctx,
+                         CefRefPtr<CefWindow> main_win, Host host)
+    : tabs_(tabs), theme_ctx_(theme_ctx), main_win_(std::move(main_win)),
+      host_(std::move(host)) {
   tabs_->AddActiveTabObserver(this);
 }
 
@@ -40,6 +41,7 @@ CefRefPtr<CefPanel> ContentView::Build() {
   content_panel_->SetToFillLayout();
   content_frame_->AddChildView(content_panel_);
 
+  Register(theme_ctx_);
   return content_outer_;
 }
 
@@ -52,12 +54,12 @@ void ContentView::RemoveCard(const std::string &tab_id) {
   mounted_cards_.erase(it);
 }
 
-void ContentView::ApplyTheme(cef_color_t bg_body, cef_color_t bg_base) {
-  bg_body_ = bg_body;
+void ContentView::ApplyTheme(const ThemeChrome &chrome) {
+  bg_body_ = chrome.bg_body;
   if (content_outer_)
-    content_outer_->SetBackgroundColor(bg_body);
+    content_outer_->SetBackgroundColor(chrome.bg_body);
   if (content_frame_)
-    content_frame_->SetBackgroundColor(bg_base);
+    content_frame_->SetBackgroundColor(chrome.bg_base);
   // Re-round active tab's corners with the new bg (theme switch can alter
   // the color used for the shadow sibling).
   auto [tab_id, card, bv] = host_.active_tab();
@@ -130,7 +132,9 @@ void ContentView::RoundCornersFor(CefRefPtr<CefBrowserView> bv,
           bv, win, bg_body));
 }
 
-void ContentView::OnEvent(const ActiveTabChanged & /*e*/) { ShowActiveCard(); }
+void ContentView::OnViewObserved(const ActiveTabChanged & /*e*/) {
+  ShowActiveCard();
+}
 
 void ContentView::ShowActiveCard() {
   auto [tab_id, card, bv] = host_.active_tab();

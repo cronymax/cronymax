@@ -13,6 +13,7 @@
 #include <string>
 #include <tuple>
 
+#include "browser/models/theme_aware_view.h"
 #include "browser/models/view_context.h"
 #include "browser/models/view_observer.h"
 #include "include/views/cef_browser_view.h"
@@ -22,7 +23,8 @@
 
 namespace cronymax {
 
-class ContentView : public ViewObserver<ActiveTabChanged> {
+class ContentView : public ThemeAwareView,
+                    public ViewObserver<ActiveTabChanged> {
 public:
   struct Host {
     // Returns (tab_id, card_view, browser_view) for the current active tab.
@@ -43,7 +45,8 @@ public:
     std::function<void()> update_popover_visibility;
   };
 
-  ContentView(TabsContext *tabs, CefRefPtr<CefWindow> main_win, Host host);
+  ContentView(TabsContext *tabs, ThemeContext *theme_ctx,
+              CefRefPtr<CefWindow> main_win, Host host);
   ~ContentView() override;
 
   // Build and return the root content_outer_ panel.  Called once during
@@ -58,7 +61,7 @@ public:
   void SetVInsets(int top, int bottom);
 
   // Update panel background colors on theme change.
-  void ApplyTheme(cef_color_t bg_body, cef_color_t bg_base);
+  void ApplyTheme(const ThemeChrome& chrome) override;
 
   // Apply corner-punch overlays to round the active tab's card corners.
   // Must be called with the CefWindow so the punch views can be placed in
@@ -70,13 +73,16 @@ public:
 
   CefRefPtr<CefPanel> content_panel() const { return content_panel_; }
 
+  // Make both OnViewObserved overloads visible (ThemeAwareView + ActiveTabChanged).
+  using ThemeAwareView::OnViewObserved;
   // ShellObserver<ActiveTabChanged>
-  void OnEvent(const ActiveTabChanged &e) override;
+  void OnViewObserved(const ActiveTabChanged &e) override;
 
 private:
   void ShowActiveCard();
 
   TabsContext *tabs_;
+  ThemeContext *theme_ctx_;
   CefRefPtr<CefWindow> main_win_;
   Host host_;
 

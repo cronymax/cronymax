@@ -58,13 +58,14 @@ constexpr double kContentCornerRadius = 10.0;
 
 PopoverCtrl::PopoverCtrl(ThemeContext *theme_ctx, PopoverOverlay *overlay,
                          CefRefPtr<CefWindow> main_win, Host host)
-    : theme_ctx_(theme_ctx), overlay_(overlay), main_win_(std::move(main_win)),
+    : overlay_(overlay), main_win_(std::move(main_win)),
       host_(std::move(host)) {
+  Register(theme_ctx);
   BuildChromeStrip();
 }
 
 void PopoverCtrl::BuildChromeStrip() {
-  const ThemeChrome chrome = theme_ctx_->GetCurrentChrome();
+  const ThemeChrome chrome = ThemeCtx()->GetCurrentChrome();
   const cef_color_t bg = chrome.bg_float != 0
                              ? chrome.bg_float
                              : static_cast<cef_color_t>(0xFF182625);
@@ -229,7 +230,7 @@ void PopoverCtrl::UpdateVisibility() {
     visible = true;
   } else {
     // Per-tab popover: only visible when the owning tab is active.
-    ThemeChrome chrome = theme_ctx_->GetCurrentChrome(); // unused, just a check
+    ThemeChrome chrome = ThemeCtx()->GetCurrentChrome(); // unused, just a check
     (void)chrome;
     // Access active tab via tabs_ctx_. We downcast via the virtual interface.
     // TabsContext has no direct Active() method; use GetActiveTabUrl() as a

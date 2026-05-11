@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "browser/models/theme_aware_view.h"
 #include "browser/models/view_observer.h"
 #include "browser/models/view_context.h"
 #include "include/views/cef_label_button.h"
@@ -24,7 +25,7 @@
 
 namespace cronymax {
 
-class TitleBarView : public ViewObserver<ThemeChanged>,
+class TitleBarView : public ThemeAwareView,
                      public ViewObserver<SpaceChanged> {
  public:
   struct Host {
@@ -41,6 +42,7 @@ class TitleBarView : public ViewObserver<ThemeChanged>,
                WindowActionContext* window_ctx,
                OverlayActionContext* overlay,
                ResourceContext* resources,
+               ThemeContext* theme_ctx,
                CefRefPtr<CefWindow> main_win,
                Host host);
   ~TitleBarView() override;
@@ -54,21 +56,22 @@ class TitleBarView : public ViewObserver<ThemeChanged>,
   void RefreshDragRegion();
 
   // Update all button/panel background colors on a theme change.
-  void ApplyTheme(const ThemeChrome& chrome);
+  void ApplyTheme(const ThemeChrome& chrome) override;
 
   // Update the space-selector button label.
   void UpdateSpaceName(const std::string& name);
 
-  // ShellObserver<ThemeChanged>
-  void OnEvent(const ThemeChanged& e) override;
+  // Make both OnViewObserved overloads visible (ThemeAwareView + SpaceChanged).
+  using ThemeAwareView::OnViewObserved;
   // ShellObserver<SpaceChanged>
-  void OnEvent(const SpaceChanged& e) override;
+  void OnViewObserved(const SpaceChanged& e) override;
 
  private:
   SpaceContext*        space_ctx_;
   WindowActionContext* window_ctx_;
   OverlayActionContext* overlay_ctx_;
   ResourceContext*     resource_ctx_;
+  ThemeContext*        theme_ctx_;
   CefRefPtr<CefWindow> main_win_;
   Host                 host_;
 

@@ -202,11 +202,6 @@ void ViewDispatcher::Wire() {
     }
     bool created = false;
     TabId id = model_->tabs_->FindOrCreateSingleton(kind, &created);
-    if (Tab* tab = model_->tabs_->Get(id)) {
-      tab->ApplyTheme(model_->current_chrome_.bg_base,
-                      model_->current_chrome_.bg_float,
-                      model_->current_chrome_.text_title);
-    }
     if (!id.empty()) model_->tabs_->Activate(id);
     return nlohmann::json{{"tabId", id}, {"created", created}}.dump();
   };
@@ -220,11 +215,6 @@ void ViewDispatcher::Wire() {
       id = tabs_ctx_->OpenWebTab("https://www.google.com");
     } else if (kind == TabKind::kTerminal || kind == TabKind::kChat) {
       id = model_->tabs_->Open(kind, OpenParams{});
-      if (Tab* tab = model_->tabs_->Get(id)) {
-        tab->ApplyTheme(model_->current_chrome_.bg_base,
-                        model_->current_chrome_.bg_float,
-                        model_->current_chrome_.text_title);
-      }
       if (!id.empty()) model_->tabs_->Activate(id);
     } else {
       return "{}";

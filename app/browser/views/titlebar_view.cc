@@ -32,17 +32,12 @@ constexpr int kWinPadW = 138;
 
 TitleBarView::TitleBarView(SpaceContext *space, WindowActionContext *window_ctx,
                            OverlayActionContext *overlay,
-                           ResourceContext *resources,
+                           ResourceContext *resources, ThemeContext *theme_ctx,
                            CefRefPtr<CefWindow> main_win, Host host)
     : space_ctx_(space), window_ctx_(window_ctx), overlay_ctx_(overlay),
-      resource_ctx_(resources), main_win_(std::move(main_win)),
-      host_(std::move(host)) {
+      resource_ctx_(resources), theme_ctx_(theme_ctx),
+      main_win_(std::move(main_win)), host_(std::move(host)) {
   space_ctx_->AddSpaceObserver(this);
-  // Theme subscription is deferred: ThemeContext::AddThemeObserver is not
-  // available here because TitleBarView receives ThemeChanged indirectly
-  // via ApplyTheme() called from MainWindow::ApplyThemeChrome (Phase 9).
-  // A follow-up phase can wire the direct subscription once a ThemeContext*
-  // is added to the constructor.
 }
 
 TitleBarView::~TitleBarView() { space_ctx_->RemoveSpaceObserver(this); }
@@ -195,6 +190,7 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
   layout->SetFlexForView(win_pad_, 0);
 
   titlebar_panel_ = panel;
+  Register(theme_ctx_);
   return panel;
 }
 
@@ -286,9 +282,7 @@ void TitleBarView::UpdateSpaceName(const std::string &name) {
     btn_space_->SetText(name + " \u25BE");
 }
 
-void TitleBarView::OnEvent(const ThemeChanged &e) { ApplyTheme(e.chrome); }
-
-void TitleBarView::OnEvent(const SpaceChanged &e) {
+void TitleBarView::OnViewObserved(const SpaceChanged &e) {
   UpdateSpaceName(e.new_name);
 }
 

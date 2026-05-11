@@ -99,19 +99,6 @@ void SimpleTabBehavior::ApplyToolbarState(const ToolbarState &state) {
     return;
 }
 
-void SimpleTabBehavior::ApplyThemeColors(cef_color_t text_fg,
-                                         cef_color_t /*surface_bg*/,
-                                         cef_color_t toolbar_bg) {
-  if (name_btn_) {
-    const bool dark = ((text_fg >> 8) & 0xFF) > 0x80;
-    name_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, text_fg);
-    name_btn_->SetTextColor(CEF_BUTTON_STATE_DISABLED, text_fg);
-    if (toolbar_bg != 0)
-      name_btn_->SetBackgroundColor(toolbar_bg);
-    IconRegistry::ApplyToButton(name_btn_, IconIdForKind(kind_), dark);
-  }
-}
-
 int SimpleTabBehavior::BrowserId() const {
   if (browser_view_) {
     if (auto br = browser_view_->GetBrowser())

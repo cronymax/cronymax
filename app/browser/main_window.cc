@@ -235,7 +235,7 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   // arc-style-tab-cards: TabManager owns every tab; per-kind *_view_
   // singletons are gone. All non-web kinds are singleton tabs whose
   // content browser loads the existing renderer HTML.
-  shell_model_.tabs_ = std::make_unique<TabManager>();
+  shell_model_.tabs_ = std::make_unique<TabManager>(this);
   shell_model_.tabs_->SetClientHandler(client_handler_.get());
   // native-title-bar: terminal/chat are multi-instance now (each click of
   // "+ Terminal" / "+ Chat" creates a fresh tab). Agent/graph stay
@@ -265,10 +265,7 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   // Falls back to opening a default Chat tab on first launch.
   if (!RestoreSidebarTabs()) {
     TabId id = shell_model_.tabs_->Open(TabKind::kChat, OpenParams{});
-    if (Tab* tab = shell_model_.tabs_->Get(id)) {
-      tab->ApplyTheme(shell_model_.current_chrome_.bg_base, shell_model_.current_chrome_.bg_float,
-                      shell_model_.current_chrome_.text_title);
-    }
+    // Tab::Register() in Open() already seeded colors — no ApplyTheme needed.
     if (!id.empty()) shell_model_.tabs_->Activate(id);
   }
 
@@ -413,7 +410,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     };
     titlebar_view_ = std::make_unique<TitleBarView>(
         /*space=*/this, /*window_ctx=*/this, /*overlay=*/this,
-        /*resources=*/this, main_window_, std::move(tb_host));
+        /*resources=*/this, /*theme_ctx=*/this, main_window_, std::move(tb_host));
     titlebar_panel_ = titlebar_view_->Build();
   }
   window->AddChildView(titlebar_panel_);
@@ -428,7 +425,9 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   root_layout->SetFlexForView(body_panel_, 1);
 
   // ── Sidebar (Phase 10: owned by SidebarView) ─────────────────────────────
-  sidebar_view_obj_ = std::make_unique<SidebarView>(this, client_handler_);
+  sidebar_view_obj_ = std::make_unique<SidebarView>(/*resource_ctx=*/this,
+                                                     /*theme_ctx=*/this,
+                                                     client_handler_);
   auto sv = sidebar_view_obj_->Build();
   body_panel_->AddChildView(sv);
   body_layout->SetFlexForView(sv, 0);
@@ -464,7 +463,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     };
     cv_host.update_popover_visibility = [this]() { UpdatePopoverVisibility(); };
     content_view_ = std::make_unique<ContentView>(
-        /*tabs=*/this, main_window_, std::move(cv_host));
+        /*tabs=*/this, /*theme_ctx=*/this, main_window_, std::move(cv_host));
     auto content_outer = content_view_->Build();
     body_panel_->AddChildView(content_outer);
     body_layout->SetFlexForView(content_outer, 1);
@@ -802,10 +801,7 @@ std::string MainWindow::OpenWebTab(const std::string& url) {
   params.url = final_url;
   TabId id = shell_model_.tabs_->Open(TabKind::kWeb, params);
   if (id.empty()) return {};
-  if (Tab* tab = shell_model_.tabs_->Get(id)) {
-    tab->ApplyTheme(shell_model_.current_chrome_.bg_base, shell_model_.current_chrome_.bg_float,
-                    shell_model_.current_chrome_.text_title);
-  }
+  // Tab::Register() in Open() seeded theme colors automatically.
   PersistTabCreated(id, final_url, "");
   shell_model_.tabs_->Activate(id);  // triggers NotifyActiveTabChanged → ContentView
   return id;
@@ -891,10 +887,7 @@ void MainWindow::OpenNewTabKind(const std::string& kind) {
     id = OpenWebTab(url_for_event);
   } else {
     id = shell_model_.tabs_->Open(k, OpenParams{});
-    if (Tab* tab = shell_model_.tabs_->Get(id)) {
-      tab->ApplyTheme(shell_model_.current_chrome_.bg_base, shell_model_.current_chrome_.bg_float,
-                      shell_model_.current_chrome_.text_title);
-    }
+    // Tab::Register() in Open() seeded theme colors automatically.
     if (!id.empty()) shell_model_.tabs_->Activate(id);
   }
   if (id.empty()) return;
@@ -1215,10 +1208,7 @@ bool MainWindow::RestoreSidebarTabs() {
 
     const TabId id = shell_model_.tabs_->Open(kind, params);
     if (id.empty()) continue;
-    if (Tab* tab = shell_model_.tabs_->Get(id)) {
-      tab->ApplyTheme(shell_model_.current_chrome_.bg_base, shell_model_.current_chrome_.bg_float,
-                      shell_model_.current_chrome_.text_title);
-    }
+    // Tab::Register() in Open() already seeded theme colors.
     if (first_id.empty()) first_id = id;
     // Note: restored tabs get new IDs (TabManager::NewId), so we can't
     // map the stored activeTabId directly. We activate by position index.
@@ -1243,36 +1233,17 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
   // Native panels: titlebar + body share the chrome fill so the visual
   // chrome is one continuous region (per refine-ui-theme-layout design).
   if (body_panel_) body_panel_->SetBackgroundColor(chrome.bg_body);
-  // Phase 8: content panel colors delegated to ContentView.
-  if (content_view_) content_view_->ApplyTheme(chrome.bg_body, chrome.bg_base);
-  // Phase 9: titlebar retinting (buttons + panels + macOS appearance)
-  // delegated to TitleBarView.
-  if (titlebar_view_) titlebar_view_->ApplyTheme(chrome);
-  // Popover chrome panel: retint via PopoverCtrl (Phase 7).
-  if (popover_ctrl_) popover_ctrl_->ApplyTheme(chrome);
-  if (shell_model_.tabs_) {
-    for (const auto& summary : shell_model_.tabs_->Snapshot()) {
-      if (Tab* tab = shell_model_.tabs_->Get(summary.id)) {
-        tab->ApplyTheme(chrome.bg_base, chrome.bg_float, chrome.text_title);
-      }
-    }
-  }
 #if defined(__APPLE__)
-  // Refresh the AppKit corner-punch views for the active tab so they match
-  // the new bg_body. Phase 8: handled by ContentView::ApplyTheme() above.
   // Phase 9: macOS window background + appearance set by TitleBarView::ApplyTheme.
-  if (shell_model_.tabs_) {
-    Tab* active = shell_model_.tabs_->Active();
-    if (active) {
-      // No-op: ContentView::ApplyTheme already calls RoundCornersFor(bv).
-      (void)active;
-    }
-  }
+  // Phase 8: corner-punch views handled by ContentView::ApplyTheme.
+  // No-op block retained for documentation only.
 #endif
   // Broadcast to renderers so each panel's installThemeMirror flips the
   // <html data-theme="…"> attribute and React listeners refresh.
   BroadcastToAllPanels("theme.changed", shell_model_.ThemeStateJson(/*include_chrome=*/true));
   // native-views-mvc Phase 4.5: notify subscribed view observers.
+  // ThemeAwareView subscribers (titlebar, sidebar, content, popover, tabs)
+  // receive ApplyTheme() via OnEvent() — no direct calls needed.
   shell_model_.NotifyThemeChanged(chrome);
 }
 

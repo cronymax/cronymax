@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "browser/models/view_context.h"
 #include "browser/tab/tab.h"
 
 namespace cronymax {
@@ -47,7 +48,7 @@ class TabBehavior;
 
 class TabManager {
 public:
-  TabManager();
+  TabManager(ThemeContext *theme_ctx);
   ~TabManager();
 
   TabManager(const TabManager &) = delete;
@@ -133,6 +134,7 @@ private:
   uint64_t next_id_seq_ = 1;
   ChangeCallback on_change_;
   ClientHandler *client_handler_ = nullptr;
+  ThemeContext *theme_ctx_ = nullptr;
 };
 
 } // namespace cronymax

@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 
+#include "browser/models/theme_aware_view.h"
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_panel.h"
 #include "include/views/cef_view.h"
@@ -63,7 +64,8 @@ public:
   virtual void RequestClose() = 0;
 };
 
-class Tab : public TabContext {
+class Tab : public TabContext,
+            public ThemeAwareView {
 public:
   Tab(TabId id, TabKind kind, std::unique_ptr<TabBehavior> behavior);
   ~Tab() override;
@@ -73,18 +75,16 @@ public:
 
   // Build the card view tree (toolbar + content). Idempotent — calling more
   // than once is a programmer error and is asserted in debug.
-  void Build();
+  void Build(ThemeContext* theme_ctx);
 
   // Bridge entrypoint: a renderer pushed toolbar state for this tab.
   // The Tab forwards to the behavior's ApplyToolbarState.
   void OnToolbarState(const ToolbarState &state);
 
-  // Apply the full theme chrome for this tab — updates the default card/
-  // toolbar background (bg_base) and the behavior's widget colors (fg from
-  // text_title, pill-surface from bg_float). Call this instead of the bare
-  // SetDefaultChromeArgb when the full ThemeChrome is available.
-  void ApplyTheme(cef_color_t bg_base, cef_color_t bg_float,
-                  cef_color_t text_title);
+  // Apply the full theme chrome for this tab — updates card/toolbar colors.
+  // Implements ThemeAwareView::ApplyTheme; called automatically on theme
+  // changes and seeded immediately after Register().
+  void ApplyTheme(const ThemeChrome& chrome) override;
 
   TabKind kind() const { return kind_; }
   CefRefPtr<CefPanel> card() const { return card_; }
@@ -98,8 +98,6 @@ public:
   void SetToolbarState(const ToolbarState &state) override;
   void SetChromeTheme(const std::string &css_color_or_empty) override;
   void RequestClose() override;
-
-  void SetDefaultChromeArgb(cef_color_t argb);
 
   // Arbitrary string key-value metadata (e.g. "chat_id" for chat tabs).
   void SetMeta(const std::string &key, const std::string &value) {

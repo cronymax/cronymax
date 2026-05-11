@@ -51,7 +51,7 @@ const char *AutoNumberPrefix(TabKind k) {
 }
 } // namespace
 
-TabManager::TabManager() = default;
+TabManager::TabManager(ThemeContext *theme_ctx) : theme_ctx_(theme_ctx) {}
 TabManager::~TabManager() = default;
 
 void TabManager::RegisterSingletonKind(TabKind kind) {
@@ -100,7 +100,7 @@ TabId TabManager::Open(TabKind kind, const OpenParams &params) {
   for (const auto &[k, v] : effective.meta) {
     tab->SetMeta(k, v);
   }
-  tab->Build();
+  tab->Build(theme_ctx_);
   tabs_.push_back(std::move(tab));
 
   auto it = singleton_kinds_registered_.find(kind);
@@ -226,7 +226,7 @@ TabManager::MakeBehavior(TabKind kind, const OpenParams &params) {
     if (!client_handler_)
       return nullptr;
     const std::string url = resolve_url("https://www.google.com");
-    return std::make_unique<WebTabBehavior>(client_handler_, url);
+    return std::make_unique<WebTabBehavior>(client_handler_, url, theme_ctx_);
   }
   case TabKind::kTerminal:
     if (!client_handler_)
