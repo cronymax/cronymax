@@ -63,8 +63,8 @@ function Row({
       className={
         "no-drag group flex h-7 cursor-pointer items-center gap-2 rounded-md px-2 text-xs " +
         (active
-          ? "bg-cronymax-float text-cronymax-title"
-          : "text-cronymax-caption hover:bg-cronymax-float hover:text-cronymax-title")
+          ? "bg-cronymax-active text-cronymax-title"
+          : "text-cronymax-caption hover:bg-cronymax-hover hover:text-cronymax-title")
       }
     >
       <span className="flex h-3.5 w-3.5 flex-none items-center justify-center">
