@@ -8,13 +8,11 @@
 #include "browser/client_handler.h"
 #include "browser/icon_registry.h"
 #include "browser/models/view_observer.h"
-#include "browser/tab/tab_toolbar.h"
+#include "browser/toolbar/tab_toolbar.h"
 #include "include/base/cef_callback.h"
 #include "include/cef_browser.h"
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_browser_view_delegate.h"
-#include "include/views/cef_button_delegate.h"
-#include "include/views/cef_textfield_delegate.h"
 #include "include/wrapper/cef_closure_task.h"
 
 namespace cronymax {
@@ -33,59 +31,6 @@ private:
   IMPLEMENT_REFCOUNTING(WebTabBrowserViewDelegate);
   DISALLOW_COPY_AND_ASSIGN(WebTabBrowserViewDelegate);
 };
-
-// Refcounted CefButtonDelegate that forwards OnButtonPressed to a
-// std::function. Used so WebTabBehavior (which is unique_ptr-owned) can
-// participate in the CefRefPtr-based delegate world.
-class FunctionButtonDelegate : public CefButtonDelegate {
-public:
-  explicit FunctionButtonDelegate(std::function<void()> on_press)
-      : on_press_(std::move(on_press)) {}
-  void OnButtonPressed(CefRefPtr<CefButton> /*button*/) override {
-    if (on_press_)
-      on_press_();
-  }
-
-private:
-  std::function<void()> on_press_;
-  IMPLEMENT_REFCOUNTING(FunctionButtonDelegate);
-  DISALLOW_COPY_AND_ASSIGN(FunctionButtonDelegate);
-};
-
-class FunctionTextfieldDelegate : public CefTextfieldDelegate {
-public:
-  FunctionTextfieldDelegate(std::function<bool(int)> on_key,
-                            std::function<void()> on_focus_change)
-      : on_key_(std::move(on_key)),
-        on_focus_change_(std::move(on_focus_change)) {}
-  bool OnKeyEvent(CefRefPtr<CefTextfield> /*textfield*/,
-                  const CefKeyEvent &event) override {
-    // Only react on key-down so Enter/Escape fire once.
-    if (event.type != KEYEVENT_RAWKEYDOWN)
-      return false;
-    if (on_key_)
-      return on_key_(event.windows_key_code);
-    return false;
-  }
-  // Best-effort focus-on-click signal: OnAfterUserAction fires on every user
-  // action (click/typing). The behavior debounces with a "last selected URL"
-  // check so we don't re-select on every keystroke.
-  void OnAfterUserAction(CefRefPtr<CefTextfield> /*textfield*/) override {
-    if (on_focus_change_)
-      on_focus_change_();
-  }
-
-private:
-  std::function<bool(int)> on_key_;
-  std::function<void()> on_focus_change_;
-  IMPLEMENT_REFCOUNTING(FunctionTextfieldDelegate);
-  DISALLOW_COPY_AND_ASSIGN(FunctionTextfieldDelegate);
-};
-
-// Default chrome ARGB / pill colors. Mirror tab_toolbar.cc defaults.
-constexpr cef_color_t kPillBg = 0xFF1A1A1F;
-constexpr cef_color_t kPillFg = 0xFFE6E6EA;
-constexpr cef_color_t kBtnFg = 0xFFE6E6EA;
 
 // Virtual key codes (Chromium VKEY_* mapping; same on all platforms).
 constexpr int kVkReturn = 0x0D;
@@ -107,86 +52,42 @@ WebTabBehavior::~WebTabBehavior() {
 
 void WebTabBehavior::BuildToolbar(TabToolbar *toolbar,
                                   TabContext * /*context*/) {
-  std::optional<ThemeChrome> theme =
-      theme_ctx_
-          ? std::make_optional<ThemeChrome>(theme_ctx_->GetCurrentChrome())
-          : std::nullopt;
-  // Leading: back / forward / refresh. (unified-icons: registry-backed
-  // CefImage replaces the previous Unicode glyph text.)
-  back_btn_ =
-      MakeIconButton(new FunctionButtonDelegate([this]() {
-                       if (browser_view_ && browser_view_->GetBrowser()) {
-                         browser_view_->GetBrowser()->GoBack();
-                       }
-                     }),
-                     IconId::kBack, "Back");
-  back_btn_->SetEnabled(false);
-  back_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
-  back_btn_->SetBackgroundColor(0);
-  toolbar->leading()->AddChildView(back_btn_);
+  toolbar_ = toolbar;
 
-  fwd_btn_ =
-      MakeIconButton(new FunctionButtonDelegate([this]() {
-                       if (browser_view_ && browser_view_->GetBrowser()) {
-                         browser_view_->GetBrowser()->GoForward();
-                       }
-                     }),
-                     IconId::kForward, "Forward");
-  fwd_btn_->SetEnabled(false);
-  fwd_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
-  fwd_btn_->SetBackgroundColor(0);
-  toolbar->leading()->AddChildView(fwd_btn_);
+  // Leading: back / forward / refresh.
+  h_back_ = toolbar->AddLeadingAction(IconId::kBack, "Back", [this]() {
+    if (browser_view_ && browser_view_->GetBrowser())
+      browser_view_->GetBrowser()->GoBack();
+  });
+  toolbar->SetActionEnabled(h_back_, false);
 
-  refresh_btn_ = MakeIconButton(new FunctionButtonDelegate([this]() {
-                                  auto br = browser_view_
-                                                ? browser_view_->GetBrowser()
-                                                : nullptr;
-                                  if (!br)
-                                    return;
-                                  if (is_loading_) {
-                                    br->StopLoad();
-                                  } else {
-                                    br->Reload();
-                                  }
-                                }),
-                                IconId::kRefresh, "Refresh");
-  refresh_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
-  refresh_btn_->SetBackgroundColor(0);
-  toolbar->leading()->AddChildView(refresh_btn_);
+  h_fwd_ = toolbar->AddLeadingAction(IconId::kForward, "Forward", [this]() {
+    if (browser_view_ && browser_view_->GetBrowser())
+      browser_view_->GetBrowser()->GoForward();
+  });
+  toolbar->SetActionEnabled(h_fwd_, false);
 
-  // Middle: URL pill.
-  url_field_ = CefTextfield::CreateTextfield(new FunctionTextfieldDelegate(
-      [this](int vk) -> bool {
-        OnUrlFieldKeyEvent(vk);
-        return false;
-      },
-      [this]() { OnUrlFieldFocused(); }));
-  url_field_->SetText(current_url_);
-  url_field_->SetBackgroundColor(theme ? theme->bg_float : kPillBg);
-  url_field_->SetTextColor(kPillFg);
-  // Explicit preferred height keeps the pill compact; the toolbar root uses
-  // CEF_AXIS_ALIGNMENT_CENTER so the field is vertically centred at this size
-  // rather than being stretched to the full toolbar inner height.
-  toolbar->middle()->AddChildView(url_field_);
-  // Make the URL textfield consume all available middle-slot width.
-  if (auto middle_layout = toolbar->middle()->GetLayout()) {
-    if (auto box = middle_layout->AsBoxLayout()) {
-      box->SetFlexForView(url_field_, 1);
-    }
-  }
+  h_refresh_ = toolbar->AddLeadingAction(IconId::kRefresh, "Refresh", [this]() {
+    auto br = browser_view_ ? browser_view_->GetBrowser() : nullptr;
+    if (!br) return;
+    if (is_loading_) br->StopLoad(); else br->Reload();
+  });
 
-  // Trailing: new-tab placeholder. Phase 10 wires the dock button properly;
-  // this is a click target so the toolbar feels live in Phase 3 smoke-tests.
-  new_btn_ = MakeIconButton(
-      new FunctionButtonDelegate([this]() {
-        if (browser_view_ && browser_view_->GetBrowser()) {
-          browser_view_->GetBrowser()->GetMainFrame()->LoadURL("about:blank");
-        }
-      }),
-      IconId::kNewTab, "New Tab");
-  new_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, kBtnFg);
-  new_btn_->SetBackgroundColor(0);
-  toolbar->trailing()->AddChildView(new_btn_);
+  // Trailing: new-tab placeholder.
+  h_new_tab_ = toolbar->AddTrailingAction(IconId::kNewTab, "New Tab", [this]() {
+    if (browser_view_ && browser_view_->GetBrowser())
+      browser_view_->GetBrowser()->GetMainFrame()->LoadURL("about:blank");
+  });
+
+  // Textfield event callbacks wired after Build (which created url_field_).
+  toolbar->SetKeyCallback([this](int vk) -> bool {
+    OnUrlFieldKeyEvent(vk);
+    return false;
+  });
+  toolbar->SetFocusCallback([this]() { OnUrlFieldFocused(); });
+
+  // Seed the URL field with the initial URL.
+  toolbar->SetUrl(current_url_);
 }
 
 CefRefPtr<CefView> WebTabBehavior::BuildContent(TabContext *context) {
@@ -239,52 +140,16 @@ void WebTabBehavior::ApplyToolbarState(const ToolbarState & /*state*/) {
   // permits it for symmetry; we just no-op.)
 }
 
-void WebTabBehavior::ApplyTheme(const ThemeChrome &chrome) {
-  const cef_color_t text_fg = chrome.text_title;
-  const cef_color_t surface_bg = chrome.bg_float;
-  const cef_color_t toolbar_bg = chrome.bg_base;
-  // dark_mode = true when text is light (dark background), false otherwise.
-  const bool dark = ((text_fg >> 8) & 0xFF) > 0x80;
-  current_dark_mode_ = dark;
-  // Update every toolbar widget built in BuildToolbar so they use the
-  // current theme's foreground / surface colors instead of hardcoded values.
-  const struct {
-    CefRefPtr<CefLabelButton> *btn;
-    IconId id;
-  } kFixedBtns[] = {
-      {&back_btn_, IconId::kBack},
-      {&fwd_btn_, IconId::kForward},
-      {&new_btn_, IconId::kNewTab},
-  };
-  for (const auto &e : kFixedBtns) {
-    if (!e.btn->get())
-      continue;
-    e.btn->get()->SetTextColor(CEF_BUTTON_STATE_NORMAL, text_fg);
-    e.btn->get()->SetTextColor(CEF_BUTTON_STATE_HOVERED, text_fg);
-    if (toolbar_bg != 0)
-      e.btn->get()->SetBackgroundColor(toolbar_bg);
-    IconRegistry::ApplyToButton(*e.btn, e.id, dark);
-  }
-  // refresh_btn_ alternates between kRefresh and kStop depending on load state.
-  if (refresh_btn_) {
-    refresh_btn_->SetTextColor(CEF_BUTTON_STATE_NORMAL, text_fg);
-    refresh_btn_->SetTextColor(CEF_BUTTON_STATE_HOVERED, text_fg);
-    if (toolbar_bg != 0)
-      refresh_btn_->SetBackgroundColor(toolbar_bg);
-    IconRegistry::ApplyToButton(
-        refresh_btn_, is_loading_ ? IconId::kStop : IconId::kRefresh, dark);
-  }
-  if (url_field_) {
-    url_field_->SetBackgroundColor(surface_bg);
-    url_field_->SetTextColor(text_fg);
-  }
+void WebTabBehavior::ApplyTheme(const ThemeChrome & /*chrome*/) {
+  // TabToolbar is a ThemeAwareView; it subscribes to the ThemeContext directly
+  // via ToolbarBase::Build → Register(ctx). No manual propagation needed here.
+  // SetChromeColor overrides still flow via Tab → WebTabBehavior::SetChromeColor
+  // which calls toolbar_->SetChromeColor.
 }
 
 void WebTabBehavior::FocusUrlField() {
-  if (url_field_) {
-    url_field_->RequestFocus();
-    url_field_->SelectAll(/*reversed=*/false);
-  }
+  if (toolbar_)
+    toolbar_->FocusUrlField();
 }
 
 void WebTabBehavior::Navigate(const std::string &url) {
@@ -293,8 +158,8 @@ void WebTabBehavior::Navigate(const std::string &url) {
     final_url = "https://" + final_url;
   }
   current_url_ = final_url;
-  if (url_field_)
-    url_field_->SetText(final_url);
+  if (toolbar_)
+    toolbar_->SetUrl(final_url);
   if (browser_view_ && browser_view_->GetBrowser()) {
     browser_view_->GetBrowser()->GetMainFrame()->LoadURL(final_url);
   }
@@ -320,8 +185,8 @@ void WebTabBehavior::Reload() {
 
 void WebTabBehavior::OnAddressChange(const std::string &url) {
   current_url_ = url;
-  if (url_field_)
-    url_field_->SetText(url);
+  if (toolbar_)
+    toolbar_->SetUrl(url);
 }
 
 void WebTabBehavior::OnTitleChange(const std::string &title) {
@@ -333,10 +198,10 @@ void WebTabBehavior::OnLoadingStateChange(bool is_loading, bool can_go_back,
   is_loading_ = is_loading;
   can_go_back_ = can_go_back;
   can_go_forward_ = can_go_forward;
-  if (back_btn_)
-    back_btn_->SetEnabled(can_go_back);
-  if (fwd_btn_)
-    fwd_btn_->SetEnabled(can_go_forward);
+  if (toolbar_) {
+    toolbar_->SetActionEnabled(h_back_, can_go_back);
+    toolbar_->SetActionEnabled(h_fwd_, can_go_forward);
+  }
   UpdateRefreshStopGlyph();
 }
 
@@ -404,25 +269,23 @@ void WebTabBehavior::OnUrlFieldKeyEvent(int windows_key_code) {
   if (windows_key_code == kVkReturn) {
     NavigateToCurrentField();
   } else if (windows_key_code == kVkEscape) {
-    if (url_field_)
-      url_field_->SetText(current_url_);
+    if (toolbar_)
+      toolbar_->SetUrl(current_url_);
   }
 }
 
 void WebTabBehavior::OnUrlFieldFocused() {
   // Best-effort: select-all on focus. OnAfterUserAction fires on every key
-  // press too, so guard with HasSelection so we don't re-select while
-  // typing.
-  if (url_field_ && !url_field_->HasSelection() &&
-      url_field_->GetText() == current_url_) {
-    url_field_->SelectAll(/*reversed=*/false);
+  // press too, so guard so we don't re-select while typing.
+  if (toolbar_ && toolbar_->GetUrl() == current_url_) {
+    toolbar_->FocusUrlField();
   }
 }
 
 void WebTabBehavior::NavigateToCurrentField() {
-  if (!url_field_)
+  if (!toolbar_)
     return;
-  std::string typed = url_field_->GetText().ToString();
+  std::string typed = toolbar_->GetUrl();
   if (typed.empty())
     return;
   if (typed.find("://") == std::string::npos)
@@ -434,16 +297,10 @@ void WebTabBehavior::NavigateToCurrentField() {
 }
 
 void WebTabBehavior::UpdateRefreshStopGlyph() {
-  if (!refresh_btn_)
-    return;
-  // unified-icons: swap the registry image instead of the text glyph.
-  // Use current_dark_mode_ so the tint matches the active theme even when
-  // this fires from OnLoadingStateChange (outside of ApplyThemeColors).
-  IconRegistry::ApplyToButton(refresh_btn_,
-                              is_loading_ ? IconId::kStop : IconId::kRefresh,
-                              current_dark_mode_);
-  refresh_btn_->SetAccessibleName(is_loading_ ? "Stop" : "Refresh");
-  refresh_btn_->SetTooltipText(is_loading_ ? "Stop" : "Refresh");
+  if (toolbar_ && h_refresh_ != ToolbarBase::kInvalidHandle) {
+    toolbar_->UpdateActionIcon(h_refresh_,
+                               is_loading_ ? IconId::kStop : IconId::kRefresh);
+  }
 }
 
 } // namespace cronymax

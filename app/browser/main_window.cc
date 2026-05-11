@@ -1,6 +1,5 @@
 #include "browser/main_window.h"
 #include "browser/models/view_model.h"
-#include "browser/views/popover_overlay.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -494,24 +493,24 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     if (content_view_) content_view_->RemoveCard(tab_id);
   };
   disp_host.get_popover_owner_browser_id = [this]() {
-    return popover_ctrl_ ? popover_ctrl_->owner_browser_id() : 0;
+    return popover_ ? popover_->owner_browser_id() : 0;
   };
   disp_host.popover_reload = [this]() {
-    if (popover_ctrl_) {
-      if (auto bv = popover_ctrl_->content_view())
+    if (popover_) {
+      if (auto bv = popover_->content_view())
         if (auto b = bv->GetBrowser()) b->Reload();
     }
   };
   disp_host.get_popover_url = [this]() -> std::string {
-    if (!popover_ctrl_) return {};
-    if (auto bv = popover_ctrl_->content_view())
+    if (!popover_) return {};
+    if (auto bv = popover_->content_view())
       if (auto b = bv->GetBrowser())
         return b->GetMainFrame()->GetURL().ToString();
     return {};
   };
   disp_host.popover_navigate_url = [this](const std::string& url) {
-    if (popover_ctrl_) {
-      if (auto bv = popover_ctrl_->content_view())
+    if (popover_) {
+      if (auto bv = popover_->content_view())
         if (auto b = bv->GetBrowser())
           b->GetMainFrame()->LoadURL(url);
     }
@@ -622,11 +621,11 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     // When the popover content browser is created, trigger LayoutPopover to
     // apply corner masks and scrim (GetBrowser() is now non-null on the
     // pre-allocated fixed slot).
-    if (popover_ctrl_ && popover_ctrl_->IsOpen()) {
-      if (auto bv = popover_ctrl_->content_view()) {
+    if (popover_ && popover_->IsOpen()) {
+      if (auto bv = popover_->content_view()) {
         if (bv->GetBrowser() &&
             bv->GetBrowser()->GetIdentifier() == browser_id) {
-          popover_ctrl_->LayoutPopover();
+          popover_->LayoutPopover();
         }
       }
     }
@@ -659,11 +658,11 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   client_handler_->on_address_change =
       [this](int browser_id, const std::string& url) {
         // Mirror popover content URL into the native chrome strip textfield.
-        if (popover_ctrl_ && popover_ctrl_->IsOpen()) {
-          if (auto bv = popover_ctrl_->content_view()) {
+        if (popover_ && popover_->IsOpen()) {
+          if (auto bv = popover_->content_view()) {
             if (bv->GetBrowser() &&
                 bv->GetBrowser()->GetIdentifier() == browser_id) {
-              popover_ctrl_->SetCurrentUrl(url);
+              popover_->SetCurrentUrl(url);
               return;
             }
           }
@@ -741,34 +740,27 @@ void MainWindow::BuildOverlaySlots() {
   // Slot 1: chrome CefPanel (higher z-order — added AFTER content so it
   // is above the content overlay in WindowServer z-order).
   auto chrome_panel = CefPanel::CreatePanel(
-      new SizedPanelDelegate(CefSize(0, PopoverOverlay::kChromeH)));
+      new SizedPanelDelegate(CefSize(0, Popover::kChromeH)));
   chrome_panel->SetBackgroundColor(bs.background_color);
   auto chrome_oc = main_window_->AddOverlayView(
       chrome_panel, CEF_DOCKING_MODE_CUSTOM, /*can_activate=*/true);
   chrome_oc->SetVisible(false);
 
-  popover_ = std::make_unique<PopoverOverlay>(
-      content_bv, content_oc,
-      chrome_panel, chrome_oc,
-      main_window_);
-
-  // Phase 7: construct PopoverCtrl now that the overlay is ready.
-  // PopoverCtrl::BuildChromeStrip() populates the chrome panel with widgets.
-  PopoverCtrl::Host phost;
-  phost.open_web_tab = [this](const std::string& url) { OpenWebTab(url); };
+  Popover::Host phost;
+  phost.open_web_tab       = [this](const std::string& url) { OpenWebTab(url); };
   phost.set_content_insets = [this](int top, int bottom) {
     SetContentOuterVInsets(top, bottom);
   };
   phost.refresh_drag_region = [this]() { RefreshTitleBarDragRegion(); };
   phost.close_notify = nullptr;
-  popover_ctrl_ = std::make_unique<PopoverCtrl>(
+  popover_ = std::make_unique<Popover>(
       /*theme_ctx=*/this,
-      popover_.get(), main_window_, std::move(phost));
+      content_bv, content_oc,
+      chrome_panel, chrome_oc,
+      main_window_, std::move(phost));
 
   // One-time deferred styling: CEF defers addChildWindow: by one event-loop
   // tick, so the overlay NSWindow is not yet attached synchronously.
-  // We post a single task here to apply initial corner masks once stable.
-  // Subsequent Show() calls may apply masks synchronously via GetBrowser().
   CefPostTask(TID_UI, base::BindOnce(
       [](CefRefPtr<CefBrowserView> bv, CefRefPtr<CefWindow> w, cef_color_t bg) {
         // Content slot: all-corners mask (will be overridden on first Show).
@@ -815,20 +807,20 @@ std::string MainWindow::OpenWebTab(const std::string& url) {
 // ---------------------------------------------------------------------------
 
 void MainWindow::OpenPopover(const std::string& url, int owner_browser_id) {
-  if (!main_window_ || !popover_ctrl_) return;
-  popover_ctrl_->Open(url, owner_browser_id);
+  if (!main_window_ || !popover_) return;
+  popover_->Open(url, owner_browser_id);
 }
 
 void MainWindow::ClosePopover() {
-  if (popover_ctrl_) popover_ctrl_->Close();
+  if (popover_) popover_->Close();
 }
 
 void MainWindow::UpdatePopoverVisibility() {
-  if (!popover_ctrl_) return;
+  if (!popover_) return;
   // Re-implement visibility check here since TabsContext doesn't expose
   // browser_id directly.
-  if (!popover_ctrl_->IsOpen()) return;
-  const int owner_id = popover_ctrl_->owner_browser_id();
+  if (!popover_->IsOpen()) return;
+  const int owner_id = popover_->owner_browser_id();
   bool visible = (owner_id == 0);
   if (!visible) {
     Tab* active = shell_model_.tabs_->Active();
@@ -840,7 +832,7 @@ void MainWindow::UpdatePopoverVisibility() {
 #if defined(__APPLE__)
   if (main_window_) {
     if (visible) {
-      popover_ctrl_->LayoutPopover();
+      popover_->LayoutPopover();
     } else {
       HidePopoverScrim(main_window_->GetWindowHandle());
     }
@@ -851,7 +843,7 @@ void MainWindow::UpdatePopoverVisibility() {
 void MainWindow::OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
                                        const CefRect& new_bounds) {
   (void)window; (void)new_bounds;
-  if (popover_ctrl_ && popover_ctrl_->IsOpen()) popover_ctrl_->LayoutPopover();
+  if (popover_ && popover_->IsOpen()) popover_->LayoutPopover();
   RefreshTitleBarDragRegion();
 }
 
@@ -967,8 +959,8 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
 
   PushToView(sidebar_view(), event_name, json_payload);
   // Also push to the popover content view if one is open (e.g. Settings).
-  if (popover_ctrl_ && popover_ctrl_->IsOpen())
-    PushToView(popover_ctrl_->content_view(), event_name, json_payload);
+  if (popover_ && popover_->IsOpen())
+    PushToView(popover_->content_view(), event_name, json_payload);
   // Phase 9: per-kind *_view_ singletons are gone. Broadcast to every
   // tab's content browser via the TabManager.
   if (!shell_model_.tabs_) return;

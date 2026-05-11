@@ -36,12 +36,9 @@ set(CRONYMAX_APP_SRCS
   app/browser/models/view_model.cc
   app/browser/models/view_dispatcher.h
   app/browser/models/view_dispatcher.cc
-  # native-views-mvc Phase 6: PopoverOverlay (fixed overlay slots)
-  app/browser/views/popover_overlay.h
-  app/browser/views/popover_overlay.cc
-  # native-views-mvc Phase 7: PopoverCtrl (owns popover lifecycle)
-  app/browser/views/popover_ctrl.h
-  app/browser/views/popover_ctrl.cc
+  # unified-toolbar: merged Popover (replaces PopoverOverlay + PopoverCtrl)
+  app/browser/views/popover.h
+  app/browser/views/popover.cc
   # native-views-mvc Phase 8: ContentView (card management + observer)
   app/browser/views/content_view.h
   app/browser/views/content_view.cc
@@ -59,12 +56,17 @@ set(CRONYMAX_APP_SRCS
   app/browser/icon_data.h
   app/browser/icon_registry.h
   app/browser/icon_registry.cc
+  # toolbar module
+  app/browser/toolbar/toolbar_base.cc
+  app/browser/toolbar/toolbar_base.h
+  app/browser/toolbar/tab_toolbar.cc
+  app/browser/toolbar/tab_toolbar.h
+  app/browser/toolbar/popover_toolbar.cc
+  app/browser/toolbar/popover_toolbar.h
   # tab module
   app/browser/tab/tab.cc
   app/browser/tab/tab.h
   app/browser/tab/tab_behavior.h
-  app/browser/tab/tab_toolbar.cc
-  app/browser/tab/tab_toolbar.h
   app/browser/tab/tab_manager.cc
   app/browser/tab/tab_manager.h
   app/browser/tab/simple_tab_behavior.cc
@@ -78,6 +80,8 @@ if(APPLE)
     app/browser/main_mac.mm
     app/browser/platform/view_style.h
     app/browser/platform/view_style_mac.mm
+    app/browser/platform/clipboard.h
+    app/browser/platform/clipboard_mac.mm
     # workspace-with-profile: native NSOpenPanel folder picker.
     app/browser/mac_folder_picker.h
     app/browser/mac_folder_picker.mm

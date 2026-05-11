@@ -37,6 +37,8 @@ enum class IconId {
   kTabWeb,
   kRestart,
   kSidebarToggle,  // layout-sidebar-left — hide/show sidebar
+  kCopy,           // copy — clipboard copy action
+  kOpenInProduct,
   kCount,  // sentinel
 };
 

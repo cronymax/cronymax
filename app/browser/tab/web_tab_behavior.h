@@ -21,10 +21,9 @@
 
 #include "browser/tab/tab.h"
 #include "browser/tab/tab_behavior.h"
+#include "browser/toolbar/toolbar_base.h"
 #include "include/base/cef_weak_ptr.h"
 #include "include/views/cef_browser_view.h"
-#include "include/views/cef_label_button.h"
-#include "include/views/cef_textfield.h"
 
 namespace cronymax {
 
@@ -82,16 +81,16 @@ private:
   bool is_loading_ = false;
   bool can_go_back_ = false;
   bool can_go_forward_ = false;
-  bool current_dark_mode_ =
-      true; // tracks last tint variant from ApplyThemeColors
   int browser_id_ = 0;
 
   CefRefPtr<CefBrowserView> browser_view_;
-  CefRefPtr<CefLabelButton> back_btn_;
-  CefRefPtr<CefLabelButton> fwd_btn_;
-  CefRefPtr<CefLabelButton> refresh_btn_;
-  CefRefPtr<CefTextfield> url_field_;
-  CefRefPtr<CefLabelButton> new_btn_;
+
+  // Non-owning pointer to the toolbar (owned by Tab).
+  TabToolbar* toolbar_ = nullptr;
+  ToolbarBase::ActionHandle h_back_    = ToolbarBase::kInvalidHandle;
+  ToolbarBase::ActionHandle h_fwd_     = ToolbarBase::kInvalidHandle;
+  ToolbarBase::ActionHandle h_refresh_ = ToolbarBase::kInvalidHandle;
+  ToolbarBase::ActionHandle h_new_tab_ = ToolbarBase::kInvalidHandle;
 
   base::WeakPtrFactory<WebTabBehavior> weak_factory_;
 };

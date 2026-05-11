@@ -11,8 +11,7 @@
 #include "browser/models/view_model.h"
 #include "browser/models/view_context.h"
 #include "browser/views/content_view.h"
-#include "browser/views/popover_ctrl.h"
-#include "browser/views/popover_overlay.h"
+#include "browser/views/popover.h"
 #include "browser/views/sidebar_view.h"
 #include "browser/views/titlebar_view.h"
 #include "include/views/cef_box_layout.h"
@@ -162,13 +161,9 @@ class MainWindow : public CefWindowDelegate,
   void PersistSidebarTabs();
   bool RestoreSidebarTabs();
 
-  // native-views-mvc Phase 6: pre-allocated overlay slots wrapped in
-  // PopoverOverlay.  Constructed by BuildOverlaySlots().  Phase 7 will
-  // migrate all old per-open popover members to use this object.
-  std::unique_ptr<PopoverOverlay> popover_;
-  // native-views-mvc Phase 7: PopoverCtrl owns the popover lifecycle.
-  // Constructed in BuildOverlaySlots() after popover_ is set up.
-  std::unique_ptr<PopoverCtrl> popover_ctrl_;
+  // unified-toolbar: merged popover lifecycle + overlay management.
+  // Constructed by BuildOverlaySlots().
+  std::unique_ptr<Popover> popover_;
 
   CefRefPtr<CefWindow>           main_window_;
 
