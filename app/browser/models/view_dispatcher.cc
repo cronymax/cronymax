@@ -114,13 +114,6 @@ void ViewDispatcher::Wire() {
     overlay_ctx_->OpenPopover(
         resource_ctx_->ResourceUrl("panels/settings/index.html"));
   };
-  sh.open_workspace_picker = [this](const std::string& path) {
-    const std::string encoded =
-        CefURIEncode(path, /*use_plus=*/false).ToString();
-    overlay_ctx_->OpenPopover(
-        resource_ctx_->ResourceUrl("panels/workspace-picker/index.html") +
-        "?path=" + encoded);
-  };
 
   sh.popover_open_as_tab = [this]() {
     const std::string url = host_.get_popover_url();

@@ -28,6 +28,7 @@ struct ThemeChrome {
   cef_color_t bg_float = 0;
   cef_color_t bg_mask = 0;
   cef_color_t border = 0;
+  cef_color_t primary = 0;  // brand accent: teal
   cef_color_t text_title = 0;
   cef_color_t text_caption = 0;
 };

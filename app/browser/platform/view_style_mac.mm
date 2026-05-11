@@ -394,6 +394,50 @@ void SetOverlayWindowBackground(void* nsview_ptr, cef_color_t argb) {
   w.opaque = (a >= 0.999);
 }
 
+// Style the profile-picker card overlay: rounded all-corners card with drop
+// shadow. `nsview_ptr` is any NSView inside the overlay
+// (e.g. from CaptureLastChildNSView). `bg_argb` is the ARGB card background.
+void StylePickerCard(void* nsview_ptr, cef_color_t bg_argb) {
+  if (!nsview_ptr) return;
+  NSView* view = (__bridge NSView*)nsview_ptr;
+
+  // Walk up to the overlay root (direct child of overlay NSWindow contentView).
+  NSView* windowContent = view.window ? view.window.contentView : nil;
+  NSView* overlayRoot = view;
+  {
+    NSView* cur = view;
+    while (cur.superview && cur.superview != windowContent) {
+      cur = cur.superview;
+    }
+    overlayRoot = cur;
+  }
+
+  // Apply background color + all-corner rounding + clip.
+  const CGFloat a = ((bg_argb >> 24) & 0xFF) / 255.0;
+  const CGFloat r = ((bg_argb >> 16) & 0xFF) / 255.0;
+  const CGFloat g = ((bg_argb >>  8) & 0xFF) / 255.0;
+  const CGFloat b = ((bg_argb      ) & 0xFF) / 255.0;
+  overlayRoot.wantsLayer = YES;
+  if (CALayer* rl = overlayRoot.layer) {
+    rl.backgroundColor =
+        [NSColor colorWithSRGBRed:r green:g blue:b alpha:a].CGColor;
+    rl.cornerRadius  = 12.0;
+    rl.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner |
+                       kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
+    rl.masksToBounds = YES;
+  }
+
+  // Make the overlay NSWindow transparent so the rounded corners show through,
+  // and enable the default macOS window drop shadow.
+  NSWindow* overlayWin = overlayRoot.window;
+  if (overlayWin) {
+    overlayWin.backgroundColor = [NSColor clearColor];
+    overlayWin.opaque          = NO;
+    overlayWin.hasShadow       = YES;
+    [overlayWin invalidateShadow];
+  }
+}
+
 void ApplyCardStyle(void* nsview_ptr) {
   if (!nsview_ptr) return;
   NSView* view = (__bridge NSView*)nsview_ptr;

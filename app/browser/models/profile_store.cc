@@ -1,4 +1,4 @@
-#include "browser/profile_store.h"
+#include "browser/models/profile_store.h"
 
 #include <algorithm>
 #include <cctype>

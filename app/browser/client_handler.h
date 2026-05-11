@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "browser/bridge_handler.h"
-#include "browser/space_manager.h"
+#include "browser/models/space_manager.h"
 #include "include/cef_client.h"
 #include "include/cef_drag_handler.h"
 #include "include/cef_keyboard_handler.h"

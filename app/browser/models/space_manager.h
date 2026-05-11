@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "browser/profile_store.h"
+#include "browser/models/profile_store.h"
 #include "event_bus/event_bus.h"
 #include "workspace/space_store.h"
 

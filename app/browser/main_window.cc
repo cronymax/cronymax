@@ -407,6 +407,11 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     tb_host.run_file_dialog = [this](std::function<void(const std::string&)> cb) {
       if (run_file_dialog_) run_file_dialog_(std::move(cb));
     };
+    // profile_picker_overlay_ is constructed in BuildOverlaySlots() which runs
+    // after BuildChrome, so capture by pointer and forward lazily.
+    tb_host.show_profile_picker = [this](const std::string& path) {
+      if (profile_picker_overlay_) profile_picker_overlay_->Show(path);
+    };
     titlebar_view_ = std::make_unique<TitleBarView>(
         /*space=*/this, /*window_ctx=*/this, /*overlay=*/this,
         /*resources=*/this, /*theme_ctx=*/this, main_window_, std::move(tb_host));
@@ -780,6 +785,37 @@ void MainWindow::BuildOverlaySlots() {
       shell_model_.current_chrome_.bg_float != 0
           ? shell_model_.current_chrome_.bg_float
           : static_cast<cef_color_t>(0xFF182625)));
+
+  // ── Profile picker overlay (workspace-with-profile D9) ──────────────────
+  ProfilePickerOverlay::Host ph;
+  ph.run_file_dialog = run_file_dialog_;
+  ph.get_profiles    = [this]() -> std::vector<ProfileRecord> {
+    return shell_model_.space_manager_.profile_store().List();
+  };
+  ph.create_space = [this](const std::string& path,
+                            const std::string& profile_id) -> std::string {
+    const auto new_id =
+        shell_model_.space_manager_.CreateSpace(std::filesystem::path(path),
+                                                profile_id);
+    if (new_id.empty()) return {};
+    for (const auto& sp : shell_model_.space_manager_.spaces()) {
+      if (sp->id == new_id) {
+        return nlohmann::json{
+            {"id",           sp->id},
+            {"name",         sp->name},
+            {"profile_id",   sp->profile_id},
+            {"workspace_root", sp->workspace_root.string()},
+        }.dump();
+      }
+    }
+    return nlohmann::json{{"id", new_id}}.dump();
+  };
+  ph.send_space_created_event = [this](const std::string& space_json) {
+    BroadcastToAllPanels("space.created", space_json);
+  };
+  profile_picker_overlay_ = std::make_unique<ProfilePickerOverlay>(
+      /*theme_ctx=*/this, main_window_, std::move(ph));
+  profile_picker_overlay_->Build();
 }
 
 // ---------------------------------------------------------------------------

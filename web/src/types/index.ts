@@ -17,6 +17,8 @@ export const SpaceSchema = z.object({
   root_path: z.string(),
   /** FK to ~/.cronymax/profiles/<id>.yaml (defaults to "default"). */
   profile_id: z.string().default("default"),
+  /** Set to true for the currently active space (from space.list). */
+  active: z.boolean().optional(),
   last_active: z.union([z.string(), z.number()]).optional(),
 });
 export type Space = z.infer<typeof SpaceSchema>;

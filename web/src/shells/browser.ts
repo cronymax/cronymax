@@ -371,33 +371,6 @@ export const Channels = {
   // ── flow run control ────────────────────────────────────────────────
   // flow.run.cancel is handled via the direct runtime IPC path (flowRun.cancel()).
 
-  // ── workspace profile (per-Space sandbox-rule overrides) ──────────
-  // Persisted at <workspace>/.cronymax/space.profile.yaml. Stored as
-  // user intent today; FileBroker enforcement plumbing wires up
-  // separately. Path lists are newline-delimited strings to keep the
-  // bridge codec simple — empty entries are stripped server-side.
-  "space.profile.get": chan({
-    req: EmptySchema,
-    res: z.object({
-      space_id: z.string(),
-      space_name: z.string(),
-      workspace_root: z.string(),
-      allow_network: z.boolean(),
-      extra_read_paths: z.array(z.string()),
-      extra_write_paths: z.array(z.string()),
-      extra_deny_paths: z.array(z.string()),
-    }),
-  }),
-  "space.profile.set": chan({
-    req: z.object({
-      allow_network: z.boolean(),
-      extra_read_paths_nl: z.string(),
-      extra_write_paths_nl: z.string(),
-      extra_deny_paths_nl: z.string(),
-    }),
-    res: z.object({ ok: z.boolean() }),
-  }),
-
   // ── workspace custom prompts ───────────────────────────────────────
   // Lists *.prompt.md files from <workspace>/.cronymax/prompts/.
   "workspace.prompts.list": chan({
@@ -547,6 +520,10 @@ export const Channels = {
     req: z.object({ id: z.string() }),
     res: z.object({ ok: z.boolean() }),
   }),
+  "profiles.check_paths": chan({
+    req: z.object({ paths: z.array(z.string()) }),
+    res: z.object({ missing: z.array(z.string()) }),
+  }),
 
   // ── flow read — handled via direct runtime IPC (flow.list(), flow.load()) ─
 } as const;
@@ -573,7 +550,6 @@ export const Events = {
   "agent.task_from_command": AgentTaskFromCommandPayloadSchema,
   "space.created": SpaceSchema,
   "space.deleted": z.object({ space_id: z.string() }),
-  "space.folder_picked": z.object({ path: z.string() }),
   "space.switch_loading": z.object({ loading: z.boolean() }),
   // refine-ui-theme-layout: theme broadcast for all panels
   "theme.changed": ThemeChangedPayloadSchema,

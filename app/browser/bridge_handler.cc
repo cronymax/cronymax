@@ -393,11 +393,13 @@ bool BridgeHandler::HandleSpace(CefRefPtr<CefBrowser> browser,
                                 CefRefPtr<Callback> callback) {
   if (channel == "space.list") {
     nlohmann::json arr = nlohmann::json::array();
+    const auto* active_sp = space_manager_->ActiveSpace();
     for (const auto& sp : space_manager_->spaces()) {
       arr.push_back({
           {"id",        sp->id},
           {"name",      sp->name},
           {"root_path", sp->workspace_root.string()},
+          {"active",    active_sp && sp->id == active_sp->id},
       });
     }
     callback->Success(arr.dump());
@@ -426,24 +428,6 @@ bool BridgeHandler::HandleSpace(CefRefPtr<CefBrowser> browser,
       }
     }
     callback->Success(nlohmann::json{{"id", id}}.dump());
-    return true;
-  }
-
-  if (channel == "space.open_folder") {
-    // Trigger a native folder picker. On selection open the workspace-picker
-    // popover so the profile selector appears centered in the full window.
-    if (!shell_cbs_.run_file_dialog) {
-      callback->Failure(501, "folder picker not available");
-      return true;
-    }
-    shell_cbs_.run_file_dialog(
-        [this, browser = browser](const std::string& path) {
-          if (path.empty()) return;  // cancelled
-          if (shell_cbs_.open_workspace_picker) {
-            shell_cbs_.open_workspace_picker(path);
-          }
-        });
-    callback->Success("ok");
     return true;
   }
 
@@ -2188,6 +2172,28 @@ bool BridgeHandler::HandleProfiles(CefRefPtr<CefBrowser> browser,
     if (err == ProfileStoreError::kIoError)        { callback->Failure(500, "I/O error deleting profile"); return true; }
 
     callback->Success("{\"ok\":true}");
+    return true;
+  }
+
+  if (channel == "profiles.check_paths") {
+    // Accepts { paths: string[] }, returns { missing: string[] } — the subset
+    // of input paths that do not exist as directories on the filesystem.
+    const auto& jp = nlohmann::json::parse(payload, nullptr, false);
+    if (!jp.is_object() || !jp.contains("paths") || !jp["paths"].is_array()) {
+      callback->Failure(400, "paths array required");
+      return true;
+    }
+    nlohmann::json missing = nlohmann::json::array();
+    for (const auto& entry : jp["paths"]) {
+      if (!entry.is_string()) continue;
+      const std::string p = entry.get<std::string>();
+      if (p.empty()) continue;
+      std::error_code ec;
+      if (!std::filesystem::exists(std::filesystem::path(p), ec)) {
+        missing.push_back(p);
+      }
+    }
+    callback->Success(nlohmann::json{{"missing", std::move(missing)}}.dump());
     return true;
   }
 

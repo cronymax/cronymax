@@ -495,8 +495,11 @@ export function App() {
       })
       .catch(() => undefined);
     browser
-      .send("space.profile.get")
-      .then((res) => setWorkspaceRoot(res.workspace_root))
+      .send("space.list")
+      .then((spaces) => {
+        const active = spaces.find((s) => s.active);
+        if (active) setWorkspaceRoot(active.root_path);
+      })
       .catch(() => undefined);
     // Load model list from configured providers
     browser

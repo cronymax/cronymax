@@ -48,10 +48,12 @@ set(CRONYMAX_APP_SRCS
   app/browser/views/titlebar_view.cc
   app/browser/views/sidebar_view.h
   app/browser/views/sidebar_view.cc
-  app/browser/profile_store.cc
-  app/browser/profile_store.h
-  app/browser/space_manager.cc
-  app/browser/space_manager.h
+  app/browser/models/profile_store.cc
+  app/browser/models/profile_store.h
+  app/browser/views/profile_picker_overlay.cc
+  app/browser/views/profile_picker_overlay.h
+  app/browser/models/space_manager.cc
+  app/browser/models/space_manager.h
   # unified-icons: semantic icon registry + native button factories.
   app/browser/icon_data.h
   app/browser/icon_registry.h
@@ -123,7 +125,7 @@ add_executable(cronymax_app MACOSX_BUNDLE ${CRONYMAX_APP_SRCS})
 # profile_store.cc uses yaml-cpp which requires exceptions. Override the
 # target-wide -fno-exceptions flag for this single translation unit.
 set_source_files_properties(
-  app/browser/profile_store.cc
+  app/browser/models/profile_store.cc
   PROPERTIES COMPILE_FLAGS "-fexceptions"
 )
 

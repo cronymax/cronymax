@@ -125,6 +125,12 @@ void AddContentCardShadow(void* bv_nsview);
 // HTML body. Used for the sidebar / shell panels.
 void MakeBrowserViewTransparent(void* nsview);
 
+// Style the profile-picker card overlay panel: 12 px all-corner rounding,
+// transparent overlay window, default macOS drop shadow, and 6 px button
+// rounding. `nsview` is any NSView inside the card overlay (e.g. from
+// CaptureLastChildNSView). `bg_argb` is the card's ARGB background color.
+void StylePickerCard(void* nsview, cef_color_t bg_argb);
+
 // Style a tab card NSView (the root view of a Tab): apply rounded corners
 // (radius 10), masksToBounds, a 1pt themed border, and install a soft drop
 // shadow on the superview so it can render outside the clipped card.

@@ -94,16 +94,14 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
           auto menu = CefMenuModel::CreateMenuModel(
               new FnMenuModelDelegate([this, spaces](int cmd) {
                 if (cmd == kNewSpaceCmd) {
+                  // Open the native folder picker first; only show the profile
+                  // picker card once the user has chosen a folder.
                   if (host_.run_file_dialog) {
-                    host_.run_file_dialog([this](const std::string &path) {
-                      if (path.empty())
-                        return;
-                      const std::string encoded =
-                          CefURIEncode(path, /*use_plus=*/false).ToString();
-                      overlay_ctx_->OpenPopover(
-                          resource_ctx_->ResourceUrl(
-                              "panels/workspace-picker/index.html") +
-                          "?path=" + encoded);
+                    host_.run_file_dialog([this](const std::string& path) {
+                      if (path.empty()) return;
+                      if (host_.show_profile_picker) {
+                        host_.show_profile_picker(path);
+                      }
                     });
                   }
                 } else if (cmd >= 0 && cmd < static_cast<int>(spaces.size())) {

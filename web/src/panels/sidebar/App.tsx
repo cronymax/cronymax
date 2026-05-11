@@ -5,7 +5,6 @@ import { useDragRegions } from "@/hooks/useDragRegions";
 import { Icon, type IconName } from "@/components/Icon";
 import type { TabKind, TabSummary } from "@/types";
 import { useStore } from "./store";
-import { ProfilePickerOverlay } from "@/components/ProfilePickerOverlay";
 
 /**
  * Sidebar — unified tab list.
@@ -160,7 +159,6 @@ export function App() {
 
   return (
     <>
-      <ProfilePickerOverlay />
       <aside
         ref={dragRef as React.RefObject<HTMLElement>}
         className="app-drag flex h-full flex-col bg-cronymax-body pt-7 text-cronymax-title"

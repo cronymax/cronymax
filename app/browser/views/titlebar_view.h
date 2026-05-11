@@ -36,6 +36,8 @@ class TitleBarView : public ThemeAwareView,
     // Runs the native folder-picker dialog; calls `callback` with the chosen
     // path (empty string if the user cancelled).
     std::function<void(std::function<void(const std::string&)>)> run_file_dialog;
+    // Shows the native ProfilePickerOverlay with a pre-chosen folder path.
+    std::function<void(const std::string&)> show_profile_picker;
   };
 
   TitleBarView(SpaceContext* space,

@@ -1275,12 +1275,30 @@ function ProfileForm({
   const [denies, setDenies] = useState(initial.extra_deny_paths.join("\n"));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [missingPaths, setMissingPaths] = useState<string[]>([]);
 
   const splitPaths = (s: string) =>
     s
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
+
+  // Validate paths whenever the textarea values change.
+  useEffect(() => {
+    const allPaths = [
+      ...splitPaths(reads),
+      ...splitPaths(writes),
+      ...splitPaths(denies),
+    ];
+    if (allPaths.length === 0) {
+      setMissingPaths([]);
+      return;
+    }
+    void browser
+      .send("profiles.check_paths", { paths: allPaths })
+      .then(({ missing }) => setMissingPaths(missing))
+      .catch(() => setMissingPaths([]));
+  }, [reads, writes, denies]);
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -1376,6 +1394,16 @@ function ProfileForm({
           spellCheck={false}
         />
       </Field>
+      {missingPaths.length > 0 && (
+        <div className="mb-2 rounded border border-yellow-400/40 bg-yellow-50/10 px-2 py-1.5 text-[11px] text-yellow-600">
+          <span className="font-medium">Paths not found on disk:</span>
+          <ul className="mt-0.5 list-inside list-disc space-y-0.5 font-mono">
+            {missingPaths.map((p) => (
+              <li key={p}>{p}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {err && <p className="mb-2 text-xs text-red-500">{err}</p>}
       <div className="flex items-center gap-2">
         <button

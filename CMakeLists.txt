@@ -171,8 +171,8 @@ target_link_libraries(cronymax_native INTERFACE
 # exercise the same SpaceManager/SpaceStore code paths the CEF app uses,
 # without dragging in CEF or the rest of app/browser/.
 add_library(cronymax_space STATIC
-  app/browser/space_manager.cc
-  app/browser/profile_store.cc
+  app/browser/models/space_manager.cc
+  app/browser/models/profile_store.cc
 )
 target_link_libraries(cronymax_space
   PUBLIC cronymax_workspace cronymax_terminal cronymax_event_bus

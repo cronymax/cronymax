@@ -15,7 +15,7 @@
 #include <string>
 
 #include "browser/models/view_observer.h"
-#include "browser/space_manager.h"
+#include "browser/models/space_manager.h"
 #include "browser/tab/tab_manager.h"
 
 namespace cronymax {

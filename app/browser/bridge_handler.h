@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "browser/space_manager.h"
+#include "browser/models/space_manager.h"
 #include "include/cef_process_message.h"
 #include "include/wrapper/cef_message_router.h"
 #include "runtime/crony_proxy.h"
@@ -42,9 +42,6 @@ struct ShellCallbacks {
   // anchored at the window. MainWindow resolves the panel URL via
   // ResourceUrl("panels/settings/index.html") so dev/prod both work.
   std::function<void()> settings_popover_open;
-  // Open the workspace-picker popover for a given folder path.
-  // MainWindow resolves the panel URL via ResourceUrl() + encoded path.
-  std::function<void(const std::string& path)> open_workspace_picker;
   // Navigates the active web tab
   std::function<void(const std::string& url)> navigate;
   // Go back / forward in active tab

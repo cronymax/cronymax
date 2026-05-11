@@ -14,6 +14,7 @@
 #include "browser/views/popover.h"
 #include "browser/views/sidebar_view.h"
 #include "browser/views/titlebar_view.h"
+#include "browser/views/profile_picker_overlay.h"
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_label_button.h"
@@ -164,6 +165,9 @@ class MainWindow : public CefWindowDelegate,
   // unified-toolbar: merged popover lifecycle + overlay management.
   // Constructed by BuildOverlaySlots().
   std::unique_ptr<Popover> popover_;
+  // workspace-with-profile D9: native profile picker dialog.
+  // Constructed by BuildOverlaySlots().
+  std::unique_ptr<ProfilePickerOverlay> profile_picker_overlay_;
 
   CefRefPtr<CefWindow>           main_window_;
 

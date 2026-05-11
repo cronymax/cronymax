@@ -31,6 +31,7 @@ ThemeChrome ViewModel::ChromeFor(const std::string& resolved) {
     c.bg_float     = 0xFFFFFFFF;
     c.bg_mask      = 0x290E1817;
     c.border       = 0xFFD5E2DE;
+    c.primary      = 0xFF0F8F83;
     c.text_title   = 0xFF13201E;
     c.text_caption = 0xFF5A6E69;
   } else {
@@ -39,6 +40,7 @@ ThemeChrome ViewModel::ChromeFor(const std::string& resolved) {
     c.bg_float     = 0xFF182625;
     c.bg_mask      = 0x85020808;
     c.border       = 0xFF29403D;
+    c.primary      = 0xFF22B8A7;
     c.text_title   = 0xFFE8F2F0;
     c.text_caption = 0xFF9DB2AD;
   }
