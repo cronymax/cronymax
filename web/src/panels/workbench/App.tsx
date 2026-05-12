@@ -1,14 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  readParams,
-  setMode,
-  type WorkbenchMode,
-  type WorkbenchParams,
-} from "./url";
-import { browser } from "@/shells/bridge";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
-
+import { browser } from "@/shells/bridge";
 import { CommentRail } from "./CommentRail";
+import { readParams, setMode, type WorkbenchMode, type WorkbenchParams } from "./url";
 
 /**
  * Top-level workbench shell. Renders a header with the doc title + mode
@@ -45,12 +39,7 @@ export function App() {
 
   return (
     <div className="flex h-screen flex-col bg-white text-gray-900">
-      <Header
-        flow={params.flow}
-        doc={params.doc}
-        mode={params.mode}
-        onSwitch={switchMode}
-      />
+      <Header flow={params.flow} doc={params.doc} mode={params.mode} onSwitch={switchMode} />
       <div className="flex min-h-0 flex-1">
         <main className="min-h-0 flex-1 overflow-hidden">
           <ModeView params={params} />
@@ -106,13 +95,7 @@ function RailHost({ params }: { params: WorkbenchParams }) {
     window.dispatchEvent(new HashChangeEvent("hashchange"));
   };
 
-  return (
-    <CommentRail
-      params={params}
-      currentMarkdown={content}
-      onJumpToBlock={onJump}
-    />
-  );
+  return <CommentRail params={params} currentMarkdown={content} onJumpToBlock={onJump} />;
 }
 
 function Header({
@@ -128,9 +111,7 @@ function Header({
 }) {
   const tabClass = (m: WorkbenchMode) =>
     `px-3 py-1 text-xs font-medium rounded ${
-      mode === m
-        ? "bg-gray-900 text-white"
-        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+      mode === m ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
     }`;
   return (
     <header className="flex items-center justify-between border-b border-gray-200 px-4 py-2">
@@ -139,16 +120,10 @@ function Header({
         <span className="ml-2 text-gray-500">· {flow}</span>
       </div>
       <div className="flex gap-1">
-        <button
-          className={tabClass("wysiwyg")}
-          onClick={() => onSwitch("wysiwyg")}
-        >
+        <button className={tabClass("wysiwyg")} onClick={() => onSwitch("wysiwyg")}>
           WYSIWYG
         </button>
-        <button
-          className={tabClass("source")}
-          onClick={() => onSwitch("source")}
-        >
+        <button className={tabClass("source")} onClick={() => onSwitch("source")}>
           Source
         </button>
         <button className={tabClass("diff")} onClick={() => onSwitch("diff")}>
@@ -175,15 +150,9 @@ function ModeView({ params }: { params: WorkbenchParams }) {
 
 import { lazy, Suspense } from "react";
 
-const LazyWysiwygInner = lazy(() =>
-  import("./Editor").then((m) => ({ default: m.Editor })),
-);
-const LazySourceInner = lazy(() =>
-  import("./SourceEditor").then((m) => ({ default: m.SourceEditor })),
-);
-const LazyDiffInner = lazy(() =>
-  import("./DiffView").then((m) => ({ default: m.DiffView })),
-);
+const LazyWysiwygInner = lazy(() => import("./Editor").then((m) => ({ default: m.Editor })));
+const LazySourceInner = lazy(() => import("./SourceEditor").then((m) => ({ default: m.SourceEditor })));
+const LazyDiffInner = lazy(() => import("./DiffView").then((m) => ({ default: m.DiffView })));
 
 function LazyWysiwyg({ params }: { params: WorkbenchParams }) {
   return (
@@ -210,9 +179,5 @@ function LazyDiff({ params }: { params: WorkbenchParams }) {
 }
 
 function Loading({ label }: { label: string }) {
-  return (
-    <div className="flex h-full items-center justify-center text-sm text-gray-500">
-      {label}
-    </div>
-  );
+  return <div className="flex h-full items-center justify-center text-sm text-gray-500">{label}</div>;
 }

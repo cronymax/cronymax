@@ -27,8 +27,8 @@
 #include <string>
 #include <vector>
 
-#include "browser/models/theme_aware_view.h"
 #include "browser/icon_registry.h"
+#include "browser/models/theme_aware_view.h"
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_label_button.h"
 #include "include/views/cef_panel.h"
@@ -49,9 +49,11 @@ class ToolbarBase : public ThemeAwareView {
 
   // Add an icon button to the leading / trailing slot.
   // Returns a handle for subsequent SetActionEnabled / UpdateActionIcon calls.
-  ActionHandle AddLeadingAction(IconId icon, std::string_view tooltip,
+  ActionHandle AddLeadingAction(IconId icon,
+                                std::string_view tooltip,
                                 std::function<void()> callback);
-  ActionHandle AddTrailingAction(IconId icon, std::string_view tooltip,
+  ActionHandle AddTrailingAction(IconId icon,
+                                 std::string_view tooltip,
                                  std::function<void()> callback);
 
   // Enable or disable a registered action button.
@@ -69,9 +71,9 @@ class ToolbarBase : public ThemeAwareView {
   // calls ApplyMiddleTheme. Final in ToolbarBase.
   void ApplyTheme(const ThemeChrome& chrome) override final;
 
-  CefRefPtr<CefPanel> root()     const { return root_; }
-  CefRefPtr<CefPanel> leading()  const { return leading_; }
-  CefRefPtr<CefPanel> middle()   const { return middle_; }
+  CefRefPtr<CefPanel> root() const { return root_; }
+  CefRefPtr<CefPanel> leading() const { return leading_; }
+  CefRefPtr<CefPanel> middle() const { return middle_; }
   CefRefPtr<CefPanel> trailing() const { return trailing_; }
 
   ~ToolbarBase() override = default;
@@ -91,22 +93,23 @@ class ToolbarBase : public ThemeAwareView {
 
  private:
   struct ActionEntry {
-    IconId                    icon;
-    CefRefPtr<CefPanel>       wrapper;
+    IconId icon;
+    CefRefPtr<CefPanel> wrapper;
     CefRefPtr<CefLabelButton> btn;
   };
 
-  ActionHandle AddAction(CefRefPtr<CefPanel> slot, IconId icon,
+  ActionHandle AddAction(CefRefPtr<CefPanel> slot,
+                         IconId icon,
                          std::string_view tooltip,
                          std::function<void()> callback);
 
   ActionEntry* EntryForHandle(ActionHandle handle);
 
-  CefRefPtr<CefPanel>      root_;
-  CefRefPtr<CefBoxLayout>  root_layout_;
-  CefRefPtr<CefPanel>      leading_;
-  CefRefPtr<CefPanel>      middle_;
-  CefRefPtr<CefPanel>      trailing_;
+  CefRefPtr<CefPanel> root_;
+  CefRefPtr<CefBoxLayout> root_layout_;
+  CefRefPtr<CefPanel> leading_;
+  CefRefPtr<CefPanel> middle_;
+  CefRefPtr<CefPanel> trailing_;
 
   std::vector<ActionEntry> leading_actions_;
   std::vector<ActionEntry> trailing_actions_;

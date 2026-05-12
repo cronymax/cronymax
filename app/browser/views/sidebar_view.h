@@ -19,9 +19,9 @@ class ResourceContext;
 class ClientHandler;
 
 class SidebarView : public ThemeAwareView {
-public:
-  SidebarView(ResourceContext *resource_ctx,
-              ThemeContext *theme_ctx,
+ public:
+  SidebarView(ResourceContext* resource_ctx,
+              ThemeContext* theme_ctx,
               CefRefPtr<ClientHandler> client_handler);
   ~SidebarView();
 
@@ -36,11 +36,11 @@ public:
 
   CefRefPtr<CefBrowserView> browser_view() const { return browser_view_; }
 
-private:
-  ResourceContext *resource_ctx_;
-  ThemeContext *theme_ctx_;
+ private:
+  ResourceContext* resource_ctx_;
+  ThemeContext* theme_ctx_;
   CefRefPtr<ClientHandler> client_handler_;
   CefRefPtr<CefBrowserView> browser_view_;
 };
 
-} // namespace cronymax
+}  // namespace cronymax

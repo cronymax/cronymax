@@ -34,7 +34,9 @@ impl MockScript {
     }
 
     pub fn delta(mut self, content: impl Into<String>) -> Self {
-        self.steps.push(LlmEvent::Delta { content: content.into() });
+        self.steps.push(LlmEvent::Delta {
+            content: content.into(),
+        });
         self
     }
 
@@ -57,7 +59,9 @@ impl MockScript {
     }
 
     pub fn done(mut self, reason: FinishReason) -> Self {
-        self.steps.push(LlmEvent::Done { finish_reason: reason });
+        self.steps.push(LlmEvent::Done {
+            finish_reason: reason,
+        });
         self
     }
 }

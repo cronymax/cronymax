@@ -43,18 +43,13 @@ function reducer(state: State, action: Action): State {
       };
     }
     case "setActive": {
-      const panes = state.panes[action.tid]
-        ? state.panes
-        : { ...state.panes, [action.tid]: blankPane() };
+      const panes = state.panes[action.tid] ? state.panes : { ...state.panes, [action.tid]: blankPane() };
       return { ...state, panes, activeTid: action.tid };
     }
     case "removePane": {
       if (!state.panes[action.tid]) return state;
       const { [action.tid]: _, ...rest } = state.panes;
-      const nextActive =
-        state.activeTid === action.tid
-          ? (Object.keys(rest)[0] ?? null)
-          : state.activeTid;
+      const nextActive = state.activeTid === action.tid ? (Object.keys(rest)[0] ?? null) : state.activeTid;
       return { ...state, panes: rest, activeTid: nextActive };
     }
     case "markStarted": {
@@ -70,7 +65,4 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-export const { Provider, useStore } = createPanelStore<State, Action>(
-  reducer,
-  initial,
-);
+export const { Provider, useStore } = createPanelStore<State, Action>(reducer, initial);

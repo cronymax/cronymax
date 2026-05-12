@@ -24,13 +24,16 @@ namespace cronymax {
 CefRefPtr<CefImage> RasterizeIconSvg(std::string_view svg_data,
                                      int logical_size,
                                      float scale_factor,
-                                     float r, float g, float b) {
+                                     float r,
+                                     float g,
+                                     float b) {
   @autoreleasepool {
     NSData* data = [NSData dataWithBytes:svg_data.data()
                                   length:svg_data.size()];
     NSImage* img = [[NSImage alloc] initWithData:data];
     if (!img) {
-      LOG(ERROR) << "IconRegistry: NSImage failed to load SVG from embedded data";
+      LOG(ERROR)
+          << "IconRegistry: NSImage failed to load SVG from embedded data";
       return nullptr;
     }
     [img setSize:NSMakeSize(logical_size, logical_size)];
@@ -79,12 +82,10 @@ CefRefPtr<CefImage> RasterizeIconSvg(std::string_view svg_data,
     }
 
     CefRefPtr<CefImage> cef_image = CefImage::CreateImage();
-    bool ok = cef_image->AddBitmap(scale_factor,
-                                   static_cast<int>(pix_w),
-                                   static_cast<int>(pix_h),
-                                   CEF_COLOR_TYPE_RGBA_8888,
-                                   CEF_ALPHA_TYPE_PREMULTIPLIED,
-                                   pixels, data_size);
+    bool ok =
+        cef_image->AddBitmap(scale_factor, static_cast<int>(pix_w),
+                             static_cast<int>(pix_h), CEF_COLOR_TYPE_RGBA_8888,
+                             CEF_ALPHA_TYPE_PREMULTIPLIED, pixels, data_size);
     CGContextRelease(ctx);
     if (!ok) {
       LOG(ERROR) << "IconRegistry: CefImage::AddBitmap failed";

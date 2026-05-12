@@ -19,10 +19,10 @@ namespace cronymax {
 namespace {
 
 // Card visual constants.
-constexpr cef_color_t kScrimColor       = 0x99000000;  // 60% black
-constexpr cef_color_t kCardBgFallback   = 0xFF2C2C2E;
-constexpr cef_color_t kTextFallback     = 0xFFE5E5EA;
-constexpr cef_color_t kCaptionFallback  = 0xFF8E8E93;
+constexpr cef_color_t kScrimColor = 0x99000000;  // 60% black
+constexpr cef_color_t kCardBgFallback = 0xFF2C2C2E;
+constexpr cef_color_t kTextFallback = 0xFFE5E5EA;
+constexpr cef_color_t kCaptionFallback = 0xFF8E8E93;
 
 }  // namespace
 
@@ -43,16 +43,16 @@ void ProfilePickerOverlay::Build() {
   // ── Slot A: scrim (full-window dimmer) ──────────────────────────────────
   auto scrim_panel = CefPanel::CreatePanel(nullptr);
   scrim_panel->SetBackgroundColor(kScrimColor);
-  scrim_oc_ = main_win_->AddOverlayView(
-      scrim_panel, CEF_DOCKING_MODE_CUSTOM, /*can_activate=*/false);
+  scrim_oc_ = main_win_->AddOverlayView(scrim_panel, CEF_DOCKING_MODE_CUSTOM,
+                                        /*can_activate=*/false);
   scrim_oc_->SetVisible(false);
 
   // ── Slot B: card (dialog) ───────────────────────────────────────────────
-  card_panel_ = CefPanel::CreatePanel(
-      new SizedPanelDelegate(CefSize(kCardW, kCardH)));
+  card_panel_ =
+      CefPanel::CreatePanel(new SizedPanelDelegate(CefSize(kCardW, kCardH)));
   card_panel_->SetBackgroundColor(kCardBgFallback);
-  card_oc_ = main_win_->AddOverlayView(
-      card_panel_, CEF_DOCKING_MODE_CUSTOM, /*can_activate=*/true);
+  card_oc_ = main_win_->AddOverlayView(card_panel_, CEF_DOCKING_MODE_CUSTOM,
+                                       /*can_activate=*/true);
   card_oc_->SetVisible(false);
 
   // Card: vertical box layout with inner padding.
@@ -63,8 +63,8 @@ void ProfilePickerOverlay::Build() {
   auto vlayout = card_panel_->SetToBoxLayout(vbox);
 
   // ── Title label ─────────────────────────────────────────────────────────
-  title_btn_ = CefLabelButton::CreateLabelButton(
-      new FnButtonDelegate([]() {}), "Open Folder");
+  title_btn_ = CefLabelButton::CreateLabelButton(new FnButtonDelegate([]() {}),
+                                                 "Open Folder");
   title_btn_->SetEnabled(false);
   title_btn_->SetTextColor(CEF_BUTTON_STATE_DISABLED, kTextFallback);
   title_btn_->SetFontList("Sans Bold, 13px");
@@ -73,8 +73,7 @@ void ProfilePickerOverlay::Build() {
   vlayout->SetFlexForView(title_btn_, 0);
 
   // ── Path row (textfield + Browse button) ────────────────────────────────
-  auto path_row = CefPanel::CreatePanel(
-      new SizedPanelDelegate(CefSize(0, 28)));
+  auto path_row = CefPanel::CreatePanel(new SizedPanelDelegate(CefSize(0, 28)));
   path_row->SetBackgroundColor(0x00000000);
   CefBoxLayoutSettings hbox_path;
   hbox_path.horizontal = true;
@@ -90,9 +89,11 @@ void ProfilePickerOverlay::Build() {
 
   browse_btn_ = CefLabelButton::CreateLabelButton(
       new FnButtonDelegate([this]() {
-        if (!host_.run_file_dialog) return;
+        if (!host_.run_file_dialog)
+          return;
         host_.run_file_dialog([this](const std::string& path) {
-          if (path.empty()) return;
+          if (path.empty())
+            return;
           path_field_->SetText(path);
           SetOpenEnabled(true);
         });
@@ -108,8 +109,8 @@ void ProfilePickerOverlay::Build() {
   vlayout->SetFlexForView(path_row, 0);
 
   // ── Profile row (CefMenuButton) ─────────────────────────────────────────
-  auto profile_row = CefPanel::CreatePanel(
-      new SizedPanelDelegate(CefSize(0, 28)));
+  auto profile_row =
+      CefPanel::CreatePanel(new SizedPanelDelegate(CefSize(0, 28)));
   profile_row->SetBackgroundColor(0x00000000);
   CefBoxLayoutSettings hbox_prof;
   hbox_prof.horizontal = true;
@@ -129,13 +130,14 @@ void ProfilePickerOverlay::Build() {
       new FnMenuButtonDelegate(
           [this](CefRefPtr<CefMenuButton> btn, const CefPoint& pt,
                  CefRefPtr<CefMenuButtonPressedLock> /*lock*/) {
-            if (!host_.get_profiles) return;
+            if (!host_.get_profiles)
+              return;
             const auto profiles = host_.get_profiles();
             auto menu = CefMenuModel::CreateMenuModel(
                 new FnMenuModelDelegate([this, profiles](int cmd) {
                   if (cmd < 0 || cmd >= static_cast<int>(profiles.size()))
                     return;
-                  selected_profile_id_   = profiles[cmd].id;
+                  selected_profile_id_ = profiles[cmd].id;
                   selected_profile_name_ = profiles[cmd].name;
                   profile_btn_->SetText(selected_profile_name_ + " \u25BE");
                 }));
@@ -156,8 +158,8 @@ void ProfilePickerOverlay::Build() {
   vlayout->SetFlexForView(profile_row, 0);
 
   // ── Error label (hidden until an error occurs) ───────────────────────────
-  error_label_ = CefLabelButton::CreateLabelButton(
-      new FnButtonDelegate([]() {}), "");
+  error_label_ =
+      CefLabelButton::CreateLabelButton(new FnButtonDelegate([]() {}), "");
   error_label_->SetEnabled(false);
   error_label_->SetTextColor(CEF_BUTTON_STATE_DISABLED, 0xFFFF453A);
   error_label_->SetBackgroundColor(0x00000000);
@@ -166,8 +168,7 @@ void ProfilePickerOverlay::Build() {
   vlayout->SetFlexForView(error_label_, 0);
 
   // ── Button row (Cancel  Open) ───────────────────────────────────────────
-  auto btn_row = CefPanel::CreatePanel(
-      new SizedPanelDelegate(CefSize(0, 32)));
+  auto btn_row = CefPanel::CreatePanel(new SizedPanelDelegate(CefSize(0, 32)));
   btn_row->SetBackgroundColor(0x00000000);
   CefBoxLayoutSettings hbox_btns;
   hbox_btns.horizontal = true;
@@ -181,8 +182,7 @@ void ProfilePickerOverlay::Build() {
   hlayout_btns->SetFlexForView(spacer, 1);
 
   cancel_btn_ = CefLabelButton::CreateLabelButton(
-      new FnButtonDelegate([this]() { Hide(); }),
-      "Cancel");
+      new FnButtonDelegate([this]() { Hide(); }), "Cancel");
   cancel_btn_->SetBackgroundColor(0xFF3A3A3C);
   cancel_btn_->SetEnabledTextColors(kTextFallback);
   cancel_btn_->SetMinimumSize(CefSize(72, 28));
@@ -191,9 +191,11 @@ void ProfilePickerOverlay::Build() {
 
   open_btn_ = CefLabelButton::CreateLabelButton(
       new FnButtonDelegate([this]() {
-        if (!open_btn_->IsEnabled()) return;
+        if (!open_btn_->IsEnabled())
+          return;
         const std::string path = path_field_->GetText().ToString();
-        if (path.empty()) return;
+        if (path.empty())
+          return;
         open_btn_->SetEnabled(false);
         ShowError("");
         const std::string json =
@@ -240,7 +242,7 @@ void ProfilePickerOverlay::Show(const std::string& prefill_path) {
   }
   SetOpenEnabled(!prefill_path.empty());
   ShowError("");
-  selected_profile_id_   = "default";
+  selected_profile_id_ = "default";
   selected_profile_name_ = "Default";
   RefreshProfileButton();
 
@@ -263,28 +265,32 @@ void ProfilePickerOverlay::Show(const std::string& prefill_path) {
   // fully parented before we walk the NSWindow hierarchy).
   if (!card_styled_) {
     card_styled_ = true;
-    CefPostTask(TID_UI, base::BindOnce(
-        [](CefRefPtr<CefWindow> w) {
-          void* nsv = CaptureLastChildNSView(
-              reinterpret_cast<void*>(w->GetWindowHandle()));
-          if (nsv) StylePickerCard(nsv, 0xFF2C2C2E);
-        },
-        main_win_));
+    CefPostTask(TID_UI,
+                base::BindOnce(
+                    [](CefRefPtr<CefWindow> w) {
+                      void* nsv = CaptureLastChildNSView(
+                          reinterpret_cast<void*>(w->GetWindowHandle()));
+                      if (nsv)
+                        StylePickerCard(nsv, 0xFF2C2C2E);
+                    },
+                    main_win_));
   }
 }
 
 void ProfilePickerOverlay::Hide() {
   CEF_REQUIRE_UI_THREAD();
 
-  if (scrim_oc_->IsValid()) scrim_oc_->SetVisible(false);
-  if (card_oc_->IsValid())  card_oc_->SetVisible(false);
+  if (scrim_oc_->IsValid())
+    scrim_oc_->SetVisible(false);
+  if (card_oc_->IsValid())
+    card_oc_->SetVisible(false);
 
   // Reset text state so reopening is clean.
   path_field_->SelectAll(false);
   path_field_->ExecuteCommand(CEF_TFC_DELETE);
   ShowError("");
   SetOpenEnabled(false);
-  selected_profile_id_   = "default";
+  selected_profile_id_ = "default";
   selected_profile_name_ = "Default";
 }
 
@@ -294,15 +300,17 @@ void ProfilePickerOverlay::Hide() {
 
 void ProfilePickerOverlay::LayoutCard() {
   const CefRect wb = main_win_->GetBounds();
-  const int x = (wb.width  - kCardW) / 2;
+  const int x = (wb.width - kCardW) / 2;
   const int y = (wb.height - kCardH) / 2;
   if (card_oc_->IsValid()) {
-    card_oc_->SetBounds(CefRect(std::max(0, x), std::max(0, y), kCardW, kCardH));
+    card_oc_->SetBounds(
+        CefRect(std::max(0, x), std::max(0, y), kCardW, kCardH));
   }
 }
 
 void ProfilePickerOverlay::SetOpenEnabled(bool enabled) {
-  if (!open_btn_) return;
+  if (!open_btn_)
+    return;
   open_btn_->SetEnabled(enabled);
   if (enabled) {
     // Active state: brand primary background, white text.
@@ -322,7 +330,8 @@ void ProfilePickerOverlay::RefreshProfileButton() {
 }
 
 void ProfilePickerOverlay::ShowError(const std::string& msg) {
-  if (!error_label_) return;
+  if (!error_label_)
+    return;
   if (msg.empty()) {
     error_label_->SetVisible(false);
   } else {
@@ -336,28 +345,29 @@ void ProfilePickerOverlay::ShowError(const std::string& msg) {
 // ---------------------------------------------------------------------------
 
 void ProfilePickerOverlay::ApplyTheme(const ThemeChrome& chrome) {
-  if (!card_panel_) return;  // Called before Build() on some platforms.
+  if (!card_panel_)
+    return;  // Called before Build() on some platforms.
 
   card_panel_->SetBackgroundColor(chrome.bg_float ? chrome.bg_float
-                                                   : kCardBgFallback);
+                                                  : kCardBgFallback);
 
   // Cache theme colors for use in SetOpenEnabled.
-  btn_bg_ = chrome.border  ? chrome.border  : 0xFF3A3A3C;
+  btn_bg_ = chrome.border ? chrome.border : 0xFF3A3A3C;
   btn_fg_ = chrome.text_title ? chrome.text_title : kTextFallback;
   primary_ = chrome.primary ? chrome.primary : 0xFF22B8A7;
 
   // Update title label text color (was hardcoded, invisible in light mode).
   if (title_btn_) {
-    title_btn_->SetTextColor(CEF_BUTTON_STATE_DISABLED,
-                             chrome.text_title ? chrome.text_title
-                                               : kTextFallback);
+    title_btn_->SetTextColor(CEF_BUTTON_STATE_DISABLED, chrome.text_title
+                                                            ? chrome.text_title
+                                                            : kTextFallback);
   }
 
   if (path_field_) {
     path_field_->SetBackgroundColor(chrome.bg_base ? chrome.bg_base
-                                                    : 0xFF1C1C1E);
+                                                   : 0xFF1C1C1E);
     path_field_->SetTextColor(chrome.text_title ? chrome.text_title
-                                                 : kTextFallback);
+                                                : kTextFallback);
   }
 
   // Use chrome.border as button background: it has real contrast against
@@ -365,8 +375,7 @@ void ProfilePickerOverlay::ApplyTheme(const ThemeChrome& chrome) {
   //   Light: border=0xFFD5E2DE on card bg_float=0xFFFFFFFF → visible gray-green
   //   Dark:  border=0xFF29403D on card bg_float=0xFF182625 → lighter teal
   const cef_color_t btn_bg = chrome.border ? chrome.border : 0xFF3A3A3C;
-  const cef_color_t fg     = chrome.text_title ? chrome.text_title
-                                                : kTextFallback;
+  const cef_color_t fg = chrome.text_title ? chrome.text_title : kTextFallback;
   if (browse_btn_) {
     browse_btn_->SetBackgroundColor(btn_bg);
     browse_btn_->SetEnabledTextColors(fg);

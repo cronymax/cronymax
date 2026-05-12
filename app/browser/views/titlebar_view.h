@@ -16,8 +16,8 @@
 #include <vector>
 
 #include "browser/models/theme_aware_view.h"
-#include "browser/models/view_observer.h"
 #include "browser/models/view_context.h"
+#include "browser/models/view_observer.h"
 #include "include/views/cef_label_button.h"
 #include "include/views/cef_menu_button.h"
 #include "include/views/cef_panel.h"
@@ -25,17 +25,18 @@
 
 namespace cronymax {
 
-class TitleBarView : public ThemeAwareView,
-                     public ViewObserver<SpaceChanged> {
+class TitleBarView : public ThemeAwareView, public ViewObserver<SpaceChanged> {
  public:
   struct Host {
     // Returns all spaces as (id, name) pairs for the space-selector dropdown.
-    std::function<std::vector<std::pair<std::string, std::string>>()> get_spaces;
+    std::function<std::vector<std::pair<std::string, std::string>>()>
+        get_spaces;
     // Opens a new tab of the given kind ("web", "terminal", "chat").
     std::function<void(const std::string&)> open_new_tab;
     // Runs the native folder-picker dialog; calls `callback` with the chosen
     // path (empty string if the user cancelled).
-    std::function<void(std::function<void(const std::string&)>)> run_file_dialog;
+    std::function<void(std::function<void(const std::string&)>)>
+        run_file_dialog;
     // Shows the native ProfilePickerOverlay with a pre-chosen folder path.
     std::function<void(const std::string&)> show_profile_picker;
   };
@@ -69,21 +70,21 @@ class TitleBarView : public ThemeAwareView,
   void OnViewObserved(const SpaceChanged& e) override;
 
  private:
-  SpaceContext*        space_ctx_;
+  SpaceContext* space_ctx_;
   WindowActionContext* window_ctx_;
   OverlayActionContext* overlay_ctx_;
-  ResourceContext*     resource_ctx_;
-  ThemeContext*        theme_ctx_;
+  ResourceContext* resource_ctx_;
+  ThemeContext* theme_ctx_;
   CefRefPtr<CefWindow> main_win_;
-  Host                 host_;
+  Host host_;
 
   // Child panels and buttons — owned by the CEF view tree once Build() adds
   // them to the panel.
-  CefRefPtr<CefPanel>       titlebar_panel_;
-  CefRefPtr<CefPanel>       lights_pad_;
-  CefRefPtr<CefPanel>       spacer_;
-  CefRefPtr<CefPanel>       win_pad_;
-  CefRefPtr<CefMenuButton>  btn_space_;
+  CefRefPtr<CefPanel> titlebar_panel_;
+  CefRefPtr<CefPanel> lights_pad_;
+  CefRefPtr<CefPanel> spacer_;
+  CefRefPtr<CefPanel> win_pad_;
+  CefRefPtr<CefMenuButton> btn_space_;
   CefRefPtr<CefLabelButton> btn_sidebar_toggle_;
   CefRefPtr<CefLabelButton> btn_web_;
   CefRefPtr<CefLabelButton> btn_term_;

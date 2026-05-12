@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { browser } from "@/shells/bridge";
+import { Icon, type IconName } from "@/components/Icon";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { useDragRegions } from "@/hooks/useDragRegions";
-import { Icon, type IconName } from "@/components/Icon";
+import { browser } from "@/shells/bridge";
 import type { TabKind, TabSummary } from "@/types";
 import { useStore } from "./store";
 
@@ -37,7 +37,6 @@ function iconNameForKind(kind: TabKind): IconName {
       return "settings-gear";
     case "graph":
       return "type-hierarchy";
-    case "web":
     default:
       return "globe";
   }
@@ -54,8 +53,7 @@ function Row({
   onActivate: () => void;
   onClose: () => void;
 }) {
-  const iconUrl =
-    tab.kind === "web" ? (tab.favicon ?? faviconFor(tab.url)) : null;
+  const iconUrl = tab.kind === "web" ? (tab.favicon ?? faviconFor(tab.url)) : null;
   return (
     <li
       onClick={onActivate}
@@ -133,12 +131,8 @@ export function App() {
       activeId: snap.activeTabId ?? null,
     }),
   );
-  useBridgeEvent("shell.tab_activated", (p) =>
-    dispatch({ type: "setActiveTab", id: p.tabId }),
-  );
-  useBridgeEvent("space.switch_loading", ({ loading }) =>
-    setSwitching(loading),
-  );
+  useBridgeEvent("shell.tab_activated", (p) => dispatch({ type: "setActiveTab", id: p.tabId }));
+  useBridgeEvent("space.switch_loading", ({ loading }) => setSwitching(loading));
 
   // ── Actions ────────────────────────────────────────────────────────
   const activate = useCallback(async (tab: TabSummary) => {
@@ -158,34 +152,32 @@ export function App() {
   }, []);
 
   return (
-    <>
-      <aside
-        ref={dragRef as React.RefObject<HTMLElement>}
-        className="app-drag flex h-full flex-col bg-cronymax-body pt-7 text-cronymax-title"
-      >
-        {/* Items section */}
-        <section className="no-drag flex-1 overflow-auto px-2 pb-4 pt-2">
-          {switching && (
-            <div className="mb-2 rounded bg-cronymax-float px-2 py-1 text-[11px] text-cronymax-caption">
-              Restarting runtime…
-            </div>
-          )}
-          <div className="no-drag px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-cronymax-caption">
-            Tabs
+    <aside
+      ref={dragRef as React.RefObject<HTMLElement>}
+      className="app-drag flex h-full flex-col bg-cronymax-body pt-7 text-cronymax-title"
+    >
+      {/* Items section */}
+      <section className="no-drag flex-1 overflow-auto px-2 pb-4 pt-2">
+        {switching && (
+          <div className="mb-2 rounded bg-cronymax-float px-2 py-1 text-[11px] text-cronymax-caption">
+            Restarting runtime…
           </div>
-          <ul className="no-drag space-y-0.5">
-            {tabs.map((t) => (
-              <Row
-                key={t.id}
-                tab={t}
-                active={t.id === activeTabId}
-                onActivate={() => void activate(t)}
-                onClose={() => void close(t)}
-              />
-            ))}
-          </ul>
-        </section>
-      </aside>
-    </>
+        )}
+        <div className="no-drag px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-cronymax-caption">
+          Tabs
+        </div>
+        <ul className="no-drag space-y-0.5">
+          {tabs.map((t) => (
+            <Row
+              key={t.id}
+              tab={t}
+              active={t.id === activeTabId}
+              onActivate={() => void activate(t)}
+              onClose={() => void close(t)}
+            />
+          ))}
+        </ul>
+      </section>
+    </aside>
   );
 }

@@ -43,9 +43,8 @@ use crate::protocol::SubscriptionId;
 
 use super::persistence::{Persistence, PersistenceError};
 use super::state::{
-    Agent, AgentId, MemoryEntry, MemoryNamespace, MemoryNamespaceId,
-    PendingReview, PermissionState, ReviewId, Run, RunId, RunStatus, Session,
-    SessionId, Snapshot, Space, SpaceId,
+    Agent, AgentId, MemoryEntry, MemoryNamespace, MemoryNamespaceId, PendingReview,
+    PermissionState, ReviewId, Run, RunId, RunStatus, Session, SessionId, Snapshot, Space, SpaceId,
 };
 use crate::llm::ChatMessage;
 
@@ -132,9 +131,7 @@ impl RuntimeAuthority {
     /// Build a fresh authority and rehydrate state from `persistence`.
     /// Existing paused or awaiting-review runs come back exactly as
     /// they were on the previous shutdown (task 4.4).
-    pub fn rehydrate(
-        persistence: Arc<dyn Persistence>,
-    ) -> Result<Self, AuthorityError> {
+    pub fn rehydrate(persistence: Arc<dyn Persistence>) -> Result<Self, AuthorityError> {
         let snapshot = persistence.load()?;
         info!(
             spaces = snapshot.spaces.len(),
@@ -270,7 +267,11 @@ impl RuntimeAuthority {
     /// compaction logic). Returns `None` if the session doesn't exist.
     pub fn session_thread(&self, session_id: &SessionId) -> Option<Vec<ChatMessage>> {
         let inner = self.inner.lock();
-        inner.snapshot.sessions.get(session_id).map(|s| s.thread.clone())
+        inner
+            .snapshot
+            .sessions
+            .get(session_id)
+            .map(|s| s.thread.clone())
     }
 
     // -- Subscriptions ------------------------------------------------------
@@ -381,9 +382,7 @@ impl RuntimeAuthority {
 
     pub fn cancel_run(&self, run_id: RunId) -> Result<(), AuthorityError> {
         self.transition_run(run_id, "cancel", |status| match status {
-            RunStatus::Succeeded
-            | RunStatus::Failed { .. }
-            | RunStatus::Cancelled => None,
+            RunStatus::Succeeded | RunStatus::Failed { .. } | RunStatus::Cancelled => None,
             _ => Some(RunStatus::Cancelled),
         })
     }
@@ -638,9 +637,7 @@ impl RuntimeAuthority {
             return Ok(());
         }
         let message = message.into();
-        self.transition_run(run_id, "fail", move |_| {
-            Some(RunStatus::Failed { message })
-        })
+        self.transition_run(run_id, "fail", move |_| Some(RunStatus::Failed { message }))
     }
 
     /// Emit an arbitrary [`RuntimeEventPayload`] keyed at this run's
@@ -709,12 +706,13 @@ impl RuntimeAuthority {
         entry: MemoryEntry,
     ) -> Result<(), AuthorityError> {
         let mut inner = self.inner.lock();
-        let ns =
-            inner.snapshot.memory.entry(namespace.clone()).or_insert_with(|| {
-                MemoryNamespace {
-                    id: namespace.clone(),
-                    entries: Default::default(),
-                }
+        let ns = inner
+            .snapshot
+            .memory
+            .entry(namespace.clone())
+            .or_insert_with(|| MemoryNamespace {
+                id: namespace.clone(),
+                entries: Default::default(),
             });
         ns.entries.insert(entry.key.clone(), entry);
         self.persistence.save(&inner.snapshot)?;
@@ -738,7 +736,7 @@ impl RuntimeAuthority {
         match target {
             "read" => session.read_namespace = Some(namespace_id),
             "write" => session.write_namespace = Some(namespace_id),
-            "both" | _ => {
+            _ => {
                 session.read_namespace = Some(namespace_id.clone());
                 session.write_namespace = Some(namespace_id);
             }
@@ -784,12 +782,10 @@ impl RuntimeAuthority {
             .runs
             .get_mut(&run_id)
             .ok_or(AuthorityError::UnknownRun(run_id))?;
-        let next = decide(&run.status).ok_or_else(|| {
-            AuthorityError::InvalidTransition {
-                run: run_id,
-                state: run.status.clone(),
-                action,
-            }
+        let next = decide(&run.status).ok_or_else(|| AuthorityError::InvalidTransition {
+            run: run_id,
+            state: run.status.clone(),
+            action,
         })?;
         let label = status_label(&next);
         run.status = next;
@@ -810,11 +806,7 @@ impl RuntimeAuthority {
     /// Walk subscriptions, deliver to topic-matched subs, drop subs
     /// whose receivers are gone. Held under the inner lock so sequence
     /// numbers stay strictly monotonic per subscription.
-    fn emit_locked(
-        inner: &mut AuthorityInner,
-        topic: String,
-        payload: RuntimeEventPayload,
-    ) {
+    fn emit_locked(inner: &mut AuthorityInner, topic: String, payload: RuntimeEventPayload) {
         let emitted_at_ms = now_ms();
         let mut dead = Vec::new();
         for (id, sub) in inner.subscriptions.iter_mut() {
@@ -872,7 +864,12 @@ mod tests {
 
     fn auth() -> (RuntimeAuthority, SpaceId) {
         let auth = RuntimeAuthority::in_memory();
-        let space = Space { id: SpaceId::new(), name: "scratch".into(), compaction_threshold_pct: 80, compaction_recency_turns: 6 };
+        let space = Space {
+            id: SpaceId::new(),
+            name: "scratch".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
         let space_id = space.id;
         auth.upsert_space(space).unwrap();
         (auth, space_id)
@@ -881,12 +878,21 @@ mod tests {
     #[tokio::test]
     async fn start_run_emits_status_event_with_seq_zero() {
         let (auth, space_id) = auth();
-        let SubscribeOutcome { id: _, mut receiver } = auth.subscribe("*");
-        let run_id = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let SubscribeOutcome {
+            id: _,
+            mut receiver,
+        } = auth.subscribe("*");
+        let run_id = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         let event = receiver.recv().await.unwrap();
         assert_eq!(event.sequence, 0);
         match event.payload {
-            RuntimeEventPayload::RunStatus { run_id: rid, status, .. } => {
+            RuntimeEventPayload::RunStatus {
+                run_id: rid,
+                status,
+                ..
+            } => {
                 assert_eq!(rid, run_id.to_string());
                 assert_eq!(status, "pending");
             }
@@ -897,8 +903,13 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_transitions_emit_increasing_sequences() {
         let (auth, space_id) = auth();
-        let SubscribeOutcome { id: _, mut receiver } = auth.subscribe("*");
-        let run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let SubscribeOutcome {
+            id: _,
+            mut receiver,
+        } = auth.subscribe("*");
+        let run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         auth.pause_run(run).unwrap();
         auth.resume_run(run).unwrap();
         auth.cancel_run(run).unwrap();
@@ -918,21 +929,37 @@ mod tests {
     #[tokio::test]
     async fn pause_after_terminal_is_rejected() {
         let (auth, space_id) = auth();
-        let run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         auth.cancel_run(run).unwrap();
         let err = auth.pause_run(run).unwrap_err();
-        assert!(matches!(err, AuthorityError::InvalidTransition { action: "pause", .. }));
+        assert!(matches!(
+            err,
+            AuthorityError::InvalidTransition {
+                action: "pause",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
     async fn topic_filter_isolates_subscriptions() {
         let (auth, space_id) = auth();
-        let run_a = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
-        let run_b = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
-        let SubscribeOutcome { id: _, receiver: mut a_recv } =
-            auth.subscribe(format!("run:{run_a}"));
-        let SubscribeOutcome { id: _, receiver: mut b_recv } =
-            auth.subscribe(format!("run:{run_b}"));
+        let run_a = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
+        let run_b = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
+        let SubscribeOutcome {
+            id: _,
+            receiver: mut a_recv,
+        } = auth.subscribe(format!("run:{run_a}"));
+        let SubscribeOutcome {
+            id: _,
+            receiver: mut b_recv,
+        } = auth.subscribe(format!("run:{run_b}"));
         auth.pause_run(run_a).unwrap();
         auth.pause_run(run_b).unwrap();
         let a_evt = a_recv.recv().await.unwrap();
@@ -947,8 +974,13 @@ mod tests {
     #[tokio::test]
     async fn review_open_resolve_round_trip() {
         let (auth, space_id) = auth();
-        let SubscribeOutcome { id: _, mut receiver } = auth.subscribe("*");
-        let run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let SubscribeOutcome {
+            id: _,
+            mut receiver,
+        } = auth.subscribe("*");
+        let run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         let _ = receiver.recv().await; // pending event
 
         let review = auth
@@ -958,7 +990,10 @@ mod tests {
         let e1 = receiver.recv().await.unwrap();
         let e2 = receiver.recv().await.unwrap();
         assert!(matches!(e1.payload, RuntimeEventPayload::RunStatus { .. }));
-        assert!(matches!(e2.payload, RuntimeEventPayload::PermissionRequest { .. }));
+        assert!(matches!(
+            e2.payload,
+            RuntimeEventPayload::PermissionRequest { .. }
+        ));
 
         auth.resolve_review(run, review, PermissionState::Approved, Some("ok".into()))
             .unwrap();
@@ -975,10 +1010,17 @@ mod tests {
         // First boot: create a run, pause it.
         let store = Arc::new(InMemoryPersistence::default());
         let auth = RuntimeAuthority::rehydrate(store.clone()).unwrap();
-        let space = Space { id: SpaceId::new(), name: "s".into(), compaction_threshold_pct: 80, compaction_recency_turns: 6 };
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
         let space_id = space.id;
         auth.upsert_space(space).unwrap();
-        let run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         auth.pause_run(run).unwrap();
         drop(auth);
 
@@ -995,7 +1037,9 @@ mod tests {
         let outcome = auth.subscribe("*");
         let id = outcome.id;
         drop(outcome.receiver); // close the channel
-        let _run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let _run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         // Subscription should now be gone.
         assert!(!auth.unsubscribe(id), "expected subscription to be reaped");
     }

@@ -11,8 +11,8 @@ namespace cronymax {
 /// `id` is the kebab-case filename stem; immutable after creation.
 /// `name` is the mutable display name.
 struct ProfileRecord {
-  std::string id;              // e.g. "locked-work"
-  std::string name;            // e.g. "Locked Work"
+  std::string id;    // e.g. "locked-work"
+  std::string name;  // e.g. "Locked Work"
   bool allow_network = true;
   std::vector<std::string> extra_read_paths;
   std::vector<std::string> extra_write_paths;
@@ -31,11 +31,11 @@ struct ProfileRules {
 /// Error codes returned by mutable ProfileStore operations.
 enum class ProfileStoreError {
   kOk,
-  kAlreadyExists,      // Create: slug collision
-  kNotFound,           // Update / Delete / Get: no such profile
-  kCannotDeleteDefault,// Delete: id == "default"
-  kInUse,              // Delete: spaces reference this profile
-  kIoError,            // file read/write failure
+  kAlreadyExists,        // Create: slug collision
+  kNotFound,             // Update / Delete / Get: no such profile
+  kCannotDeleteDefault,  // Delete: id == "default"
+  kInUse,                // Delete: spaces reference this profile
+  kIoError,              // file read/write failure
 };
 
 /// Manages named sandbox profiles stored as YAML files in
@@ -48,8 +48,8 @@ class ProfileStore {
   /// Used by SpaceManager before Init() is called.
   ProfileStore() = default;
 
-  /// Initialise with the user's home directory. Profiles are read from / written
-  /// to `home_dir/.cronymax/profiles/`.
+  /// Initialise with the user's home directory. Profiles are read from /
+  /// written to `home_dir/.cronymax/profiles/`.
   explicit ProfileStore(std::filesystem::path home_dir);
 
   /// Ensure ~/.cronymax/profiles/default.yaml exists; write it if absent.
@@ -64,14 +64,15 @@ class ProfileStore {
 
   /// Create a new profile. Slugifies `rules.name` to derive the profile ID.
   /// Returns kAlreadyExists if a file with the same slug already exists.
-  ProfileStoreError Create(const ProfileRules& rules, std::string* out_id = nullptr);
+  ProfileStoreError Create(const ProfileRules& rules,
+                           std::string* out_id = nullptr);
 
   /// Update the rules of an existing profile (ID unchanged).
   ProfileStoreError Update(const std::string& id, const ProfileRules& rules);
 
-  /// Delete a profile file. Blocked on `default` and if any space references it.
-  /// `space_profile_ids` should be the current list of profile_id values from
-  /// the spaces table; the caller is responsible for querying them.
+  /// Delete a profile file. Blocked on `default` and if any space references
+  /// it. `space_profile_ids` should be the current list of profile_id values
+  /// from the spaces table; the caller is responsible for querying them.
   ProfileStoreError Delete(const std::string& id,
                            const std::vector<std::string>& space_profile_ids);
 

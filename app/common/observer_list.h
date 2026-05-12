@@ -31,12 +31,13 @@
 #include <algorithm>
 #include <vector>
 
-#include "include/wrapper/cef_helpers.h" // DCHECK
+#include "include/wrapper/cef_helpers.h"  // DCHECK
 
 namespace cronymax {
 
-template <typename ObserverType> class ObserverList {
-public:
+template <typename ObserverType>
+class ObserverList {
+ public:
   ObserverList() = default;
 
   ~ObserverList() {
@@ -46,23 +47,23 @@ public:
   }
 
   // Non-copyable, non-movable — observer pointers must remain stable.
-  ObserverList(const ObserverList &) = delete;
-  ObserverList &operator=(const ObserverList &) = delete;
+  ObserverList(const ObserverList&) = delete;
+  ObserverList& operator=(const ObserverList&) = delete;
 
-  void AddObserver(ObserverType *obs) {
+  void AddObserver(ObserverType* obs) {
     DCHECK(obs);
     DCHECK(!HasObserver(obs)) << "Observer already registered.";
     observers_.push_back(obs);
   }
 
-  void RemoveObserver(ObserverType *obs) {
+  void RemoveObserver(ObserverType* obs) {
     auto it = std::find(observers_.begin(), observers_.end(), obs);
     DCHECK(it != observers_.end()) << "Observer not registered.";
     if (it != observers_.end())
       observers_.erase(it);
   }
 
-  bool HasObserver(const ObserverType *obs) const {
+  bool HasObserver(const ObserverType* obs) const {
     return std::find(observers_.cbegin(), observers_.cend(), obs) !=
            observers_.cend();
   }
@@ -74,14 +75,14 @@ public:
   // removals (or additions) inside an OnXxx handler do not invalidate the
   // iteration.
   template <typename Method, typename... Args>
-  void Notify(Method method, Args &&...args) {
-    const std::vector<ObserverType *> snapshot = observers_;
-    for (ObserverType *obs : snapshot)
+  void Notify(Method method, Args&&... args) {
+    const std::vector<ObserverType*> snapshot = observers_;
+    for (ObserverType* obs : snapshot)
       (obs->*method)(std::forward<Args>(args)...);
   }
 
-private:
-  std::vector<ObserverType *> observers_;
+ private:
+  std::vector<ObserverType*> observers_;
 };
 
-} // namespace cronymax
+}  // namespace cronymax

@@ -21,32 +21,32 @@
 namespace cronymax {
 
 class ThemeAwareView : public ViewObserver<ThemeChanged> {
-public:
+ public:
   // ViewObserver<ThemeChanged>: final — delegates to ApplyTheme.
-  void OnViewObserved(const ThemeChanged &e) final { ApplyTheme(e.chrome); }
+  void OnViewObserved(const ThemeChanged& e) final { ApplyTheme(e.chrome); }
 
   // Subscribe to theme changes and immediately seed with the current chrome.
   // Must be called after CEF child views exist (typically end of Build()).
-  virtual void Register(ThemeContext *ctx) {
+  virtual void Register(ThemeContext* ctx) {
     theme_ctx_ = ctx;
     theme_ctx_->AddThemeObserver(this);
     ApplyTheme(theme_ctx_->GetCurrentChrome());
   }
 
   // Override to apply ThemeChrome color tokens to native CEF views.
-  virtual void ApplyTheme(const ThemeChrome &chrome) = 0;
+  virtual void ApplyTheme(const ThemeChrome& chrome) = 0;
 
-protected:
+ protected:
   ~ThemeAwareView() override {
     if (theme_ctx_)
       theme_ctx_->RemoveThemeObserver(this);
   }
 
   // Accessor for derived classes that need the ThemeContext after Register().
-  ThemeContext *ThemeCtx() const { return theme_ctx_; }
+  ThemeContext* ThemeCtx() const { return theme_ctx_; }
 
-private:
-  ThemeContext *theme_ctx_ = nullptr;
+ private:
+  ThemeContext* theme_ctx_ = nullptr;
 };
 
-} // namespace cronymax
+}  // namespace cronymax

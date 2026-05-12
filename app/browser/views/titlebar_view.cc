@@ -28,19 +28,28 @@ constexpr int kWinPadW = 0;
 constexpr int kLightsPadW = 0;
 constexpr int kWinPadW = 138;
 #endif
-} // namespace
+}  // namespace
 
-TitleBarView::TitleBarView(SpaceContext *space, WindowActionContext *window_ctx,
-                           OverlayActionContext *overlay,
-                           ResourceContext *resources, ThemeContext *theme_ctx,
-                           CefRefPtr<CefWindow> main_win, Host host)
-    : space_ctx_(space), window_ctx_(window_ctx), overlay_ctx_(overlay),
-      resource_ctx_(resources), theme_ctx_(theme_ctx),
-      main_win_(std::move(main_win)), host_(std::move(host)) {
+TitleBarView::TitleBarView(SpaceContext* space,
+                           WindowActionContext* window_ctx,
+                           OverlayActionContext* overlay,
+                           ResourceContext* resources,
+                           ThemeContext* theme_ctx,
+                           CefRefPtr<CefWindow> main_win,
+                           Host host)
+    : space_ctx_(space),
+      window_ctx_(window_ctx),
+      overlay_ctx_(overlay),
+      resource_ctx_(resources),
+      theme_ctx_(theme_ctx),
+      main_win_(std::move(main_win)),
+      host_(std::move(host)) {
   space_ctx_->AddSpaceObserver(this);
 }
 
-TitleBarView::~TitleBarView() { space_ctx_->RemoveSpaceObserver(this); }
+TitleBarView::~TitleBarView() {
+  space_ctx_->RemoveSpaceObserver(this);
+}
 
 CefRefPtr<CefPanel> TitleBarView::Build() {
   auto panel =
@@ -65,7 +74,7 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
     btn_sidebar_toggle_ = MakeIconLabelButton(
         new FnButtonDelegate([this]() {
           CefPostTask(TID_UI, base::BindOnce(
-                                  [](WindowActionContext *ctx) {
+                                  [](WindowActionContext* ctx) {
                                     ctx->ToggleSidebar();
                                   },
                                   window_ctx_));
@@ -87,7 +96,7 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
             : space_ctx_->GetCurrentSpaceName() + " \u25BE";
 
     auto delegate = new FnMenuButtonDelegate(
-        [this](CefRefPtr<CefMenuButton> btn, const CefPoint &pt,
+        [this](CefRefPtr<CefMenuButton> btn, const CefPoint& pt,
                CefRefPtr<CefMenuButtonPressedLock> /*lock*/) {
           const auto spaces = space_ctx_->GetSpaces();
           const std::string active_id = space_ctx_->GetCurrentSpaceId();
@@ -98,7 +107,8 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
                   // picker card once the user has chosen a folder.
                   if (host_.run_file_dialog) {
                     host_.run_file_dialog([this](const std::string& path) {
-                      if (path.empty()) return;
+                      if (path.empty())
+                        return;
                       if (host_.show_profile_picker) {
                         host_.show_profile_picker(path);
                       }
@@ -133,13 +143,13 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
   layout->SetFlexForView(spacer_, 1);
 
   // 3. New-tab buttons.
-  auto add_btn = [&](CefRefPtr<CefLabelButton> *slot, IconId icon,
-                     const std::string &label, const std::string &tooltip,
-                     const std::string &kind) {
+  auto add_btn = [&](CefRefPtr<CefLabelButton>* slot, IconId icon,
+                     const std::string& label, const std::string& tooltip,
+                     const std::string& kind) {
     auto btn = MakeIconLabelButton(
         new FnButtonDelegate([this, kind]() {
           CefPostTask(TID_UI, base::BindOnce(
-                                  [](TitleBarView *self, std::string k) {
+                                  [](TitleBarView* self, std::string k) {
                                     if (self->host_.open_new_tab)
                                       self->host_.open_new_tab(k);
                                   },
@@ -163,7 +173,7 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
     auto btn = MakeIconLabelButton(
         new FnButtonDelegate([this]() {
           CefPostTask(TID_UI, base::BindOnce(
-                                  [](TitleBarView *self) {
+                                  [](TitleBarView* self) {
                                     self->overlay_ctx_->OpenPopover(
                                         self->resource_ctx_->ResourceUrl(
                                             "panels/settings/index.html"));
@@ -209,7 +219,7 @@ void TitleBarView::RefreshDragRegion() {
     if (lr.width > 0 && lr.height > 0)
       nodrag.emplace_back(lr.x - win.x, lr.y - win.y, lr.width, lr.height);
   }
-  auto add = [&](const CefRefPtr<CefLabelButton> &b) {
+  auto add = [&](const CefRefPtr<CefLabelButton>& b) {
     if (!b)
       return;
     CefRect r = b->GetBoundsInScreen();
@@ -217,7 +227,7 @@ void TitleBarView::RefreshDragRegion() {
       return;
     nodrag.emplace_back(r.x - win.x, r.y - win.y, r.width, r.height);
   };
-  auto add_view = [&](const CefRefPtr<CefView> &b) {
+  auto add_view = [&](const CefRefPtr<CefView>& b) {
     if (!b)
       return;
     CefRect r = b->GetBoundsInScreen();
@@ -237,7 +247,7 @@ void TitleBarView::RefreshDragRegion() {
 #endif
 }
 
-void TitleBarView::ApplyTheme(const ThemeChrome &chrome) {
+void TitleBarView::ApplyTheme(const ThemeChrome& chrome) {
   if (titlebar_panel_)
     titlebar_panel_->SetBackgroundColor(chrome.bg_body);
   if (lights_pad_)
@@ -256,10 +266,10 @@ void TitleBarView::ApplyTheme(const ThemeChrome &chrome) {
   constexpr IconId kIcons[] = {IconId::kSidebarToggle, IconId::kTabWeb,
                                IconId::kTabTerminal, IconId::kTabChat,
                                IconId::kSettings};
-  CefRefPtr<CefLabelButton> *kBtns[] = {&btn_sidebar_toggle_, &btn_web_,
+  CefRefPtr<CefLabelButton>* kBtns[] = {&btn_sidebar_toggle_, &btn_web_,
                                         &btn_term_, &btn_chat_, &btn_settings_};
   for (int i = 0; i < 5; ++i) {
-    auto *b = kBtns[i]->get();
+    auto* b = kBtns[i]->get();
     if (!b)
       continue;
     b->SetTextColor(CEF_BUTTON_STATE_NORMAL, chrome.text_title);
@@ -275,13 +285,13 @@ void TitleBarView::ApplyTheme(const ThemeChrome &chrome) {
 #endif
 }
 
-void TitleBarView::UpdateSpaceName(const std::string &name) {
+void TitleBarView::UpdateSpaceName(const std::string& name) {
   if (btn_space_)
     btn_space_->SetText(name + " \u25BE");
 }
 
-void TitleBarView::OnViewObserved(const SpaceChanged &e) {
+void TitleBarView::OnViewObserved(const SpaceChanged& e) {
   UpdateSpaceName(e.new_name);
 }
 
-} // namespace cronymax
+}  // namespace cronymax

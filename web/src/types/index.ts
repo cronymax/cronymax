@@ -72,13 +72,7 @@ export const TabIdPayloadSchema = z.object({
 
 // ── arc-style-tab-cards (Phase 2) ────────────────────────────────────
 // Discriminator for the new tab system. Mirrors `cronymax::TabKind`.
-export const TabKindEnum = z.enum([
-  "web",
-  "terminal",
-  "chat",
-  "agent",
-  "graph",
-]);
+export const TabKindEnum = z.enum(["web", "terminal", "chat", "agent", "graph"]);
 export type TabKind = z.infer<typeof TabKindEnum>;
 
 const tabSummaryBase = {

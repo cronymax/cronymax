@@ -16,8 +16,8 @@ int64_t NowMs() {
 
 // Helper: bind text (treats empty string as NULL for optional fields)
 void BindText(sqlite3_stmt* stmt, int idx, const std::string& value) {
-  sqlite3_bind_text(stmt, idx, value.c_str(),
-                    static_cast<int>(value.size()), SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, idx, value.c_str(), static_cast<int>(value.size()),
+                    SQLITE_TRANSIENT);
 }
 
 }  // namespace
@@ -163,9 +163,10 @@ void SpaceStore::ApplySchema() {
   // SQLite ignores ALTER TABLE ADD COLUMN when the column already exists only
   // from SQLite 3.37+; use a try-and-ignore approach for older versions.
   sqlite3_exec(db_,
-      "ALTER TABLE spaces ADD COLUMN "
-      "profile_id TEXT NOT NULL DEFAULT 'default';",
-      nullptr, nullptr, nullptr);  // error ignored — column may already exist
+               "ALTER TABLE spaces ADD COLUMN "
+               "profile_id TEXT NOT NULL DEFAULT 'default';",
+               nullptr, nullptr,
+               nullptr);  // error ignored — column may already exist
 }
 
 // ---------------------------------------------------------------------------
@@ -220,9 +221,11 @@ void SpaceStore::WriteLoop() {
 // ---------------------------------------------------------------------------
 
 bool SpaceStore::CreateSpace(const SpaceRow& row) {
-  if (!db_) return false;
+  if (!db_)
+    return false;
   const char* sql =
-      "INSERT OR IGNORE INTO spaces (id, name, root_path, profile_id, created_at, "
+      "INSERT OR IGNORE INTO spaces (id, name, root_path, profile_id, "
+      "created_at, "
       "last_active) VALUES (?,?,?,?,?,?);";
   sqlite3_stmt* stmt = nullptr;
   sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -240,9 +243,11 @@ bool SpaceStore::CreateSpace(const SpaceRow& row) {
 std::vector<SpaceRow> SpaceStore::ListSpaces() const {
   std::lock_guard<std::mutex> lock(read_mutex_);
   std::vector<SpaceRow> result;
-  if (!db_) return result;
+  if (!db_)
+    return result;
   const char* sql =
-      "SELECT id, name, root_path, profile_id, created_at, last_active FROM spaces "
+      "SELECT id, name, root_path, profile_id, created_at, last_active FROM "
+      "spaces "
       "ORDER BY last_active DESC;";
   sqlite3_stmt* stmt = nullptr;
   sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -262,7 +267,8 @@ std::vector<SpaceRow> SpaceStore::ListSpaces() const {
 }
 
 bool SpaceStore::UpdateLastActive(const std::string& space_id, int64_t ts) {
-  if (!db_) return false;
+  if (!db_)
+    return false;
   const char* sql = "UPDATE spaces SET last_active=? WHERE id=?;";
   sqlite3_stmt* stmt = nullptr;
   sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -274,7 +280,8 @@ bool SpaceStore::UpdateLastActive(const std::string& space_id, int64_t ts) {
 }
 
 bool SpaceStore::DeleteSpace(const std::string& space_id) {
-  if (!db_) return false;
+  if (!db_)
+    return false;
   // Cascades delete child rows (foreign_keys=ON).
   const char* sql = "DELETE FROM spaces WHERE id=?;";
   sqlite3_stmt* stmt = nullptr;
@@ -290,7 +297,8 @@ bool SpaceStore::DeleteSpace(const std::string& space_id) {
 // ---------------------------------------------------------------------------
 
 int64_t SpaceStore::CreateTab(const BrowserTabRow& row) {
-  if (!db_) return 0;
+  if (!db_)
+    return 0;
   const char* sql =
       "INSERT INTO browser_tabs (space_id, url, title, is_pinned, "
       "last_accessed) VALUES (?,?,?,?,?);";
@@ -307,7 +315,8 @@ int64_t SpaceStore::CreateTab(const BrowserTabRow& row) {
 }
 
 bool SpaceStore::UpdateTab(const BrowserTabRow& row) {
-  if (!db_) return false;
+  if (!db_)
+    return false;
   const char* sql =
       "UPDATE browser_tabs SET url=?, title=?, is_pinned=?, last_accessed=? "
       "WHERE id=?;";
@@ -324,7 +333,8 @@ bool SpaceStore::UpdateTab(const BrowserTabRow& row) {
 }
 
 bool SpaceStore::DeleteTab(int64_t tab_id) {
-  if (!db_) return false;
+  if (!db_)
+    return false;
   const char* sql = "DELETE FROM browser_tabs WHERE id=?;";
   sqlite3_stmt* stmt = nullptr;
   sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -338,7 +348,8 @@ std::vector<BrowserTabRow> SpaceStore::ListTabsForSpace(
     const std::string& space_id) const {
   std::lock_guard<std::mutex> lock(read_mutex_);
   std::vector<BrowserTabRow> result;
-  if (!db_) return result;
+  if (!db_)
+    return result;
   const char* sql =
       "SELECT id, space_id, url, title, is_pinned, last_accessed "
       "FROM browser_tabs WHERE space_id=? ORDER BY is_pinned DESC, id ASC;";
@@ -365,7 +376,8 @@ std::vector<BrowserTabRow> SpaceStore::ListTabsForSpace(
 
 void SpaceStore::CreateBlock(const TerminalBlockRow& row) {
   EnqueueWrite([this, row] {
-    if (!db_) return;
+    if (!db_)
+      return;
     const char* sql =
         "INSERT INTO terminal_blocks (space_id, command, output, exit_code, "
         "started_at, ended_at) VALUES (?,?,?,?,?,?);";
@@ -384,7 +396,8 @@ void SpaceStore::CreateBlock(const TerminalBlockRow& row) {
 
 void SpaceStore::UpdateBlock(const TerminalBlockRow& row) {
   EnqueueWrite([this, row] {
-    if (!db_) return;
+    if (!db_)
+      return;
     const char* sql =
         "UPDATE terminal_blocks SET output=?, exit_code=?, ended_at=? WHERE "
         "id=?;";
@@ -400,10 +413,12 @@ void SpaceStore::UpdateBlock(const TerminalBlockRow& row) {
 }
 
 std::vector<TerminalBlockRow> SpaceStore::ListBlocksForSpace(
-    const std::string& space_id, int limit) const {
+    const std::string& space_id,
+    int limit) const {
   std::lock_guard<std::mutex> lock(read_mutex_);
   std::vector<TerminalBlockRow> result;
-  if (!db_) return result;
+  if (!db_)
+    return result;
   const char* sql =
       "SELECT id, space_id, command, output, exit_code, started_at, ended_at "
       "FROM terminal_blocks WHERE space_id=? ORDER BY id DESC LIMIT ?;";
@@ -434,7 +449,8 @@ std::vector<TerminalBlockRow> SpaceStore::ListBlocksForSpace(
 
 void SpaceStore::AppendTrace(const AgentTraceRow& row) {
   EnqueueWrite([this, row] {
-    if (!db_) return;
+    if (!db_)
+      return;
     const char* sql =
         "INSERT INTO agent_traces (space_id, graph_id, event_type, payload, "
         "ts) VALUES (?,?,?,?,?);";
@@ -451,10 +467,12 @@ void SpaceStore::AppendTrace(const AgentTraceRow& row) {
 }
 
 std::vector<AgentTraceRow> SpaceStore::ListTracesForSpace(
-    const std::string& space_id, int limit) const {
+    const std::string& space_id,
+    int limit) const {
   std::lock_guard<std::mutex> lock(read_mutex_);
   std::vector<AgentTraceRow> result;
-  if (!db_) return result;
+  if (!db_)
+    return result;
   const char* sql =
       "SELECT id, space_id, graph_id, event_type, payload, ts "
       "FROM agent_traces WHERE space_id=? ORDER BY id DESC LIMIT ?;";
@@ -467,7 +485,8 @@ std::vector<AgentTraceRow> SpaceStore::ListTracesForSpace(
     row.id = sqlite3_column_int64(stmt, 0);
     row.space_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
     row.graph_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-    row.event_type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+    row.event_type =
+        reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
     row.payload = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
     row.ts = sqlite3_column_int64(stmt, 5);
     result.push_back(std::move(row));
@@ -482,7 +501,8 @@ std::vector<AgentTraceRow> SpaceStore::ListTracesForSpace(
 // ---------------------------------------------------------------------------
 
 bool SpaceStore::SetLlmConfig(const LlmConfig& config) {
-  if (!db_) return false;
+  if (!db_)
+    return false;
   const char* sql =
       "INSERT OR REPLACE INTO kv_config (key, value) VALUES (?,?);";
   auto exec = [&](const std::string& key, const std::string& val) {
@@ -501,22 +521,30 @@ bool SpaceStore::SetLlmConfig(const LlmConfig& config) {
 LlmConfig SpaceStore::GetLlmConfig() const {
   std::lock_guard<std::mutex> lock(read_mutex_);
   LlmConfig config;
-  if (!db_) return config;
-  const char* sql = "SELECT key, value FROM kv_config WHERE key IN ('llm.base_url','llm.api_key');";
+  if (!db_)
+    return config;
+  const char* sql =
+      "SELECT key, value FROM kv_config WHERE key IN "
+      "('llm.base_url','llm.api_key');";
   sqlite3_stmt* stmt = nullptr;
   sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
   while (sqlite3_step(stmt) == SQLITE_ROW) {
-    const std::string key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-    const std::string val = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-    if (key == "llm.base_url") config.base_url = val;
-    else if (key == "llm.api_key") config.api_key = val;
+    const std::string key =
+        reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+    const std::string val =
+        reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+    if (key == "llm.base_url")
+      config.base_url = val;
+    else if (key == "llm.api_key")
+      config.api_key = val;
   }
   sqlite3_finalize(stmt);
   return config;
 }
 
 bool SpaceStore::SetKv(const std::string& key, const std::string& value) {
-  if (!db_) return false;
+  if (!db_)
+    return false;
   const char* sql =
       "INSERT OR REPLACE INTO kv_config (key, value) VALUES (?,?);";
   sqlite3_stmt* stmt = nullptr;
@@ -532,7 +560,8 @@ bool SpaceStore::SetKv(const std::string& key, const std::string& value) {
 
 std::string SpaceStore::GetKv(const std::string& key) const {
   std::lock_guard<std::mutex> lock(read_mutex_);
-  if (!db_) return std::string();
+  if (!db_)
+    return std::string();
   const char* sql = "SELECT value FROM kv_config WHERE key = ?;";
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -541,9 +570,10 @@ std::string SpaceStore::GetKv(const std::string& key) const {
   BindText(stmt, 1, key);
   std::string out;
   if (sqlite3_step(stmt) == SQLITE_ROW) {
-    const auto* txt = reinterpret_cast<const char*>(
-        sqlite3_column_text(stmt, 0));
-    if (txt) out = txt;
+    const auto* txt =
+        reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+    if (txt)
+      out = txt;
   }
   sqlite3_finalize(stmt);
   return out;

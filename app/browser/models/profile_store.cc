@@ -35,7 +35,8 @@ ProfileStore::ProfileStore(std::filesystem::path home_dir)
 // ---------------------------------------------------------------------------
 
 void ProfileStore::EnsureDefaultProfile() {
-  if (profiles_dir_.empty()) return;
+  if (profiles_dir_.empty())
+    return;
   std::error_code ec;
   std::filesystem::create_directories(profiles_dir_, ec);
   const auto path = ProfilePath(kDefaultId);
@@ -59,9 +60,11 @@ std::vector<ProfileRecord> ProfileStore::List() const {
   }
   for (const auto& entry :
        std::filesystem::directory_iterator(profiles_dir_, ec)) {
-    if (ec) break;
+    if (ec)
+      break;
     const auto& p = entry.path();
-    if (p.extension() != ".yaml") continue;
+    if (p.extension() != ".yaml")
+      continue;
     const std::string id = p.stem().string();
     try {
       result.push_back(ParseYaml(p, id));
@@ -70,11 +73,14 @@ std::vector<ProfileRecord> ProfileStore::List() const {
     }
   }
   // Stable order: default first, then alphabetical.
-  std::sort(result.begin(), result.end(), [](const ProfileRecord& a, const ProfileRecord& b) {
-    if (a.id == kDefaultId) return true;
-    if (b.id == kDefaultId) return false;
-    return a.id < b.id;
-  });
+  std::sort(result.begin(), result.end(),
+            [](const ProfileRecord& a, const ProfileRecord& b) {
+              if (a.id == kDefaultId)
+                return true;
+              if (b.id == kDefaultId)
+                return false;
+              return a.id < b.id;
+            });
   return result;
 }
 
@@ -101,9 +107,11 @@ std::optional<ProfileRecord> ProfileStore::Get(const std::string& id) const {
 
 ProfileStoreError ProfileStore::Create(const ProfileRules& rules,
                                        std::string* out_id) {
-  if (profiles_dir_.empty()) return ProfileStoreError::kIoError;
+  if (profiles_dir_.empty())
+    return ProfileStoreError::kIoError;
   const std::string id = Slugify(rules.name);
-  if (id.empty()) return ProfileStoreError::kIoError;
+  if (id.empty())
+    return ProfileStoreError::kIoError;
 
   const auto path = ProfilePath(id);
   std::error_code ec;
@@ -113,12 +121,12 @@ ProfileStoreError ProfileStore::Create(const ProfileRules& rules,
   }
 
   ProfileRecord rec;
-  rec.id                = id;
-  rec.name              = rules.name;
-  rec.allow_network     = rules.allow_network;
-  rec.extra_read_paths  = rules.extra_read_paths;
+  rec.id = id;
+  rec.name = rules.name;
+  rec.allow_network = rules.allow_network;
+  rec.extra_read_paths = rules.extra_read_paths;
   rec.extra_write_paths = rules.extra_write_paths;
-  rec.extra_deny_paths  = rules.extra_deny_paths;
+  rec.extra_deny_paths = rules.extra_deny_paths;
 
   try {
     WriteYaml(path, rec);
@@ -126,7 +134,8 @@ ProfileStoreError ProfileStore::Create(const ProfileRules& rules,
     return ProfileStoreError::kIoError;
   }
 
-  if (out_id) *out_id = id;
+  if (out_id)
+    *out_id = id;
   return ProfileStoreError::kOk;
 }
 
@@ -136,7 +145,8 @@ ProfileStoreError ProfileStore::Create(const ProfileRules& rules,
 
 ProfileStoreError ProfileStore::Update(const std::string& id,
                                        const ProfileRules& rules) {
-  if (profiles_dir_.empty()) return ProfileStoreError::kIoError;
+  if (profiles_dir_.empty())
+    return ProfileStoreError::kIoError;
   const auto path = ProfilePath(id);
   std::error_code ec;
   if (!std::filesystem::exists(path, ec)) {
@@ -144,12 +154,12 @@ ProfileStoreError ProfileStore::Update(const std::string& id,
   }
 
   ProfileRecord rec;
-  rec.id                = id;
-  rec.name              = rules.name;
-  rec.allow_network     = rules.allow_network;
-  rec.extra_read_paths  = rules.extra_read_paths;
+  rec.id = id;
+  rec.name = rules.name;
+  rec.allow_network = rules.allow_network;
+  rec.extra_read_paths = rules.extra_read_paths;
   rec.extra_write_paths = rules.extra_write_paths;
-  rec.extra_deny_paths  = rules.extra_deny_paths;
+  rec.extra_deny_paths = rules.extra_deny_paths;
 
   try {
     WriteYaml(path, rec);
@@ -166,11 +176,14 @@ ProfileStoreError ProfileStore::Update(const std::string& id,
 ProfileStoreError ProfileStore::Delete(
     const std::string& id,
     const std::vector<std::string>& space_profile_ids) {
-  if (profiles_dir_.empty()) return ProfileStoreError::kIoError;
-  if (id == kDefaultId) return ProfileStoreError::kCannotDeleteDefault;
+  if (profiles_dir_.empty())
+    return ProfileStoreError::kIoError;
+  if (id == kDefaultId)
+    return ProfileStoreError::kCannotDeleteDefault;
 
   for (const auto& pid : space_profile_ids) {
-    if (pid == id) return ProfileStoreError::kInUse;
+    if (pid == id)
+      return ProfileStoreError::kInUse;
   }
 
   const auto path = ProfilePath(id);
@@ -192,50 +205,55 @@ std::filesystem::path ProfileStore::ProfilePath(const std::string& id) const {
 }
 
 ProfileRecord ProfileStore::ParseYaml(const std::filesystem::path& path,
-                                       const std::string& id) const {
+                                      const std::string& id) const {
   YAML::Node doc = YAML::LoadFile(path.string());
   ProfileRecord rec;
   rec.id = id;
   rec.name = doc["name"] ? doc["name"].as<std::string>() : id;
-  rec.allow_network = doc["allow_network"] ? doc["allow_network"].as<bool>() : true;
+  rec.allow_network =
+      doc["allow_network"] ? doc["allow_network"].as<bool>() : true;
 
   auto load_list = [&](const char* key, std::vector<std::string>& out) {
     if (doc[key] && doc[key].IsSequence()) {
       for (const auto& item : doc[key]) {
         const std::string v = item.as<std::string>();
-        if (!v.empty()) out.push_back(v);
+        if (!v.empty())
+          out.push_back(v);
       }
     }
   };
-  load_list("extra_read_paths",  rec.extra_read_paths);
+  load_list("extra_read_paths", rec.extra_read_paths);
   load_list("extra_write_paths", rec.extra_write_paths);
-  load_list("extra_deny_paths",  rec.extra_deny_paths);
+  load_list("extra_deny_paths", rec.extra_deny_paths);
   return rec;
 }
 
 void ProfileStore::WriteYaml(const std::filesystem::path& path,
-                              const ProfileRecord& rec) const {
+                             const ProfileRecord& rec) const {
   YAML::Emitter out;
   out << YAML::BeginMap;
-  out << YAML::Key << "id"            << YAML::Value << rec.id;
-  out << YAML::Key << "name"          << YAML::Value << rec.name;
+  out << YAML::Key << "id" << YAML::Value << rec.id;
+  out << YAML::Key << "name" << YAML::Value << rec.name;
   out << YAML::Key << "allow_network" << YAML::Value << rec.allow_network;
 
   auto emit_list = [&](const char* key, const std::vector<std::string>& v) {
     out << YAML::Key << key << YAML::Value << YAML::BeginSeq;
-    for (const auto& s : v) out << s;
+    for (const auto& s : v)
+      out << s;
     out << YAML::EndSeq;
   };
-  emit_list("extra_read_paths",  rec.extra_read_paths);
+  emit_list("extra_read_paths", rec.extra_read_paths);
   emit_list("extra_write_paths", rec.extra_write_paths);
-  emit_list("extra_deny_paths",  rec.extra_deny_paths);
+  emit_list("extra_deny_paths", rec.extra_deny_paths);
   out << YAML::EndMap;
 
   std::ofstream f(path, std::ios::binary | std::ios::trunc);
-  if (!f) throw std::runtime_error("cannot open for write: " + path.string());
+  if (!f)
+    throw std::runtime_error("cannot open for write: " + path.string());
   f << out.c_str();
   f.close();
-  if (!f) throw std::runtime_error("write failed: " + path.string());
+  if (!f)
+    throw std::runtime_error("write failed: " + path.string());
 }
 
 // static
@@ -253,7 +271,8 @@ std::string ProfileStore::Slugify(const std::string& name) {
     }
   }
   // Trim trailing dash.
-  while (!slug.empty() && slug.back() == '-') slug.pop_back();
+  while (!slug.empty() && slug.back() == '-')
+    slug.pop_back();
   return slug;
 }
 

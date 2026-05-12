@@ -29,8 +29,8 @@ pub use gitignore::GitignoreHelper;
 pub use mention_parser::{parse_mentions, ParsedMention};
 pub use registry::FlowRegistry;
 pub use runtime::{
-    AvailableDoc, EventEmitter, FlowRunDocumentEntry, FlowRunState, FlowRunStatus,
-    FlowRuntime, InvocationContext, InvocationTrigger, NodeRunState, PortStatus,
+    AvailableDoc, EventEmitter, FlowRunDocumentEntry, FlowRunState, FlowRunStatus, FlowRuntime,
+    InvocationContext, InvocationTrigger, NodeRunState, PortStatus,
 };
 pub use trace::{TraceEvent, TraceKind, TraceWriter};
 pub use watcher::FsWatcher;

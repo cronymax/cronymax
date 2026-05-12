@@ -44,9 +44,7 @@ export function DiffCard({ event }: Props) {
           ))}
         </pre>
       ) : (
-        <div className="px-3 py-2 text-xs opacity-60">
-          File written (no diff available)
-        </div>
+        <div className="px-3 py-2 text-xs opacity-60">File written (no diff available)</div>
       )}
     </div>
   );

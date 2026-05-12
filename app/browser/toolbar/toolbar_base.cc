@@ -25,7 +25,8 @@ class FnButtonDelegate : public CefButtonDelegate {
  public:
   explicit FnButtonDelegate(std::function<void()> fn) : fn_(std::move(fn)) {}
   void OnButtonPressed(CefRefPtr<CefButton>) override {
-    if (fn_) fn_();
+    if (fn_)
+      fn_();
   }
 
  private:
@@ -80,7 +81,8 @@ CefRefPtr<CefPanel> ToolbarBase::Build(ThemeContext* ctx,
   // Create middle widget; it will be colored properly when Register→ApplyTheme
   // fires below, but we need a placeholder chrome to size/create it now.
   ThemeChrome placeholder_chrome;
-  if (ctx) placeholder_chrome = ctx->GetCurrentChrome();
+  if (ctx)
+    placeholder_chrome = ctx->GetCurrentChrome();
   CefRefPtr<CefView> mid_widget = CreateMiddleWidget(placeholder_chrome);
   if (mid_widget) {
     middle_->AddChildView(mid_widget);
@@ -92,7 +94,8 @@ CefRefPtr<CefPanel> ToolbarBase::Build(ThemeContext* ctx,
   }
 
   // Subscribe to theme; seeds ApplyTheme immediately.
-  if (ctx) Register(ctx);
+  if (ctx)
+    Register(ctx);
 
   return root_;
 }
@@ -101,16 +104,17 @@ CefRefPtr<CefPanel> ToolbarBase::Build(ThemeContext* ctx,
 // Action management
 // ---------------------------------------------------------------------------
 
-ToolbarBase::ActionHandle ToolbarBase::AddAction(CefRefPtr<CefPanel> slot,
-                                                  IconId icon,
-                                                  std::string_view tooltip,
-                                                  std::function<void()> callback) {
-  auto btn = MakeIconButton(new FnButtonDelegate(std::move(callback)),
-                            icon, tooltip);
+ToolbarBase::ActionHandle ToolbarBase::AddAction(
+    CefRefPtr<CefPanel> slot,
+    IconId icon,
+    std::string_view tooltip,
+    std::function<void()> callback) {
+  auto btn =
+      MakeIconButton(new FnButtonDelegate(std::move(callback)), icon, tooltip);
   IconRegistry::ApplyToButton(btn, icon, dark_mode_);
 
-  auto wrapper = CefPanel::CreatePanel(
-      new SizedPanelDelegate(CefSize(kBtnSz, kBtnSz)));
+  auto wrapper =
+      CefPanel::CreatePanel(new SizedPanelDelegate(CefSize(kBtnSz, kBtnSz)));
   wrapper->SetToFillLayout();
   wrapper->AddChildView(btn);
   slot->AddChildView(wrapper);
@@ -126,18 +130,23 @@ ToolbarBase::ActionHandle ToolbarBase::AddAction(CefRefPtr<CefPanel> slot,
 }
 
 ToolbarBase::ActionHandle ToolbarBase::AddLeadingAction(
-    IconId icon, std::string_view tooltip, std::function<void()> callback) {
-  if (!leading_) return kInvalidHandle;
+    IconId icon,
+    std::string_view tooltip,
+    std::function<void()> callback) {
+  if (!leading_)
+    return kInvalidHandle;
 
-  auto btn = MakeIconButton(new FnButtonDelegate(std::move(callback)),
-                            icon, tooltip);
-  if (current_bg_) btn->SetBackgroundColor(current_bg_);
+  auto btn =
+      MakeIconButton(new FnButtonDelegate(std::move(callback)), icon, tooltip);
+  if (current_bg_)
+    btn->SetBackgroundColor(current_bg_);
   IconRegistry::ApplyToButton(btn, icon, dark_mode_);
 
-  auto wrapper = CefPanel::CreatePanel(
-      new SizedPanelDelegate(CefSize(kBtnSz, kBtnSz)));
+  auto wrapper =
+      CefPanel::CreatePanel(new SizedPanelDelegate(CefSize(kBtnSz, kBtnSz)));
   wrapper->SetToFillLayout();
-  if (current_bg_) wrapper->SetBackgroundColor(current_bg_);
+  if (current_bg_)
+    wrapper->SetBackgroundColor(current_bg_);
   wrapper->AddChildView(btn);
   leading_->AddChildView(wrapper);
 
@@ -153,18 +162,23 @@ ToolbarBase::ActionHandle ToolbarBase::AddLeadingAction(
 }
 
 ToolbarBase::ActionHandle ToolbarBase::AddTrailingAction(
-    IconId icon, std::string_view tooltip, std::function<void()> callback) {
-  if (!trailing_) return kInvalidHandle;
+    IconId icon,
+    std::string_view tooltip,
+    std::function<void()> callback) {
+  if (!trailing_)
+    return kInvalidHandle;
 
-  auto btn = MakeIconButton(new FnButtonDelegate(std::move(callback)),
-                            icon, tooltip);
-  if (current_bg_) btn->SetBackgroundColor(current_bg_);
+  auto btn =
+      MakeIconButton(new FnButtonDelegate(std::move(callback)), icon, tooltip);
+  if (current_bg_)
+    btn->SetBackgroundColor(current_bg_);
   IconRegistry::ApplyToButton(btn, icon, dark_mode_);
 
-  auto wrapper = CefPanel::CreatePanel(
-      new SizedPanelDelegate(CefSize(kBtnSz, kBtnSz)));
+  auto wrapper =
+      CefPanel::CreatePanel(new SizedPanelDelegate(CefSize(kBtnSz, kBtnSz)));
   wrapper->SetToFillLayout();
-  if (current_bg_) wrapper->SetBackgroundColor(current_bg_);
+  if (current_bg_)
+    wrapper->SetBackgroundColor(current_bg_);
   wrapper->AddChildView(btn);
   trailing_->AddChildView(wrapper);
 
@@ -174,13 +188,15 @@ ToolbarBase::ActionHandle ToolbarBase::AddTrailingAction(
     }
   }
 
-  ActionHandle handle = kTrailingBase + static_cast<int>(trailing_actions_.size());
+  ActionHandle handle =
+      kTrailingBase + static_cast<int>(trailing_actions_.size());
   trailing_actions_.push_back({icon, wrapper, btn});
   return handle;
 }
 
 ToolbarBase::ActionEntry* ToolbarBase::EntryForHandle(ActionHandle handle) {
-  if (handle == kInvalidHandle) return nullptr;
+  if (handle == kInvalidHandle)
+    return nullptr;
   if (handle >= kTrailingBase) {
     int idx = handle - kTrailingBase;
     if (idx >= 0 && idx < static_cast<int>(trailing_actions_.size()))
@@ -194,14 +210,16 @@ ToolbarBase::ActionEntry* ToolbarBase::EntryForHandle(ActionHandle handle) {
 
 void ToolbarBase::SetActionEnabled(ActionHandle handle, bool enabled) {
   if (auto* e = EntryForHandle(handle)) {
-    if (e->btn) e->btn->SetEnabled(enabled);
+    if (e->btn)
+      e->btn->SetEnabled(enabled);
   }
 }
 
 void ToolbarBase::UpdateActionIcon(ActionHandle handle, IconId new_icon) {
   if (auto* e = EntryForHandle(handle)) {
     e->icon = new_icon;
-    if (e->btn) IconRegistry::ApplyToButton(e->btn, new_icon, dark_mode_);
+    if (e->btn)
+      IconRegistry::ApplyToButton(e->btn, new_icon, dark_mode_);
   }
 }
 
@@ -217,14 +235,16 @@ void ToolbarBase::UpdateActionBackgrounds(cef_color_t bg, bool dark_mode) {
       e.btn->SetBackgroundColor(bg);
       IconRegistry::ApplyToButton(e.btn, e.icon, dark_mode_);
     }
-    if (e.wrapper) e.wrapper->SetBackgroundColor(bg);
+    if (e.wrapper)
+      e.wrapper->SetBackgroundColor(bg);
   }
   for (auto& e : trailing_actions_) {
     if (e.btn) {
       e.btn->SetBackgroundColor(bg);
       IconRegistry::ApplyToButton(e.btn, e.icon, dark_mode_);
     }
-    if (e.wrapper) e.wrapper->SetBackgroundColor(bg);
+    if (e.wrapper)
+      e.wrapper->SetBackgroundColor(bg);
   }
 }
 
@@ -237,10 +257,14 @@ void ToolbarBase::ApplyTheme(const ThemeChrome& chrome) {
   current_bg_ = bg;
   dark_mode_ = ((chrome.text_title >> 8) & 0xFF) > 0x80;
 
-  if (root_)     root_->SetBackgroundColor(bg);
-  if (leading_)  leading_->SetBackgroundColor(bg);
-  if (middle_)   middle_->SetBackgroundColor(bg);
-  if (trailing_) trailing_->SetBackgroundColor(bg);
+  if (root_)
+    root_->SetBackgroundColor(bg);
+  if (leading_)
+    leading_->SetBackgroundColor(bg);
+  if (middle_)
+    middle_->SetBackgroundColor(bg);
+  if (trailing_)
+    trailing_->SetBackgroundColor(bg);
 
   UpdateActionBackgrounds(bg, dark_mode_);
 

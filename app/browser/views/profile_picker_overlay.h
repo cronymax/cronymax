@@ -17,9 +17,9 @@
 #include <string>
 #include <vector>
 
+#include "browser/models/profile_store.h"
 #include "browser/models/theme_aware_view.h"
 #include "browser/models/view_context.h"
-#include "browser/models/profile_store.h"
 #include "include/views/cef_label_button.h"
 #include "include/views/cef_menu_button.h"
 #include "include/views/cef_overlay_controller.h"
@@ -34,13 +34,15 @@ class ProfilePickerOverlay : public ThemeAwareView {
   struct Host {
     // Runs the native folder-picker dialog; calls callback with the chosen
     // path (empty string if cancelled).
-    std::function<void(std::function<void(const std::string&)>)> run_file_dialog;
+    std::function<void(std::function<void(const std::string&)>)>
+        run_file_dialog;
     // Returns all available profiles.
     std::function<std::vector<ProfileRecord>()> get_profiles;
     // Creates a new Space at root_path with the given profile_id.
     // Returns the new Space JSON string on success, empty string on failure.
     std::function<std::string(const std::string& path,
-                              const std::string& profile_id)> create_space;
+                              const std::string& profile_id)>
+        create_space;
     // Broadcast the space.created event to all panels.
     std::function<void(const std::string& space_json)> send_space_created_event;
   };
@@ -72,9 +74,9 @@ class ProfilePickerOverlay : public ThemeAwareView {
   // Show an error message; pass empty string to hide.
   void ShowError(const std::string& msg);
 
-  ThemeContext*        theme_ctx_;
+  ThemeContext* theme_ctx_;
   CefRefPtr<CefWindow> main_win_;
-  Host                 host_;
+  Host host_;
 
   // Overlay controllers (pre-allocated in Build).
   CefRefPtr<CefOverlayController> scrim_oc_;
@@ -84,9 +86,9 @@ class ProfilePickerOverlay : public ThemeAwareView {
   CefRefPtr<CefPanel> card_panel_;
 
   // Interactive child views inside the card.
-  CefRefPtr<CefLabelButton> title_btn_;    // static title — themed in ApplyTheme
-  CefRefPtr<CefTextfield>   path_field_;
-  CefRefPtr<CefMenuButton>  profile_btn_;
+  CefRefPtr<CefLabelButton> title_btn_;  // static title — themed in ApplyTheme
+  CefRefPtr<CefTextfield> path_field_;
+  CefRefPtr<CefMenuButton> profile_btn_;
   CefRefPtr<CefLabelButton> browse_btn_;
   CefRefPtr<CefLabelButton> open_btn_;
   CefRefPtr<CefLabelButton> cancel_btn_;

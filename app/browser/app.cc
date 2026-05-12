@@ -28,7 +28,7 @@ void App::OnContextInitialized() {
 }
 
 void App::OnBeforeCommandLineProcessing(
-    const CefString & /*process_type*/,
+    const CefString& /*process_type*/,
     CefRefPtr<CefCommandLine> command_line) {
   // ES module imports are CORS-gated. From a file:// origin Chromium has
   // no Origin header so every `import "./other.js"` is rejected, which
@@ -60,4 +60,4 @@ bool App::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
       browser, frame, source_process, message);
 }
 
-} // namespace cronymax
+}  // namespace cronymax

@@ -13,8 +13,8 @@
 // rather than CGContext drawing.  CA renders the shadow at WindowServer
 // compositing time — ABOVE CEF's IOSurface layers, so it is always visible.
 //
-// Why CGContext approaches (drawRect: + CGContextSetShadowWithColor / kCGBlendModeClear)
-// failed in earlier iterations:
+// Why CGContext approaches (drawRect: + CGContextSetShadowWithColor /
+// kCGBlendModeClear) failed in earlier iterations:
 //
 //   1. CGContextSetShadowWithColor generates a SOFTWARE shadow written into
 //      the layer's own bitmap backing store.  That bitmap lives in the AppKit
@@ -46,12 +46,16 @@
   if (self) {
     self.wantsLayer = YES;
     self.layer.backgroundColor = [NSColor clearColor].CGColor;
-    self.layer.masksToBounds   = NO;
+    self.layer.masksToBounds = NO;
   }
   return self;
 }
-- (BOOL)isOpaque { return NO; }
-- (void)dealloc { [self removeFromSuperview]; }
+- (BOOL)isOpaque {
+  return NO;
+}
+- (void)dealloc {
+  [self removeFromSuperview];
+}
 @end
 
 // ---------------------------------------------------------------------------
@@ -88,12 +92,16 @@
   if (self) {
     self.wantsLayer = YES;
     self.layer.backgroundColor = [NSColor clearColor].CGColor;
-    self.layer.masksToBounds   = NO;
+    self.layer.masksToBounds = NO;
   }
   return self;
 }
-- (BOOL)isOpaque { return NO; }
-- (void)dealloc { [self removeFromSuperview]; }
+- (BOOL)isOpaque {
+  return NO;
+}
+- (void)dealloc {
+  [self removeFromSuperview];
+}
 @end
 
 static char kPopoverShadowOwnerKey;
@@ -105,25 +113,30 @@ namespace {
 
 CACornerMask ToCACornerMask(int mask) {
   CACornerMask out = 0;
-  if (mask & kCornerTopLeft)     out |= kCALayerMinXMaxYCorner;
-  if (mask & kCornerTopRight)    out |= kCALayerMaxXMaxYCorner;
-  if (mask & kCornerBottomLeft)  out |= kCALayerMinXMinYCorner;
-  if (mask & kCornerBottomRight) out |= kCALayerMaxXMinYCorner;
+  if (mask & kCornerTopLeft)
+    out |= kCALayerMinXMaxYCorner;
+  if (mask & kCornerTopRight)
+    out |= kCALayerMaxXMaxYCorner;
+  if (mask & kCornerBottomLeft)
+    out |= kCALayerMinXMinYCorner;
+  if (mask & kCornerBottomRight)
+    out |= kCALayerMaxXMinYCorner;
   return out;
 }
 
 NSColor* ColorFromArgb(cef_color_t argb) {
   CGFloat a = ((argb >> 24) & 0xFF) / 255.0;
   CGFloat r = ((argb >> 16) & 0xFF) / 255.0;
-  CGFloat g = ((argb >>  8) & 0xFF) / 255.0;
-  CGFloat b = ((argb >>  0) & 0xFF) / 255.0;
+  CGFloat g = ((argb >> 8) & 0xFF) / 255.0;
+  CGFloat b = ((argb >> 0) & 0xFF) / 255.0;
   return [NSColor colorWithSRGBRed:r green:g blue:b alpha:a];
 }
 
 // Build a CGPath (in CALayer non-flipped coordinates) for a rectangle
 // with per-corner rounding driven by a CACornerMask. Ownership: caller
 // must CGPathRelease the returned path.
-CGPathRef RoundedRectPathForLayer(CGRect r, CGFloat radius,
+CGPathRef RoundedRectPathForLayer(CGRect r,
+                                  CGFloat radius,
                                   CACornerMask corners) {
   // CA non-flipped: minY=bottom, maxY=top.
   const CGFloat blr = (corners & kCALayerMinXMinYCorner) ? radius : 0;  // BL
@@ -137,20 +150,28 @@ CGPathRef RoundedRectPathForLayer(CGRect r, CGFloat radius,
   CGPathMoveToPoint(p, NULL, minX + tlr, maxY);
   // Top edge → top-right corner.
   CGPathAddLineToPoint(p, NULL, maxX - trr, maxY);
-  if (trr > 0) CGPathAddArcToPoint(p, NULL, maxX, maxY, maxX, maxY - trr, trr);
-  else         CGPathAddLineToPoint(p, NULL, maxX, maxY);
+  if (trr > 0)
+    CGPathAddArcToPoint(p, NULL, maxX, maxY, maxX, maxY - trr, trr);
+  else
+    CGPathAddLineToPoint(p, NULL, maxX, maxY);
   // Right edge → bottom-right corner.
   CGPathAddLineToPoint(p, NULL, maxX, minY + brr);
-  if (brr > 0) CGPathAddArcToPoint(p, NULL, maxX, minY, maxX - brr, minY, brr);
-  else         CGPathAddLineToPoint(p, NULL, maxX, minY);
+  if (brr > 0)
+    CGPathAddArcToPoint(p, NULL, maxX, minY, maxX - brr, minY, brr);
+  else
+    CGPathAddLineToPoint(p, NULL, maxX, minY);
   // Bottom edge → bottom-left corner.
   CGPathAddLineToPoint(p, NULL, minX + blr, minY);
-  if (blr > 0) CGPathAddArcToPoint(p, NULL, minX, minY, minX, minY + blr, blr);
-  else         CGPathAddLineToPoint(p, NULL, minX, minY);
+  if (blr > 0)
+    CGPathAddArcToPoint(p, NULL, minX, minY, minX, minY + blr, blr);
+  else
+    CGPathAddLineToPoint(p, NULL, minX, minY);
   // Left edge → top-left corner.
   CGPathAddLineToPoint(p, NULL, minX, maxY - tlr);
-  if (tlr > 0) CGPathAddArcToPoint(p, NULL, minX, maxY, minX + tlr, maxY, tlr);
-  else         CGPathAddLineToPoint(p, NULL, minX, maxY);
+  if (tlr > 0)
+    CGPathAddArcToPoint(p, NULL, minX, maxY, minX + tlr, maxY, tlr);
+  else
+    CGPathAddLineToPoint(p, NULL, minX, maxY);
   CGPathCloseSubpath(p);
   return p;
 }
@@ -166,7 +187,9 @@ CGPathRef RoundedRectPathForLayer(CGRect r, CGFloat radius,
 @end
 
 @implementation CronymaxDragVisualEffectView
-- (BOOL)mouseDownCanMoveWindow { return YES; }
+- (BOOL)mouseDownCanMoveWindow {
+  return YES;
+}
 @end
 
 namespace cronymax {
@@ -175,7 +198,8 @@ void StyleOverlayBrowserView(void* nsview_ptr,
                              double radius,
                              int corner_mask,
                              bool with_shadow) {
-  if (!nsview_ptr) return;
+  if (!nsview_ptr)
+    return;
   NSView* view = (__bridge NSView*)nsview_ptr;
 
   const CACornerMask cm = ToCACornerMask(corner_mask);
@@ -198,9 +222,7 @@ void StyleOverlayBrowserView(void* nsview_ptr,
 
   // Clear every intermediate CALayer background so the corner regions exposed
   // by the mask appear transparent rather than filled with opaque gray.
-  for (NSView* anc = view;
-       anc && anc != windowContent;
-       anc = anc.superview) {
+  for (NSView* anc = view; anc && anc != windowContent; anc = anc.superview) {
     anc.wantsLayer = YES;
     if (CALayer* al = anc.layer) {
       al.backgroundColor = [NSColor clearColor].CGColor;
@@ -246,14 +268,15 @@ void StyleOverlayBrowserView(void* nsview_ptr,
         objc_getAssociatedObject(overlayRoot, &kPopoverShadowOwnerKey);
 
     if (!shadowView || shadowView.superview != windowContent) {
-      if (shadowView) [shadowView removeFromSuperview];
-      shadowView = [[CronymaxPopoverShadowView alloc]
-                        initWithFrame:overlayRoot.frame];
+      if (shadowView)
+        [shadowView removeFromSuperview];
+      shadowView =
+          [[CronymaxPopoverShadowView alloc] initWithFrame:overlayRoot.frame];
       [windowContent addSubview:shadowView
-                      positioned:NSWindowBelow
-                      relativeTo:overlayRoot];
-      objc_setAssociatedObject(overlayRoot, &kPopoverShadowOwnerKey,
-                               shadowView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                     positioned:NSWindowBelow
+                     relativeTo:overlayRoot];
+      objc_setAssociatedObject(overlayRoot, &kPopoverShadowOwnerKey, shadowView,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
     // Keep the shadow layer in sync with the overlay frame.
@@ -262,13 +285,12 @@ void StyleOverlayBrowserView(void* nsview_ptr,
     if (CALayer* sl = shadowView.layer) {
       sl.masksToBounds = NO;
       sl.shadowOpacity = 0.55f;
-      sl.shadowRadius  = 20.0f;
-      sl.shadowOffset  = CGSizeMake(0, -6);
-      sl.shadowColor   = [NSColor blackColor].CGColor;
+      sl.shadowRadius = 20.0f;
+      sl.shadowOffset = CGSizeMake(0, -6);
+      sl.shadowColor = [NSColor blackColor].CGColor;
       // shadowPath is in the layer's own (non-flipped) coordinate system.
       // Bounds origin is always {0,0}; size matches the frame dimensions.
-      const CGRect sb = CGRectMake(0, 0,
-                                   overlayRoot.frame.size.width,
+      const CGRect sb = CGRectMake(0, 0, overlayRoot.frame.size.width,
                                    overlayRoot.frame.size.height);
       CGPathRef sp = CGPathCreateWithRoundedRect(sb, r, r, NULL);
       sl.shadowPath = sp;
@@ -278,12 +300,17 @@ void StyleOverlayBrowserView(void* nsview_ptr,
 }
 
 void ShowPopoverScrim(void* main_window_nsview_ptr,
-                     int pop_x, int pop_y, int pop_w, int pop_h,
-                     double corner_radius) {
-  if (!main_window_nsview_ptr) return;
+                      int pop_x,
+                      int pop_y,
+                      int pop_w,
+                      int pop_h,
+                      double corner_radius) {
+  if (!main_window_nsview_ptr)
+    return;
   NSView* root = (__bridge NSView*)main_window_nsview_ptr;
   NSView* wc = root.window ? root.window.contentView : root;
-  if (!wc) return;
+  if (!wc)
+    return;
 
   CronymaxPopoverScrimView* scrim =
       objc_getAssociatedObject(wc, &kPopoverScrimKey);
@@ -302,43 +329,49 @@ void ShowPopoverScrim(void* main_window_nsview_ptr,
   // window height because the app uses NSWindowStyleMaskFullSizeContentView.
   NSRect wf = wc.bounds;
   NSRect f;
-  f.origin.x    = (CGFloat)pop_x;
-  f.size.width  = (CGFloat)pop_w;
+  f.origin.x = (CGFloat)pop_x;
+  f.size.width = (CGFloat)pop_w;
   f.size.height = (CGFloat)pop_h;
-  f.origin.y    = NSHeight(wf) - (CGFloat)pop_y - (CGFloat)pop_h;
-  scrim.frame   = NSIntersectionRect(f, wf);  // clamp to visible window area
-  scrim.hidden  = NO;
+  f.origin.y = NSHeight(wf) - (CGFloat)pop_y - (CGFloat)pop_h;
+  scrim.frame = NSIntersectionRect(f, wf);  // clamp to visible window area
+  scrim.hidden = NO;
 
   if (CALayer* sl = scrim.layer) {
-    sl.shadowOpacity  = 0.0f;
+    sl.shadowOpacity = 0.0f;
     sl.backgroundColor = [NSColor colorWithWhite:0 alpha:0.25f].CGColor;
     // Round the scrim corners to match the card corner radius so the
     // bg_body-colored corner punch views below show through at each corner,
     // preserving the rounded-card appearance while the overlay is visible.
-    sl.cornerRadius   = (CGFloat)corner_radius;
-    sl.masksToBounds  = (corner_radius > 0.0);
+    sl.cornerRadius = (CGFloat)corner_radius;
+    sl.masksToBounds = (corner_radius > 0.0);
   }
 }
 
 void HidePopoverScrim(void* window_nsview_ptr) {
-  if (!window_nsview_ptr) return;
+  if (!window_nsview_ptr)
+    return;
   NSView* root = (__bridge NSView*)window_nsview_ptr;
   NSView* wc = root.window ? root.window.contentView : root;
   CronymaxPopoverScrimView* scrim =
       objc_getAssociatedObject(wc, &kPopoverScrimKey);
-  if (scrim) [scrim removeFromSuperview];
+  if (scrim)
+    [scrim removeFromSuperview];
 }
 
 void* CaptureLastChildNSView(void* main_nsview_ptr) {
-  if (!main_nsview_ptr) return nullptr;
+  if (!main_nsview_ptr)
+    return nullptr;
   NSView* contentView = (__bridge NSView*)main_nsview_ptr;
   NSWindow* mainWin = contentView.window;
-  if (!mainWin) return nullptr;
+  if (!mainWin)
+    return nullptr;
   NSArray<NSWindow*>* children = mainWin.childWindows;
-  if (children.count == 0) return nullptr;
+  if (children.count == 0)
+    return nullptr;
   NSWindow* overlay = children.lastObject;
   NSView* overlayContent = overlay.contentView;
-  if (!overlayContent) return nullptr;
+  if (!overlayContent)
+    return nullptr;
   NSArray<NSView*>* subs = overlayContent.subviews;
   // Return the widget root NSView (direct subview of overlay contentView).
   // StyleOverlayBrowserView walks up from this to find the overlay root.
@@ -349,7 +382,8 @@ void StyleOverlayPanel(void* nsview_ptr,
                        double radius,
                        int corner_mask,
                        cef_color_t bg_color) {
-  if (!nsview_ptr) return;
+  if (!nsview_ptr)
+    return;
   NSView* view = (__bridge NSView*)nsview_ptr;
 
   // Walk up to find the overlay root (direct child of the overlay NSWindow's
@@ -370,26 +404,28 @@ void StyleOverlayPanel(void* nsview_ptr,
   if (CALayer* rl = overlayRoot.layer) {
     const CGFloat a = ((bg_color >> 24) & 0xFF) / 255.0;
     const CGFloat r = ((bg_color >> 16) & 0xFF) / 255.0;
-    const CGFloat g = ((bg_color >>  8) & 0xFF) / 255.0;
-    const CGFloat b = ((bg_color      ) & 0xFF) / 255.0;
+    const CGFloat g = ((bg_color >> 8) & 0xFF) / 255.0;
+    const CGFloat b = ((bg_color) & 0xFF) / 255.0;
     rl.backgroundColor =
         [NSColor colorWithSRGBRed:r green:g blue:b alpha:a].CGColor;
-    rl.cornerRadius   = (CGFloat)radius;
-    rl.maskedCorners  = ToCACornerMask(corner_mask);
-    rl.masksToBounds  = YES;
-    rl.shadowOpacity  = 0.0f;  // no shadow on the chrome strip
+    rl.cornerRadius = (CGFloat)radius;
+    rl.maskedCorners = ToCACornerMask(corner_mask);
+    rl.masksToBounds = YES;
+    rl.shadowOpacity = 0.0f;  // no shadow on the chrome strip
   }
 }
 
 void SetOverlayWindowBackground(void* nsview_ptr, cef_color_t argb) {
-  if (!nsview_ptr) return;
+  if (!nsview_ptr)
+    return;
   NSView* view = (__bridge NSView*)nsview_ptr;
   NSWindow* w = view.window;
-  if (!w) return;
+  if (!w)
+    return;
   const CGFloat a = ((argb >> 24) & 0xFF) / 255.0;
   const CGFloat r = ((argb >> 16) & 0xFF) / 255.0;
-  const CGFloat g = ((argb >>  8) & 0xFF) / 255.0;
-  const CGFloat b = ((argb      ) & 0xFF) / 255.0;
+  const CGFloat g = ((argb >> 8) & 0xFF) / 255.0;
+  const CGFloat b = ((argb) & 0xFF) / 255.0;
   w.backgroundColor = [NSColor colorWithSRGBRed:r green:g blue:b alpha:a];
   w.opaque = (a >= 0.999);
 }
@@ -398,7 +434,8 @@ void SetOverlayWindowBackground(void* nsview_ptr, cef_color_t argb) {
 // shadow. `nsview_ptr` is any NSView inside the overlay
 // (e.g. from CaptureLastChildNSView). `bg_argb` is the ARGB card background.
 void StylePickerCard(void* nsview_ptr, cef_color_t bg_argb) {
-  if (!nsview_ptr) return;
+  if (!nsview_ptr)
+    return;
   NSView* view = (__bridge NSView*)nsview_ptr;
 
   // Walk up to the overlay root (direct child of overlay NSWindow contentView).
@@ -415,13 +452,13 @@ void StylePickerCard(void* nsview_ptr, cef_color_t bg_argb) {
   // Apply background color + all-corner rounding + clip.
   const CGFloat a = ((bg_argb >> 24) & 0xFF) / 255.0;
   const CGFloat r = ((bg_argb >> 16) & 0xFF) / 255.0;
-  const CGFloat g = ((bg_argb >>  8) & 0xFF) / 255.0;
-  const CGFloat b = ((bg_argb      ) & 0xFF) / 255.0;
+  const CGFloat g = ((bg_argb >> 8) & 0xFF) / 255.0;
+  const CGFloat b = ((bg_argb) & 0xFF) / 255.0;
   overlayRoot.wantsLayer = YES;
   if (CALayer* rl = overlayRoot.layer) {
     rl.backgroundColor =
         [NSColor colorWithSRGBRed:r green:g blue:b alpha:a].CGColor;
-    rl.cornerRadius  = 12.0;
+    rl.cornerRadius = 12.0;
     rl.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner |
                        kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
     rl.masksToBounds = YES;
@@ -432,14 +469,15 @@ void StylePickerCard(void* nsview_ptr, cef_color_t bg_argb) {
   NSWindow* overlayWin = overlayRoot.window;
   if (overlayWin) {
     overlayWin.backgroundColor = [NSColor clearColor];
-    overlayWin.opaque          = NO;
-    overlayWin.hasShadow       = YES;
+    overlayWin.opaque = NO;
+    overlayWin.hasShadow = YES;
     [overlayWin invalidateShadow];
   }
 }
 
 void ApplyCardStyle(void* nsview_ptr) {
-  if (!nsview_ptr) return;
+  if (!nsview_ptr)
+    return;
   NSView* view = (__bridge NSView*)nsview_ptr;
 
   view.wantsLayer = YES;
@@ -450,13 +488,16 @@ void ApplyCardStyle(void* nsview_ptr) {
     layer.masksToBounds = YES;
     layer.borderWidth = 1.0;
     // Default dark border; chrome theme phase will retint via a getter.
-    NSColor* border = [NSColor colorWithSRGBRed:0.06 green:0.06 blue:0.07
+    NSColor* border = [NSColor colorWithSRGBRed:0.06
+                                          green:0.06
+                                           blue:0.07
                                           alpha:1.0];
     layer.borderColor = border.CGColor;
   }
 
   NSView* host = view.superview;
-  if (!host) return;
+  if (!host)
+    return;
   host.wantsLayer = YES;
   if (CALayer* hl = host.layer) {
     hl.masksToBounds = NO;
@@ -468,12 +509,14 @@ void ApplyCardStyle(void* nsview_ptr) {
 }
 
 void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
-  if (!nswindow_ptr) return;
+  if (!nswindow_ptr)
+    return;
   // CEF returns the NSView* of the window's content view as the window
   // handle, not the NSWindow itself. Walk up to the hosting NSWindow.
   NSView* content = (__bridge NSView*)nswindow_ptr;
   NSWindow* window = content.window;
-  if (!window) return;
+  if (!window)
+    return;
 
   // Title bar disappears into the content; traffic lights still render and
   // the top edge remains a drag region.
@@ -487,13 +530,11 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
   // body region; a flat opaque color guarantees a single uniform chrome.
   // refine-ui-theme-layout: caller threads the active chrome color in;
   // 0 falls back to the legacy dark default.
-  NSColor* chromeColor =
-      argb == 0
-          ? [NSColor colorWithSRGBRed:0x14 / 255.0
-                                green:0x14 / 255.0
-                                 blue:0x1A / 255.0
-                                alpha:1.0]
-          : ColorFromArgb(argb);
+  NSColor* chromeColor = argb == 0 ? [NSColor colorWithSRGBRed:0x14 / 255.0
+                                                         green:0x14 / 255.0
+                                                          blue:0x1A / 255.0
+                                                         alpha:1.0]
+                                   : ColorFromArgb(argb);
   window.opaque = YES;
   window.backgroundColor = chromeColor;
   window.hasShadow = YES;
@@ -522,7 +563,8 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
   dispatch_async(dispatch_get_main_queue(), ^{
     // Block retains |window| in MRC — safe since the window outlives this tick.
     NSWindow* w = window;
-    if (!w) return;
+    if (!w)
+      return;
     const CGFloat kTitleBarH = 38.0;
 
     NSButton* btns[3] = {
@@ -535,30 +577,34 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
     // owns the traffic-light buttons).  Expand it to kTitleBarH if needed
     // so the buttons have room to be centred.
     NSView* themeFrame = w.contentView.superview;
-    NSView* container  = nil;
+    NSView* container = nil;
     if (btns[0]) {
       NSView* v = btns[0].superview;
-      while (v && v.superview && v.superview != themeFrame) v = v.superview;
-      if (v && v.superview == themeFrame) container = v;
+      while (v && v.superview && v.superview != themeFrame)
+        v = v.superview;
+      if (v && v.superview == themeFrame)
+        container = v;
     }
     if (container && NSHeight(container.bounds) < kTitleBarH) {
       [container setTranslatesAutoresizingMaskIntoConstraints:YES];
       NSRect cf = container.frame;
       CGFloat extra = kTitleBarH - cf.size.height;
-      cf.origin.y    -= extra;
-      cf.size.height  = kTitleBarH;
+      cf.origin.y -= extra;
+      cf.size.height = kTitleBarH;
       container.frame = cf;
       container.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
     }
 
     for (int i = 0; i < 3; ++i) {
       NSButton* btn = btns[i];
-      if (!btn) continue;
+      if (!btn)
+        continue;
       [btn setTranslatesAutoresizingMaskIntoConstraints:YES];
       NSRect f = btn.frame;
       // Centre the button vertically in the kTitleBarH container.
       // This formula is correct for both flipped and non-flipped containers:
-      // it positions origin.y so that the button's centre lands at kTitleBarH/2.
+      // it positions origin.y so that the button's centre lands at
+      // kTitleBarH/2.
       f.origin.y = (kTitleBarH - NSHeight(f)) / 2.0;
       btn.frame = f;
     }
@@ -584,15 +630,24 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
 @end
 
 @implementation CronymaxCornerPunchView
-- (void)setTag:(NSInteger)t { _tag = t; }
-- (NSInteger)tag { return _tag; }
-- (BOOL)mouseDownCanMoveWindow { return NO; }
-- (BOOL)wantsUpdateLayer { return YES; }
-- (BOOL)wantsLayer { return YES; }
+- (void)setTag:(NSInteger)t {
+  _tag = t;
+}
+- (NSInteger)tag {
+  return _tag;
+}
+- (BOOL)mouseDownCanMoveWindow {
+  return NO;
+}
+- (BOOL)wantsUpdateLayer {
+  return YES;
+}
+- (BOOL)wantsLayer {
+  return YES;
+}
 - (void)updateLayer {
-  self.layer.backgroundColor = self.punchColor
-      ? self.punchColor.CGColor
-      : NSColor.blackColor.CGColor;
+  self.layer.backgroundColor =
+      self.punchColor ? self.punchColor.CGColor : NSColor.blackColor.CGColor;
   CGFloat s = self.bounds.size.width;
   CGFloat r = self.punchRadius;
   CGMutablePathRef path = CGPathCreateMutable();
@@ -600,11 +655,21 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
   CGPoint center;
   // punchCorner: 0=BL,1=BR,2=TR,3=TL in NSView (y=0 at bottom).
   switch (self.punchCorner) {
-    case 0:  center = CGPointMake(s, s); break;
-    case 1:  center = CGPointMake(0, s); break;
-    case 2:  center = CGPointMake(0, 0); break;
-    case 3:  center = CGPointMake(s, 0); break;
-    default: center = CGPointMake(0, 0); break;
+    case 0:
+      center = CGPointMake(s, s);
+      break;
+    case 1:
+      center = CGPointMake(0, s);
+      break;
+    case 2:
+      center = CGPointMake(0, 0);
+      break;
+    case 3:
+      center = CGPointMake(s, 0);
+      break;
+    default:
+      center = CGPointMake(0, 0);
+      break;
   }
   CGPathAddArc(path, NULL, center.x, center.y, r, 0, 2 * M_PI, 0);
   CAShapeLayer* mask = [CAShapeLayer layer];
@@ -623,53 +688,61 @@ void StyleContentBrowserView(void* window_nsview_ptr,
                              double radius,
                              cef_color_t bg_argb,
                              const CefRect& card_rect) {
-  if (!window_nsview_ptr) return;
+  if (!window_nsview_ptr)
+    return;
   NSView* root = (__bridge NSView*)window_nsview_ptr;
 
   // Remove previously installed punch views.
   NSMutableArray* old = [NSMutableArray array];
   for (NSView* sv in root.subviews) {
-    if (sv.tag == kCornerPunchTag) [old addObject:sv];
+    if (sv.tag == kCornerPunchTag)
+      [old addObject:sv];
   }
-  for (NSView* sv in old) [sv removeFromSuperview];
+  for (NSView* sv in old)
+    [sv removeFromSuperview];
 
   // card_rect uses CEF coordinates: y grows down, y=0 at top of content area.
   // NSView (non-flipped): y=0 at bottom.
-  CGFloat rootH        = root.bounds.size.height;
-  CGFloat cardX        = card_rect.x;
-  CGFloat cardY        = card_rect.y;
-  CGFloat cardW        = card_rect.width;
-  CGFloat cardH        = card_rect.height;
-  CGFloat r            = (CGFloat)radius;
-  NSColor* fill        = ColorFromArgb(bg_argb);
+  CGFloat rootH = root.bounds.size.height;
+  CGFloat cardX = card_rect.x;
+  CGFloat cardY = card_rect.y;
+  CGFloat cardW = card_rect.width;
+  CGFloat cardH = card_rect.height;
+  CGFloat r = (CGFloat)radius;
+  NSColor* fill = ColorFromArgb(bg_argb);
   CGFloat nsCardBottom = rootH - cardY - cardH;
-  CGFloat nsCardTop    = rootH - cardY;
+  CGFloat nsCardTop = rootH - cardY;
 
-  struct { CGFloat x, y; int corner; } patches[4] = {
-    { cardX,              nsCardBottom,     0 },  // BL
-    { cardX + cardW - r,  nsCardBottom,     1 },  // BR
-    { cardX + cardW - r,  nsCardTop    - r, 2 },  // TR
-    { cardX,              nsCardTop    - r, 3 },  // TL
+  struct {
+    CGFloat x, y;
+    int corner;
+  } patches[4] = {
+      {cardX, nsCardBottom, 0},               // BL
+      {cardX + cardW - r, nsCardBottom, 1},   // BR
+      {cardX + cardW - r, nsCardTop - r, 2},  // TR
+      {cardX, nsCardTop - r, 3},              // TL
   };
 
   for (int i = 0; i < 4; i++) {
     CronymaxCornerPunchView* v = [[CronymaxCornerPunchView alloc] init];
-    v.punchColor  = fill;
+    v.punchColor = fill;
     v.punchCorner = patches[i].corner;
     v.punchRadius = r;
-    v.tag         = kCornerPunchTag;
-    v.frame       = NSMakeRect(patches[i].x, patches[i].y, r, r);
+    v.tag = kCornerPunchTag;
+    v.frame = NSMakeRect(patches[i].x, patches[i].y, r, r);
     [root addSubview:v];
   }
 }
 
 void AddContentCardShadow(void* bv_nsview_ptr) {
-  if (!bv_nsview_ptr) return;
+  if (!bv_nsview_ptr)
+    return;
   NSView* view = (__bridge NSView*)bv_nsview_ptr;
   // Shadow is placed on the BrowserView's host (superview) so it can
   // bleed outside the clipped layer area and appear around the card edge.
   NSView* host = view.superview;
-  if (!host) return;
+  if (!host)
+    return;
   host.wantsLayer = YES;
   if (CALayer* hl = host.layer) {
     hl.masksToBounds = NO;
@@ -684,7 +757,8 @@ void AddContentCardShadow(void* bv_nsview_ptr) {
 // installed by StyleContentBrowserView already cover content_frame_'s corners.
 
 void MakeBrowserViewTransparent(void* nsview_ptr) {
-  if (!nsview_ptr) return;
+  if (!nsview_ptr)
+    return;
   NSView* view = (__bridge NSView*)nsview_ptr;
   view.wantsLayer = YES;
   if (CALayer* l = view.layer) {
@@ -703,12 +777,15 @@ void MakeBrowserViewTransparent(void* nsview_ptr) {
 }
 
 void PerformWindowDrag(void* nswindow_ptr) {
-  if (!nswindow_ptr) return;
+  if (!nswindow_ptr)
+    return;
   NSView* content = (__bridge NSView*)nswindow_ptr;
   NSWindow* window = content.window;
-  if (!window) return;
+  if (!window)
+    return;
   NSEvent* ev = [NSApp currentEvent];
-  if (!ev) return;
+  if (!ev)
+    return;
   // performWindowDragWithEvent: must be called from a mouseDown event.
   if (ev.type == NSEventTypeLeftMouseDown ||
       ev.type == NSEventTypeLeftMouseDragged) {
@@ -730,25 +807,37 @@ void PerformWindowDrag(void* nswindow_ptr) {
 @implementation CronymaxDragHitView {
   NSInteger _tag;
 }
-- (void)setTag:(NSInteger)tag { _tag = tag; }
-- (NSInteger)tag { return _tag; }
-- (BOOL)mouseDownCanMoveWindow { return YES; }
-- (BOOL)acceptsFirstMouse:(NSEvent*)event { return YES; }
+- (void)setTag:(NSInteger)tag {
+  _tag = tag;
+}
+- (NSInteger)tag {
+  return _tag;
+}
+- (BOOL)mouseDownCanMoveWindow {
+  return YES;
+}
+- (BOOL)acceptsFirstMouse:(NSEvent*)event {
+  return YES;
+}
 - (NSView*)hitTest:(NSPoint)pointInSuperview {
-  if (!self.dragPath) return nil;
+  if (!self.dragPath)
+    return nil;
   NSPoint local = [self convertPoint:pointInSuperview fromView:self.superview];
-  if (![self.dragPath containsPoint:local]) return nil;
+  if (![self.dragPath containsPoint:local])
+    return nil;
   return self;
 }
 - (void)mouseDown:(NSEvent*)event {
   // Hard fallback in case mouseDownCanMoveWindow isn't honoured for any
   // reason (e.g. window is non-movable, vibrancy quirks, etc.).
   NSWindow* w = self.window;
-  if (w) [w performWindowDragWithEvent:event];
+  if (w)
+    [w performWindowDragWithEvent:event];
 }
 - (void)hostFrameDidChange:(NSNotification*)note {
   NSView* host = self.trackedHost;
-  if (!host || !host.window || !self.superview) return;
+  if (!host || !host.window || !self.superview)
+    return;
   NSRect r = [host convertRect:host.bounds toView:self.superview];
   self.frame = r;
 }
@@ -761,12 +850,15 @@ static constexpr NSInteger kDragOverlayTag = 0x44524147;  // 'DRAG'
 void ApplyDraggableRegions(void* nsview_ptr,
                            const DragRegion* regions,
                            size_t count) {
-  if (!nsview_ptr) return;
+  if (!nsview_ptr)
+    return;
   NSView* host = (__bridge NSView*)nsview_ptr;
   NSWindow* window = host.window;
-  if (!window) return;
+  if (!window)
+    return;
   NSView* contentView = window.contentView;
-  if (!contentView) return;
+  if (!contentView)
+    return;
 
   // Find an existing overlay tracking this host (one per chrome panel).
   CronymaxDragHitView* overlay = nil;
@@ -789,9 +881,7 @@ void ApplyDraggableRegions(void* nsview_ptr,
     overlay.tag = kDragOverlayTag;
     overlay.trackedHost = host;
     overlay.autoresizingMask = NSViewNotSizable;
-    [contentView addSubview:overlay
-                 positioned:NSWindowAbove
-                 relativeTo:nil];
+    [contentView addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
     host.postsFrameChangedNotifications = YES;
     [[NSNotificationCenter defaultCenter]
         addObserver:overlay
@@ -803,9 +893,7 @@ void ApplyDraggableRegions(void* nsview_ptr,
     // Re-raise to the topmost subview so any later-added CEF children sit
     // below it.
     [overlay removeFromSuperview];
-    [contentView addSubview:overlay
-                 positioned:NSWindowAbove
-                 relativeTo:nil];
+    [contentView addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
   }
 
   // Build path = union(draggable) − union(no-drag). Web rects use
@@ -816,8 +904,10 @@ void ApplyDraggableRegions(void* nsview_ptr,
   for (size_t i = 0; i < count; ++i) {
     const auto& r = regions[i];
     NSRect rect = NSMakeRect(r.x, H - r.y - r.height, r.width, r.height);
-    if (r.draggable) [drag appendBezierPathWithRect:rect];
-    else             [nodrag appendBezierPathWithRect:rect];
+    if (r.draggable)
+      [drag appendBezierPathWithRect:rect];
+    else
+      [nodrag appendBezierPathWithRect:rect];
   }
   drag.windingRule = NSWindingRuleEvenOdd;
   [drag appendBezierPath:nodrag];
@@ -832,39 +922,54 @@ void ApplyDraggableRegions(void* nsview_ptr,
 // buttons) so clicks pass through to the CEF browser view that paints them.
 // One singleton per contentView identified by tag.
 @interface CronymaxTitleBarDragView : NSView
-@property(nonatomic, assign) CGFloat barHeight;             // top strip height (AppKit pts)
-@property(nonatomic, copy) NSArray<NSValue*>* noDragRects;  // NSRect, AppKit (bottom-up) overlay-local coords
+@property(nonatomic, assign)
+    CGFloat barHeight;  // top strip height (AppKit pts)
+@property(nonatomic, copy) NSArray<NSValue*>*
+    noDragRects;  // NSRect, AppKit (bottom-up) overlay-local coords
 @end
 
 @implementation CronymaxTitleBarDragView {
   NSInteger _tag;
 }
-- (void)setTag:(NSInteger)tag { _tag = tag; }
-- (NSInteger)tag { return _tag; }
+- (void)setTag:(NSInteger)tag {
+  _tag = tag;
+}
+- (NSInteger)tag {
+  return _tag;
+}
 // Return NO so AppKit delivers mouseDown: to us; we then explicitly call
 // performWindowDragWithEvent:. (Returning YES would let AppKit consume the
 // click, but inside an NSTitlebarAccessoryViewController it does not actually
 // initiate a window drag.)
-- (BOOL)mouseDownCanMoveWindow { return NO; }
-- (BOOL)acceptsFirstMouse:(NSEvent*)event { (void)event; return YES; }
+- (BOOL)mouseDownCanMoveWindow {
+  return NO;
+}
+- (BOOL)acceptsFirstMouse:(NSEvent*)event {
+  (void)event;
+  return YES;
+}
 - (NSView*)hitTest:(NSPoint)pointInSuperview {
   NSPoint local = [self convertPoint:pointInSuperview fromView:self.superview];
-  if (!NSPointInRect(local, self.bounds)) return nil;
+  if (!NSPointInRect(local, self.bounds))
+    return nil;
   for (NSValue* v in self.noDragRects) {
-    if (NSPointInRect(local, v.rectValue)) return nil;
+    if (NSPointInRect(local, v.rectValue))
+      return nil;
   }
   return self;
 }
 - (void)mouseDown:(NSEvent*)event {
   NSWindow* w = self.window;
-  if (w) [w performWindowDragWithEvent:event];
+  if (w)
+    [w performWindowDragWithEvent:event];
 }
 
 // Stay topmost across CEF subview reorderings.
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
   NSView* parent = self.superview;
-  if (!parent) return;
+  if (!parent)
+    return;
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [[NSNotificationCenter defaultCenter]
       addObserver:self
@@ -886,16 +991,14 @@ void ApplyDraggableRegions(void* nsview_ptr,
   }
   // KVO on the parent's subviews array catches every insertion / removal /
   // reorder that CEF performs as it mounts browser views.
-  [parent addObserver:self
-           forKeyPath:@"subviews"
-              options:0
-              context:NULL];
+  [parent addObserver:self forKeyPath:@"subviews" options:0 context:NULL];
 }
 - (void)observeValueForKeyPath:(NSString*)keyPath
                       ofObject:(id)object
-                        change:(NSDictionary<NSKeyValueChangeKey,id>*)change
+                        change:(NSDictionary<NSKeyValueChangeKey, id>*)change
                        context:(void*)context {
-  (void)change; (void)context;
+  (void)change;
+  (void)context;
   if ([keyPath isEqualToString:@"subviews"] && object == self.superview) {
     [self parentSubviewsDidChange:nil];
   }
@@ -903,8 +1006,10 @@ void ApplyDraggableRegions(void* nsview_ptr,
 - (void)parentSubviewsDidChange:(NSNotification*)note {
   (void)note;
   NSView* parent = self.superview;
-  if (!parent) return;
-  if (parent.subviews.lastObject == self) return;
+  if (!parent)
+    return;
+  if (parent.subviews.lastObject == self)
+    return;
   [self retain];
   [self removeFromSuperview];
   [parent addSubview:self positioned:NSWindowAbove relativeTo:nil];
@@ -912,8 +1017,10 @@ void ApplyDraggableRegions(void* nsview_ptr,
 }
 - (void)dealloc {
   if (self.superview) {
-    @try { [self.superview removeObserver:self forKeyPath:@"subviews"]; }
-    @catch (NSException*) {}
+    @try {
+      [self.superview removeObserver:self forKeyPath:@"subviews"];
+    } @catch (NSException*) {
+    }
   }
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [super dealloc];
@@ -928,16 +1035,19 @@ void InstallTitleBarDragOverlay(void* nswindow_handle,
                                 const CefRect& bar_rect_window_coords,
                                 const CefRect* nodrag_rects,
                                 size_t nodrag_count) {
-  if (!nswindow_handle) return;
+  if (!nswindow_handle)
+    return;
   NSView* content = (__bridge NSView*)nswindow_handle;
   NSWindow* window = content.window;
-  if (!window) return;
+  if (!window)
+    return;
   // The window's contentView.superview is the AppKit "themeFrame". Subviews
   // installed there sit ABOVE the contentView (and therefore above any
   // CefBrowserView/CefPanel NSViews) and receive titlebar clicks even with
   // NSWindowStyleMaskFullSizeContentView + titlebarAppearsTransparent.
   NSView* themeFrame = content.superview;
-  if (!themeFrame) return;
+  if (!themeFrame)
+    return;
 
   CronymaxTitleBarDragView* overlay = nil;
   for (NSView* sv in themeFrame.subviews) {
@@ -958,15 +1068,11 @@ void InstallTitleBarDragOverlay(void* nswindow_handle,
     overlay = [[CronymaxTitleBarDragView alloc] initWithFrame:frame];
     overlay.tag = kTitleBarDragTag;
     overlay.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    [themeFrame addSubview:overlay
-                positioned:NSWindowAbove
-                relativeTo:nil];
+    [themeFrame addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
   } else {
     overlay.frame = frame;
     [overlay removeFromSuperview];
-    [themeFrame addSubview:overlay
-                positioned:NSWindowAbove
-                relativeTo:nil];
+    [themeFrame addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
   }
   overlay.barHeight = barH;
 
@@ -979,7 +1085,8 @@ void InstallTitleBarDragOverlay(void* nswindow_handle,
     const auto& r = nodrag_rects[i];
     const CGFloat lx = r.x;
     const CGFloat ly = barH - r.y - r.height;
-    [nodrag addObject:[NSValue valueWithRect:NSMakeRect(lx, ly, r.width, r.height)]];
+    [nodrag addObject:[NSValue
+                          valueWithRect:NSMakeRect(lx, ly, r.width, r.height)]];
   }
   overlay.noDragRects = nodrag;
 }
@@ -989,10 +1096,12 @@ void InstallTitleBarDragOverlay(void* nswindow_handle,
 // ---------------------------------------------------------------------------
 
 void SetMainWindowBackgroundColor(void* nswindow_ptr, cef_color_t argb) {
-  if (!nswindow_ptr) return;
+  if (!nswindow_ptr)
+    return;
   NSView* content = (__bridge NSView*)nswindow_ptr;
   NSWindow* window = content.window;
-  if (!window) return;
+  if (!window)
+    return;
   NSColor* color = ColorFromArgb(argb);
   window.backgroundColor = color;
   if (CALayer* cl = content.layer) {
@@ -1002,7 +1111,8 @@ void SetMainWindowBackgroundColor(void* nswindow_ptr, cef_color_t argb) {
 
 void SetAppAppearance(bool dark) {
   if (@available(macOS 10.14, *)) {
-    NSAppearanceName name = dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua;
+    NSAppearanceName name =
+        dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua;
     NSApp.appearance = [NSAppearance appearanceNamed:name];
   }
 }
@@ -1010,14 +1120,14 @@ void SetAppAppearance(bool dark) {
 void InstallRoundedFrame(void* nsview_ptr,
                          double radius,
                          cef_color_t border_argb) {
-  if (!nsview_ptr) return;
+  if (!nsview_ptr)
+    return;
   NSView* view = (__bridge NSView*)nsview_ptr;
   view.wantsLayer = YES;
   if (CALayer* layer = view.layer) {
     layer.cornerRadius = radius;
-    layer.maskedCorners =
-        kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner |
-        kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
+    layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner |
+                          kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner;
     layer.masksToBounds = YES;
     layer.borderWidth = 1.0;
     layer.borderColor = ColorFromArgb(border_argb).CGColor;
@@ -1027,16 +1137,18 @@ void InstallRoundedFrame(void* nsview_ptr,
 const char* CurrentSystemAppearance() {
   if (@available(macOS 10.14, *)) {
     NSAppearance* appearance = NSApp.effectiveAppearance;
-    NSAppearanceName best = [appearance
-        bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua,
-                                              NSAppearanceNameDarkAqua ]];
-    if ([best isEqualToString:NSAppearanceNameDarkAqua]) return "dark";
+    NSAppearanceName best = [appearance bestMatchFromAppearancesWithNames:@[
+      NSAppearanceNameAqua, NSAppearanceNameDarkAqua
+    ]];
+    if ([best isEqualToString:NSAppearanceNameDarkAqua])
+      return "dark";
   }
   return "light";
 }
 
 void* AddSystemAppearanceObserver(void (*on_changed)(void* user), void* user) {
-  if (!on_changed) return nullptr;
+  if (!on_changed)
+    return nullptr;
   // AppleInterfaceThemeChangedNotification fires on the
   // NSDistributedNotificationCenter when System Settings toggles
   // Light/Dark. Run the callback on the main queue so MainWindow can
@@ -1053,7 +1165,8 @@ void* AddSystemAppearanceObserver(void (*on_changed)(void* user), void* user) {
 }
 
 void RemoveSystemAppearanceObserver(void* token) {
-  if (!token) return;
+  if (!token)
+    return;
   id obs = (__bridge_transfer id)token;
   [[NSDistributedNotificationCenter defaultCenter] removeObserver:obs];
 }

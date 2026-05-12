@@ -1,46 +1,41 @@
 import {
-  useEffect,
-  useRef,
-  useCallback,
-  useState,
-  useMemo,
-  useLayoutEffect,
-  type FormEvent,
-  type KeyboardEvent,
   type ChangeEvent,
   type ClipboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
 } from "react";
 import { Streamdown } from "streamdown";
-import { ThinkingBlock } from "./ThinkingBlock";
+import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { browser } from "@/shells/bridge";
+import { agentRegistry, agentRun, b64ToUtf8, terminal as rt_terminal } from "@/shells/runtime";
+import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
+import { PromptPopover } from "./PromptPopover";
 import {
-  useStore,
-  loadChatData,
-  persistChatData,
-  ensureChat,
-  chatNameFor,
-  loadFlowsList,
-  loadSavedGraph,
-  persistSelectedFlow,
-  loadSelectedModel,
-  persistSelectedModel,
+  type Attachment,
   type Block,
   type ConversationBlock,
+  chatNameFor,
+  ensureChat,
+  loadChatData,
+  loadFlowsList,
+  loadSavedGraph,
+  loadSelectedModel,
+  persistChatData,
+  persistSelectedFlow,
+  persistSelectedModel,
   type ShellBlock,
-  type Attachment,
   type Thread,
+  useStore,
 } from "./store";
-import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
+import { ThinkingBlock } from "./ThinkingBlock";
 import { TraceViewer } from "./TraceViewer";
-import { PromptPopover } from "./PromptPopover";
 import { useSelectionTooltip } from "./useSelectionTooltip";
-import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
-import {
-  agentRegistry,
-  agentRun,
-  terminal as rt_terminal,
-  b64ToUtf8,
-} from "@/shells/runtime";
 
 // ── picker types ────────────────────────────────────────────────────────
 
@@ -73,8 +68,7 @@ function parseFrontmatter(raw: string): {
   description?: string;
   content: string;
 } {
-  if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n"))
-    return { content: raw };
+  if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n")) return { content: raw };
   const end = raw.indexOf("\n---", 4);
   if (end === -1) return { content: raw };
   const fm = raw.slice(4, end);
@@ -88,13 +82,7 @@ function parseFrontmatter(raw: string): {
  * Render a user message string, wrapping `/slug` tokens (prompt pill
  * references) as visually distinct inline badges.
  */
-function UserMessageContent({
-  text,
-  onPillClick,
-}: {
-  text: string;
-  onPillClick?: (label: string) => void;
-}) {
+function UserMessageContent({ text, onPillClick }: { text: string; onPillClick?: (label: string) => void }) {
   const pillRe = /^\/[a-z0-9_][a-z0-9_-]*$/i;
   // Split preserving whitespace separators so we can re-render them as-is.
   const words = text.split(/([ \t]+)/);
@@ -162,18 +150,13 @@ const BUILTIN_COMMANDS: PickerItem[] = [
 
 function leadAgentOfFlow(flowName: string): string {
   const spec = loadSavedGraph(flowName);
-  if (!spec || !spec.nodes.length) return "";
-  const lead = spec.nodes
-    .slice()
-    .sort((a, b) => Number(a.id) - Number(b.id))[0];
+  if (!spec?.nodes.length) return "";
+  const lead = spec.nodes.slice().sort((a, b) => Number(a.id) - Number(b.id))[0];
   const cfg = (lead?.config ?? {}) as Record<string, unknown>;
   return (cfg.agent_name as string) || lead?.type || "";
 }
 
-function parseMention(
-  text: string,
-  agents: string[],
-): { agent: string | null; body: string } {
+function parseMention(text: string, agents: string[]): { agent: string | null; body: string } {
   const m = text.match(/^@([A-Za-z0-9_.-]+)\s*(.*)$/s);
   if (!m) return { agent: null, body: text };
   const want = m[1]!.toLowerCase();
@@ -188,32 +171,18 @@ function fmtDuration(ms: number): string {
 
 // ── Block components ────────────────────────────────────────────────────
 
-function ThreadSummary({
-  thread,
-  onExpand,
-}: {
-  thread: Thread;
-  onExpand: () => void;
-}) {
+function ThreadSummary({ thread, onExpand }: { thread: Thread; onExpand: () => void }) {
   const lastMsg = thread.messages.at(-1);
   return (
     <div className="mt-2 rounded border border-cronymax-border bg-cronymax-float px-3 py-2 text-xs">
       <div className="flex items-center gap-2">
-        <span className="font-semibold capitalize text-cronymax-primary">
-          {thread.action}
-        </span>
+        <span className="font-semibold capitalize text-cronymax-primary">{thread.action}</span>
         <span className="text-cronymax-caption">
           {thread.messages.length} message
           {thread.messages.length !== 1 ? "s" : ""}
         </span>
-        {thread.running && (
-          <span className="text-cronymax-caption italic">running…</span>
-        )}
-        <button
-          type="button"
-          onClick={onExpand}
-          className="ml-auto text-cronymax-primary hover:underline"
-        >
+        {thread.running && <span className="text-cronymax-caption italic">running…</span>}
+        <button type="button" onClick={onExpand} className="ml-auto text-cronymax-primary hover:underline">
           View thread ⇄
         </button>
       </div>
@@ -239,9 +208,7 @@ function ConversationBlockView({
 }) {
   const pinnedComments = block.comments.filter((c) => c.pinnedToPrompt);
   const [activePillLabel, setActivePillLabel] = useState<string | null>(null);
-  const activePillPrompt = activePillLabel
-    ? workspacePrompts.find((p) => p.label === activePillLabel)
-    : null;
+  const activePillPrompt = activePillLabel ? workspacePrompts.find((p) => p.label === activePillLabel) : null;
   return (
     <div
       className={`py-4 space-y-2 transition-all duration-500${
@@ -251,9 +218,7 @@ function ConversationBlockView({
     >
       {/* User message */}
       <div className="rounded-md bg-cronymax-primary/10 px-3 py-2">
-        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cronymax-primary">
-          You
-        </div>
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cronymax-primary">You</div>
         {block.attachments.length > 0 && (
           <div className="mb-1 flex flex-wrap gap-1">
             {block.attachments.map((a) => (
@@ -261,11 +226,7 @@ function ConversationBlockView({
                 key={a.id}
                 className="rounded-full bg-cronymax-border px-2 py-0.5 text-[10px] text-cronymax-caption"
               >
-                {a.kind === "comment"
-                  ? "💬 "
-                  : a.kind === "image"
-                    ? "🖼 "
-                    : "📎 "}
+                {a.kind === "comment" ? "💬 " : a.kind === "image" ? "🖼 " : "📎 "}
                 {a.label}
               </span>
             ))}
@@ -274,9 +235,7 @@ function ConversationBlockView({
         <div className="whitespace-pre-wrap break-words text-sm text-cronymax-title">
           <UserMessageContent
             text={block.userContent}
-            onPillClick={(label) =>
-              setActivePillLabel((prev) => (prev === label ? null : label))
-            }
+            onPillClick={(label) => setActivePillLabel((prev) => (prev === label ? null : label))}
           />
         </div>
       </div>
@@ -301,9 +260,7 @@ function ConversationBlockView({
       {/* Thinking block — show animated dots while running (before content arrives),
            then collapsible summary once sealed. Hidden only after completion
            when no thinking content was produced. */}
-      {(block.thinkingText ||
-        block.thinkingSealed ||
-        block.status === "running") && (
+      {(block.thinkingText || block.thinkingSealed || block.status === "running") && (
         <ThinkingBlock
           thinkingText={block.thinkingText}
           sealed={block.thinkingSealed}
@@ -343,7 +300,12 @@ function ConversationBlockView({
 
       {/* Thread */}
       {block.thread && (
-        <ThreadSummary thread={block.thread} onExpand={() => {}} />
+        <ThreadSummary
+          thread={block.thread}
+          onExpand={() => {
+            /* noop */
+          }}
+        />
       )}
     </div>
   );
@@ -359,18 +321,10 @@ function ShellBlockView({
   isHighlighted?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(false);
-  const duration =
-    block.endedAt && block.startedAt
-      ? fmtDuration(block.endedAt - block.startedAt)
-      : null;
+  const duration = block.endedAt && block.startedAt ? fmtDuration(block.endedAt - block.startedAt) : null;
   const statusColor =
-    block.status === "ok"
-      ? "text-green-400"
-      : block.status === "fail"
-        ? "text-red-400"
-        : "text-amber-400";
-  const statusGlyph =
-    block.status === "ok" ? "✓" : block.status === "fail" ? "✗" : "●";
+    block.status === "ok" ? "text-green-400" : block.status === "fail" ? "text-red-400" : "text-amber-400";
+  const statusGlyph = block.status === "ok" ? "✓" : block.status === "fail" ? "✗" : "●";
 
   return (
     <div
@@ -381,20 +335,12 @@ function ShellBlockView({
     >
       {/* Header — highlighted command prompt */}
       <div className="flex items-center gap-2 rounded-md bg-cronymax-primary/10 px-3 py-1.5">
-        <span className={`font-mono text-sm font-bold ${statusColor}`}>
-          {statusGlyph}
-        </span>
-        <span className="flex-1 font-mono text-sm text-cronymax-title">
-          $ {block.command}
-        </span>
+        <span className={`font-mono text-sm font-bold ${statusColor}`}>{statusGlyph}</span>
+        <span className="flex-1 font-mono text-sm text-cronymax-title">$ {block.command}</span>
         {block.exitCode !== null && block.exitCode !== 0 && (
-          <span className="text-[10px] text-red-400">
-            exit {block.exitCode}
-          </span>
+          <span className="text-[10px] text-red-400">exit {block.exitCode}</span>
         )}
-        {duration && (
-          <span className="text-[10px] text-cronymax-caption">{duration}</span>
-        )}
+        {duration && <span className="text-[10px] text-cronymax-caption">{duration}</span>}
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
@@ -442,7 +388,12 @@ function ShellBlockView({
 
       {/* Thread */}
       {block.thread && (
-        <ThreadSummary thread={block.thread} onExpand={() => {}} />
+        <ThreadSummary
+          thread={block.thread}
+          onExpand={() => {
+            /* noop */
+          }}
+        />
       )}
     </div>
   );
@@ -471,13 +422,7 @@ function BlockView({
       />
     );
   }
-  return (
-    <ShellBlockView
-      block={block}
-      onAction={onShellAction}
-      isHighlighted={isHighlighted}
-    />
-  );
+  return <ShellBlockView block={block} onAction={onShellAction} isHighlighted={isHighlighted} />;
 }
 
 // ── Attachment tray ─────────────────────────────────────────────────────
@@ -501,23 +446,13 @@ function AttachmentTray({
       {a.kind === "comment" ? "💬" : a.kind === "image" ? "🖼" : "📎"}
       <span
         className={`max-w-[100px] truncate${
-          a.kind === "comment" && onCommentClick
-            ? " cursor-pointer hover:text-cronymax-title"
-            : ""
+          a.kind === "comment" && onCommentClick ? " cursor-pointer hover:text-cronymax-title" : ""
         }`}
-        onClick={
-          a.kind === "comment" && onCommentClick
-            ? () => onCommentClick(a)
-            : undefined
-        }
+        onClick={a.kind === "comment" && onCommentClick ? () => onCommentClick(a) : undefined}
       >
         {a.label}
       </span>
-      <button
-        type="button"
-        onClick={() => onRemove(a.id)}
-        className="ml-0.5 text-cronymax-caption hover:text-red-400"
-      >
+      <button type="button" onClick={() => onRemove(a.id)} className="ml-0.5 text-cronymax-caption hover:text-red-400">
         ×
       </button>
     </span>
@@ -558,9 +493,7 @@ export function App() {
   const timelineRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [agentLoadError, setAgentLoadError] = useState<string | null>(null);
-  const [inputMode, setInputMode] = useState<"chat" | "shell" | "command">(
-    "chat",
-  );
+  const [inputMode, setInputMode] = useState<"chat" | "shell" | "command">("chat");
   const [commentDraft, setCommentDraft] = useState("");
 
   // ── slash / @ picker state ─────────────────────────────────────────────
@@ -569,13 +502,9 @@ export function App() {
   const [workspacePrompts, setWorkspacePrompts] = useState<PickerItem[]>([]);
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   /** Model options grouped by provider name, loaded from llm.providers.get */
-  const [modelGroups, setModelGroups] = useState<
-    { label: string; models: string[] }[]
-  >([]);
+  const [modelGroups, setModelGroups] = useState<{ label: string; models: string[] }[]>([]);
   /** Prompt pills attached to the current message (like VS Code slash commands). */
-  const [attachedPrompts, setAttachedPrompts] = useState<
-    { id: string; label: string; content: string }[]
-  >([]);
+  const [attachedPrompts, setAttachedPrompts] = useState<{ id: string; label: string; content: string }[]>([]);
   /** ID of the pill whose PromptPopover is currently open (null = none). */
   const [activePillId, setActivePillId] = useState<string | null>(null);
 
@@ -590,8 +519,7 @@ export function App() {
             return {
               id: `ws-${p.name}`,
               label: p.name,
-              description:
-                description ?? content.slice(0, 70).replace(/\n/g, " ").trim(),
+              description: description ?? content.slice(0, 70).replace(/\n/g, " ").trim(),
               content,
             };
           }),
@@ -618,12 +546,7 @@ export function App() {
           api_key: string;
           default_model: string;
         }
-        const COPILOT_FALLBACK = [
-          "gpt-4o",
-          "gpt-4o-mini",
-          "claude-3.5-sonnet",
-          "o3-mini",
-        ];
+        const COPILOT_FALLBACK = ["gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet", "o3-mini"];
         const providers: StoredProvider[] = JSON.parse(raw);
         const groups: { label: string; models: string[] }[] = [];
         for (const p of providers) {
@@ -631,12 +554,7 @@ export function App() {
           let models: string[] = [];
           try {
             if (p.kind === "anthropic") {
-              models = [
-                "claude-opus-4-5",
-                "claude-sonnet-4-5",
-                "claude-3-5-sonnet-latest",
-                "claude-3-5-haiku-latest",
-              ];
+              models = ["claude-opus-4-5", "claude-sonnet-4-5", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"];
             } else if (p.kind === "ollama") {
               const base = p.base_url.replace(/\/v1\/?$/, "");
               const r = await fetch(`${base}/api/tags`, {
@@ -651,8 +569,8 @@ export function App() {
               const headers: Record<string, string> = {
                 Accept: "application/json",
               };
-              if (p.api_key) headers["Authorization"] = `Bearer ${p.api_key}`;
-              const url = p.base_url.replace(/\/?$/, "") + "/models";
+              if (p.api_key) headers.Authorization = `Bearer ${p.api_key}`;
+              const url = `${p.base_url.replace(/\/?$/, "")}/models`;
               const r = await fetch(url, {
                 headers,
                 signal: AbortSignal.timeout(5000),
@@ -668,10 +586,8 @@ export function App() {
           } catch {
             if (p.kind === "github_copilot") models = COPILOT_FALLBACK;
           }
-          if (models.length === 0 && p.default_model)
-            models = [p.default_model];
-          if (models.length > 0)
-            groups.push({ label: p.name || p.kind, models });
+          if (models.length === 0 && p.default_model) models = [p.default_model];
+          if (models.length > 0) groups.push({ label: p.name || p.kind, models });
         }
         setModelGroups(groups);
       })
@@ -681,15 +597,11 @@ export function App() {
   // Selection tooltip — freeze when comment input is focused so it doesn't
   // disappear when the browser clears the selection on input focus.
   const selectionInfo = useSelectionTooltip(timelineRef);
-  const [frozenSelection, setFrozenSelection] = useState<
-    import("./useSelectionTooltip").SelectionInfo | null
-  >(null);
+  const [frozenSelection, setFrozenSelection] = useState<import("./useSelectionTooltip").SelectionInfo | null>(null);
   const activeSelection = frozenSelection ?? selectionInfo;
 
   // ── comment attachment → scroll & highlight ────────────────────────────
-  const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(
-    null,
-  );
+  const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null);
   const onCommentAttachmentClick = useCallback(
     (a: Attachment) => {
       if (!a.commentId) return;
@@ -704,9 +616,8 @@ export function App() {
       if (!blockId) return;
       // Scroll to the comment annotation, or the block if annotation not rendered yet
       const target =
-        timelineRef.current?.querySelector(
-          `[data-comment-id="${a.commentId}"]`,
-        ) ?? timelineRef.current?.querySelector(`[data-block-id="${blockId}"]`);
+        timelineRef.current?.querySelector(`[data-comment-id="${a.commentId}"]`) ??
+        timelineRef.current?.querySelector(`[data-block-id="${blockId}"]`);
       target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       setHighlightedBlockId(blockId);
       setTimeout(() => setHighlightedBlockId(null), 1600);
@@ -740,8 +651,7 @@ export function App() {
       }
       try {
         const newTid = await browser.send("terminal.new");
-        const tid =
-          typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
+        const tid = typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
         await rt_terminal.start(tid);
         dispatch({ type: "setTerminalTid", tid });
         // Persist immediately
@@ -774,9 +684,9 @@ export function App() {
 
       // Register this tab's chatId with the native shell so it survives
       // the next app restart (no-op if already registered with same value).
-      void browser
-        .send("shell.tab_set_meta", { key: "chat_id", value: id })
-        .catch(() => {});
+      void browser.send("shell.tab_set_meta", { key: "chat_id", value: id }).catch(() => {
+        /* ignore */
+      });
 
       const { data, migrationNotice } = loadChatData(id);
       const model = data.model || loadSelectedModel();
@@ -809,9 +719,7 @@ export function App() {
       }
       if (e.key === "chats") {
         if (state.activeChatId) {
-          const { data: d, migrationNotice: mn } = loadChatData(
-            state.activeChatId,
-          );
+          const { data: d, migrationNotice: mn } = loadChatData(state.activeChatId);
           dispatch({
             type: "loadChat",
             id: state.activeChatId,
@@ -836,76 +744,73 @@ export function App() {
 
   // ── terminal output → ShellBlock accumulation ──────────────────────────
   // Topic-scoped to the active terminal; auto-resubscribes on space switch.
-  useRuntimeEvent(
-    state.terminalTid ? `terminal:${state.terminalTid}` : "",
-    (eventJson: string) => {
-      const blockId = runningBlockIdRef.current;
-      if (!blockId) return;
+  useRuntimeEvent(state.terminalTid ? `terminal:${state.terminalTid}` : "", (eventJson: string) => {
+    const blockId = runningBlockIdRef.current;
+    if (!blockId) return;
 
-      const info = shellSentinelRef.current.get(blockId);
-      if (!info) return;
+    const info = shellSentinelRef.current.get(blockId);
+    if (!info) return;
 
-      let data: string;
-      try {
-        const ev = JSON.parse(eventJson) as Record<string, unknown>;
-        const pl = ev?.payload as Record<string, unknown> | undefined;
-        if (pl?.kind !== "raw") return;
-        const dataObj = pl?.data as Record<string, unknown> | undefined;
-        const b64 = dataObj?.data as string | undefined;
-        if (!b64) return;
-        data = b64ToUtf8(b64);
-      } catch {
-        return;
-      }
+    let data: string;
+    try {
+      const ev = JSON.parse(eventJson) as Record<string, unknown>;
+      const pl = ev?.payload as Record<string, unknown> | undefined;
+      if (pl?.kind !== "raw") return;
+      const dataObj = pl?.data as Record<string, unknown> | undefined;
+      const b64 = dataObj?.data as string | undefined;
+      if (!b64) return;
+      data = b64ToUtf8(b64);
+    } catch {
+      return;
+    }
 
-      // Phase 1: waiting for start marker — discard all preamble
-      // (shell prompts, echoed command line, etc.)
-      if (!info.capturing) {
-        const startIdx = data.indexOf(info.start);
-        if (startIdx === -1) return; // still preamble — discard chunk
-        // Skip to the line after the start marker line
-        const nl = data.indexOf("\n", startIdx);
-        data = nl !== -1 ? data.slice(nl + 1) : "";
-        info.capturing = true;
-        if (!data) return;
-      }
+    // Phase 1: waiting for start marker — discard all preamble
+    // (shell prompts, echoed command line, etc.)
+    if (!info.capturing) {
+      const startIdx = data.indexOf(info.start);
+      if (startIdx === -1) return; // still preamble — discard chunk
+      // Skip to the line after the start marker line
+      const nl = data.indexOf("\n", startIdx);
+      data = nl !== -1 ? data.slice(nl + 1) : "";
+      info.capturing = true;
+      if (!data) return;
+    }
 
-      // Phase 2: capturing — look for end marker
-      const endRe = new RegExp(`${info.end}:(\\d+)`);
-      const match = endRe.exec(data);
-      if (match) {
-        const exitCode = parseInt(match[1]!, 10);
-        // Deliver output before the end-marker line (strip trailing partial line)
-        const cleanData = data.slice(0, match.index).replace(/[^\n]*$/, "");
-        if (cleanData) {
-          dispatch({
-            type: "appendShellOutput",
-            id: blockId,
-            chunk: cleanData,
-            now: Date.now(),
-          });
-        }
+    // Phase 2: capturing — look for end marker
+    const endRe = new RegExp(`${info.end}:(\\d+)`);
+    const match = endRe.exec(data);
+    if (match) {
+      const exitCode = parseInt(match[1]!, 10);
+      // Deliver output before the end-marker line (strip trailing partial line)
+      const cleanData = data.slice(0, match.index).replace(/[^\n]*$/, "");
+      if (cleanData) {
         dispatch({
-          type: "finalizeShellBlock",
+          type: "appendShellOutput",
           id: blockId,
-          exitCode,
+          chunk: cleanData,
           now: Date.now(),
         });
-        dispatch({ type: "setRunning", running: false });
-        dispatch({ type: "setRunningBlockId", id: null });
-        runningBlockIdRef.current = null;
-        shellSentinelRef.current.delete(blockId);
-        return;
       }
-
       dispatch({
-        type: "appendShellOutput",
+        type: "finalizeShellBlock",
         id: blockId,
-        chunk: data,
+        exitCode,
         now: Date.now(),
       });
-    },
-  );
+      dispatch({ type: "setRunning", running: false });
+      dispatch({ type: "setRunningBlockId", id: null });
+      runningBlockIdRef.current = null;
+      shellSentinelRef.current.delete(blockId);
+      return;
+    }
+
+    dispatch({
+      type: "appendShellOutput",
+      id: blockId,
+      chunk: data,
+      now: Date.now(),
+    });
+  });
 
   // ── auto scroll ──────────────────────────────────────────────────────
   useLayoutEffect(() => {
@@ -1026,9 +931,7 @@ export function App() {
 
   // Per-block sentinel info: start marker, end marker, and whether the start
   // marker has already been seen (so preamble / echo lines are discarded).
-  const shellSentinelRef = useRef<
-    Map<string, { start: string; end: string; capturing: boolean }>
-  >(new Map());
+  const shellSentinelRef = useRef<Map<string, { start: string; end: string; capturing: boolean }>>(new Map());
 
   // ── send / run ─────────────────────────────────────────────────────────
   const onRun = useCallback(
@@ -1037,8 +940,7 @@ export function App() {
       const chatId = state.activeChatId;
 
       // Detect shell mode: rawText starts with "$" OR inputMode is "shell"
-      const isShellCmd =
-        rawText.trimStart().startsWith("$") || inputMode === "shell";
+      const isShellCmd = rawText.trimStart().startsWith("$") || inputMode === "shell";
       if (isShellCmd) {
         // Strip leading "$ " or "$" if present (user may have typed it or mode stripped it)
         const command = rawText.replace(/^\s*\$\s*/, "").trim();
@@ -1170,11 +1072,9 @@ export function App() {
             if (seenSeqs.has(seq)) return;
             seenSeqs.add(seq);
           }
-          const pl =
-            (inner.payload as Record<string, unknown> | undefined) ?? {};
+          const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
           const pRunId =
-            (pl.run_id as string | undefined) ??
-            ((inner as Record<string, unknown>).run_id as string | undefined);
+            (pl.run_id as string | undefined) ?? ((inner as Record<string, unknown>).run_id as string | undefined);
           if (pRunId && runId && pRunId !== runId) return;
           const kind = pl.kind as string | undefined;
 
@@ -1209,11 +1109,7 @@ export function App() {
             }
           } else if (kind === "run_status") {
             const status = pl.status as string | undefined;
-            if (
-              status === "succeeded" ||
-              status === "failed" ||
-              status === "cancelled"
-            ) {
+            if (status === "succeeded" || status === "failed" || status === "cancelled") {
               dispatch({ type: "clearAwaitingApproval" });
               // Seal any pending thinking block before finalizing.
               if (thinkingStartedAt !== null && !thinkingSealed) {
@@ -1222,8 +1118,7 @@ export function App() {
                 dispatch({ type: "sealThinkingBlock", id: blockId, elapsedMs });
               }
               if (!assistantText) {
-                assistantText =
-                  status === "succeeded" ? "(completed)" : "(no output)";
+                assistantText = status === "succeeded" ? "(completed)" : "(no output)";
                 dispatch({
                   type: "setAssistantContent",
                   id: blockId,
@@ -1256,14 +1151,9 @@ export function App() {
             }
           } else if (kind === "permission_request") {
             // Tool approval request: read trust and decide automatically or ask user
-            const reviewId =
-              (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
-            const req =
-              (pl.request as Record<string, unknown> | undefined) ?? {};
-            const toolName =
-              (req.tool_name as string | undefined) ??
-              (pl.tool_name as string | undefined) ??
-              "";
+            const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
+            const req = (pl.request as Record<string, unknown> | undefined) ?? {};
+            const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
             const args = req.args ?? pl.args ?? {};
             const category = toolName.split("_")[0] ?? toolName;
 
@@ -1272,13 +1162,9 @@ export function App() {
             const trust = trustMap[category] ?? "ask";
 
             if (trust === "autopilot") {
-              browser
-                .send("review.approve", { review_id: reviewId })
-                .catch(() => undefined);
+              browser.send("review.approve", { review_id: reviewId }).catch(() => undefined);
             } else if (trust === "bypass") {
-              browser
-                .send("review.request_changes", { review_id: reviewId })
-                .catch(() => undefined);
+              browser.send("review.request_changes", { review_id: reviewId }).catch(() => undefined);
             } else {
               // "ask" — show the approval card
               dispatch({
@@ -1302,8 +1188,7 @@ export function App() {
             }
           } else if (kind === "trace") {
             // Structured trace events from the runtime
-            const trace =
-              (pl.trace as Record<string, unknown> | undefined) ?? pl;
+            const trace = (pl.trace as Record<string, unknown> | undefined) ?? pl;
             const traceKind = trace.kind as string | undefined;
 
             if (traceKind === "run_start") {
@@ -1313,8 +1198,7 @@ export function App() {
                 entry: {
                   kind: "run_start",
                   model: (trace.model as string | undefined) ?? "",
-                  systemPrompt:
-                    (trace.system_prompt as string | undefined) ?? "",
+                  systemPrompt: (trace.system_prompt as string | undefined) ?? "",
                   userInput: (trace.user_input as string | undefined) ?? "",
                   tools: (trace.tools as string[] | undefined) ?? [],
                   turnsLimit: (trace.turns_limit as number | undefined) ?? 0,
@@ -1328,13 +1212,9 @@ export function App() {
                 entry: {
                   kind: "assistant_turn",
                   // Rust emits "turn" (not "turn_id")
-                  turnId:
-                    (trace.turn as number | undefined) ??
-                    (trace.turn_id as number | undefined) ??
-                    0,
+                  turnId: (trace.turn as number | undefined) ?? (trace.turn_id as number | undefined) ?? 0,
                   text: (trace.text as string | undefined) ?? "",
-                  finishReason:
-                    (trace.finish_reason as string | undefined) ?? "",
+                  finishReason: (trace.finish_reason as string | undefined) ?? "",
                   ts: Date.now(),
                 },
               });
@@ -1366,10 +1246,7 @@ export function App() {
               });
             } else if (traceKind === "review_resolved") {
               const resolvedId = (trace.review_id as string | undefined) ?? "";
-              const decision =
-                (trace.decision as string | undefined) === "approve"
-                  ? "approve"
-                  : "reject";
+              const decision = (trace.decision as string | undefined) === "approve" ? "approve" : "reject";
               dispatch({
                 type: "appendTraceEntry",
                 id: blockId,
@@ -1443,16 +1320,12 @@ export function App() {
 
       try {
         // Inject pinned selection comments into the task body
-        const commentAtts = block.attachments.filter(
-          (a) => a.kind === "comment",
-        );
+        const commentAtts = block.attachments.filter((a) => a.kind === "comment");
         if (commentAtts.length > 0) {
           const selContext = commentAtts
             .map((a) => {
               const txt = a.selectedText ?? a.label;
-              return a.commentText
-                ? `> ${txt}\n[Comment]: ${a.commentText}`
-                : `> ${txt}`;
+              return a.commentText ? `> ${txt}\n[Comment]: ${a.commentText}` : `> ${txt}`;
             })
             .join("\n\n");
           body = `[Referenced selections]\n${selContext}\n\n${body}`;
@@ -1467,9 +1340,9 @@ export function App() {
           model_override: state.model || undefined,
         });
         if (!runId) throw new Error("runtime did not return run_id");
-        await browser
-          .send("events.subscribe", { run_id: runId })
-          .catch(() => {});
+        await browser.send("events.subscribe", { run_id: runId }).catch(() => {
+          /* ignore */
+        });
       } catch (err) {
         off();
         dispatch({
@@ -1487,11 +1360,7 @@ export function App() {
             args: {
               message:
                 "Failed to start: " +
-                (err instanceof Error
-                  ? err.message
-                  : typeof err === "string"
-                    ? err
-                    : String(err)),
+                (err instanceof Error ? err.message : typeof err === "string" ? err : String(err)),
             },
             ts: Date.now(),
           },
@@ -1608,9 +1477,7 @@ export function App() {
     if (picker.type === "slash") {
       const custom = loadCustomPrompts();
       const all = [...BUILTIN_COMMANDS, ...custom, ...workspacePrompts];
-      return all
-        .filter((x) => !q || x.label.toLowerCase().startsWith(q))
-        .slice(0, 8);
+      return all.filter((x) => !q || x.label.toLowerCase().startsWith(q)).slice(0, 8);
     } else {
       // "at" type: filter agents
       return state.agents
@@ -1632,11 +1499,9 @@ export function App() {
 
       if (picker.type === "slash") {
         // Replace the "/query" token with nothing (the action handles the rest)
-        el.value =
-          el.value.slice(0, picker.triggerStart) +
-          el.value.slice(el.selectionStart ?? el.value.length);
+        el.value = el.value.slice(0, picker.triggerStart) + el.value.slice(el.selectionStart ?? el.value.length);
         el.style.height = "auto";
-        el.style.height = Math.min(el.scrollHeight, 200) + "px";
+        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
         setPicker(null);
         setInputMode("chat");
         el.focus();
@@ -1661,10 +1526,7 @@ export function App() {
           // in onSubmit. Focus the textarea so they can start typing immediately.
           setAttachedPrompts((prev) => {
             if (prev.some((p) => p.id === item.id)) return prev;
-            return [
-              ...prev,
-              { id: item.id, label: item.label, content: item.content! },
-            ];
+            return [...prev, { id: item.id, label: item.label, content: item.content! }];
           });
         }
       } else {
@@ -1677,7 +1539,7 @@ export function App() {
         const newCaret = picker.triggerStart + replacement.length;
         el.setSelectionRange(newCaret, newCaret);
         el.style.height = "auto";
-        el.style.height = Math.min(el.scrollHeight, 200) + "px";
+        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
         setPicker(null);
         el.focus();
       }
@@ -1740,14 +1602,11 @@ export function App() {
   const runningBlockId = state.runningBlockId;
 
   // Copilot-like textarea auto-height
-  const onTextareaInput = useCallback(
-    (e: React.FormEvent<HTMLTextAreaElement>) => {
-      const el = e.currentTarget;
-      el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 200) + "px";
-    },
-    [],
-  );
+  const onTextareaInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, []);
 
   return (
     <main className="flex h-screen flex-col bg-cronymax-base text-cronymax-title">
@@ -1805,10 +1664,7 @@ export function App() {
       )}
 
       {/* Block timeline */}
-      <div
-        ref={timelineRef}
-        className="flex-1 overflow-y-auto divide-y divide-cronymax-border px-4 py-2"
-      >
+      <div ref={timelineRef} className="flex-1 overflow-y-auto divide-y divide-cronymax-border px-4 py-2">
         {state.blocks.map((b) => (
           <BlockView
             key={b.id}
@@ -1827,9 +1683,7 @@ export function App() {
           className="fixed z-50 rounded-lg border border-cronymax-border bg-cronymax-body shadow-xl"
           style={{
             top: activeSelection.anchorRect.top - 8,
-            left:
-              activeSelection.anchorRect.left +
-              activeSelection.anchorRect.width / 2,
+            left: activeSelection.anchorRect.left + activeSelection.anchorRect.width / 2,
             transform: "translateX(-50%) translateY(-100%)",
           }}
           onMouseDown={(e) => {
@@ -1846,9 +1700,7 @@ export function App() {
             <button
               type="button"
               className="rounded px-2 py-0.5 text-[11px] text-cronymax-caption hover:text-cronymax-title hover:bg-cronymax-hover transition"
-              onClick={() =>
-                navigator.clipboard.writeText(activeSelection.selectedText)
-              }
+              onClick={() => navigator.clipboard.writeText(activeSelection.selectedText)}
             >
               Copy
             </button>
@@ -1883,9 +1735,7 @@ export function App() {
               onChange={(e) => setCommentDraft(e.target.value)}
               placeholder="Add a comment… (Enter to pin)"
               className="w-52 rounded border border-cronymax-border bg-cronymax-base px-2 py-1 text-[11px] text-cronymax-title placeholder:text-cronymax-caption outline-none focus:border-cronymax-primary"
-              onFocus={() =>
-                setFrozenSelection(selectionInfo ?? frozenSelection)
-              }
+              onFocus={() => setFrozenSelection(selectionInfo ?? frozenSelection)}
               onBlur={() => setFrozenSelection(null)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
@@ -1967,9 +1817,7 @@ export function App() {
                   </span>
                   <span className="font-semibold">{item.label}</span>
                   {item.description && (
-                    <span className="truncate text-cronymax-caption ml-1">
-                      — {item.description}
-                    </span>
+                    <span className="truncate text-cronymax-caption ml-1">— {item.description}</span>
                   )}
                 </button>
               ))}
@@ -1991,9 +1839,7 @@ export function App() {
                 {/* PromptPopover rendered above the pill row */}
                 {activePillId !== null &&
                   (() => {
-                    const activePill = attachedPrompts.find(
-                      (p) => p.id === activePillId,
-                    );
+                    const activePill = attachedPrompts.find((p) => p.id === activePillId);
                     if (!activePill) return null;
                     return (
                       <PromptPopover
@@ -2001,16 +1847,10 @@ export function App() {
                         prompt={activePill}
                         onClose={() => setActivePillId(null)}
                         onSave={async (label, content) => {
-                          const res = await browser.send(
-                            "workspace.prompt.save",
-                            { name: label, content },
-                          );
-                          if (!res.ok)
-                            throw new Error(res.error ?? "Save failed");
+                          const res = await browser.send("workspace.prompt.save", { name: label, content });
+                          if (!res.ok) throw new Error(res.error ?? "Save failed");
                           setAttachedPrompts((prev) =>
-                            prev.map((p) =>
-                              p.id === activePillId ? { ...p, content } : p,
-                            ),
+                            prev.map((p) => (p.id === activePillId ? { ...p, content } : p)),
                           );
                           setActivePillId(null);
                         }}
@@ -2026,9 +1866,7 @@ export function App() {
                         ? "bg-cronymax-primary/25 border-cronymax-primary/60 text-cronymax-primary"
                         : "bg-cronymax-primary/15 border-cronymax-primary/30 text-cronymax-primary hover:bg-cronymax-primary/25")
                     }
-                    onClick={() =>
-                      setActivePillId((prev) => (prev === p.id ? null : p.id))
-                    }
+                    onClick={() => setActivePillId((prev) => (prev === p.id ? null : p.id))}
                   >
                     <span className="opacity-70">/</span>
                     {p.label}
@@ -2037,12 +1875,8 @@ export function App() {
                       className="ml-0.5 opacity-50 hover:opacity-100 leading-none"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setActivePillId((prev) =>
-                          prev === p.id ? null : prev,
-                        );
-                        setAttachedPrompts((prev) =>
-                          prev.filter((x) => x.id !== p.id),
-                        );
+                        setActivePillId((prev) => (prev === p.id ? null : prev));
+                        setAttachedPrompts((prev) => prev.filter((x) => x.id !== p.id));
                       }}
                     >
                       ×
@@ -2084,7 +1918,6 @@ export function App() {
             <textarea
               ref={inputRef}
               rows={1}
-              autoFocus
               disabled={!!state.awaitingApproval}
               placeholder={
                 state.awaitingApproval
@@ -2114,13 +1947,7 @@ export function App() {
                 <span className="text-sm leading-none">+</span>
                 <span>Add</span>
               </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                className="hidden"
-                multiple
-                onChange={onFileChange}
-              />
+              <input ref={fileInputRef} type="file" className="hidden" multiple onChange={onFileChange} />
 
               {/* Model dropdown */}
               <select

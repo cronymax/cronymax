@@ -19,7 +19,8 @@ class UrlFieldDelegate : public CefTextfieldDelegate {
   explicit UrlFieldDelegate(TabToolbar* owner) : owner_(owner) {}
   bool OnKeyEvent(CefRefPtr<CefTextfield> /*tf*/,
                   const CefKeyEvent& event) override {
-    if (event.type != KEYEVENT_RAWKEYDOWN) return false;
+    if (event.type != KEYEVENT_RAWKEYDOWN)
+      return false;
     return owner_->OnUrlKeyEvent(event.windows_key_code);
   }
   void OnAfterUserAction(CefRefPtr<CefTextfield> /*tf*/) override {
@@ -46,7 +47,8 @@ static cef_color_t TextColorForBg(cef_color_t bg) {
 
 static cef_color_t ParseCssColorOrDefault(const std::string& css,
                                           cef_color_t fallback) {
-  if (css.empty()) return fallback;
+  if (css.empty())
+    return fallback;
   if (css.size() == 7 && css[0] == '#') {
     unsigned int v = 0;
     if (std::sscanf(css.c_str() + 1, "%x", &v) == 1)
@@ -60,8 +62,8 @@ static cef_color_t ParseCssColorOrDefault(const std::string& css,
   return fallback;
 }
 
-constexpr cef_color_t kDefaultFieldBg  = 0xFF1A1A1F;
-constexpr cef_color_t kDefaultFieldFg  = 0xFFE6E6EA;
+constexpr cef_color_t kDefaultFieldBg = 0xFF1A1A1F;
+constexpr cef_color_t kDefaultFieldFg = 0xFFE6E6EA;
 
 }  // namespace
 
@@ -71,18 +73,24 @@ constexpr cef_color_t kDefaultFieldFg  = 0xFFE6E6EA;
 
 CefRefPtr<CefView> TabToolbar::CreateMiddleWidget(const ThemeChrome& chrome) {
   url_field_ = CefTextfield::CreateTextfield(new UrlFieldDelegate(this));
-  const cef_color_t bg = chrome.bg_float != 0 ? chrome.bg_float : kDefaultFieldBg;
-  const cef_color_t fg = chrome.text_title != 0 ? chrome.text_title : kDefaultFieldFg;
+  const cef_color_t bg =
+      chrome.bg_float != 0 ? chrome.bg_float : kDefaultFieldBg;
+  const cef_color_t fg =
+      chrome.text_title != 0 ? chrome.text_title : kDefaultFieldFg;
   url_field_->SetBackgroundColor(bg);
   url_field_->SetTextColor(fg);
   return url_field_;
 }
 
 void TabToolbar::ApplyMiddleTheme(const ThemeChrome& chrome) {
-  if (!url_field_) return;
-  if (!chrome_override_.empty()) return;  // page override in effect
-  const cef_color_t bg = chrome.bg_float != 0 ? chrome.bg_float : kDefaultFieldBg;
-  const cef_color_t fg = chrome.text_title != 0 ? chrome.text_title : kDefaultFieldFg;
+  if (!url_field_)
+    return;
+  if (!chrome_override_.empty())
+    return;  // page override in effect
+  const cef_color_t bg =
+      chrome.bg_float != 0 ? chrome.bg_float : kDefaultFieldBg;
+  const cef_color_t fg =
+      chrome.text_title != 0 ? chrome.text_title : kDefaultFieldFg;
   url_field_->SetBackgroundColor(bg);
   url_field_->SetTextColor(fg);
 }
@@ -92,11 +100,13 @@ void TabToolbar::ApplyMiddleTheme(const ThemeChrome& chrome) {
 // ---------------------------------------------------------------------------
 
 void TabToolbar::SetUrl(const std::string& url) {
-  if (url_field_) url_field_->SetText(url);
+  if (url_field_)
+    url_field_->SetText(url);
 }
 
 std::string TabToolbar::GetUrl() const {
-  if (url_field_) return url_field_->GetText();
+  if (url_field_)
+    return url_field_->GetText();
   return {};
 }
 
@@ -111,11 +121,13 @@ void TabToolbar::SetFocusCallback(std::function<void()> on_focus) {
   focus_cb_ = std::move(on_focus);
 }
 bool TabToolbar::OnUrlKeyEvent(int windows_key_code) {
-  if (key_cb_) return key_cb_(windows_key_code);
+  if (key_cb_)
+    return key_cb_(windows_key_code);
   return false;
 }
 void TabToolbar::OnUrlFocused() {
-  if (focus_cb_) focus_cb_();
+  if (focus_cb_)
+    focus_cb_();
 }
 
 // ---------------------------------------------------------------------------
@@ -135,21 +147,25 @@ void TabToolbar::FocusUrlField() {
 
 void TabToolbar::SetChromeColor(const std::string& css_or_empty) {
   chrome_override_ = css_or_empty;
-  if (!root()) return;
+  if (!root())
+    return;
 
   // Determine effective bg from override or last known bg_float.
   const ThemeChrome current =
       ThemeCtx() ? ThemeCtx()->GetCurrentChrome() : ThemeChrome{};
-  const cef_color_t fallback_bg =
-      current.bg_float != 0 ? current.bg_float
-                             : static_cast<cef_color_t>(0xFF131F1D);
+  const cef_color_t fallback_bg = current.bg_float != 0
+                                      ? current.bg_float
+                                      : static_cast<cef_color_t>(0xFF131F1D);
   const cef_color_t bg = ParseCssColorOrDefault(css_or_empty, fallback_bg);
   const cef_color_t fg = TextColorForBg(bg);
 
   root()->SetBackgroundColor(bg);
-  if (leading())  leading()->SetBackgroundColor(bg);
-  if (middle())   middle()->SetBackgroundColor(bg);
-  if (trailing()) trailing()->SetBackgroundColor(bg);
+  if (leading())
+    leading()->SetBackgroundColor(bg);
+  if (middle())
+    middle()->SetBackgroundColor(bg);
+  if (trailing())
+    trailing()->SetBackgroundColor(bg);
 
   // Keep action button/wrapper backgrounds and icon tints in sync with the
   // new panel color. dark_mode is re-derived from the computed fg color using

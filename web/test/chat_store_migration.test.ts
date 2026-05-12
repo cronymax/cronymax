@@ -5,12 +5,9 @@
  *   - both absent: returns empty data
  *   - persistChatData writes to v3 key
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { ConversationBlock, PersistedChatData } from "../src/panels/chat/store";
 import { loadChatData, persistChatData } from "../src/panels/chat/store";
-import type {
-  ConversationBlock,
-  PersistedChatData,
-} from "../src/panels/chat/store";
 
 // Provide a minimal localStorage mock
 const storage: Record<string, string> = {};
@@ -42,9 +39,7 @@ if (!globalThis.crypto) {
 const V2_KEY = (id: string) => `chat_history_v2:${id}`;
 const V3_KEY = (id: string) => `chat_history_v3:${id}`;
 
-const makeConvBlock = (
-  overrides: Partial<ConversationBlock> = {},
-): ConversationBlock => ({
+const makeConvBlock = (overrides: Partial<ConversationBlock> = {}): ConversationBlock => ({
   kind: "conversation",
   id: "block-1",
   userContent: "hello",
@@ -113,9 +108,7 @@ describe("loadChatData – v2 → v3 migration", () => {
     const { data, migrationNotice } = loadChatData("chat-3");
     expect(data.blocks).toHaveLength(1);
     const block = data.blocks[0] as ConversationBlock;
-    expect(
-      (block as unknown as Record<string, unknown>).traceContent,
-    ).toBeUndefined();
+    expect((block as unknown as Record<string, unknown>).traceContent).toBeUndefined();
     expect(block.traceEntries).toEqual([]);
     expect(migrationNotice).toBeUndefined();
   });
@@ -126,7 +119,8 @@ describe("loadChatData – v2 → v3 migration", () => {
     loadChatData("chat-4");
     const v3Raw = localStorageMock.getItem(V3_KEY("chat-4"));
     expect(v3Raw).not.toBeNull();
-    const parsed = JSON.parse(v3Raw!) as PersistedChatData;
+    if (v3Raw === null) return;
+    const parsed = JSON.parse(v3Raw) as PersistedChatData;
     expect(parsed.model).toBe("m1");
   });
 
@@ -160,9 +154,9 @@ describe("persistChatData", () => {
     };
     persistChatData("chat-7", data);
     expect(localStorageMock.getItem(V3_KEY("chat-7"))).not.toBeNull();
-    const parsed = JSON.parse(
-      localStorageMock.getItem(V3_KEY("chat-7"))!,
-    ) as PersistedChatData;
+    const v3Raw7 = localStorageMock.getItem(V3_KEY("chat-7"));
+    if (v3Raw7 === null) return;
+    const parsed = JSON.parse(v3Raw7) as PersistedChatData;
     expect(parsed.model).toBe("saved");
   });
 
@@ -195,7 +189,8 @@ describe("persistChatData", () => {
       model: "",
     };
     persistChatData("chat-9", data);
-    const raw = localStorageMock.getItem(V3_KEY("chat-9"))!;
+    const raw = localStorageMock.getItem(V3_KEY("chat-9"));
+    if (raw === null) return;
     const parsed = JSON.parse(raw) as PersistedChatData;
     expect((parsed.blocks[0] as Record<string, unknown>).rawBuf).toBe("");
   });

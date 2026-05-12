@@ -12,16 +12,22 @@ namespace cronymax {
 
 namespace {
 constexpr double kContentCornerRadius = 10.0;
-} // namespace
+}  // namespace
 
-ContentView::ContentView(TabsContext *tabs, ThemeContext *theme_ctx,
-                         CefRefPtr<CefWindow> main_win, Host host)
-    : tabs_(tabs), theme_ctx_(theme_ctx), main_win_(std::move(main_win)),
+ContentView::ContentView(TabsContext* tabs,
+                         ThemeContext* theme_ctx,
+                         CefRefPtr<CefWindow> main_win,
+                         Host host)
+    : tabs_(tabs),
+      theme_ctx_(theme_ctx),
+      main_win_(std::move(main_win)),
       host_(std::move(host)) {
   tabs_->AddActiveTabObserver(this);
 }
 
-ContentView::~ContentView() { tabs_->RemoveActiveTabObserver(this); }
+ContentView::~ContentView() {
+  tabs_->RemoveActiveTabObserver(this);
+}
 
 CefRefPtr<CefPanel> ContentView::Build() {
   content_outer_ = CefPanel::CreatePanel(nullptr);
@@ -45,7 +51,7 @@ CefRefPtr<CefPanel> ContentView::Build() {
   return content_outer_;
 }
 
-void ContentView::RemoveCard(const std::string &tab_id) {
+void ContentView::RemoveCard(const std::string& tab_id) {
   auto it = mounted_cards_.find(tab_id);
   if (it == mounted_cards_.end())
     return;
@@ -54,7 +60,7 @@ void ContentView::RemoveCard(const std::string &tab_id) {
   mounted_cards_.erase(it);
 }
 
-void ContentView::ApplyTheme(const ThemeChrome &chrome) {
+void ContentView::ApplyTheme(const ThemeChrome& chrome) {
   bg_body_ = chrome.bg_body;
   if (content_outer_)
     content_outer_->SetBackgroundColor(chrome.bg_body);
@@ -125,14 +131,14 @@ void ContentView::RoundCornersFor(CefRefPtr<CefBrowserView> bv,
             // at the card's four corners, painting bg with a quarter-circle
             // cutout so both the card AND content_frame_ appear rounded (the
             // card fills content_frame_ exactly via FillLayout).
-            void *window_nsview = w->GetWindowHandle();
+            void* window_nsview = w->GetWindowHandle();
             StyleContentBrowserView(window_nsview, kContentCornerRadius, bg,
                                     card_rect);
           },
           bv, win, bg_body));
 }
 
-void ContentView::OnViewObserved(const ActiveTabChanged & /*e*/) {
+void ContentView::OnViewObserved(const ActiveTabChanged& /*e*/) {
   ShowActiveCard();
 }
 
@@ -140,7 +146,7 @@ void ContentView::ShowActiveCard() {
   auto [tab_id, card, bv] = host_.active_tab();
 
   // Hide every mounted card that is NOT the active one.
-  for (auto &[id, c] : mounted_cards_) {
+  for (auto& [id, c] : mounted_cards_) {
     if (id != tab_id && c)
       c->SetVisible(false);
   }
@@ -174,4 +180,4 @@ void ContentView::ShowActiveCard() {
   host_.update_popover_visibility();
 }
 
-} // namespace cronymax
+}  // namespace cronymax

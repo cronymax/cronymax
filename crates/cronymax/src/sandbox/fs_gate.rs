@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::capability::filesystem::{FilesystemCapability, ReadFileResult, StrReplaceResult};
 use super::broker::{Actor, PermissionBroker};
 use super::policy::SandboxPolicy;
+use crate::capability::filesystem::{FilesystemCapability, ReadFileResult, StrReplaceResult};
 
 /// Filesystem capability wrapper that checks [`SandboxPolicy`] before
 /// delegating to the inner implementation.
@@ -22,7 +22,11 @@ pub struct PolicyFilesystem<F> {
 
 impl<F: FilesystemCapability> PolicyFilesystem<F> {
     pub fn new(inner: F, broker: PermissionBroker, policy: Arc<SandboxPolicy>) -> Self {
-        Self { inner, broker, policy }
+        Self {
+            inner,
+            broker,
+            policy,
+        }
     }
 }
 
@@ -36,7 +40,11 @@ impl<F: FilesystemCapability> FilesystemCapability for PolicyFilesystem<F> {
     ) -> anyhow::Result<ReadFileResult> {
         let decision = self.broker.check_read(Actor::Agent, path, &self.policy);
         if !decision.allowed {
-            anyhow::bail!("sandbox policy denied read access to '{}': {}", path.display(), decision.reason);
+            anyhow::bail!(
+                "sandbox policy denied read access to '{}': {}",
+                path.display(),
+                decision.reason
+            );
         }
         self.inner.read_file(path, offset, max_bytes).await
     }
@@ -49,7 +57,11 @@ impl<F: FilesystemCapability> FilesystemCapability for PolicyFilesystem<F> {
     ) -> anyhow::Result<()> {
         let decision = self.broker.check_write(Actor::Agent, path, &self.policy);
         if !decision.allowed {
-            anyhow::bail!("sandbox policy denied write access to '{}': {}", path.display(), decision.reason);
+            anyhow::bail!(
+                "sandbox policy denied write access to '{}': {}",
+                path.display(),
+                decision.reason
+            );
         }
         self.inner.write_file(path, content, create_dirs).await
     }
@@ -57,7 +69,11 @@ impl<F: FilesystemCapability> FilesystemCapability for PolicyFilesystem<F> {
     async fn list_dir(&self, path: &Path) -> anyhow::Result<Vec<String>> {
         let decision = self.broker.check_read(Actor::Agent, path, &self.policy);
         if !decision.allowed {
-            anyhow::bail!("sandbox policy denied read access to '{}': {}", path.display(), decision.reason);
+            anyhow::bail!(
+                "sandbox policy denied read access to '{}': {}",
+                path.display(),
+                decision.reason
+            );
         }
         self.inner.list_dir(path).await
     }
@@ -76,7 +92,11 @@ impl<F: FilesystemCapability> FilesystemCapability for PolicyFilesystem<F> {
     ) -> anyhow::Result<StrReplaceResult> {
         let decision = self.broker.check_write(Actor::Agent, path, &self.policy);
         if !decision.allowed {
-            anyhow::bail!("sandbox policy denied write access to '{}': {}", path.display(), decision.reason);
+            anyhow::bail!(
+                "sandbox policy denied write access to '{}': {}",
+                path.display(),
+                decision.reason
+            );
         }
         self.inner.str_replace(path, old_str, new_str).await
     }

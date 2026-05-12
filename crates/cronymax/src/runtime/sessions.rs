@@ -64,16 +64,18 @@ impl SessionManager {
         let session_id = session_id.into();
         let (thread, read_namespace, write_namespace) = {
             // Authority manages the lock; we delegate the create/lookup.
-            let thread = self.authority.get_or_create_session(
-                session_id.clone(),
-                space_id,
-                name,
-            )?;
+            let thread =
+                self.authority
+                    .get_or_create_session(session_id.clone(), space_id, name)?;
             // Fetch the namespace bindings that were set on the session.
             let (rns, wns) = self.authority.session_namespaces(&session_id);
             (thread, rns, wns)
         };
-        Ok(SessionInfo { thread, read_namespace, write_namespace })
+        Ok(SessionInfo {
+            thread,
+            read_namespace,
+            write_namespace,
+        })
     }
 
     /// Persist the final thread back into the session. If a
@@ -112,7 +114,10 @@ impl SessionManager {
             .enumerate()
             .filter_map(|(i, m)| {
                 if matches!(m.role, ChatRole::System)
-                    && m.content.as_deref().map(|s| s.starts_with("[REFLECTION]")).unwrap_or(false)
+                    && m.content
+                        .as_deref()
+                        .map(|s| s.starts_with("[REFLECTION]"))
+                        .unwrap_or(false)
                 {
                     Some(i)
                 } else {
@@ -128,8 +133,7 @@ impl SessionManager {
 
         // We have ≥ 2 reflections. Summarise all but the last.
         let newest_idx = *reflection_indices.last().unwrap();
-        let older_indices: Vec<usize> =
-            reflection_indices[..reflection_indices.len() - 1].to_vec();
+        let older_indices: Vec<usize> = reflection_indices[..reflection_indices.len() - 1].to_vec();
 
         let older_texts: Vec<String> = older_indices
             .iter()
@@ -222,41 +226,43 @@ impl SessionManager {
 
         if result.compacted {
             // Persist the compacted thread.
-            let _ = self.authority.flush_thread(session_id, result.thread.clone());
+            let _ = self
+                .authority
+                .flush_thread(session_id, result.thread.clone());
 
             // Write summary to MemoryManager (task 4.3).
-                if let Some(summary) = &result.summary {
-                    if let (Some(wns), Some(mm)) = (write_namespace, self.memory.as_ref()) {
-                        let count = self
-                            .authority
-                            .session_thread(session_id)
-                            .map(|t| t.len())
-                            .unwrap_or(0);
-                        let key = format!("compaction/{}", count);
-                        let value = serde_json::json!({ "summary": summary }).to_string();
-                        let _ = mm.write(&wns.0, key.clone(), value).await;
-                        // Emit a trace so the UI can show memory-write events.
-                        if let Some(rid) = run_id {
-                            self.authority.emit_for_run(
-                                *rid,
-                                crate::protocol::events::RuntimeEventPayload::Trace {
-                                    run_id: rid.to_string(),
-                                    trace: serde_json::json!({
-                                        "kind": "memory_write",
-                                        "namespace": wns.0,
-                                        "key": key,
-                                        "source": "compaction",
-                                    }),
-                                },
-                            );
-                        }
-                        debug!(
-                            session = %session_id,
-                            namespace = %wns,
-                            "compaction summary written to memory"
+            if let Some(summary) = &result.summary {
+                if let (Some(wns), Some(mm)) = (write_namespace, self.memory.as_ref()) {
+                    let count = self
+                        .authority
+                        .session_thread(session_id)
+                        .map(|t| t.len())
+                        .unwrap_or(0);
+                    let key = format!("compaction/{}", count);
+                    let value = serde_json::json!({ "summary": summary }).to_string();
+                    let _ = mm.write(&wns.0, key.clone(), value).await;
+                    // Emit a trace so the UI can show memory-write events.
+                    if let Some(rid) = run_id {
+                        self.authority.emit_for_run(
+                            *rid,
+                            crate::protocol::events::RuntimeEventPayload::Trace {
+                                run_id: rid.to_string(),
+                                trace: serde_json::json!({
+                                    "kind": "memory_write",
+                                    "namespace": wns.0,
+                                    "key": key,
+                                    "source": "compaction",
+                                }),
+                            },
                         );
                     }
+                    debug!(
+                        session = %session_id,
+                        namespace = %wns,
+                        "compaction summary written to memory"
+                    );
                 }
+            }
         }
 
         result.thread
@@ -292,9 +298,7 @@ impl SessionManager {
         let req = LlmRequest {
             model: model.to_owned(),
             messages: vec![
-                ChatMessage::system(
-                    crate::crony::prompts::REFLECTION_DECAY_SUMMARIZE,
-                ),
+                ChatMessage::system(crate::crony::prompts::REFLECTION_DECAY_SUMMARIZE),
                 ChatMessage::user(prompt),
             ],
             tools: Vec::new(),
@@ -444,7 +448,11 @@ mod tests {
         let saved = auth.session_thread(&sid).unwrap();
         // One reflection: passthrough, no summarisation.
         assert_eq!(saved.len(), 2);
-        assert!(saved[1].content.as_deref().unwrap_or("").starts_with("[REFLECTION]"));
+        assert!(saved[1]
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("[REFLECTION]"));
     }
 
     #[tokio::test]

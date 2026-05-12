@@ -7,14 +7,14 @@
 #include <vector>
 
 #include "browser/client_handler.h"
+#include "browser/models/view_context.h"
 #include "browser/models/view_dispatcher.h"
 #include "browser/models/view_model.h"
-#include "browser/models/view_context.h"
 #include "browser/views/content_view.h"
 #include "browser/views/popover.h"
+#include "browser/views/profile_picker_overlay.h"
 #include "browser/views/sidebar_view.h"
 #include "browser/views/titlebar_view.h"
-#include "browser/views/profile_picker_overlay.h"
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_label_button.h"
@@ -66,8 +66,9 @@ class MainWindow : public CefWindowDelegate,
   // Pre-allocate fixed overlay slots (Phase 6). Called at end of BuildChrome.
   void BuildOverlaySlots();
 
-  // native-views-mvc: ThemeChrome is now the global struct from shell_observer.h.
-  // This alias preserves all existing references to MainWindow::ThemeChrome.
+  // native-views-mvc: ThemeChrome is now the global struct from
+  // shell_observer.h. This alias preserves all existing references to
+  // MainWindow::ThemeChrome.
   using ThemeChrome = ::ThemeChrome;
   // Push current_chrome_ to every native surface and broadcast
   // theme.changed to renderers.
@@ -110,7 +111,7 @@ class MainWindow : public CefWindowDelegate,
   // all Spaces). Initialized in BuildChrome; nullptr until the runtime
   // binary is located and the handshake succeeds.
   std::unique_ptr<RuntimeBridge> runtime_bridge_;
-  std::unique_ptr<RuntimeProxy>  runtime_proxy_;
+  std::unique_ptr<RuntimeProxy> runtime_proxy_;
   // arc-style-tab-cards: TabManager lives in shell_model_.tabs_.
 
   // Layout views.
@@ -121,14 +122,16 @@ class MainWindow : public CefWindowDelegate,
   CefRefPtr<CefBrowserView> sidebar_view() const {
     return sidebar_view_obj_ ? sidebar_view_obj_->browser_view() : nullptr;
   }
-  // native-views-mvc Phase 8: content panels + card management owned by ContentView.
+  // native-views-mvc Phase 8: content panels + card management owned by
+  // ContentView.
   std::unique_ptr<ContentView> content_view_;
   // native-views-mvc Phase 9: title bar owned by TitleBarView.
   std::unique_ptr<TitleBarView> titlebar_view_;
   // native-title-bar: root layout flipped from H to V; the body box hosts
   // the existing `[sidebar | content_outer]` row directly under the title bar.
-  CefRefPtr<CefPanel>        titlebar_panel_;  // root panel returned by TitleBarView::Build()
-  CefRefPtr<CefPanel>        body_panel_;
+  CefRefPtr<CefPanel>
+      titlebar_panel_;  // root panel returned by TitleBarView::Build()
+  CefRefPtr<CefPanel> body_panel_;
   bool sidebar_visible_ = true;  // tracks current sidebar visibility
   // ToggleSidebar: implements WindowActionContext::ToggleSidebar.
   // (declaration via context override below)
@@ -169,7 +172,7 @@ class MainWindow : public CefWindowDelegate,
   // Constructed by BuildOverlaySlots().
   std::unique_ptr<ProfilePickerOverlay> profile_picker_overlay_;
 
-  CefRefPtr<CefWindow>           main_window_;
+  CefRefPtr<CefWindow> main_window_;
 
   // native-title-bar: build the top title-bar panel
   // native-title-bar: open a new tab of `kind` ("web"|"terminal"|"chat")

@@ -12,4 +12,3 @@ bool IsSensitivePath(const std::filesystem::path& path);
 std::string ShellQuote(const std::string& value);
 
 }  // namespace cronymax
-

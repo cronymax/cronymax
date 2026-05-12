@@ -120,22 +120,14 @@ function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-cronymax-border/30 transition"
       >
-        <span
-          className={`w-4 shrink-0 text-center font-mono text-[11px] ${glyphColor}`}
-        >
-          {glyph}
-        </span>
-        <span className="flex-1 truncate font-mono text-[11px] text-cronymax-caption">
-          {label}
-        </span>
+        <span className={`w-4 shrink-0 text-center font-mono text-[11px] ${glyphColor}`}>{glyph}</span>
+        <span className="flex-1 truncate font-mono text-[11px] text-cronymax-caption">{label}</span>
         {!isRunStart && (
           <span className="shrink-0 font-mono text-[10px] text-cronymax-caption opacity-60">
             {fmtRelTs(base, entry.ts)}
           </span>
         )}
-        <span className="shrink-0 text-[10px] text-cronymax-caption opacity-40">
-          {open ? "▾" : "▸"}
-        </span>
+        <span className="shrink-0 text-[10px] text-cronymax-caption opacity-40">{open ? "▾" : "▸"}</span>
       </button>
 
       {open && isRunStart && entry.kind === "run_start" && (
@@ -148,9 +140,7 @@ function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
           </pre>
           {entry.userInput && (
             <>
-              <div className="text-[10px] text-cronymax-caption opacity-70 font-mono mt-1">
-                User message:
-              </div>
+              <div className="text-[10px] text-cronymax-caption opacity-70 font-mono mt-1">User message:</div>
               <pre className="max-h-[240px] overflow-y-auto rounded bg-cronymax-base px-2 py-1 font-mono text-[10px] text-cronymax-caption whitespace-pre-wrap break-all">
                 {entry.userInput}
               </pre>
@@ -184,12 +174,8 @@ export function TraceViewer({ entries, startExpanded }: Props) {
         onClick={() => setCollapsed((v) => !v)}
         className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-cronymax-border/20 transition"
       >
-        <span className="font-mono text-[10px] text-cronymax-caption">
-          {collapsed ? "▶" : "▼"}
-        </span>
-        <span className="text-[11px] font-semibold text-cronymax-caption">
-          Trace
-        </span>
+        <span className="font-mono text-[10px] text-cronymax-caption">{collapsed ? "▶" : "▼"}</span>
+        <span className="text-[11px] font-semibold text-cronymax-caption">Trace</span>
         <span className="text-[10px] text-cronymax-caption opacity-60">
           {entries.length} {entries.length === 1 ? "entry" : "entries"}
           {dur ? ` · ${dur}` : ""}

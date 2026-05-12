@@ -1,24 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Editor as MilkdownEditor,
-  defaultValueCtx,
-  editorViewCtx,
-  rootCtx,
-  serializerCtx,
-} from "@milkdown/core";
+import { defaultValueCtx, editorViewCtx, Editor as MilkdownEditor, rootCtx, serializerCtx } from "@milkdown/core";
 import { commonmark } from "@milkdown/preset-commonmark";
 import { gfm } from "@milkdown/preset-gfm";
-import { nord } from "@milkdown/theme-nord";
 import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
+import { nord } from "@milkdown/theme-nord";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { browser } from "@/shells/bridge";
 
-import {
-  assignMissingBlockIds,
-  formatBlockMarker,
-  parseBlockComments,
-  withBlockIds,
-} from "./blockIds";
+import { assignMissingBlockIds, formatBlockMarker, parseBlockComments, withBlockIds } from "./blockIds";
 import type { WorkbenchParams } from "./url";
 
 // ---------------------------------------------------------------------------
@@ -65,10 +54,7 @@ interface DocumentSubmitResponse {
   sha: string;
 }
 
-function MilkdownInner(props: {
-  initialMarkdown: string;
-  onReady: (getMd: () => string) => void;
-}) {
+function MilkdownInner(props: { initialMarkdown: string; onReady: (getMd: () => string) => void }) {
   const { initialMarkdown, onReady } = props;
 
   useEditor((root) => {
@@ -148,9 +134,7 @@ export function Editor({ params }: { params: WorkbenchParams }) {
       setRevision(res.revision);
       setStatus({ state: "saved", message: `Saved · rev ${res.revision}` });
       window.setTimeout(() => {
-        setStatus((cur) =>
-          cur.state === "saved" ? { state: "idle", message: "" } : cur,
-        );
+        setStatus((cur) => (cur.state === "saved" ? { state: "idle", message: "" } : cur));
       }, 2500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -161,10 +145,7 @@ export function Editor({ params }: { params: WorkbenchParams }) {
   // Cmd/Ctrl+S to save.
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      const isSave =
-        (ev.metaKey || ev.ctrlKey) &&
-        !ev.shiftKey &&
-        ev.key.toLowerCase() === "s";
+      const isSave = (ev.metaKey || ev.ctrlKey) && !ev.shiftKey && ev.key.toLowerCase() === "s";
       if (!isSave) return;
       ev.preventDefault();
       void handleSave();
@@ -188,16 +169,11 @@ export function Editor({ params }: { params: WorkbenchParams }) {
       const marker = formatBlockMarker(blockId);
       const candidates = root.querySelectorAll<HTMLElement>("*");
       for (const el of candidates) {
-        if (
-          el.children.length === 0 &&
-          el.textContent &&
-          el.textContent.includes(marker)
-        ) {
+        if (el.children.length === 0 && el.textContent && el.textContent.includes(marker)) {
           const target = el.closest(
             "[data-type='html-block'], p, h1, h2, h3, h4, h5, h6, blockquote, pre, ul, ol, table",
           );
-          const focusEl = (target?.nextElementSibling ??
-            target) as HTMLElement | null;
+          const focusEl = (target?.nextElementSibling ?? target) as HTMLElement | null;
           if (focusEl) {
             focusEl.scrollIntoView({ behavior: "smooth", block: "center" });
             focusEl.classList.add("ring-2", "ring-emerald-400", "rounded");
@@ -224,11 +200,7 @@ export function Editor({ params }: { params: WorkbenchParams }) {
   }
 
   if (initial === null) {
-    return (
-      <div className="flex h-full items-center justify-center p-6 text-sm text-gray-500">
-        Loading…
-      </div>
-    );
+    return <div className="flex h-full items-center justify-center p-6 text-sm text-gray-500">Loading…</div>;
   }
 
   const markerCount = parseBlockComments(initial).length;
@@ -251,11 +223,7 @@ export function Editor({ params }: { params: WorkbenchParams }) {
         </div>
         <div
           className={
-            status.state === "error"
-              ? "text-red-600"
-              : status.state === "saved"
-                ? "text-emerald-600"
-                : "text-gray-500"
+            status.state === "error" ? "text-red-600" : status.state === "saved" ? "text-emerald-600" : "text-gray-500"
           }
         >
           {status.message}

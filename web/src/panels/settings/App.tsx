@@ -9,35 +9,20 @@
  *   Flows      — visual agent-flow editor
  *   Runner     — legacy ReAct runner (terminal Explain/Fix/Retry target)
  */
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from "react";
-import { browser } from "@/shells/bridge";
-import { agentRegistry, docType, agentRun } from "@/shells/runtime";
-import { useBridgeEvent } from "@/hooks/useBridgeEvent";
-import { useTheme } from "@/hooks/useTheme";
-import type { ThemeMode } from "@/types";
-
+import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Flows } from "@/components/FlowEditor";
 import { Icon } from "@/components/Icon";
-import { useStore, type PermissionRequest } from "./store";
-
 import { WysiwygMarkdown } from "@/components/WysiwygMarkdown";
+import { useBridgeEvent } from "@/hooks/useBridgeEvent";
+import { useTheme } from "@/hooks/useTheme";
+import { browser } from "@/shells/bridge";
+import { agentRegistry, agentRun, docType } from "@/shells/runtime";
+import type { ThemeMode } from "@/types";
+import { type PermissionRequest, useStore } from "./store";
 
 // ── types ─────────────────────────────────────────────────────────────────
 
-type SettingsTab =
-  | "appearance"
-  | "providers"
-  | "agents"
-  | "doc-types"
-  | "profiles"
-  | "flows"
-  | "runner";
+type SettingsTab = "appearance" | "providers" | "agents" | "doc-types" | "profiles" | "flows" | "runner";
 
 // ── ReAct graph builder ───────────────────────────────────────────────────
 
@@ -48,18 +33,10 @@ const inputCls =
 
 // ── shared Field ──────────────────────────────────────────────────────────
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-3">
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-cronymax-caption">
-        {label}
-      </div>
+      <div className="mb-1 text-[11px] uppercase tracking-wide text-cronymax-caption">{label}</div>
       {children}
     </div>
   );
@@ -102,12 +79,7 @@ function AppearanceTab() {
 
 // ── Providers tab ─────────────────────────────────────────────────────────
 
-type ProviderKind =
-  | "openai"
-  | "anthropic"
-  | "ollama"
-  | "github_copilot"
-  | "custom";
+type ProviderKind = "openai" | "anthropic" | "ollama" | "github_copilot" | "custom";
 
 interface LlmProvider {
   id: string;
@@ -118,10 +90,7 @@ interface LlmProvider {
   default_model: string;
 }
 
-const KIND_PRESETS: Record<
-  ProviderKind,
-  { base_url: string; default_model: string; display: string }
-> = {
+const KIND_PRESETS: Record<ProviderKind, { base_url: string; default_model: string; display: string }> = {
   openai: {
     base_url: "https://api.openai.com/v1",
     default_model: "gpt-4o-mini",
@@ -147,11 +116,7 @@ const KIND_PRESETS: Record<
 
 function newProvider(kind: ProviderKind = "openai"): LlmProvider {
   const preset = KIND_PRESETS[kind];
-  const id =
-    "p_" +
-    Date.now().toString(36) +
-    "_" +
-    Math.random().toString(36).slice(2, 7);
+  const id = `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
   return {
     id,
     name: preset.display,
@@ -181,13 +146,11 @@ async function listProviderModels(provider: LlmProvider): Promise<string[]> {
     });
     if (!res.ok) throw new Error(`/api/tags ${res.status}`);
     const data = await res.json();
-    return ((data.models ?? []) as { name: string }[])
-      .map((m) => m.name)
-      .sort();
+    return ((data.models ?? []) as { name: string }[]).map((m) => m.name).sort();
   }
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (api_key) headers["Authorization"] = `Bearer ${api_key}`;
-  const url = base_url.replace(/\/?$/, "") + "/models";
+  if (api_key) headers.Authorization = `Bearer ${api_key}`;
+  const url = `${base_url.replace(/\/?$/, "")}/models`;
   const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`/models ${res.status}`);
   const data = await res.json();
@@ -249,9 +212,7 @@ function ModelSelect({
           {fetching ? "…" : "⟳"}
         </button>
       </div>
-      {fetchErr && (
-        <p className="text-[11px] text-red-400">fetch failed: {fetchErr}</p>
-      )}
+      {fetchErr && <p className="text-[11px] text-red-400">fetch failed: {fetchErr}</p>}
       {models.length > 0 && !fetching && (
         <div className="flex max-h-[120px] flex-wrap gap-1 overflow-y-auto pt-0.5">
           {models.map((m) => (
@@ -300,17 +261,13 @@ async function startGithubDeviceCode(): Promise<DeviceCode> {
   });
   if (!resp.ok) throw new Error(`device/code ${resp.status}`);
   const data = await resp.json();
-  if (!data.device_code)
-    throw new Error(data.error_description || "no device_code");
+  if (!data.device_code) throw new Error(data.error_description || "no device_code");
   return data as DeviceCode;
 }
 
 async function pollGithubAccessToken(
   device_code: string,
-): Promise<
-  | { ok: true; access_token: string }
-  | { ok: false; retry: boolean; interval?: number; error: string }
-> {
+): Promise<{ ok: true; access_token: string } | { ok: false; retry: boolean; interval?: number; error: string }> {
   const resp = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
     headers: {
@@ -323,8 +280,7 @@ async function pollGithubAccessToken(
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }),
   });
-  if (!resp.ok)
-    return { ok: false, retry: false, error: `HTTP ${resp.status}` };
+  if (!resp.ok) return { ok: false, retry: false, error: `HTTP ${resp.status}` };
   const data = await resp.json();
   if (data.access_token) return { ok: true, access_token: data.access_token };
   const err = String(data.error || "unknown");
@@ -333,13 +289,7 @@ async function pollGithubAccessToken(
 }
 
 interface OauthState {
-  phase:
-    | "idle"
-    | "starting"
-    | "awaiting_user"
-    | "polling"
-    | "success"
-    | "error";
+  phase: "idle" | "starting" | "awaiting_user" | "polling" | "success" | "error";
   user_code?: string;
   verification_uri?: string;
   error?: string;
@@ -356,10 +306,7 @@ function CopilotOauthBlock({
   onSignIn: () => void;
   onCancel: () => void;
 }) {
-  const isActive =
-    oauth.phase === "starting" ||
-    oauth.phase === "awaiting_user" ||
-    oauth.phase === "polling";
+  const isActive = oauth.phase === "starting" || oauth.phase === "awaiting_user" || oauth.phase === "polling";
   return (
     <div className="mt-2 rounded border border-cronymax-border bg-cronymax-float p-2 text-xs">
       <div className="flex items-center justify-between gap-2">
@@ -386,51 +333,40 @@ function CopilotOauthBlock({
           </button>
         )}
       </div>
-      {oauth.phase === "starting" && (
-        <p className="mt-1 text-cronymax-caption">Requesting device code…</p>
-      )}
-      {(oauth.phase === "awaiting_user" || oauth.phase === "polling") &&
-        oauth.user_code && (
-          <div className="mt-2 space-y-1">
-            <p className="text-cronymax-caption">
-              Enter this code on{" "}
-              <a
-                href={oauth.verification_uri}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline hover:text-cronymax-primary"
-              >
-                {oauth.verification_uri}
-              </a>
-              :
-            </p>
-            <div className="flex items-center gap-2">
-              <code className="select-all rounded bg-cronymax-base px-2 py-1 font-mono text-sm tracking-widest">
-                {oauth.user_code}
-              </code>
-              <button
-                type="button"
-                onClick={() =>
-                  void navigator.clipboard
-                    .writeText(oauth.user_code ?? "")
-                    .catch(() => undefined)
-                }
-                className="rounded border border-cronymax-border px-2 py-0.5 text-[11px] hover:bg-cronymax-base"
-              >
-                Copy
-              </button>
-              <span className="text-[11px] text-cronymax-caption">
-                {oauth.phase === "polling" ? "Waiting for authorization…" : ""}
-              </span>
-            </div>
+      {oauth.phase === "starting" && <p className="mt-1 text-cronymax-caption">Requesting device code…</p>}
+      {(oauth.phase === "awaiting_user" || oauth.phase === "polling") && oauth.user_code && (
+        <div className="mt-2 space-y-1">
+          <p className="text-cronymax-caption">
+            Enter this code on{" "}
+            <a
+              href={oauth.verification_uri}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:text-cronymax-primary"
+            >
+              {oauth.verification_uri}
+            </a>
+            :
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="select-all rounded bg-cronymax-base px-2 py-1 font-mono text-sm tracking-widest">
+              {oauth.user_code}
+            </code>
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard.writeText(oauth.user_code ?? "").catch(() => undefined)}
+              className="rounded border border-cronymax-border px-2 py-0.5 text-[11px] hover:bg-cronymax-base"
+            >
+              Copy
+            </button>
+            <span className="text-[11px] text-cronymax-caption">
+              {oauth.phase === "polling" ? "Waiting for authorization…" : ""}
+            </span>
           </div>
-        )}
-      {oauth.phase === "success" && (
-        <p className="mt-1 text-emerald-500">Signed in. Click Save to store.</p>
+        </div>
       )}
-      {oauth.phase === "error" && (
-        <p className="mt-1 text-red-500">Sign-in failed: {oauth.error}</p>
-      )}
+      {oauth.phase === "success" && <p className="mt-1 text-emerald-500">Signed in. Click Save to store.</p>}
+      {oauth.phase === "error" && <p className="mt-1 text-red-500">Sign-in failed: {oauth.error}</p>}
     </div>
   );
 }
@@ -500,15 +436,12 @@ function ProvidersTab() {
     [providers],
   );
 
-  const persist = useCallback(
-    async (next: LlmProvider[], nextActive: string) => {
-      await browser.send("llm.providers.set", {
-        raw: JSON.stringify(next),
-        active_id: nextActive,
-      });
-    },
-    [],
-  );
+  const persist = useCallback(async (next: LlmProvider[], nextActive: string) => {
+    await browser.send("llm.providers.set", {
+      raw: JSON.stringify(next),
+      active_id: nextActive,
+    });
+  }, []);
 
   const onAdd = useCallback((kind: ProviderKind = "openai") => {
     const p = newProvider(kind);
@@ -531,9 +464,7 @@ function ProvidersTab() {
     setMsg(null);
     try {
       const exists = providers.some((p) => p.id === draft.id);
-      const next = exists
-        ? providers.map((p) => (p.id === draft.id ? draft : p))
-        : [...providers, draft];
+      const next = exists ? providers.map((p) => (p.id === draft.id ? draft : p)) : [...providers, draft];
       await persist(next, activeId || draft.id);
       setProviders(next);
       if (!activeId) setActiveId(draft.id);
@@ -656,8 +587,7 @@ function ProvidersTab() {
                 api_key: r.access_token,
                 kind: "github_copilot",
                 base_url: d.base_url || KIND_PRESETS.github_copilot.base_url,
-                default_model:
-                  d.default_model || KIND_PRESETS.github_copilot.default_model,
+                default_model: d.default_model || KIND_PRESETS.github_copilot.default_model,
               }
             : d,
         );
@@ -671,8 +601,7 @@ function ProvidersTab() {
       }
       if (r.error === "slow_down" && r.interval) interval = r.interval * 1000;
     }
-    if (!cancelToken.cancelled)
-      setOauth({ phase: "error", error: "code expired — try again" });
+    if (!cancelToken.cancelled) setOauth({ phase: "error", error: "code expired — try again" });
   }, [draft]);
 
   const cancelOauth = useCallback(() => {
@@ -706,9 +635,7 @@ function ProvidersTab() {
         </div>
         <ul className="flex-1 overflow-auto py-1">
           {providers.length === 0 && (
-            <li className="px-2 py-1 text-[11px] text-cronymax-caption">
-              No providers configured.
-            </li>
+            <li className="px-2 py-1 text-[11px] text-cronymax-caption">No providers configured.</li>
           )}
           {providers.map((p) => {
             const isActive = p.id === activeId;
@@ -728,9 +655,7 @@ function ProvidersTab() {
                   <span className="flex w-full items-center gap-1 font-medium">
                     <span className="flex-1 truncate">{p.name}</span>
                     {isActive && (
-                      <span className="rounded bg-green-500/20 px-1 text-[10px] text-green-300">
-                        active
-                      </span>
+                      <span className="rounded bg-green-500/20 px-1 text-[10px] text-green-300">active</span>
                     )}
                   </span>
                   <span className="text-[10px] opacity-70">
@@ -746,17 +671,15 @@ function ProvidersTab() {
       <section className="flex-1 overflow-auto p-3">
         {!draft && (
           <p className="text-xs text-cronymax-caption">
-            Select a provider to edit or activate it. Click <b>+</b> to add a
-            new one. Credentials are stored in the workspace SQLite kv store.
+            Select a provider to edit or activate it. Click <b>+</b> to add a new one. Credentials are stored in the
+            workspace SQLite kv store.
           </p>
         )}
         {draft && (
           <div className="max-w-[560px]">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-semibold">
-                {providers.some((p) => p.id === draft.id)
-                  ? `Edit: ${draft.name || draft.id}`
-                  : "New provider"}
+                {providers.some((p) => p.id === draft.id) ? `Edit: ${draft.name || draft.id}` : "New provider"}
               </h2>
               {providers.some((p) => p.id === draft.id) && (
                 <button
@@ -795,9 +718,7 @@ function ProvidersTab() {
               <input
                 className={inputCls}
                 value={draft.base_url}
-                onChange={(e) =>
-                  setDraft({ ...draft, base_url: e.target.value })
-                }
+                onChange={(e) => setDraft({ ...draft, base_url: e.target.value })}
                 placeholder="https://api.openai.com/v1"
               />
             </Field>
@@ -806,9 +727,7 @@ function ProvidersTab() {
                 className={inputCls}
                 type="password"
                 value={draft.api_key}
-                onChange={(e) =>
-                  setDraft({ ...draft, api_key: e.target.value })
-                }
+                onChange={(e) => setDraft({ ...draft, api_key: e.target.value })}
                 placeholder="sk-…"
                 autoComplete="off"
               />
@@ -906,15 +825,7 @@ const TOOL_GROUPS: { label: string; tools: string[] }[] = [
   },
   {
     label: "Git",
-    tools: [
-      "git_status",
-      "git_diff",
-      "git_log",
-      "git_add",
-      "git_reset",
-      "git_commit",
-      "git_push",
-    ],
+    tools: ["git_status", "git_diff", "git_log", "git_add", "git_reset", "git_commit", "git_push"],
   },
   {
     label: "Workflow",
@@ -936,20 +847,12 @@ const ALL_KNOWN_TOOLS = new Set(TOOL_GROUPS.flatMap((g) => g.tools));
  * fully checked, the value is saved as `[]`; otherwise the explicit list is
  * saved.
  */
-function ToolCheckboxes({
-  value,
-  onChange,
-}: {
-  value: string[];
-  onChange: (v: string[]) => void;
-}) {
+function ToolCheckboxes({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
   // Derive "unknown" tools from the current value that aren't in any group.
   const unknownTools = value.filter((t) => !ALL_KNOWN_TOOLS.has(t));
 
   // When value === [], treat all known tools as checked.
-  const effectiveSet = new Set(
-    value.length === 0 ? TOOL_GROUPS.flatMap((g) => g.tools) : value,
-  );
+  const effectiveSet = new Set(value.length === 0 ? TOOL_GROUPS.flatMap((g) => g.tools) : value);
 
   function toggle(tool: string) {
     const next = new Set(effectiveSet);
@@ -968,9 +871,9 @@ function ToolCheckboxes({
     const allChecked = group.tools.every((t) => effectiveSet.has(t));
     const next = new Set(effectiveSet);
     if (allChecked) {
-      group.tools.forEach((t) => next.delete(t));
+      for (const t of group.tools) next.delete(t);
     } else {
-      group.tools.forEach((t) => next.add(t));
+      for (const t of group.tools) next.add(t);
     }
     const allKnown = TOOL_GROUPS.flatMap((g) => g.tools);
     const allChecked2 = allKnown.every((t) => next.has(t));
@@ -981,8 +884,7 @@ function ToolCheckboxes({
     <div className="space-y-2">
       {TOOL_GROUPS.map((group) => {
         const groupChecked = group.tools.every((t) => effectiveSet.has(t));
-        const groupPartial =
-          !groupChecked && group.tools.some((t) => effectiveSet.has(t));
+        const groupPartial = !groupChecked && group.tools.some((t) => effectiveSet.has(t));
         return (
           <div key={group.label}>
             <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-semibold text-cronymax-title">
@@ -999,10 +901,7 @@ function ToolCheckboxes({
             </label>
             <div className="ml-4 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
               {group.tools.map((tool) => (
-                <label
-                  key={tool}
-                  className="flex cursor-pointer items-center gap-1 text-[11px] text-cronymax-caption"
-                >
+                <label key={tool} className="flex cursor-pointer items-center gap-1 text-[11px] text-cronymax-caption">
                   <input
                     type="checkbox"
                     checked={effectiveSet.has(tool)}
@@ -1018,15 +917,10 @@ function ToolCheckboxes({
       })}
       {unknownTools.length > 0 && (
         <div>
-          <span className="text-[11px] font-semibold text-cronymax-title">
-            Other
-          </span>
+          <span className="text-[11px] font-semibold text-cronymax-title">Other</span>
           <div className="ml-4 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
             {unknownTools.map((tool) => (
-              <label
-                key={tool}
-                className="flex cursor-pointer items-center gap-1 text-[11px] text-cronymax-caption"
-              >
+              <label key={tool} className="flex cursor-pointer items-center gap-1 text-[11px] text-cronymax-caption">
                 <input
                   type="checkbox"
                   checked={effectiveSet.has(tool)}
@@ -1050,9 +944,7 @@ function AgentsTab() {
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeProvider, setActiveProvider] = useState<LlmProvider | null>(
-    null,
-  );
+  const [activeProvider, setActiveProvider] = useState<LlmProvider | null>(null);
 
   useEffect(() => {
     browser.send("llm.providers.get").then((res) => {
@@ -1069,9 +961,7 @@ function AgentsTab() {
   const loadList = useCallback(async () => {
     try {
       let res = await agentRegistry.list();
-      const existingNames = new Set(
-        (res.agents ?? []).map((a: AgentSummary) => a.name),
-      );
+      const existingNames = new Set((res.agents ?? []).map((a: AgentSummary) => a.name));
 
       // Seed the built-in agents if they are not yet registered.
       // "Chat" is always seeded; the software-dev-cycle agents are seeded
@@ -1142,9 +1032,7 @@ function AgentsTab() {
         },
       ];
 
-      const missing = BUILTIN_AGENTS.filter(
-        (a) => a && !existingNames.has(a.name),
-      );
+      const missing = BUILTIN_AGENTS.filter((a) => a && !existingNames.has(a.name));
       if (missing.length > 0) {
         await Promise.all(missing.map((a) => agentRegistry.save(a)));
         res = await agentRegistry.list();
@@ -1194,9 +1082,7 @@ function AgentsTab() {
   const onSave = useCallback(async () => {
     if (!draft) return;
     if (!/^[A-Za-z0-9_.-]{1,64}$/.test(draft.name)) {
-      setError(
-        "Name must be 1-64 chars of letters, digits, _, -, or . (no slashes).",
-      );
+      setError("Name must be 1-64 chars of letters, digits, _, -, or . (no slashes).");
       return;
     }
     setBusy(true);
@@ -1253,9 +1139,7 @@ function AgentsTab() {
         </div>
         <ul className="flex-1 overflow-auto py-1">
           {agents.length === 0 && (
-            <li className="px-2 py-1 text-[11px] text-cronymax-caption">
-              No agents registered.
-            </li>
+            <li className="px-2 py-1 text-[11px] text-cronymax-caption">No agents registered.</li>
           )}
           {agents.map((a) => (
             <li key={a.name}>
@@ -1280,16 +1164,13 @@ function AgentsTab() {
       <section className="flex-1 overflow-auto p-3">
         {!draft && (
           <p className="text-xs text-cronymax-caption">
-            Select an agent to view or edit, or click <b>+</b> to create one.
-            Files live under{" "}
+            Select an agent to view or edit, or click <b>+</b> to create one. Files live under{" "}
             <code>.cronymax/agents/&lt;name&gt;.agent.yaml</code>.
           </p>
         )}
         {draft && (
           <div className="max-w-[560px]">
-            <h2 className="mb-3 text-sm font-semibold">
-              {creating ? "New agent" : `Edit: ${selected}`}
-            </h2>
+            <h2 className="mb-3 text-sm font-semibold">{creating ? "New agent" : `Edit: ${selected}`}</h2>
             {draft.prompt_sealed ? (
               <>
                 <p className="mb-4 rounded border border-cronymax-border bg-cronymax-float px-3 py-2 text-xs text-cronymax-caption">
@@ -1322,15 +1203,11 @@ function AgentsTab() {
                     className={inputCls}
                     value={draft.name}
                     disabled={!creating}
-                    onChange={(e) =>
-                      setDraft({ ...draft, name: e.target.value })
-                    }
+                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                     placeholder="my_worker"
                   />
                   {!creating && (
-                    <p className="mt-1 text-[10px] text-cronymax-caption">
-                      Rename by deleting and recreating.
-                    </p>
+                    <p className="mt-1 text-[10px] text-cronymax-caption">Rename by deleting and recreating.</p>
                   )}
                 </Field>
                 <Field label="LLM model">
@@ -1344,9 +1221,7 @@ function AgentsTab() {
                     <input
                       className={inputCls}
                       value={draft.llm}
-                      onChange={(e) =>
-                        setDraft({ ...draft, llm: e.target.value })
-                      }
+                      onChange={(e) => setDraft({ ...draft, llm: e.target.value })}
                       placeholder="(uses provider default)"
                     />
                   )}
@@ -1355,9 +1230,7 @@ function AgentsTab() {
                   <input
                     className={inputCls}
                     value={draft.memory_namespace}
-                    onChange={(e) =>
-                      setDraft({ ...draft, memory_namespace: e.target.value })
-                    }
+                    onChange={(e) => setDraft({ ...draft, memory_namespace: e.target.value })}
                     placeholder="(defaults to agent name)"
                   />
                 </Field>
@@ -1369,10 +1242,7 @@ function AgentsTab() {
                   />
                 </Field>
                 <Field label="Tools (empty = Space defaults, all checked)">
-                  <ToolCheckboxes
-                    value={draft.tools}
-                    onChange={(v) => setDraft({ ...draft, tools: v })}
-                  />
+                  <ToolCheckboxes value={draft.tools} onChange={(v) => setDraft({ ...draft, tools: v })} />
                 </Field>
                 {error && <p className="mb-3 text-xs text-red-300">{error}</p>}
                 <div className="flex items-center gap-2">
@@ -1458,11 +1328,7 @@ function ProfileForm({
 
   // Validate paths whenever the textarea values change.
   useEffect(() => {
-    const allPaths = [
-      ...splitPaths(reads),
-      ...splitPaths(writes),
-      ...splitPaths(denies),
-    ];
+    const allPaths = [...splitPaths(reads), ...splitPaths(writes), ...splitPaths(denies)];
     if (allPaths.length === 0) {
       setMissingPaths([]);
       return;
@@ -1525,18 +1391,12 @@ function ProfileForm({
           disabled={isDefault}
         />
         {isDefault && (
-          <p className="mt-1 text-[11px] text-cronymax-caption">
-            The default profile name cannot be changed.
-          </p>
+          <p className="mt-1 text-[11px] text-cronymax-caption">The default profile name cannot be changed.</p>
         )}
       </Field>
       <Field label="Network">
         <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={allowNet}
-            onChange={(e) => setAllowNet(e.target.checked)}
-          />
+          <input type="checkbox" checked={allowNet} onChange={(e) => setAllowNet(e.target.checked)} />
           Allow outbound network access
         </label>
       </Field>
@@ -1606,10 +1466,7 @@ function ProfileForm({
           </button>
         )}
         {isDefault && (
-          <span
-            className="ml-auto text-[11px] text-cronymax-caption"
-            title="The default profile cannot be deleted"
-          >
+          <span className="ml-auto text-[11px] text-cronymax-caption" title="The default profile cannot be deleted">
             🔒 Cannot delete default
           </span>
         )}
@@ -1715,27 +1572,21 @@ function ProfilesTab() {
   return (
     <div className="h-full overflow-auto p-4">
       <p className="mb-4 text-[11px] text-cronymax-caption">
-        Named sandbox profiles are stored in <code>~/.cronymax/profiles/</code>.
-        Assign a profile to a workspace when opening a folder.
+        Named sandbox profiles are stored in <code>~/.cronymax/profiles/</code>. Assign a profile to a workspace when
+        opening a folder.
       </p>
       {msg && <p className="mb-3 text-xs text-red-500">{msg}</p>}
       <div className="max-w-[600px] space-y-2">
         {profiles.map((p) => (
-          <div
-            key={p.id}
-            className="rounded border border-cronymax-border bg-cronymax-base"
-          >
+          <div key={p.id} className="rounded border border-cronymax-border bg-cronymax-base">
             <button
               type="button"
-              onClick={() =>
-                setExpandedId((prev) => (prev === p.id ? null : p.id))
-              }
+              onClick={() => setExpandedId((prev) => (prev === p.id ? null : p.id))}
               className="flex w-full items-center justify-between px-3 py-2 text-left text-xs"
             >
               <span className="font-medium text-cronymax-title">{p.name}</span>
               <span className="text-cronymax-caption">
-                {p.allow_network ? "network ✓" : "network ✗"} ·{" "}
-                {p.id === "default" ? "🔒 default" : p.id}
+                {p.allow_network ? "network ✓" : "network ✗"} · {p.id === "default" ? "🔒 default" : p.id}
               </span>
             </button>
             {expandedId === p.id && (
@@ -1751,9 +1602,7 @@ function ProfilesTab() {
         ))}
       </div>
       <NewProfileForm onCreated={() => void reload()} />
-      {busy && (
-        <p className="mt-3 text-[11px] text-cronymax-caption">Saving…</p>
-      )}
+      {busy && <p className="mt-3 text-[11px] text-cronymax-caption">Saving…</p>}
     </div>
   );
 }
@@ -1833,19 +1682,13 @@ function DocTypesTab() {
   const onSave = useCallback(async () => {
     if (!draft) return;
     if (!/^[A-Za-z0-9_.-]{1,64}$/.test(draft.name)) {
-      setError(
-        "Name must be 1-64 chars of letters, digits, _, -, or . (no slashes).",
-      );
+      setError("Name must be 1-64 chars of letters, digits, _, -, or . (no slashes).");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await docType.save(
-        draft.name,
-        draft.display_name || draft.name,
-        draft.description,
-      );
+      await docType.save(draft.name, draft.display_name || draft.name, draft.description);
       await loadList();
       setSelected(draft.name);
       setCreating(false);
@@ -1874,9 +1717,7 @@ function DocTypesTab() {
     }
   }, [selected, loadList]);
 
-  const selectedIsUserDefined =
-    selected != null &&
-    (docTypes.find((d) => d.name === selected)?.user_defined ?? false);
+  const selectedIsUserDefined = selected != null && (docTypes.find((d) => d.name === selected)?.user_defined ?? false);
 
   const editable = creating || selectedIsUserDefined;
 
@@ -1896,9 +1737,7 @@ function DocTypesTab() {
         </div>
         <ul className="flex-1 overflow-auto py-1">
           {docTypes.length === 0 && (
-            <li className="px-2 py-1 text-[11px] text-cronymax-caption">
-              No doc types found.
-            </li>
+            <li className="px-2 py-1 text-[11px] text-cronymax-caption">No doc types found.</li>
           )}
           {docTypes.map((dt) => (
             <li key={dt.name}>
@@ -1913,9 +1752,7 @@ function DocTypesTab() {
                 }
               >
                 <span className="font-medium">{dt.name}</span>
-                <span className="text-[10px] opacity-70">
-                  {dt.user_defined ? "user" : "built-in"}
-                </span>
+                <span className="text-[10px] opacity-70">{dt.user_defined ? "user" : "built-in"}</span>
               </button>
             </li>
           ))}
@@ -1925,23 +1762,19 @@ function DocTypesTab() {
       <section className="flex-1 overflow-auto p-3">
         {!draft && (
           <p className="text-xs text-cronymax-caption">
-            Select a doc type to view its Markdown description, or click{" "}
-            <b>+</b> to create a new one. User-defined doc types are stored in{" "}
-            <code>.cronymax/doc-types/&lt;name&gt;.yaml</code> and appear
-            alongside built-ins in the Flow PRODUCES picker.
+            Select a doc type to view its Markdown description, or click <b>+</b> to create a new one. User-defined doc
+            types are stored in <code>.cronymax/doc-types/&lt;name&gt;.yaml</code> and appear alongside built-ins in the
+            Flow PRODUCES picker.
           </p>
         )}
         {draft && (
           <div className="max-w-[640px]">
             <h2 className="mb-3 text-sm font-semibold">
-              {creating
-                ? "New doc type"
-                : `${editable ? "Edit" : "View"}: ${selected}`}
+              {creating ? "New doc type" : `${editable ? "Edit" : "View"}: ${selected}`}
             </h2>
             {!creating && !selectedIsUserDefined && (
               <p className="mb-3 rounded border border-cronymax-border bg-cronymax-float p-2 text-[11px] text-cronymax-caption">
-                Built-in doc types are read-only. Create a user doc type to
-                define your own document structure.
+                Built-in doc types are read-only. Create a user doc type to define your own document structure.
               </p>
             )}
             <Field label="Name (file basename)">
@@ -1953,9 +1786,7 @@ function DocTypesTab() {
                 placeholder="my-doc-type"
               />
               {!creating && (
-                <p className="mt-1 text-[10px] text-cronymax-caption">
-                  Rename by deleting and recreating.
-                </p>
+                <p className="mt-1 text-[10px] text-cronymax-caption">Rename by deleting and recreating.</p>
               )}
             </Field>
             <Field label="Display name">
@@ -1963,24 +1794,16 @@ function DocTypesTab() {
                 className={inputCls}
                 value={draft.display_name}
                 disabled={!editable}
-                onChange={(e) =>
-                  setDraft({ ...draft, display_name: e.target.value })
-                }
+                onChange={(e) => setDraft({ ...draft, display_name: e.target.value })}
                 placeholder="My Doc Type"
               />
             </Field>
             <Field label="Description">
               <WysiwygMarkdown
                 value={draft.description}
-                onChange={
-                  editable
-                    ? (v) => setDraft({ ...draft, description: v })
-                    : undefined
-                }
+                onChange={editable ? (v) => setDraft({ ...draft, description: v }) : undefined}
                 readOnly={!editable}
-                className={
-                  !editable ? "pointer-events-none opacity-60" : undefined
-                }
+                className={!editable ? "pointer-events-none opacity-60" : undefined}
               />
             </Field>
             {error && <p className="mb-3 text-xs text-red-300">{error}</p>}
@@ -2138,9 +1961,11 @@ function RunnerTab() {
     try {
       runId = await agentRun(text);
       if (!runId) throw new Error("runtime did not return run_id");
-      await browser.send("events.subscribe", { run_id: runId }).catch(() => {});
+      await browser.send("events.subscribe", { run_id: runId }).catch(() => {
+        /* ignore */
+      });
     } catch (err) {
-      dispatch({ type: "appendResult", chunk: "\n" + (err as Error).message });
+      dispatch({ type: "appendResult", chunk: `\n${(err as Error).message}` });
       dispatch({ type: "setStatus", status: "failed" });
       return;
     }
@@ -2151,9 +1976,7 @@ function RunnerTab() {
       if (ev.tag === "event") {
         const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
         const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
-        const pRunId = (inner as Record<string, unknown>).run_id as
-          | string
-          | undefined;
+        const pRunId = (inner as Record<string, unknown>).run_id as string | undefined;
         if (pRunId && pRunId !== runId) return;
         const kind = pl.kind as string | undefined;
         if (kind === "token" && pl.content) {
@@ -2251,13 +2074,7 @@ function RunnerTab() {
 
 // ── Permission overlay ────────────────────────────────────────────────────
 
-function PermissionOverlay({
-  perm,
-  onResolve,
-}: {
-  perm: PermissionRequest;
-  onResolve: (allow: boolean) => void;
-}) {
+function PermissionOverlay({ perm, onResolve }: { perm: PermissionRequest; onResolve: (allow: boolean) => void }) {
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="w-[340px] rounded-md border border-cronymax-border bg-cronymax-float p-4 text-sm text-cronymax-title shadow-lg">
@@ -2295,13 +2112,7 @@ const TAB_LABELS: { id: SettingsTab; label: string }[] = [
   { id: "runner", label: "Runner" },
 ];
 
-function TabBar({
-  tab,
-  onChange,
-}: {
-  tab: SettingsTab;
-  onChange: (t: SettingsTab) => void;
-}) {
+function TabBar({ tab, onChange }: { tab: SettingsTab; onChange: (t: SettingsTab) => void }) {
   return (
     <nav className="flex items-center gap-0 border-b border-cronymax-border bg-cronymax-float px-1">
       {TAB_LABELS.map((t) => (
@@ -2340,8 +2151,7 @@ export function App() {
           api_key?: string;
           default_model?: string;
         }>;
-        const active =
-          providers.find((p) => p.id === provRes.active_id) || providers[0];
+        const active = providers.find((p) => p.id === provRes.active_id) || providers[0];
         if (active) {
           dispatch({
             type: "setLlmConfig",
@@ -2381,7 +2191,9 @@ export function App() {
   );
 
   const onClose = useCallback(() => {
-    browser.send("shell.popover_close").catch(() => {});
+    browser.send("shell.popover_close").catch(() => {
+      /* ignore */
+    });
   }, []);
 
   return (
@@ -2411,12 +2223,7 @@ export function App() {
         {tab === "runner" && <RunnerTab />}
       </div>
 
-      {state.permission && (
-        <PermissionOverlay
-          perm={state.permission}
-          onResolve={onResolvePermission}
-        />
-      )}
+      {state.permission && <PermissionOverlay perm={state.permission} onResolve={onResolvePermission} />}
     </main>
   );
 }

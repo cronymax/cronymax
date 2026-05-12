@@ -107,11 +107,7 @@ impl MemoryManager {
     }
 
     /// Read a single entry from a namespace. Returns `None` if not found.
-    pub async fn read(
-        &self,
-        namespace_id: &str,
-        key: &str,
-    ) -> Option<MemoryEntry> {
+    pub async fn read(&self, namespace_id: &str, key: &str) -> Option<MemoryEntry> {
         let mut guard = self.namespaces.lock().await;
         let store = Self::get_or_load(&mut guard, &self.dir, namespace_id).await;
         store.read(key).cloned()
@@ -125,12 +121,7 @@ impl MemoryManager {
     }
 
     /// BM25 keyword search over a namespace. `limit` caps the result count.
-    pub async fn search(
-        &self,
-        namespace_id: &str,
-        query: &str,
-        limit: usize,
-    ) -> Vec<RankedResult> {
+    pub async fn search(&self, namespace_id: &str, query: &str, limit: usize) -> Vec<RankedResult> {
         let mut guard = self.namespaces.lock().await;
         let store = Self::get_or_load(&mut guard, &self.dir, namespace_id).await;
         store.search(query, limit)
@@ -181,9 +172,15 @@ mod tests {
         let mgr = MemoryManager::new(tmp.path(), None).await;
 
         mgr.write("ns1", "k1", "the quick brown fox").await.unwrap();
-        mgr.write("ns1", "k2", "quick fox and more fox").await.unwrap();
-        mgr.write("ns1", "k3", "something else entirely").await.unwrap();
-        mgr.write("ns1", "__summary__", "namespace summary text").await.unwrap();
+        mgr.write("ns1", "k2", "quick fox and more fox")
+            .await
+            .unwrap();
+        mgr.write("ns1", "k3", "something else entirely")
+            .await
+            .unwrap();
+        mgr.write("ns1", "__summary__", "namespace summary text")
+            .await
+            .unwrap();
 
         let results = mgr.search("ns1", "quick fox", 10).await;
         assert!(!results.is_empty());

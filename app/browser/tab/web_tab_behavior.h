@@ -31,39 +31,41 @@ class ClientHandler;
 class TabToolbar;
 
 class WebTabBehavior : public TabBehavior {
-public:
-  WebTabBehavior(ClientHandler *client_handler, std::string initial_url,
-                 ThemeContext *theme_ctx);
+ public:
+  WebTabBehavior(ClientHandler* client_handler,
+                 std::string initial_url,
+                 ThemeContext* theme_ctx);
   ~WebTabBehavior() override;
 
   TabKind Kind() const override { return TabKind::kWeb; }
-  void BuildToolbar(TabToolbar *toolbar, TabContext *context) override;
-  CefRefPtr<CefView> BuildContent(TabContext *context) override;
-  void ApplyToolbarState(const ToolbarState &state) override;
-  void ApplyTheme(const ThemeChrome &chrome) override;
+  void BuildToolbar(TabToolbar* toolbar, TabContext* context) override;
+  CefRefPtr<CefView> BuildContent(TabContext* context) override;
+  void ApplyToolbarState(const ToolbarState& state) override;
+  void ApplyTheme(const ThemeChrome& chrome) override;
   int BrowserId() const override { return browser_id_; }
 
   // Programmatic navigation API used by MainWindow shell callbacks.
-  void Navigate(const std::string &url);
+  void Navigate(const std::string& url);
   void GoBack();
   void GoForward();
   void Reload();
-  const std::string &current_url() const { return current_url_; }
-  const std::string &current_title() const { return current_title_; }
+  const std::string& current_url() const { return current_url_; }
+  const std::string& current_title() const { return current_title_; }
   CefRefPtr<CefBrowserView> browser_view() const { return browser_view_; }
 
   // Programmatically focus + select the URL pill (Cmd-L target — Phase 12).
   void FocusUrlField();
 
-private:
+ private:
   // Called by the per-browser listener once the browser is realized.
-  void OnAddressChange(const std::string &url);
-  void OnTitleChange(const std::string &title);
-  void OnLoadingStateChange(bool is_loading, bool can_go_back,
+  void OnAddressChange(const std::string& url);
+  void OnTitleChange(const std::string& title);
+  void OnLoadingStateChange(bool is_loading,
+                            bool can_go_back,
                             bool can_go_forward);
   // Injects JS to detect the page's background/theme color and propagate it
   // back via the tab.set_chrome_theme bridge so the toolbar matches the page.
-  void OnLoadEnd(const std::string &url);
+  void OnLoadEnd(const std::string& url);
   void OnUrlFieldKeyEvent(int windows_key_code);
   void OnUrlFieldFocused();
 
@@ -72,9 +74,9 @@ private:
 
   void RegisterBrowserListener();
 
-  TabContext *context_ = nullptr;
-  ThemeContext *theme_ctx_ = nullptr;
-  ClientHandler *client_handler_;
+  TabContext* context_ = nullptr;
+  ThemeContext* theme_ctx_ = nullptr;
+  ClientHandler* client_handler_;
   std::string initial_url_;
   std::string current_url_;
   std::string current_title_;
@@ -87,12 +89,12 @@ private:
 
   // Non-owning pointer to the toolbar (owned by Tab).
   TabToolbar* toolbar_ = nullptr;
-  ToolbarBase::ActionHandle h_back_    = ToolbarBase::kInvalidHandle;
-  ToolbarBase::ActionHandle h_fwd_     = ToolbarBase::kInvalidHandle;
+  ToolbarBase::ActionHandle h_back_ = ToolbarBase::kInvalidHandle;
+  ToolbarBase::ActionHandle h_fwd_ = ToolbarBase::kInvalidHandle;
   ToolbarBase::ActionHandle h_refresh_ = ToolbarBase::kInvalidHandle;
   ToolbarBase::ActionHandle h_new_tab_ = ToolbarBase::kInvalidHandle;
 
   base::WeakPtrFactory<WebTabBehavior> weak_factory_;
 };
 
-} // namespace cronymax
+}  // namespace cronymax

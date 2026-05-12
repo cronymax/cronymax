@@ -49,7 +49,8 @@ std::filesystem::path WorkspaceLayout::DocFile(const std::string& flow,
   return DocsDir(flow) / (doc + ".md");
 }
 
-std::filesystem::path WorkspaceLayout::HistoryDir(const std::string& flow) const {
+std::filesystem::path WorkspaceLayout::HistoryDir(
+    const std::string& flow) const {
   return DocsDir(flow) / kHistoryDirName;
 }
 
@@ -63,17 +64,20 @@ std::filesystem::path WorkspaceLayout::RunDir(const std::string& flow,
 }
 
 std::filesystem::path WorkspaceLayout::RunStateFile(
-    const std::string& flow, const std::string& run_id) const {
+    const std::string& flow,
+    const std::string& run_id) const {
   return RunDir(flow, run_id) / kStateFileName;
 }
 
 std::filesystem::path WorkspaceLayout::RunTraceFile(
-    const std::string& flow, const std::string& run_id) const {
+    const std::string& flow,
+    const std::string& run_id) const {
   return RunDir(flow, run_id) / kTraceFileName;
 }
 
 std::filesystem::path WorkspaceLayout::RunReviewsFile(
-    const std::string& flow, const std::string& run_id) const {
+    const std::string& flow,
+    const std::string& run_id) const {
   return RunDir(flow, run_id) / kReviewsFileName;
 }
 
@@ -81,7 +85,8 @@ std::filesystem::path WorkspaceLayout::AgentsDir() const {
   return CronymaxDir() / kAgentsDirName;
 }
 
-std::filesystem::path WorkspaceLayout::AgentFile(const std::string& agent) const {
+std::filesystem::path WorkspaceLayout::AgentFile(
+    const std::string& agent) const {
   return AgentsDir() / (agent + ".agent.yaml");
 }
 
@@ -89,7 +94,8 @@ std::filesystem::path WorkspaceLayout::DocTypesDir() const {
   return CronymaxDir() / kDocTypesDirName;
 }
 
-std::filesystem::path WorkspaceLayout::DocTypeFile(const std::string& type) const {
+std::filesystem::path WorkspaceLayout::DocTypeFile(
+    const std::string& type) const {
   return DocTypesDir() / (type + ".yaml");
 }
 
@@ -103,8 +109,8 @@ std::filesystem::path WorkspaceLayout::VersionFile() const {
 
 bool WorkspaceLayout::EnsureSkeleton(std::string* error) const {
   std::error_code ec;
-  for (const auto& dir : {CronymaxDir(), FlowsDir(), AgentsDir(),
-                          DocTypesDir(), ConflictsDir()}) {
+  for (const auto& dir : {CronymaxDir(), FlowsDir(), AgentsDir(), DocTypesDir(),
+                          ConflictsDir()}) {
     std::filesystem::create_directories(dir, ec);
     if (ec) {
       if (error) {

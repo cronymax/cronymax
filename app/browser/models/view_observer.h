@@ -16,7 +16,7 @@
 #include <string>
 
 #include "common/observer_list.h"
-#include "include/cef_base.h" // cef_color_t
+#include "include/cef_base.h"  // cef_color_t
 
 // ---------------------------------------------------------------------------
 // ThemeChrome — resolved colour token set sent with ThemeChanged events.
@@ -56,11 +56,12 @@ namespace cronymax {
 // ViewObserver<EventT>
 // ---------------------------------------------------------------------------
 
-template <typename EventT> class ViewObserver {
-public:
-  virtual void OnViewObserved(const EventT &event) = 0;
+template <typename EventT>
+class ViewObserver {
+ public:
+  virtual void OnViewObserved(const EventT& event) = 0;
 
-protected:
+ protected:
   virtual ~ViewObserver() = default;
 };
 
@@ -71,24 +72,25 @@ protected:
 // Notify(event) convenience method so call sites stay concise.
 // ---------------------------------------------------------------------------
 
-template <typename EventT> class ViewObserverList {
-public:
+template <typename EventT>
+class ViewObserverList {
+ public:
   ViewObserverList() = default;
 
-  void AddObserver(ViewObserver<EventT> *obs) { list_.AddObserver(obs); }
-  void RemoveObserver(ViewObserver<EventT> *obs) { list_.RemoveObserver(obs); }
-  bool HasObserver(const ViewObserver<EventT> *obs) const {
+  void AddObserver(ViewObserver<EventT>* obs) { list_.AddObserver(obs); }
+  void RemoveObserver(ViewObserver<EventT>* obs) { list_.RemoveObserver(obs); }
+  bool HasObserver(const ViewObserver<EventT>* obs) const {
     return list_.HasObserver(obs);
   }
   bool empty() const { return list_.empty(); }
 
   // Dispatch the event to all registered observers.
-  void Notify(const EventT &event) {
+  void Notify(const EventT& event) {
     list_.Notify(&ViewObserver<EventT>::OnViewObserved, event);
   }
 
-private:
+ private:
   ObserverList<ViewObserver<EventT>> list_;
 };
 
-} // namespace cronymax
+}  // namespace cronymax

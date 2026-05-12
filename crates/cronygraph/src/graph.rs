@@ -197,8 +197,7 @@ impl<N, E> Graph<N, E> {
     /// Kahn's algorithm. Returns nodes in a valid topological order or
     /// [`GraphError::Cycle`] if the graph is cyclic.
     pub fn topological_order(&self) -> Result<Vec<NodeId>, GraphError> {
-        let mut indegree: HashMap<NodeId, usize> =
-            self.nodes.keys().map(|&id| (id, 0)).collect();
+        let mut indegree: HashMap<NodeId, usize> = self.nodes.keys().map(|&id| (id, 0)).collect();
         for edges in self.adjacency.values() {
             for edge in edges {
                 *indegree.entry(edge.target).or_insert(0) += 1;
@@ -266,8 +265,14 @@ mod tests {
         let mut g: Graph<(), ()> = Graph::new();
         let a = g.add_node(());
         let phantom = NodeId::new();
-        assert_eq!(g.add_edge(a, phantom, ()), Err(GraphError::UnknownNode(phantom)));
-        assert_eq!(g.add_edge(phantom, a, ()), Err(GraphError::UnknownNode(phantom)));
+        assert_eq!(
+            g.add_edge(a, phantom, ()),
+            Err(GraphError::UnknownNode(phantom))
+        );
+        assert_eq!(
+            g.add_edge(phantom, a, ()),
+            Err(GraphError::UnknownNode(phantom))
+        );
     }
 
     #[test]

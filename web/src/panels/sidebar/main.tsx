@@ -4,6 +4,7 @@ import "@/styles/theme.css";
 import { installThemeMirror } from "@/styles/installThemeMirror";
 
 installThemeMirror();
+
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { App } from "./App";
 import { Provider } from "./store";

@@ -53,7 +53,8 @@ class FnButtonDelegate : public CefButtonDelegate {
   explicit FnButtonDelegate(std::function<void()> on_click)
       : on_click_(std::move(on_click)) {}
   void OnButtonPressed(CefRefPtr<CefButton>) override {
-    if (on_click_) on_click_();
+    if (on_click_)
+      on_click_();
   }
 
  private:
@@ -75,7 +76,8 @@ class FnMenuButtonDelegate : public CefMenuButtonDelegate {
   void OnMenuButtonPressed(CefRefPtr<CefMenuButton> btn,
                            const CefPoint& pt,
                            CefRefPtr<CefMenuButtonPressedLock> lock) override {
-    if (fn_) fn_(btn, pt, lock);
+    if (fn_)
+      fn_(btn, pt, lock);
   }
   void OnButtonPressed(CefRefPtr<CefButton>) override {}
 
@@ -93,9 +95,11 @@ class FnMenuModelDelegate : public CefMenuModelDelegate {
  public:
   using ExecFn = std::function<void(int)>;
   explicit FnMenuModelDelegate(ExecFn fn) : fn_(std::move(fn)) {}
-  void ExecuteCommand(CefRefPtr<CefMenuModel>, int cmd,
+  void ExecuteCommand(CefRefPtr<CefMenuModel>,
+                      int cmd,
                       cef_event_flags_t) override {
-    if (fn_) fn_(cmd);
+    if (fn_)
+      fn_(cmd);
   }
 
  private:

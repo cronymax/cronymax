@@ -7,4 +7,3 @@ namespace cronymax {
 class AppDelegate {};
 
 }  // namespace cronymax
-

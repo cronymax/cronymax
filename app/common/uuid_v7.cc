@@ -40,16 +40,13 @@ std::string Format(long long ms, std::uint16_t rand_a, std::uint64_t rand_b) {
   //   var        : 2  bits = 0b10
   //   rand_b     : 62 bits
   const std::uint64_t hi =
-      (static_cast<std::uint64_t>(ms & 0xFFFFFFFFFFFFULL) << 16) |
-      (0x7000ULL) |
+      (static_cast<std::uint64_t>(ms & 0xFFFFFFFFFFFFULL) << 16) | (0x7000ULL) |
       (static_cast<std::uint64_t>(rand_a & 0x0FFF));
-  const std::uint64_t lo =
-      (rand_b & 0x3FFFFFFFFFFFFFFFULL) |
-      (0x8000000000000000ULL);  // variant 10xx
+  const std::uint64_t lo = (rand_b & 0x3FFFFFFFFFFFFFFFULL) |
+                           (0x8000000000000000ULL);  // variant 10xx
   // Format as 8-4-4-4-12 hex.
   char buf[40];
-  std::snprintf(buf, sizeof(buf),
-                "%08x-%04x-%04x-%04x-%012llx",
+  std::snprintf(buf, sizeof(buf), "%08x-%04x-%04x-%04x-%012llx",
                 static_cast<unsigned>((hi >> 32) & 0xFFFFFFFFULL),
                 static_cast<unsigned>((hi >> 16) & 0xFFFFULL),
                 static_cast<unsigned>(hi & 0xFFFFULL),

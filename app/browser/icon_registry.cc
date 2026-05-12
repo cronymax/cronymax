@@ -28,21 +28,21 @@ struct IconSpec {
 // IconId → Codicon SVG filename.  kRestart and kTabAgent intentionally reuse
 // existing filenames so they share the same rasterised image.
 constexpr std::array<IconSpec, static_cast<size_t>(IconId::kCount)> kSpecs = {{
-    {IconId::kBack,        "arrow-left.svg"},
-    {IconId::kForward,     "arrow-right.svg"},
-    {IconId::kRefresh,     "refresh.svg"},
-    {IconId::kStop,        "debug-stop.svg"},
-    {IconId::kNewTab,      "add.svg"},
-    {IconId::kClose,       "close.svg"},
-    {IconId::kSettings,    "settings-gear.svg"},
+    {IconId::kBack, "arrow-left.svg"},
+    {IconId::kForward, "arrow-right.svg"},
+    {IconId::kRefresh, "refresh.svg"},
+    {IconId::kStop, "debug-stop.svg"},
+    {IconId::kNewTab, "add.svg"},
+    {IconId::kClose, "close.svg"},
+    {IconId::kSettings, "settings-gear.svg"},
     {IconId::kTabTerminal, "terminal.svg"},
-    {IconId::kTabChat,     "comment-discussion.svg"},
-    {IconId::kTabAgent,    "settings-gear.svg"},
-    {IconId::kTabGraph,    "type-hierarchy.svg"},
-    {IconId::kTabWeb,      "globe.svg"},
-    {IconId::kRestart,     "refresh.svg"},
+    {IconId::kTabChat, "comment-discussion.svg"},
+    {IconId::kTabAgent, "settings-gear.svg"},
+    {IconId::kTabGraph, "type-hierarchy.svg"},
+    {IconId::kTabWeb, "globe.svg"},
+    {IconId::kRestart, "refresh.svg"},
     {IconId::kSidebarToggle, "layout-sidebar-left-off.svg"},
-    {IconId::kCopy,         "copy.svg"},
+    {IconId::kCopy, "copy.svg"},
     {IconId::kOpenInProduct, "open-in-product.svg"},
 }};
 
@@ -51,9 +51,13 @@ constexpr std::array<int, 2> kLogicalSizes = {16, 20};
 
 // Tint colours for each theme variant.  Codicons render black by default;
 // we recolour to the appropriate foreground for dark/light backgrounds.
-struct TintSpec { float r, g, b; };
-constexpr TintSpec kTintDark  = {0xE8/255.f, 0xF2/255.f, 0xF0/255.f};  // light glyph
-constexpr TintSpec kTintLight = {0x13/255.f, 0x20/255.f, 0x1E/255.f};  // dark glyph
+struct TintSpec {
+  float r, g, b;
+};
+constexpr TintSpec kTintDark = {0xE8 / 255.f, 0xF2 / 255.f,
+                                0xF0 / 255.f};  // light glyph
+constexpr TintSpec kTintLight = {0x13 / 255.f, 0x20 / 255.f,
+                                 0x1E / 255.f};  // dark glyph
 
 // Per-(IconId, logical_size, dark_mode) image cache, populated by Init().
 struct CacheKey {
@@ -67,11 +71,11 @@ struct CacheKey {
 struct CacheKeyHash {
   size_t operator()(const CacheKey& k) const {
     return (static_cast<size_t>(k.id) << 17) ^
-           (static_cast<size_t>(k.size) << 1) ^
-           static_cast<size_t>(k.dark);
+           (static_cast<size_t>(k.size) << 1) ^ static_cast<size_t>(k.dark);
   }
 };
-using ImageCache = std::unordered_map<CacheKey, CefRefPtr<CefImage>, CacheKeyHash>;
+using ImageCache =
+    std::unordered_map<CacheKey, CefRefPtr<CefImage>, CacheKeyHash>;
 
 ImageCache& Cache() {
   static ImageCache* c = new ImageCache();
@@ -83,13 +87,16 @@ bool& InitDone() {
   return done;
 }
 
-void ApplyImageStates(CefRefPtr<CefLabelButton> btn, IconId id,
-                      bool dark_mode = true, int logical_size = 16) {
+void ApplyImageStates(CefRefPtr<CefLabelButton> btn,
+                      IconId id,
+                      bool dark_mode = true,
+                      int logical_size = 16) {
   CefRefPtr<CefImage> img = IconRegistry::GetImage(id, logical_size, dark_mode);
-  if (!img) return;
-  btn->SetImage(CEF_BUTTON_STATE_NORMAL,   img);
-  btn->SetImage(CEF_BUTTON_STATE_HOVERED,  img);
-  btn->SetImage(CEF_BUTTON_STATE_PRESSED,  img);
+  if (!img)
+    return;
+  btn->SetImage(CEF_BUTTON_STATE_NORMAL, img);
+  btn->SetImage(CEF_BUTTON_STATE_HOVERED, img);
+  btn->SetImage(CEF_BUTTON_STATE_PRESSED, img);
   btn->SetImage(CEF_BUTTON_STATE_DISABLED, img);
 }
 
@@ -97,7 +104,8 @@ void ApplyImageStates(CefRefPtr<CefLabelButton> btn, IconId id,
 
 /* static */ void IconRegistry::Init() {
   CEF_REQUIRE_UI_THREAD();
-  if (InitDone()) return;
+  if (InitDone())
+    return;
 
   const float scale = GetPrimaryDisplayScale();
 
@@ -112,9 +120,8 @@ void ApplyImageStates(CefRefPtr<CefLabelButton> btn, IconId id,
     for (int logical_size : kLogicalSizes) {
       for (bool dark : {true, false}) {
         const TintSpec& tint = dark ? kTintDark : kTintLight;
-        CefRefPtr<CefImage> img =
-            RasterizeIconSvg(svg_data, logical_size, scale,
-                             tint.r, tint.g, tint.b);
+        CefRefPtr<CefImage> img = RasterizeIconSvg(
+            svg_data, logical_size, scale, tint.r, tint.g, tint.b);
         if (!img) {
           LOG(FATAL) << "IconRegistry: failed to rasterise "
                      << spec.svg_filename << " @" << logical_size << "px";
@@ -126,9 +133,9 @@ void ApplyImageStates(CefRefPtr<CefLabelButton> btn, IconId id,
   }
 
   InitDone() = true;
-  LOG(INFO) << "IconRegistry: loaded "
-            << static_cast<int>(IconId::kCount) << " icons at "
-            << kLogicalSizes.size() << " sizes (scale=" << scale << ")";
+  LOG(INFO) << "IconRegistry: loaded " << static_cast<int>(IconId::kCount)
+            << " icons at " << kLogicalSizes.size() << " sizes (scale=" << scale
+            << ")";
 }
 
 /* static */ CefRefPtr<CefImage> IconRegistry::GetImage(IconId id,
@@ -140,8 +147,10 @@ void ApplyImageStates(CefRefPtr<CefLabelButton> btn, IconId id,
                << static_cast<int>(id);
     return nullptr;
   }
-  auto it = Cache().find(CacheKey{static_cast<int>(id), logical_size, dark_mode});
-  if (it != Cache().end()) return it->second;
+  auto it =
+      Cache().find(CacheKey{static_cast<int>(id), logical_size, dark_mode});
+  if (it != Cache().end())
+    return it->second;
 
   // Fall back to 16px when an unsupported size is requested.
   auto fb = Cache().find(CacheKey{static_cast<int>(id), 16, dark_mode});
@@ -167,10 +176,9 @@ void ApplyImageStates(CefRefPtr<CefLabelButton> btn, IconId id,
 // Factory helpers
 // ---------------------------------------------------------------------------
 
-CefRefPtr<CefLabelButton> MakeIconButton(
-    CefRefPtr<CefButtonDelegate> delegate,
-    IconId id,
-    std::string_view accessible_name) {
+CefRefPtr<CefLabelButton> MakeIconButton(CefRefPtr<CefButtonDelegate> delegate,
+                                         IconId id,
+                                         std::string_view accessible_name) {
   std::string name(accessible_name);
   auto btn = CefLabelButton::CreateLabelButton(delegate, "");
   btn->SetInkDropEnabled(true);

@@ -41,10 +41,7 @@ use tracing::warn;
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use crate::{
-    memory::MemoryManager,
-    runtime::state::MemoryNamespaceId,
-};
+use crate::{memory::MemoryManager, runtime::state::MemoryNamespaceId};
 
 /// All context needed to expand variables in a prompt template.
 ///
@@ -129,7 +126,6 @@ impl VarContextBuilder {
     }
 }
 
-
 static TRIPLE_NEWLINE: &str = "\n\n\n";
 
 /// Render a prompt template, substituting all `${…}` variables from `ctx`.
@@ -149,7 +145,7 @@ pub fn render(template: &str, ctx: &VarContext) -> String {
     }
 
     // git branch — attempt to resolve if not already known.
-    let branch = ctx.git_branch.as_deref().or_else(|| None);
+    let branch = ctx.git_branch.as_deref().or(None);
     let branch_str = if let Some(b) = branch {
         b.to_owned()
     } else if let Some(root) = &ctx.workspace_root {
@@ -216,8 +212,7 @@ fn resolve_memory_vars(mut template: String, ctx: &VarContext) -> String {
     if template.contains("${memory/summary}") {
         let summary = if let (Some(mgr), Some(ns)) = (&ctx.memory_manager, &ctx.read_namespace) {
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(mgr.get_summary(&ns.0))
+                tokio::runtime::Handle::current().block_on(mgr.get_summary(&ns.0))
             })
         } else {
             String::new()
@@ -248,8 +243,7 @@ fn resolve_memory_vars(mut template: String, ctx: &VarContext) -> String {
                 let key = &rest[slash + 1..];
                 if let Some(mgr) = &ctx.memory_manager {
                     tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(mgr.read(ns, key))
+                        tokio::runtime::Handle::current().block_on(mgr.read(ns, key))
                     })
                     .map(|e| e.value.clone())
                     .unwrap_or_default()
@@ -260,8 +254,7 @@ fn resolve_memory_vars(mut template: String, ctx: &VarContext) -> String {
                 // Default-namespace read: `${memory/<key>}`.
                 if let (Some(mgr), Some(ns)) = (&ctx.memory_manager, &ctx.read_namespace) {
                     tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(mgr.read(&ns.0, rest))
+                        tokio::runtime::Handle::current().block_on(mgr.read(&ns.0, rest))
                     })
                     .map(|e| e.value.clone())
                     .unwrap_or_default()
@@ -327,7 +320,16 @@ fn today_date() -> String {
     let month_days: [u32; 12] = [
         31,
         if leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
     ];
     let mut month = 1u32;
     for &md in &month_days {
@@ -351,9 +353,9 @@ fn resolve_git_branch(workspace_root: &std::path::Path) -> Option<String> {
     git2::Repository::discover(workspace_root)
         .ok()
         .and_then(|repo| {
-            repo.head().ok().and_then(|head| {
-                head.shorthand().map(str::to_owned)
-            })
+            repo.head()
+                .ok()
+                .and_then(|head| head.shorthand().map(str::to_owned))
         })
 }
 
@@ -417,7 +419,10 @@ mod tests {
             workspace_root: Some(PathBuf::from("/home/x/proj")),
             user_vars: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("greeting".to_owned(), "Hello from ${workspace/name}".to_owned());
+                m.insert(
+                    "greeting".to_owned(),
+                    "Hello from ${workspace/name}".to_owned(),
+                );
                 m
             },
             ..Default::default()

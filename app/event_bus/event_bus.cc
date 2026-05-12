@@ -1,8 +1,8 @@
 #include "event_bus/event_bus.h"
 
+#include <sqlite3.h>
 #include <chrono>
 #include <fstream>
-#include <sqlite3.h>
 #include <system_error>
 
 #include <nlohmann/json.hpp>
@@ -35,14 +35,15 @@ void BindText(sqlite3_stmt* stmt, int idx, const std::string& s) {
   if (s.empty()) {
     sqlite3_bind_null(stmt, idx);
   } else {
-    sqlite3_bind_text(stmt, idx, s.c_str(),
-                      static_cast<int>(s.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, idx, s.c_str(), static_cast<int>(s.size()),
+                      SQLITE_TRANSIENT);
   }
 }
 
 std::string ColText(sqlite3_stmt* stmt, int idx) {
   const auto* p = sqlite3_column_text(stmt, idx);
-  if (!p) return {};
+  if (!p)
+    return {};
   return reinterpret_cast<const char*>(p);
 }
 
@@ -50,22 +51,33 @@ std::string ColText(sqlite3_stmt* stmt, int idx) {
 
 const char* InboxStateToString(InboxState s) {
   switch (s) {
-    case InboxState::kUnread: return "unread";
-    case InboxState::kRead: return "read";
-    case InboxState::kSnoozed: return "snoozed";
+    case InboxState::kUnread:
+      return "unread";
+    case InboxState::kRead:
+      return "read";
+    case InboxState::kSnoozed:
+      return "snoozed";
   }
   return "unread";
 }
 
 bool InboxStateFromString(const std::string& s, InboxState* out) {
-  if (s == "unread") { *out = InboxState::kUnread; return true; }
-  if (s == "read") { *out = InboxState::kRead; return true; }
-  if (s == "snoozed") { *out = InboxState::kSnoozed; return true; }
+  if (s == "unread") {
+    *out = InboxState::kUnread;
+    return true;
+  }
+  if (s == "read") {
+    *out = InboxState::kRead;
+    return true;
+  }
+  if (s == "snoozed") {
+    *out = InboxState::kSnoozed;
+    return true;
+  }
   return false;
 }
 
-EventBus::EventBus(SpaceStore* store, std::string space_id,
-                   fs::path space_root)
+EventBus::EventBus(SpaceStore* store, std::string space_id, fs::path space_root)
     : store_(store),
       space_id_(std::move(space_id)),
       space_root_(std::move(space_root)) {}
@@ -73,24 +85,29 @@ EventBus::EventBus(SpaceStore* store, std::string space_id,
 EventBus::~EventBus() = default;
 
 bool EventBus::ScopeMatches(const Scope& s, const AppEvent& e) const {
-  if (!s.flow_id.empty() && s.flow_id != e.flow_id) return false;
-  if (!s.run_id.empty() && s.run_id != e.run_id) return false;
+  if (!s.flow_id.empty() && s.flow_id != e.flow_id)
+    return false;
+  if (!s.run_id.empty() && s.run_id != e.run_id)
+    return false;
   return true;
 }
 
 bool EventBus::TriageNeedsAction(const AppEvent& e) const {
   switch (e.kind) {
     case AppEventKind::kReviewEvent: {
-      return e.payload.contains("verdict") && e.payload["verdict"].is_string() &&
+      return e.payload.contains("verdict") &&
+             e.payload["verdict"].is_string() &&
              e.payload["verdict"].get<std::string>() == "request_changes" &&
-             e.payload.contains("reviewer") && e.payload["reviewer"].is_string() &&
+             e.payload.contains("reviewer") &&
+             e.payload["reviewer"].is_string() &&
              e.payload["reviewer"].get<std::string>() == "human";
     }
     case AppEventKind::kText: {
       if (!e.payload.contains("mentions") || !e.payload["mentions"].is_array())
         return false;
       for (const auto& v : e.payload["mentions"]) {
-        if (v.is_string() && v.get<std::string>() == kCurrentUserId) return true;
+        if (v.is_string() && v.get<std::string>() == kCurrentUserId)
+          return true;
       }
       return false;
     }
@@ -99,7 +116,8 @@ bool EventBus::TriageNeedsAction(const AppEvent& e) const {
                e.payload["scope"].get<std::string>() == "tool");
     }
     case AppEventKind::kSystem: {
-      return e.payload.contains("subkind") && e.payload["subkind"].is_string() &&
+      return e.payload.contains("subkind") &&
+             e.payload["subkind"].is_string() &&
              e.payload["subkind"].get<std::string>() == "run_paused" &&
              e.payload.contains("cause") && e.payload["cause"].is_string() &&
              e.payload["cause"].get<std::string>() == "human_approval";
@@ -110,25 +128,30 @@ bool EventBus::TriageNeedsAction(const AppEvent& e) const {
 }
 
 void EventBus::WriteJsonlLine(const AppEvent& e) const {
-  if (e.run_id.empty() || space_root_.empty()) return;
+  if (e.run_id.empty() || space_root_.empty())
+    return;
   std::error_code ec;
   // Layout matches src/flow/workspace_layout.cc:
   //   <space>/.cronymax/flows/<flow_id>/runs/<run_id>/trace.jsonl
-  if (e.flow_id.empty()) return;
-  const auto dir = space_root_ / ".cronymax" / "flows" / e.flow_id /
-                   "runs" / e.run_id;
+  if (e.flow_id.empty())
+    return;
+  const auto dir =
+      space_root_ / ".cronymax" / "flows" / e.flow_id / "runs" / e.run_id;
   fs::create_directories(dir, ec);
-  std::ofstream out(dir / "trace.jsonl",
-                    std::ios::binary | std::ios::app);
-  if (!out) return;
+  std::ofstream out(dir / "trace.jsonl", std::ios::binary | std::ios::app);
+  if (!out)
+    return;
   const auto line = e.ToJson() + "\n";
   out.write(line.data(), static_cast<std::streamsize>(line.size()));
 }
 
 std::string EventBus::Append(AppEvent evt) {
-  if (evt.id.empty()) evt.id = MakeUuidV7();
-  if (evt.ts_ms == 0) evt.ts_ms = NowMs();
-  if (evt.space_id.empty()) evt.space_id = space_id_;
+  if (evt.id.empty())
+    evt.id = MakeUuidV7();
+  if (evt.ts_ms == 0)
+    evt.ts_ms = NowMs();
+  if (evt.space_id.empty())
+    evt.space_id = space_id_;
 
   // Single critical section: SQL insert + JSONL write + triage + dispatch.
   std::lock_guard<std::mutex> lock(mu_);
@@ -174,7 +197,8 @@ std::string EventBus::Append(AppEvent evt) {
   WriteJsonlLine(evt);
 
   for (const auto& s : subs_) {
-    if (ScopeMatches(s.scope, evt)) s.cb(evt);
+    if (ScopeMatches(s.scope, evt))
+      s.cb(evt);
   }
   return evt.id;
 }
@@ -182,14 +206,18 @@ std::string EventBus::Append(AppEvent evt) {
 ListResult EventBus::List(const ListQuery& q) const {
   ListResult out;
   auto* db = store_ ? store_->raw_db() : nullptr;
-  if (!db) return out;
+  if (!db)
+    return out;
   const int limit = std::min(std::max(q.limit, 1), 1000);
   std::string sql =
       "SELECT id, ts_ms, space_id, flow_id, run_id, agent_id, kind, payload "
       "FROM events WHERE 1=1";
-  if (!q.scope.flow_id.empty()) sql += " AND flow_id = ?";
-  if (!q.scope.run_id.empty()) sql += " AND run_id = ?";
-  if (!q.before_id.empty()) sql += " AND id < ?";
+  if (!q.scope.flow_id.empty())
+    sql += " AND flow_id = ?";
+  if (!q.scope.run_id.empty())
+    sql += " AND run_id = ?";
+  if (!q.before_id.empty())
+    sql += " AND id < ?";
   sql += " ORDER BY id DESC LIMIT ?;";
 
   std::lock_guard<std::mutex> sl(store_->read_mutex());
@@ -198,9 +226,12 @@ ListResult EventBus::List(const ListQuery& q) const {
     return out;
   }
   int idx = 1;
-  if (!q.scope.flow_id.empty()) BindText(stmt, idx++, q.scope.flow_id);
-  if (!q.scope.run_id.empty()) BindText(stmt, idx++, q.scope.run_id);
-  if (!q.before_id.empty()) BindText(stmt, idx++, q.before_id);
+  if (!q.scope.flow_id.empty())
+    BindText(stmt, idx++, q.scope.flow_id);
+  if (!q.scope.run_id.empty())
+    BindText(stmt, idx++, q.scope.run_id);
+  if (!q.before_id.empty())
+    BindText(stmt, idx++, q.before_id);
   sqlite3_bind_int(stmt, idx, limit);
 
   while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -239,14 +270,19 @@ EventBus::Token EventBus::Subscribe(const Scope& scope, Subscriber cb) {
     ListQuery pq = q;
     pq.before_id = before;
     auto page = List(pq);  // List takes its own SQL lock — safe (recursive)
-    if (page.events.empty()) break;
-    for (auto& e : page.events) buf.push_back(std::move(e));
-    if (page.cursor.empty()) break;
+    if (page.events.empty())
+      break;
+    for (auto& e : page.events)
+      buf.push_back(std::move(e));
+    if (page.cursor.empty())
+      break;
     before = page.cursor;
-    if (buf.size() > 10000) break;  // safety cap; UI paginates beyond
+    if (buf.size() > 10000)
+      break;  // safety cap; UI paginates beyond
   }
   // Replay oldest-first.
-  for (auto it = buf.rbegin(); it != buf.rend(); ++it) cb(*it);
+  for (auto it = buf.rbegin(); it != buf.rend(); ++it)
+    cb(*it);
 
   const Token tok = next_token_.fetch_add(1);
   subs_.push_back({tok, scope, std::move(cb)});
@@ -266,12 +302,15 @@ void EventBus::Unsubscribe(Token tok) {
 InboxListResult EventBus::ListInbox(const InboxQuery& q) const {
   InboxListResult out;
   auto* db = store_ ? store_->raw_db() : nullptr;
-  if (!db) return out;
+  if (!db)
+    return out;
   std::string sql =
       "SELECT event_id, state, snooze_until, flow_id, kind FROM inbox "
       "WHERE 1=1";
-  if (q.state.has_value()) sql += " AND state = ?";
-  if (!q.flow_id.empty()) sql += " AND flow_id = ?";
+  if (q.state.has_value())
+    sql += " AND state = ?";
+  if (!q.flow_id.empty())
+    sql += " AND flow_id = ?";
   sql += " ORDER BY event_id DESC LIMIT ?;";
 
   std::lock_guard<std::mutex> sl(store_->read_mutex());
@@ -283,7 +322,8 @@ InboxListResult EventBus::ListInbox(const InboxQuery& q) const {
   if (q.state.has_value()) {
     BindText(stmt, idx++, InboxStateToString(*q.state));
   }
-  if (!q.flow_id.empty()) BindText(stmt, idx++, q.flow_id);
+  if (!q.flow_id.empty())
+    BindText(stmt, idx++, q.flow_id);
   sqlite3_bind_int(stmt, idx, q.limit > 0 ? q.limit : 100);
 
   while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -312,10 +352,12 @@ InboxListResult EventBus::ListInbox(const InboxQuery& q) const {
   return out;
 }
 
-bool EventBus::SetInboxState(const std::string& event_id, InboxState state,
+bool EventBus::SetInboxState(const std::string& event_id,
+                             InboxState state,
                              std::optional<long long> snooze_until) {
   auto* db = store_ ? store_->raw_db() : nullptr;
-  if (!db) return false;
+  if (!db)
+    return false;
   std::lock_guard<std::mutex> sl(store_->read_mutex());
   static constexpr const char* kUpdate =
       "UPDATE inbox SET state=?, snooze_until=? WHERE event_id=?;";
@@ -338,7 +380,8 @@ bool EventBus::SetInboxState(const std::string& event_id, InboxState state,
 
 int EventBus::GarbageCollect(long long older_than_ms) {
   auto* db = store_ ? store_->raw_db() : nullptr;
-  if (!db) return 0;
+  if (!db)
+    return 0;
   std::lock_guard<std::mutex> sl(store_->read_mutex());
   // Promote snoozed-and-expired rows to unread first.
   static constexpr const char* kExpire =
@@ -367,12 +410,14 @@ int EventBus::GarbageCollect(long long older_than_ms) {
 
 bool EventBus::IsKindEnabledForNotifications(const std::string& kind) const {
   auto* db = store_ ? store_->raw_db() : nullptr;
-  if (!db) return true;
+  if (!db)
+    return true;
   std::lock_guard<std::mutex> sl(store_->read_mutex());
   static constexpr const char* kQ =
       "SELECT enabled FROM notification_prefs WHERE kind=?;";
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, kQ, -1, &stmt, nullptr) != SQLITE_OK) return true;
+  if (sqlite3_prepare_v2(db, kQ, -1, &stmt, nullptr) != SQLITE_OK)
+    return true;
   BindText(stmt, 1, kind);
   bool enabled = true;
   if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -385,13 +430,15 @@ bool EventBus::IsKindEnabledForNotifications(const std::string& kind) const {
 void EventBus::SetKindNotificationEnabled(const std::string& kind,
                                           bool enabled) {
   auto* db = store_ ? store_->raw_db() : nullptr;
-  if (!db) return;
+  if (!db)
+    return;
   std::lock_guard<std::mutex> sl(store_->read_mutex());
   static constexpr const char* kUp =
       "INSERT INTO notification_prefs (kind, enabled) VALUES (?, ?) "
       "ON CONFLICT(kind) DO UPDATE SET enabled=excluded.enabled;";
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, kUp, -1, &stmt, nullptr) != SQLITE_OK) return;
+  if (sqlite3_prepare_v2(db, kUp, -1, &stmt, nullptr) != SQLITE_OK)
+    return;
   BindText(stmt, 1, kind);
   sqlite3_bind_int(stmt, 2, enabled ? 1 : 0);
   sqlite3_step(stmt);
@@ -401,12 +448,14 @@ void EventBus::SetKindNotificationEnabled(const std::string& kind,
 std::vector<std::string> EventBus::ListEnabledNotificationKinds() const {
   std::vector<std::string> out;
   auto* db = store_ ? store_->raw_db() : nullptr;
-  if (!db) return out;
+  if (!db)
+    return out;
   std::lock_guard<std::mutex> sl(store_->read_mutex());
   static constexpr const char* kQ =
       "SELECT kind FROM notification_prefs WHERE enabled=1;";
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, kQ, -1, &stmt, nullptr) != SQLITE_OK) return out;
+  if (sqlite3_prepare_v2(db, kQ, -1, &stmt, nullptr) != SQLITE_OK)
+    return out;
   while (sqlite3_step(stmt) == SQLITE_ROW) {
     out.push_back(ColText(stmt, 0));
   }

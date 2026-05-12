@@ -34,10 +34,10 @@ pub use config::{LogConfig, RuntimeConfig, StoragePaths};
 pub use lifecycle::{Runtime, RuntimeError, RuntimeHandle};
 pub use protocol::{ProtocolVersion, PROTOCOL_VERSION};
 pub use runtime::{
-    Agent, AgentId, AuthorityError, InMemoryPersistence, JsonFilePersistence,
-    MemoryEntry, MemoryNamespace, MemoryNamespaceId, PendingReview, Persistence,
-    PermissionState, ReviewId, Run, RunId, RunStatus, RuntimeAuthority,
-    RuntimeHandler, Session, SessionId, Snapshot, Space, SpaceId,
+    Agent, AgentId, AuthorityError, InMemoryPersistence, JsonFilePersistence, MemoryEntry,
+    MemoryNamespace, MemoryNamespaceId, PendingReview, PermissionState, Persistence, ReviewId, Run,
+    RunId, RunStatus, RuntimeAuthority, RuntimeHandler, Session, SessionId, Snapshot, Space,
+    SpaceId,
 };
 
 /// Cronymax crate version surfaced for diagnostics and handshakes.

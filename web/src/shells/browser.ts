@@ -16,55 +16,55 @@
 
 import { z } from "zod";
 import {
-  SpaceSchema,
-  TerminalRowSchema,
-  TerminalIdPayloadSchema,
-  TerminalExitPayloadSchema,
-  TerminalListResponseSchema,
-  TerminalBlockSchema,
-  TerminalBlockSavePayloadSchema,
-  TerminalBlocksLoadPayloadSchema,
-  AgentTaskFromCommandPayloadSchema,
-  ToolExecPayloadSchema,
-  ToolExecResultSchema,
-  PermissionRespondPayloadSchema,
-  LlmConfigSchema,
-  LlmConfigSetPayloadSchema,
-  BrowserTabSchema,
-  TabIdPayloadSchema,
-  TabCreatedSchema,
-  TabClosedSchema,
-  TabTitleChangedSchema,
-  TabUrlChangedSchema,
   ActiveTabChangedSchema,
-  SpaceChangedSchema,
-  ShellNavigatePayloadSchema,
-  ShellPopoverOpenPayloadSchema,
-  ShellTabOpenSingletonPayloadSchema,
-  ShellTabOpenSingletonResponseSchema,
-  ShellNewTabKindPayloadSchema,
-  ShellNewTabKindResponseSchema,
-  ShellSettingsPopoverOpenPayloadSchema,
-  ShellSettingsPopoverOpenResponseSchema,
-  ThemeGetResponseSchema,
-  ThemeSetPayloadSchema,
-  ThemeChangedPayloadSchema,
-  TabSetToolbarStatePayloadSchema,
-  TabSetChromeThemePayloadSchema,
-  TabsListSnapshotSchema,
-  TabActivatedEventSchema,
-  EmptySchema,
+  AgentTaskFromCommandPayloadSchema,
   AppEventSchema,
+  BrowserTabSchema,
+  EmptySchema,
+  EventsAppendReq,
+  EventsAppendRes,
   EventsListReq,
   EventsListRes,
   EventsSubscribeReq,
   EventsSubscribeRes,
-  EventsAppendReq,
-  EventsAppendRes,
   InboxListReq,
   InboxListRes,
-  InboxStateChangeReq,
   InboxSnoozeReq,
+  InboxStateChangeReq,
+  LlmConfigSchema,
+  LlmConfigSetPayloadSchema,
+  PermissionRespondPayloadSchema,
+  ShellNavigatePayloadSchema,
+  ShellNewTabKindPayloadSchema,
+  ShellNewTabKindResponseSchema,
+  ShellPopoverOpenPayloadSchema,
+  ShellSettingsPopoverOpenPayloadSchema,
+  ShellSettingsPopoverOpenResponseSchema,
+  ShellTabOpenSingletonPayloadSchema,
+  ShellTabOpenSingletonResponseSchema,
+  SpaceChangedSchema,
+  SpaceSchema,
+  TabActivatedEventSchema,
+  TabClosedSchema,
+  TabCreatedSchema,
+  TabIdPayloadSchema,
+  TabSetChromeThemePayloadSchema,
+  TabSetToolbarStatePayloadSchema,
+  TabsListSnapshotSchema,
+  TabTitleChangedSchema,
+  TabUrlChangedSchema,
+  TerminalBlockSavePayloadSchema,
+  TerminalBlockSchema,
+  TerminalBlocksLoadPayloadSchema,
+  TerminalExitPayloadSchema,
+  TerminalIdPayloadSchema,
+  TerminalListResponseSchema,
+  TerminalRowSchema,
+  ThemeChangedPayloadSchema,
+  ThemeGetResponseSchema,
+  ThemeSetPayloadSchema,
+  ToolExecPayloadSchema,
+  ToolExecResultSchema,
 } from "../types";
 
 interface ChannelDef<Req extends z.ZodTypeAny, Res extends z.ZodTypeAny> {
@@ -73,9 +73,7 @@ interface ChannelDef<Req extends z.ZodTypeAny, Res extends z.ZodTypeAny> {
   fastPath?: boolean;
 }
 
-function chan<Req extends z.ZodTypeAny, Res extends z.ZodTypeAny>(
-  def: ChannelDef<Req, Res>,
-): ChannelDef<Req, Res> {
+function chan<Req extends z.ZodTypeAny, Res extends z.ZodTypeAny>(def: ChannelDef<Req, Res>): ChannelDef<Req, Res> {
   return def;
 }
 
@@ -575,10 +573,6 @@ export const FastPathEvents = new Set<keyof typeof Events>(["event"]);
 
 export type ChannelName = keyof typeof Channels;
 export type EventName = keyof typeof Events;
-export type RequestOf<C extends ChannelName> = z.input<
-  (typeof Channels)[C]["req"]
->;
-export type ResponseOf<C extends ChannelName> = z.infer<
-  (typeof Channels)[C]["res"]
->;
+export type RequestOf<C extends ChannelName> = z.input<(typeof Channels)[C]["req"]>;
+export type ResponseOf<C extends ChannelName> = z.infer<(typeof Channels)[C]["res"]>;
 export type EventPayloadOf<E extends EventName> = z.infer<(typeof Events)[E]>;

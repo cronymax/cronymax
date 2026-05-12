@@ -28,9 +28,9 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::workspace::Workspace;
 use crate::flow::definition::{FlowDefinition, FlowGraph};
 use crate::flow::trace::{TraceEvent, TraceKind, TraceWriter};
+use crate::workspace::Workspace;
 
 // ── FlowRunStatus ─────────────────────────────────────────────────────────────
 
@@ -73,8 +73,10 @@ pub struct FlowRunDocumentEntry {
 /// Lifecycle state of a single port for one node in a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[derive(Default)]
 pub enum PortStatus {
     /// The node has not yet submitted this document.
+    #[default]
     Pending,
     /// The document has been submitted and is under review by agents/humans.
     InReview,
@@ -82,12 +84,6 @@ pub enum PortStatus {
     AwaitingOwner,
     /// The document has been approved (review passed or auto-approved).
     Approved,
-}
-
-impl Default for PortStatus {
-    fn default() -> Self {
-        PortStatus::Pending
-    }
 }
 
 /// Trigger that caused a node invocation.
@@ -327,9 +323,7 @@ impl FlowRuntime {
         chat_state
             .ports
             .insert("initial-brief".to_owned(), PortStatus::Approved);
-        state
-            .node_states
-            .insert("__chat__".to_owned(), chat_state);
+        state.node_states.insert("__chat__".to_owned(), chat_state);
 
         // Persist and register.
         self.persist_run(&state).await?;
@@ -376,21 +370,19 @@ impl FlowRuntime {
 
     /// Returns `true` if all required inputs for `node_id` have `Approved`
     /// status in the given run state.
-    pub fn is_node_ready(
-        &self,
-        node_id: &str,
-        state: &FlowRunState,
-        graph: &FlowGraph,
-    ) -> bool {
-        graph.required_inputs_for(node_id).iter().all(|(from_node, port)| {
-            state
-                .node_states
-                .get(from_node.as_str())
-                .and_then(|ns| ns.ports.get(port.as_str()))
-                .copied()
-                .unwrap_or_default()
-                == PortStatus::Approved
-        })
+    pub fn is_node_ready(&self, node_id: &str, state: &FlowRunState, graph: &FlowGraph) -> bool {
+        graph
+            .required_inputs_for(node_id)
+            .iter()
+            .all(|(from_node, port)| {
+                state
+                    .node_states
+                    .get(from_node.as_str())
+                    .and_then(|ns| ns.ports.get(port.as_str()))
+                    .copied()
+                    .unwrap_or_default()
+                    == PortStatus::Approved
+            })
     }
 
     /// Check AND-join for all nodes awaiting `(producing_node, port)` and
@@ -460,6 +452,7 @@ impl FlowRuntime {
     ///    checks + implicit re-invocation. Otherwise → mark `InReview`.
     ///
     /// Returns invocation contexts for any newly activated downstream nodes.
+    #[allow(clippy::too_many_arguments)]
     pub async fn on_document_submitted(
         &self,
         run_id: &str,
@@ -471,12 +464,8 @@ impl FlowRuntime {
         revision: u32,
     ) -> anyhow::Result<Vec<InvocationContext>> {
         // 1. Cycle-limit check.
-        if let Some(action) =
-            self.check_cycle_limit(run_id, node_id, port, flow).await?
-        {
-            anyhow::bail!(
-                "cycle limit exceeded on node {node_id} port {port}; action={action}"
-            );
+        if let Some(action) = self.check_cycle_limit(run_id, node_id, port, flow).await? {
+            anyhow::bail!("cycle limit exceeded on node {node_id} port {port}; action={action}");
         }
 
         // 2. Persist the doc submission in reviews.json.
@@ -718,7 +707,11 @@ impl FlowRuntime {
         let new_count = self.increment_port_cycles(run_id, node_id, port).await?;
         if new_count > max_cycles {
             tracing::warn!(
-                run_id, node_id, port, max_cycles, new_count,
+                run_id,
+                node_id,
+                port,
+                max_cycles,
+                new_count,
                 "cycle limit exceeded"
             );
             Ok(Some(on_exhausted))
@@ -821,7 +814,9 @@ impl FlowRuntime {
             let current = ns.ports.get(port).copied().unwrap_or_default();
             if current == PortStatus::Approved && new_status != PortStatus::Approved {
                 tracing::warn!(
-                    run_id, node_id, port,
+                    run_id,
+                    node_id,
+                    port,
                     "ignoring attempt to downgrade port from APPROVED to {:?}",
                     new_status
                 );
@@ -979,10 +974,9 @@ impl FlowRuntime {
                             let _ = self.persist_run(&state).await;
                             count += 1;
                         }
-                        self.runs.write().insert(
-                            state.run_id.clone(),
-                            Arc::new(RwLock::new(state)),
-                        );
+                        self.runs
+                            .write()
+                            .insert(state.run_id.clone(), Arc::new(RwLock::new(state)));
                     }
                 }
             }
@@ -1047,6 +1041,7 @@ impl FlowRuntime {
     }
 
     /// Write or update `reviews.json` for a run document.
+    #[allow(clippy::too_many_arguments)]
     async fn upsert_review_state(
         &self,
         flow_id: &str,
@@ -1066,8 +1061,7 @@ impl FlowRuntime {
             let raw = tokio::fs::read_to_string(&reviews_path)
                 .await
                 .unwrap_or_default();
-            serde_json::from_str(&raw)
-                .unwrap_or_else(|_| serde_json::json!({"docs": {}}))
+            serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({"docs": {}}))
         } else {
             serde_json::json!({"docs": {}})
         };
@@ -1080,15 +1074,15 @@ impl FlowRuntime {
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("reviews.json: docs is not an object"))?;
 
-        let entry = docs
-            .entry(doc_name)
-            .or_insert_with(|| serde_json::json!({
+        let entry = docs.entry(doc_name).or_insert_with(|| {
+            serde_json::json!({
                 "current_revision": 0,
                 "status": "DRAFT",
                 "round_count": 0,
                 "revisions": [],
                 "comments": []
-            }));
+            })
+        });
 
         if revision > 0 {
             entry["current_revision"] = serde_json::json!(revision);
@@ -1529,7 +1523,9 @@ nodes:
         );
         let reinvoke_ctx = ctxs.iter().find(|c| c.node_id == "rd-design").unwrap();
         assert!(
-            reinvoke_ctx.pending_ports.contains(&"code-description".to_owned()),
+            reinvoke_ctx
+                .pending_ports
+                .contains(&"code-description".to_owned()),
             "pending_ports should include code-description"
         );
     }

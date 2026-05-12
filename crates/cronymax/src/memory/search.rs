@@ -75,7 +75,13 @@ impl Bm25Index {
             }
         }
 
-        Self { term_freqs, doc_freqs, doc_lengths, avg_dl, n_docs }
+        Self {
+            term_freqs,
+            doc_freqs,
+            doc_lengths,
+            avg_dl,
+            n_docs,
+        }
     }
 
     /// Rank all indexed documents against `query`. Returns results sorted by
@@ -108,9 +114,16 @@ impl Bm25Index {
         let mut results: Vec<RankedResult> = scores
             .into_iter()
             .filter(|(_, s)| *s > 0.0)
-            .map(|(key, score)| RankedResult { key: key.to_owned(), score })
+            .map(|(key, score)| RankedResult {
+                key: key.to_owned(),
+                score,
+            })
             .collect();
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results
     }
 }

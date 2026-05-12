@@ -85,7 +85,8 @@ class SpaceStore {
   int64_t CreateTab(const BrowserTabRow& row);
   bool UpdateTab(const BrowserTabRow& row);
   bool DeleteTab(int64_t tab_id);
-  std::vector<BrowserTabRow> ListTabsForSpace(const std::string& space_id) const;
+  std::vector<BrowserTabRow> ListTabsForSpace(
+      const std::string& space_id) const;
 
   // TerminalBlock CRUD (writes are deferred to a background thread)
   // Returns placeholder id 0; actual id assigned by background writer.

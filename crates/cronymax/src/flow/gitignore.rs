@@ -35,13 +35,12 @@ impl GitignoreHelper {
     /// Reads only — never modifies any file.
     pub fn missing_entries(workspace_root: &Path) -> Vec<&'static str> {
         let gitignore = workspace_root.join(".gitignore");
-        let existing_lines: std::collections::HashSet<String> =
-            std::fs::read_to_string(&gitignore)
-                .unwrap_or_default()
-                .lines()
-                .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
-                .map(|l| l.to_owned())
-                .collect();
+        let existing_lines: std::collections::HashSet<String> = std::fs::read_to_string(&gitignore)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+            .map(|l| l.to_owned())
+            .collect();
 
         Self::suggested_entries()
             .into_iter()
@@ -82,11 +81,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let entry = GitignoreHelper::suggested_entries()[0];
         // Write the entry as a comment — it should NOT count as present.
-        std::fs::write(
-            dir.path().join(".gitignore"),
-            format!("# {entry}\n"),
-        )
-        .unwrap();
+        std::fs::write(dir.path().join(".gitignore"), format!("# {entry}\n")).unwrap();
         let missing = GitignoreHelper::missing_entries(dir.path());
         assert!(missing.contains(&entry));
     }

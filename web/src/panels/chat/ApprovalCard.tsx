@@ -37,7 +37,7 @@ function truncateJson(value: unknown, maxLen = 200): string {
   try {
     const s = JSON.stringify(value, null, 2);
     if (s.length <= maxLen) return s;
-    return s.slice(0, maxLen) + "…";
+    return `${s.slice(0, maxLen)}…`;
   } catch {
     return String(value);
   }
@@ -49,18 +49,9 @@ const TRUST_LABELS: Record<TrustLevel, string> = {
   bypass: "Bypass",
 };
 
-export function ApprovalCard({
-  runId,
-  reviewId,
-  toolName,
-  args,
-  onAllow,
-  onDeny,
-}: Props) {
+export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny }: Props) {
   const category = toolName.split("_")[0] ?? toolName;
-  const [trust, setTrust] = useState<TrustLevel>(
-    () => loadTrustMap()[category] ?? "ask",
-  );
+  const [trust, setTrust] = useState<TrustLevel>(() => loadTrustMap()[category] ?? "ask");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -69,16 +60,12 @@ export function ApprovalCard({
   }, [reviewId, category]);
 
   const handleAllow = () => {
-    browser
-      .send("review.approve", { review_id: reviewId })
-      .catch(() => undefined);
+    browser.send("review.approve", { review_id: reviewId }).catch(() => undefined);
     onAllow();
   };
 
   const handleDeny = () => {
-    browser
-      .send("review.request_changes", { review_id: reviewId })
-      .catch(() => undefined);
+    browser.send("review.request_changes", { review_id: reviewId }).catch(() => undefined);
     onDeny();
   };
 
@@ -105,9 +92,7 @@ export function ApprovalCard({
     <div className="mx-3 mb-1 rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="font-semibold text-amber-300">
-            Tool approval required
-          </span>
+          <span className="font-semibold text-amber-300">Tool approval required</span>
           <span
             className={
               "rounded px-1.5 py-0.5 text-[10px] font-mono " +

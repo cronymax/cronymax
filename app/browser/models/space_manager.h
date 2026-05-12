@@ -57,13 +57,13 @@ struct Space {
 
   TerminalSession* FindTerminal(const std::string& tid);
   TerminalSession* ActiveTerminal();
-  TerminalSession* CreateTerminal();  // appends, sets active
+  TerminalSession* CreateTerminal();           // appends, sets active
   bool CloseTerminal(const std::string& tid);  // false if not found
 };
 
 // Callback invoked (on the caller's thread) when the active Space changes.
-using SpaceSwitchCallback = std::function<void(const std::string& old_id,
-                                               const std::string& new_id)>;
+using SpaceSwitchCallback =
+    std::function<void(const std::string& old_id, const std::string& new_id)>;
 
 // Callback invoked when a space switch requires a runtime restart.
 // Receives the new workspace_root (absolute path string) and the resolved

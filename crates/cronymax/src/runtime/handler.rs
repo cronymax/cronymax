@@ -544,7 +544,7 @@ impl Handler for RuntimeHandler {
                     .filter(|s| !s.is_empty())
                     .map(PathBuf::from)
                     .or_else(|| self.workspace_roots.first().cloned())
-                    .unwrap_or_else(|| std::env::temp_dir());
+                    .unwrap_or_else(std::env::temp_dir);
 
                 // Optionally wire a FlowRuntime when the payload carries a
                 // `flow_id` field (i.e. this is a flow-run invocation).
@@ -2160,7 +2160,7 @@ impl RuntimeHandler {
 fn base64_encode(data: &[u8]) -> String {
     // Simple base64 without dependencies — use the alphabet directly.
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = Vec::with_capacity(data.len().div_ceil(3) * 4);
     let mut i = 0;
     while i + 3 <= data.len() {
         let n = (data[i] as u32) << 16 | (data[i + 1] as u32) << 8 | data[i + 2] as u32;

@@ -44,7 +44,8 @@ struct FlowYamlDoc {
 
 // Parse a flow.yaml file. Never throws; returns FlowYamlDoc with ok=false on
 // error.
-FlowYamlDoc LoadFlowYaml(const std::filesystem::path& path, const std::string& id);
+FlowYamlDoc LoadFlowYaml(const std::filesystem::path& path,
+                         const std::string& id);
 
 // Returns the list of agent IDs from a flow.yaml, or empty on parse error.
 std::vector<std::string> LoadFlowAgents(const std::filesystem::path& path);

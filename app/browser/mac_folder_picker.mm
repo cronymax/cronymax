@@ -7,7 +7,8 @@
 
 namespace cronymax {
 
-void ShowNativeFolderPicker(std::function<void(const std::string& path)> callback) {
+void ShowNativeFolderPicker(
+    std::function<void(const std::string& path)> callback) {
   dispatch_async(dispatch_get_main_queue(), ^{
     @autoreleasepool {
       NSOpenPanel* panel = [NSOpenPanel openPanel];

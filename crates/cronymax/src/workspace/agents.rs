@@ -38,7 +38,9 @@ pub struct AgentDef {
     pub tools: Vec<String>,
 }
 
-fn default_worker() -> String { "worker".to_owned() }
+fn default_worker() -> String {
+    "worker".to_owned()
+}
 
 /// Raw YAML shape — handles both scalar and map `llm` fields.
 #[derive(Debug, Deserialize)]
@@ -60,15 +62,19 @@ struct RawAgentYaml {
 
 fn parse_agent_yaml(yaml: &str) -> Option<AgentDef> {
     let raw: RawAgentYaml = serde_yml::from_str(yaml).ok()?;
-    if raw.name.is_empty() { return None; }
+    if raw.name.is_empty() {
+        return None;
+    }
 
     let (llm, llm_provider, llm_model) = match &raw.llm {
         serde_yml::Value::Mapping(m) => {
-            let provider = m.get("provider")
+            let provider = m
+                .get("provider")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned();
-            let model = m.get("model")
+            let model = m
+                .get("model")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned();
@@ -78,7 +84,11 @@ fn parse_agent_yaml(yaml: &str) -> Option<AgentDef> {
         _ => (String::new(), String::new(), String::new()),
     };
 
-    let kind = if raw.kind == "reviewer" { "reviewer".to_owned() } else { "worker".to_owned() };
+    let kind = if raw.kind == "reviewer" {
+        "reviewer".to_owned()
+    } else {
+        "worker".to_owned()
+    };
     let memory_namespace = if raw.memory_namespace.is_empty() {
         raw.name.clone()
     } else {
@@ -107,7 +117,10 @@ pub struct AgentRegistry {
 
 impl AgentRegistry {
     pub fn new(agents_dir: impl Into<PathBuf>) -> Self {
-        Self { agents_dir: agents_dir.into(), agents: HashMap::new() }
+        Self {
+            agents_dir: agents_dir.into(),
+            agents: HashMap::new(),
+        }
     }
 
     /// Reload from disk. Returns the number of agents loaded.
@@ -118,9 +131,13 @@ impl AgentRegistry {
                 let path = entry.path();
                 // Must end in .agent.yaml
                 let fname = path.file_name().unwrap_or_default().to_string_lossy();
-                if !fname.ends_with(".agent.yaml") { continue; }
+                if !fname.ends_with(".agent.yaml") {
+                    continue;
+                }
                 let basename = fname.trim_end_matches(".agent.yaml").to_owned();
-                if basename.is_empty() { continue; }
+                if basename.is_empty() {
+                    continue;
+                }
                 if let Ok(text) = fs::read_to_string(&path).await {
                     if let Some(def) = parse_agent_yaml(&text) {
                         next.insert(basename, def);
@@ -148,7 +165,8 @@ impl AgentRegistry {
     /// prompt variable. When `description` is empty, the first sentence of
     /// `system_prompt` is used as a fallback.
     pub fn entries(&self) -> Vec<(String, String)> {
-        let mut v: Vec<_> = self.agents
+        let mut v: Vec<_> = self
+            .agents
             .iter()
             .map(|(name, def)| {
                 let desc = if !def.description.is_empty() {
@@ -187,20 +205,30 @@ impl AgentRegistry {
     pub async fn delete(&mut self, name: &str) -> anyhow::Result<()> {
         validate_safe_name(name)?;
         let path = self.agents_dir.join(format!("{name}.agent.yaml"));
-        fs::remove_file(&path).await
-            .or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })?;
+        fs::remove_file(&path).await.or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })?;
         self.agents.remove(name);
         Ok(())
     }
 
-    pub fn agents_dir(&self) -> &Path { &self.agents_dir }
+    pub fn agents_dir(&self) -> &Path {
+        &self.agents_dir
+    }
 }
 
 fn validate_safe_name(name: &str) -> anyhow::Result<()> {
     if name.is_empty() || name.len() > 64 {
         anyhow::bail!("invalid agent name length");
     }
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         anyhow::bail!("agent name contains invalid characters");
     }
     if name.starts_with('-') {

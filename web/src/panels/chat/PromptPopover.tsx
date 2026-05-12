@@ -39,10 +39,7 @@ export function PromptPopover({ prompt, onClose, onSave }: Props) {
   // Close on click-outside
   useEffect(() => {
     function handleMouseDown(e: MouseEvent) {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         onClose();
       }
     }
@@ -135,11 +132,7 @@ export function PromptPopover({ prompt, onClose, onSave }: Props) {
       {/* Footer (edit mode only) */}
       {isEditing && (
         <div className="border-t border-cronymax-border px-2.5 py-1.5 flex items-center justify-between gap-2">
-          {error ? (
-            <span className="text-[11px] text-red-400 flex-1">{error}</span>
-          ) : (
-            <span />
-          )}
+          {error ? <span className="text-[11px] text-red-400 flex-1">{error}</span> : <span />}
           <div className="flex items-center gap-1.5">
             <button
               type="button"

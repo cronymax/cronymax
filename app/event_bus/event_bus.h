@@ -30,13 +30,13 @@ struct Scope {
 // Pagination for List().
 struct ListQuery {
   Scope scope;
-  std::string before_id;   // empty = newest first
-  int limit = 200;         // hard-capped at 1000
+  std::string before_id;  // empty = newest first
+  int limit = 200;        // hard-capped at 1000
 };
 
 struct ListResult {
   std::vector<AppEvent> events;
-  std::string cursor;      // empty when no more
+  std::string cursor;  // empty when no more
 };
 
 // Inbox row materialised by the triage step.
@@ -54,15 +54,15 @@ struct InboxRow {
 };
 
 struct InboxQuery {
-  std::optional<InboxState> state;        // nullopt = any
-  std::string flow_id;                    // empty = any
+  std::optional<InboxState> state;  // nullopt = any
+  std::string flow_id;              // empty = any
   int limit = 100;
 };
 
 struct InboxListResult {
   std::vector<InboxRow> rows;
   int unread_count = 0;
-  int needs_action_count = 0;            // == rows for default state filter
+  int needs_action_count = 0;  // == rows for default state filter
 };
 
 // Identifier used to identify the user when triaging @-mentions in text
@@ -80,7 +80,8 @@ class EventBus {
 
   // `space_root` is the workspace directory (where `.cronymax/` lives).
   // The bus uses it to derive the per-run trace.jsonl path.
-  EventBus(SpaceStore* store, std::string space_id,
+  EventBus(SpaceStore* store,
+           std::string space_id,
            std::filesystem::path space_root);
   ~EventBus();
 
@@ -109,7 +110,8 @@ class EventBus {
 
   // Inbox queries.
   InboxListResult ListInbox(const InboxQuery& q) const;
-  bool SetInboxState(const std::string& event_id, InboxState state,
+  bool SetInboxState(const std::string& event_id,
+                     InboxState state,
                      std::optional<long long> snooze_until = std::nullopt);
 
   // Garbage-collect events older than `older_than_ms` whose inbox row is
@@ -137,7 +139,7 @@ class EventBus {
   std::string space_id_;
   std::filesystem::path space_root_;
 
-  mutable std::mutex mu_;        // guards subs_, append-side ordering
+  mutable std::mutex mu_;  // guards subs_, append-side ordering
   std::vector<SubEntry> subs_;
   std::atomic<Token> next_token_{1};
 };

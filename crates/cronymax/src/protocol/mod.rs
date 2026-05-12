@@ -28,9 +28,7 @@ pub mod version;
 
 pub use capabilities::{CapabilityError, CapabilityRequest, CapabilityResponse};
 pub use control::{ControlError, ControlRequest, ControlResponse};
-pub use envelope::{
-    Channel, ClientToRuntime, CorrelationId, RuntimeToClient, SubscriptionId,
-};
+pub use envelope::{Channel, ClientToRuntime, CorrelationId, RuntimeToClient, SubscriptionId};
 pub use events::RuntimeEvent;
 pub use transport::{Transport, TransportError};
 pub use version::{ProtocolVersion, PROTOCOL_VERSION};

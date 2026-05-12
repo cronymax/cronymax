@@ -17,8 +17,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-static NAME_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9_-]*$").unwrap());
+static NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-z0-9][a-z0-9_-]*$").unwrap());
 
 pub fn is_safe_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 128 && NAME_RE.is_match(name)
@@ -117,14 +116,18 @@ impl DocumentStore {
     /// until `timeout_ms`. Returns the open file descriptor (caller must close).
     #[allow(deprecated)]
     fn acquire_flock(lock_path: &Path, timeout_ms: u64) -> Result<RawFd> {
-        use nix::fcntl::{open, OFlag};
-        use nix::sys::stat::Mode;
+        use nix::errno::Errno;
         use nix::fcntl::flock as nix_flock;
         use nix::fcntl::FlockArg;
-        use nix::errno::Errno;
+        use nix::fcntl::{open, OFlag};
+        use nix::sys::stat::Mode;
 
-        let fd = open(lock_path, OFlag::O_RDWR | OFlag::O_CREAT, Mode::from_bits_truncate(0o644))
-            .context("open lock file")?;
+        let fd = open(
+            lock_path,
+            OFlag::O_RDWR | OFlag::O_CREAT,
+            Mode::from_bits_truncate(0o644),
+        )
+        .context("open lock file")?;
 
         let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
@@ -214,7 +217,7 @@ impl DocumentStore {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "md") {
+            if path.extension().is_none_or(|e| e != "md") {
                 continue;
             }
             let stem = match path.file_stem().and_then(|s| s.to_str()) {
@@ -226,7 +229,11 @@ impl DocumentStore {
             }
             let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
             let latest_revision = self.latest_revision(&stem);
-            out.push(DocInfo { name: stem, latest_revision, size_bytes });
+            out.push(DocInfo {
+                name: stem,
+                latest_revision,
+                size_bytes,
+            });
         }
         out
     }

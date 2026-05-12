@@ -21,10 +21,7 @@ function base64ToBytes(b64: string): Uint8Array {
  * Scoped to the given `tid` at the subscription level (no fan-out filtering).
  * Auto-unsubscribes on unmount and resubscribes after a space switch.
  */
-export function useTerminalOutput(
-  tid: string,
-  onData: (data: Uint8Array) => void,
-): void {
+export function useTerminalOutput(tid: string, onData: (data: Uint8Array) => void): void {
   useRuntimeEvent(`terminal:${tid}`, (eventJson: string) => {
     try {
       const ev = JSON.parse(eventJson) as Record<string, unknown>;

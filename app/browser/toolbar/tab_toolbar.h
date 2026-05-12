@@ -54,7 +54,7 @@ class TabToolbar : public ToolbarBase {
   CefRefPtr<CefTextfield> url_field_;
   std::string chrome_override_;
   std::function<bool(int)> key_cb_;
-  std::function<void()>    focus_cb_;
+  std::function<void()> focus_cb_;
 };
 
 }  // namespace cronymax

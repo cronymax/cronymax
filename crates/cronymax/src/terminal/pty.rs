@@ -50,6 +50,7 @@ impl PtySessionManager {
     ///
     /// `output_fn` is called (from a background task) each time the PTY
     /// produces output. `exit_fn` is called once when the child exits.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create<O, E>(
         &mut self,
         id: String,

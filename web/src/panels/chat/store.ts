@@ -170,9 +170,7 @@ export interface ShellBlock {
 
 export type Block = ConversationBlock | ShellBlock;
 
-export type ActiveView =
-  | { kind: "main" }
-  | { kind: "thread"; blockId: string; threadId: string };
+export type ActiveView = { kind: "main" } | { kind: "thread"; blockId: string; threadId: string };
 
 export interface AgentSummary {
   name: string;
@@ -272,11 +270,7 @@ export type Action =
 // Completion is detected in App.tsx via a nonce sentinel echoed after
 // every wrapped command — no OSC 133 markers needed.
 
-function applyShellOutput(
-  block: ShellBlock,
-  chunk: string,
-  now: number,
-): ShellBlock {
+function applyShellOutput(block: ShellBlock, chunk: string, now: number): ShellBlock {
   const clean = stripAnsi(chunk);
   const output = block.output + clean;
   return { ...block, output, rawBuf: "", endedAt: block.endedAt ?? now };
@@ -403,7 +397,7 @@ function reducer(state: State, action: Action): State {
     case "pinComment": {
       const { comment } = action;
       const attachment: Attachment = {
-        id: "att-" + comment.id,
+        id: `att-${comment.id}`,
         kind: "comment",
         label: comment.selectedText.slice(0, 60),
         commentId: comment.id,
@@ -430,22 +424,16 @@ function reducer(state: State, action: Action): State {
     }
 
     case "unpinComment": {
-      const nextAttachments = state.attachments.filter(
-        (a) => a.commentId !== action.commentId,
-      );
+      const nextAttachments = state.attachments.filter((a) => a.commentId !== action.commentId);
       const nextBlocks = state.blocks.map((blk) => ({
         ...blk,
-        comments: blk.comments.map((c) =>
-          c.id === action.commentId ? { ...c, pinnedToPrompt: false } : c,
-        ),
+        comments: blk.comments.map((c) => (c.id === action.commentId ? { ...c, pinnedToPrompt: false } : c)),
       }));
       return { ...state, blocks: nextBlocks, attachments: nextAttachments };
     }
 
     case "clearPinnedComments": {
-      const nextAttachments = state.attachments.filter(
-        (a) => a.kind !== "comment",
-      );
+      const nextAttachments = state.attachments.filter((a) => a.kind !== "comment");
       const nextBlocks = state.blocks.map((blk) => ({
         ...blk,
         comments: blk.comments.map((c) => ({ ...c, pinnedToPrompt: false })),
@@ -525,10 +513,7 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-export const { Provider, useStore } = createPanelStore<State, Action>(
-  reducer,
-  initial,
-);
+export const { Provider, useStore } = createPanelStore<State, Action>(reducer, initial);
 
 // ── localStorage helpers ───────────────────────────────────────────────
 
@@ -581,8 +566,7 @@ export function loadChatData(id: string): {
         ...parsed,
         blocks: parsed.blocks.map((b) => {
           if (b.kind !== "conversation") return b;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const { traceContent: _tc, ...rest } = b as any;
+          const { traceContent: _tc, ...rest } = b as ConversationBlock & { traceContent?: unknown };
           void _tc;
           return {
             ...rest,
@@ -638,8 +622,7 @@ export function loadChatData(id: string): {
       }
       return {
         data: { blocks, terminalTid: null, model: "" },
-        migrationNotice:
-          "Your chat history was migrated to the new block format.",
+        migrationNotice: "Your chat history was migrated to the new block format.",
       };
     }
   } catch {
@@ -689,7 +672,7 @@ export function ensureChat(): { id: string; name: string } {
   // Brand-new tab (or chat was deleted) — create a fresh chat entry
   const list = loadChatsList();
   const num = list.length + 1;
-  const id = "c" + Date.now().toString(36);
+  const id = `c${Date.now().toString(36)}`;
   const row = { id, name: `Chat ${num}` };
   try {
     localStorage.setItem(chatsListKey, JSON.stringify([...list, row]));
@@ -728,12 +711,7 @@ export function loadFlowsList(): { flows: string[]; selected: string } {
   }
   const names = Object.keys(flowsObj).sort();
   const stored = localStorage.getItem("chat_active_flow") || "";
-  const selected =
-    stored && names.includes(stored)
-      ? stored
-      : names.includes("Chat")
-        ? "Chat"
-        : (names[0] ?? "");
+  const selected = stored && names.includes(stored) ? stored : names.includes("Chat") ? "Chat" : (names[0] ?? "");
   return { flows: names, selected };
 }
 
@@ -775,9 +753,7 @@ export function persistChatMode(mode: ChatMode): void {
 
 export function loadSavedGraph(selectedFlow: string): SavedFlowSpec | null {
   try {
-    const flows: Record<string, SavedFlowSpec> = JSON.parse(
-      localStorage.getItem("flows") || "{}",
-    );
+    const flows: Record<string, SavedFlowSpec> = JSON.parse(localStorage.getItem("flows") || "{}");
     return flows[selectedFlow] ?? null;
   } catch {
     return null;

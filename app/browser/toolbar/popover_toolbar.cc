@@ -27,11 +27,14 @@ constexpr cef_color_t kDefaultLabelFg = 0xFFE6E6EA;
 // Middle widget
 // ---------------------------------------------------------------------------
 
-CefRefPtr<CefView> PopoverToolbar::CreateMiddleWidget(const ThemeChrome& chrome) {
+CefRefPtr<CefView> PopoverToolbar::CreateMiddleWidget(
+    const ThemeChrome& chrome) {
   url_label_ = CefLabelButton::CreateLabelButton(new NoOpButtonDelegate(), "");
   url_label_->SetEnabled(false);
-  const cef_color_t bg = chrome.bg_float != 0 ? chrome.bg_float : kDefaultLabelBg;
-  const cef_color_t fg = chrome.text_title != 0 ? chrome.text_title : kDefaultLabelFg;
+  const cef_color_t bg =
+      chrome.bg_float != 0 ? chrome.bg_float : kDefaultLabelBg;
+  const cef_color_t fg =
+      chrome.text_title != 0 ? chrome.text_title : kDefaultLabelFg;
   url_label_->SetTextColor(CEF_BUTTON_STATE_NORMAL, fg);
   url_label_->SetTextColor(CEF_BUTTON_STATE_DISABLED, fg);
   url_label_->SetBackgroundColor(bg);
@@ -39,9 +42,12 @@ CefRefPtr<CefView> PopoverToolbar::CreateMiddleWidget(const ThemeChrome& chrome)
 }
 
 void PopoverToolbar::ApplyMiddleTheme(const ThemeChrome& chrome) {
-  if (!url_label_) return;
-  const cef_color_t bg = chrome.bg_float != 0 ? chrome.bg_float : kDefaultLabelBg;
-  const cef_color_t fg = chrome.text_title != 0 ? chrome.text_title : kDefaultLabelFg;
+  if (!url_label_)
+    return;
+  const cef_color_t bg =
+      chrome.bg_float != 0 ? chrome.bg_float : kDefaultLabelBg;
+  const cef_color_t fg =
+      chrome.text_title != 0 ? chrome.text_title : kDefaultLabelFg;
   url_label_->SetTextColor(CEF_BUTTON_STATE_NORMAL, fg);
   url_label_->SetTextColor(CEF_BUTTON_STATE_DISABLED, fg);
   url_label_->SetBackgroundColor(bg);

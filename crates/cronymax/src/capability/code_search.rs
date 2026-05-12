@@ -23,25 +23,21 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
-use crate::capability::dispatcher::DispatcherBuilder;
 use crate::agent_loop::tools::ToolOutcome;
+use crate::capability::dispatcher::DispatcherBuilder;
 use crate::llm::ToolDef;
 
 // ── Tool: search_workspace ────────────────────────────────────────────────────
 
 /// Register `search_workspace` on `builder`. Uses `rg` as the search engine.
-pub fn register_search_workspace(
-    builder: &mut DispatcherBuilder,
-    workspace_root: PathBuf,
-) {
+pub fn register_search_workspace(builder: &mut DispatcherBuilder, workspace_root: PathBuf) {
     let root = workspace_root.clone();
     let def = ToolDef {
         name: "search_workspace".into(),
-        description:
-            "Full-text search across all workspace files using ripgrep. \
+        description: "Full-text search across all workspace files using ripgrep. \
              Returns up to 20 matches with surrounding context. \
              Use `path_glob` to restrict to a sub-tree (e.g. 'src/**/*.rs')."
-                .into(),
+            .into(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -79,17 +75,13 @@ pub fn register_search_workspace(
 // ── Tool: grep_workspace ──────────────────────────────────────────────────────
 
 /// Register `grep_workspace` on `builder`.
-pub fn register_grep_workspace(
-    builder: &mut DispatcherBuilder,
-    workspace_root: PathBuf,
-) {
+pub fn register_grep_workspace(builder: &mut DispatcherBuilder, workspace_root: PathBuf) {
     let root = workspace_root.clone();
     let def = ToolDef {
         name: "grep_workspace".into(),
-        description:
-            "Search workspace files with a regex pattern via ripgrep. \
+        description: "Search workspace files with a regex pattern via ripgrep. \
              Returns up to 50 matches. Set `context_lines` for surrounding context."
-                .into(),
+            .into(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -134,18 +126,14 @@ pub fn register_grep_workspace(
 // ── Tool: glob_files ──────────────────────────────────────────────────────────
 
 /// Register `glob_files` on `builder`.
-pub fn register_glob_files(
-    builder: &mut DispatcherBuilder,
-    workspace_root: PathBuf,
-) {
+pub fn register_glob_files(builder: &mut DispatcherBuilder, workspace_root: PathBuf) {
     let root = workspace_root.clone();
     let def = ToolDef {
         name: "glob_files".into(),
-        description:
-            "List workspace files matching a glob pattern. \
+        description: "List workspace files matching a glob pattern. \
              Respects .gitignore. Returns up to 200 paths; \
              `truncated: true` when limit exceeded."
-                .into(),
+            .into(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -161,7 +149,9 @@ pub fn register_glob_files(
         let root = root.clone();
         async move {
             #[derive(serde::Deserialize)]
-            struct Args { pattern: String }
+            struct Args {
+                pattern: String,
+            }
             let a: Args = match serde_json::from_str(&args) {
                 Ok(r) => r,
                 Err(e) => return ToolOutcome::Error(format!("invalid glob_files args: {e}")),
@@ -190,8 +180,10 @@ pub async fn run_rg_search(
     let mut cmd = Command::new("rg");
     cmd.current_dir(root)
         .arg("--json")
-        .arg("--max-count").arg("1")  // 1 match per line (to cap volume)
-        .arg("--context").arg(context_lines.to_string());
+        .arg("--max-count")
+        .arg("1") // 1 match per line (to cap volume)
+        .arg("--context")
+        .arg(context_lines.to_string());
 
     if !path_glob.is_empty() {
         cmd.arg("--glob").arg(path_glob);
@@ -199,10 +191,8 @@ pub async fn run_rg_search(
 
     cmd.arg(pattern);
 
-    let output = tokio::time::timeout(
-        Duration::from_secs(30),
-        cmd.output(),
-    ).await
+    let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+        .await
         .map_err(|_| anyhow::anyhow!("rg timed out after 30 s"))?
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -275,7 +265,9 @@ pub async fn run_glob(
 
         for entry in walker.flatten() {
             if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                let rel = entry.path().strip_prefix(&root)
+                let rel = entry
+                    .path()
+                    .strip_prefix(&root)
                     .unwrap_or(entry.path())
                     .to_string_lossy()
                     .into_owned();

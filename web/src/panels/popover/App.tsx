@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { browser } from "@/shells/bridge";
 import { Icon } from "@/components/Icon";
+import { browser } from "@/shells/bridge";
 
 export function App() {
   const [url, setUrl] = useState("");
@@ -17,7 +17,7 @@ export function App() {
     let target = url.trim();
     if (!target) return;
     if (!/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//.test(target)) {
-      target = "https://" + target;
+      target = `https://${target}`;
     }
     browser.send("shell.popover_navigate", { url: target });
   }
@@ -30,10 +30,7 @@ export function App() {
   return (
     // Toolbar background uses the theme float surface so it matches the
     // rounded card below it regardless of light/dark mode.
-    <div
-      className="flex h-full w-full items-center gap-1 px-2"
-      style={{ background: "var(--color-cronymax-float)" }}
-    >
+    <div className="flex h-full w-full items-center gap-1 px-2" style={{ background: "var(--color-cronymax-float)" }}>
       {/* URL input — no standalone background; blends into the toolbar */}
       <input
         ref={inputRef}

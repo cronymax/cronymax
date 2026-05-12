@@ -15,12 +15,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use cronymax::{RuntimeAuthority, SessionId, Space, SpaceId};
-use cronymax::llm::{ChatMessage, FinishReason, MockLlmProvider, MockScript};
-use cronymax::agent_loop::{
-    compaction::{maybe_compact, token_estimate, DEFAULT_RECENCY_TURNS, DEFAULT_THRESHOLD_PCT},
+use cronymax::agent_loop::compaction::{
+    maybe_compact, token_estimate, DEFAULT_RECENCY_TURNS, DEFAULT_THRESHOLD_PCT,
 };
-use cronymax::capability::filesystem::{LocalFilesystem, FilesystemCapability};
+use cronymax::capability::filesystem::{FilesystemCapability, LocalFilesystem};
+use cronymax::llm::{ChatMessage, FinishReason, MockLlmProvider, MockScript};
+use cronymax::{RuntimeAuthority, SessionId, Space, SpaceId};
 use tempfile::tempdir;
 
 // ─────────────────────────────────────────────────────────────────
@@ -31,7 +31,12 @@ use tempfile::tempdir;
 fn session_is_created_for_new_session_id() {
     let auth = RuntimeAuthority::in_memory();
 
-    let space = Space { id: SpaceId::new(), name: "test".into(), compaction_threshold_pct: 80, compaction_recency_turns: 6 };
+    let space = Space {
+        id: SpaceId::new(),
+        name: "test".into(),
+        compaction_threshold_pct: 80,
+        compaction_recency_turns: 6,
+    };
     let sid = space.id;
     auth.upsert_space(space).unwrap();
 
@@ -51,10 +56,12 @@ fn session_is_created_for_new_session_id() {
 
     // Session is reflected in the snapshot.
     let snap = auth.snapshot();
-    assert!(snap.sessions.contains_key(&session_id), "session should be in snapshot");
+    assert!(
+        snap.sessions.contains_key(&session_id),
+        "session should be in snapshot"
+    );
     assert_eq!(
-        snap.sessions[&session_id].space_id,
-        sid,
+        snap.sessions[&session_id].space_id, sid,
         "session's space_id should match"
     );
 }
@@ -67,12 +74,18 @@ fn session_is_created_for_new_session_id() {
 fn flush_thread_persisted_and_reloaded() {
     let auth = RuntimeAuthority::in_memory();
 
-    let space = Space { id: SpaceId::new(), name: "test".into(), compaction_threshold_pct: 80, compaction_recency_turns: 6 };
+    let space = Space {
+        id: SpaceId::new(),
+        name: "test".into(),
+        compaction_threshold_pct: 80,
+        compaction_recency_turns: 6,
+    };
     let sid = space.id;
     auth.upsert_space(space).unwrap();
 
     let session_id = SessionId("flush-test".into());
-    auth.get_or_create_session(session_id.clone(), sid, None).unwrap();
+    auth.get_or_create_session(session_id.clone(), sid, None)
+        .unwrap();
 
     let history = vec![
         ChatMessage::user("hello"),
@@ -81,7 +94,9 @@ fn flush_thread_persisted_and_reloaded() {
     auth.flush_thread(&session_id, history.clone()).unwrap();
 
     // Retrieve the thread back.
-    let loaded = auth.session_thread(&session_id).expect("session should exist");
+    let loaded = auth
+        .session_thread(&session_id)
+        .expect("session should exist");
     assert_eq!(loaded.len(), 2, "should have 2 messages after flush");
     assert_eq!(
         loaded[0].content.as_deref(),
@@ -97,7 +112,7 @@ fn flush_thread_persisted_and_reloaded() {
 #[test]
 fn token_estimate_sums_content_lengths() {
     let msgs = vec![
-        ChatMessage::user("hello"),      // 5 chars = 1 token
+        ChatMessage::user("hello"),            // 5 chars = 1 token
         ChatMessage::assistant_text("world!"), // 6 chars = 1 token
     ];
     // 11 chars total / 4 ≈ 2 tokens
@@ -111,7 +126,10 @@ fn maybe_compact_below_threshold_returns_unchanged() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let llm = Arc::new(MockLlmProvider::new());
-        let short_thread = vec![ChatMessage::user("hi"), ChatMessage::assistant_text("hello")];
+        let short_thread = vec![
+            ChatMessage::user("hi"),
+            ChatMessage::assistant_text("hello"),
+        ];
 
         let result = maybe_compact(
             short_thread.clone(),
@@ -196,15 +214,27 @@ fn maybe_compact_above_threshold_produces_compacted_thread() {
 async fn str_replace_success() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("file.txt");
-    tokio::fs::write(&path, "hello world\nfoo bar\n").await.unwrap();
+    tokio::fs::write(&path, "hello world\nfoo bar\n")
+        .await
+        .unwrap();
 
     let fs = LocalFilesystem::new();
     let result = fs.str_replace(&path, "hello world", "goodbye world").await;
-    assert!(result.is_ok(), "str_replace should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "str_replace should succeed: {:?}",
+        result.err()
+    );
 
     let content = tokio::fs::read_to_string(&path).await.unwrap();
-    assert!(content.contains("goodbye world"), "replacement should be in file");
-    assert!(!content.contains("hello world"), "old string should be gone");
+    assert!(
+        content.contains("goodbye world"),
+        "replacement should be in file"
+    );
+    assert!(
+        !content.contains("hello world"),
+        "old string should be gone"
+    );
 
     let sr = result.unwrap();
     assert!(!sr.diff.is_empty(), "diff should be non-empty");
@@ -217,10 +247,15 @@ async fn str_replace_not_found_returns_error() {
     tokio::fs::write(&path, "hello world\n").await.unwrap();
 
     let fs = LocalFilesystem::new();
-    let result = fs.str_replace(&path, "nonexistent string", "replacement").await;
+    let result = fs
+        .str_replace(&path, "nonexistent string", "replacement")
+        .await;
     assert!(result.is_err(), "should error when old_str not found");
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("not_found"), "error message should mention not_found; got: {msg}");
+    assert!(
+        msg.contains("not_found"),
+        "error message should mention not_found; got: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -234,7 +269,10 @@ async fn str_replace_ambiguous_returns_error() {
     let result = fs.str_replace(&path, "foo", "bar").await;
     assert!(result.is_err(), "should error when old_str is ambiguous");
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("ambiguous"), "error message should mention ambiguous; got: {msg}");
+    assert!(
+        msg.contains("ambiguous"),
+        "error message should mention ambiguous; got: {msg}"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -247,23 +285,31 @@ async fn glob_files_finds_files_in_temp_dir() {
     let dir = tempdir().unwrap();
 
     // Create a few files.
-    tokio::fs::write(dir.path().join("hello.rs"), "fn main() {}").await.unwrap();
-    tokio::fs::write(dir.path().join("world.rs"), "fn world() {}").await.unwrap();
-    tokio::fs::write(dir.path().join("readme.txt"), "text").await.unwrap();
+    tokio::fs::write(dir.path().join("hello.rs"), "fn main() {}")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("world.rs"), "fn world() {}")
+        .await
+        .unwrap();
+    tokio::fs::write(dir.path().join("readme.txt"), "text")
+        .await
+        .unwrap();
 
-    let (results, _truncated) = cronymax::capability::code_search::run_glob(
-        dir.path(),
-        "**/*.rs",
-        200,
-    )
-    .await
-    .expect("run_glob should succeed");
+    let (results, _truncated) =
+        cronymax::capability::code_search::run_glob(dir.path(), "**/*.rs", 200)
+            .await
+            .expect("run_glob should succeed");
 
-    assert_eq!(results.len(), 2, "should find exactly 2 .rs files, got: {results:?}");
+    assert_eq!(
+        results.len(),
+        2,
+        "should find exactly 2 .rs files, got: {results:?}"
+    );
     // Both files should appear.
-    let names: Vec<&str> = results.iter().map(|s| {
-        Path::new(s).file_name().unwrap().to_str().unwrap()
-    }).collect();
+    let names: Vec<&str> = results
+        .iter()
+        .map(|s| Path::new(s).file_name().unwrap().to_str().unwrap())
+        .collect();
     assert!(names.contains(&"hello.rs"), "hello.rs should be found");
     assert!(names.contains(&"world.rs"), "world.rs should be found");
 }
@@ -277,31 +323,46 @@ async fn grep_workspace_finds_pattern() {
     }
 
     let dir = tempdir().unwrap();
-    tokio::fs::write(dir.path().join("foo.rs"), "fn hello_world() {}\nfn other() {}").await.unwrap();
-    tokio::fs::write(dir.path().join("bar.rs"), "fn bar() {}").await.unwrap();
-
-    let results = cronymax::capability::code_search::run_rg_search(
-        dir.path(),
-        "hello_world",
-        "",
-        0,
-        50,
+    tokio::fs::write(
+        dir.path().join("foo.rs"),
+        "fn hello_world() {}\nfn other() {}",
     )
     .await
-    .expect("run_rg_search should succeed");
+    .unwrap();
+    tokio::fs::write(dir.path().join("bar.rs"), "fn bar() {}")
+        .await
+        .unwrap();
 
-    assert!(!results.is_empty(), "should find at least one match for hello_world");
+    let results =
+        cronymax::capability::code_search::run_rg_search(dir.path(), "hello_world", "", 0, 50)
+            .await
+            .expect("run_rg_search should succeed");
+
+    assert!(
+        !results.is_empty(),
+        "should find at least one match for hello_world"
+    );
     let any_match = results.iter().any(|r| {
-        r.get("text").and_then(|t| t.as_str()).map(|s| s.contains("hello_world")).unwrap_or(false)
+        r.get("text")
+            .and_then(|t| t.as_str())
+            .map(|s| s.contains("hello_world"))
+            .unwrap_or(false)
     });
-    assert!(any_match, "a result should contain the matched text; got: {results:?}");
+    assert!(
+        any_match,
+        "a result should contain the matched text; got: {results:?}"
+    );
 }
 
 fn which_rg() -> Option<std::path::PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
             let candidate = dir.join("rg");
-            if candidate.is_file() { Some(candidate) } else { None }
+            if candidate.is_file() {
+                Some(candidate)
+            } else {
+                None
+            }
         })
     })
 }
@@ -331,7 +392,8 @@ fn init_test_repo(root: &Path) -> git2::Repository {
     let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
     let oid = index.write_tree().unwrap();
     let tree = repo.find_tree(oid).unwrap();
-    repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[]).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
+        .unwrap();
     drop(tree);
 
     repo
@@ -354,7 +416,10 @@ fn git_status_returns_untracked_file() {
             .map(|arr| arr.iter().any(|f| f.as_str() == Some("wt_new")))
             .unwrap_or(false)
     });
-    assert!(any_untracked, "should report new_file.txt as untracked; got: {entries:?}");
+    assert!(
+        any_untracked,
+        "should report new_file.txt as untracked; got: {entries:?}"
+    );
 }
 
 #[test]
@@ -364,7 +429,10 @@ fn git_diff_returns_empty_for_clean_repo() {
 
     let diff = cronymax::capability::git::git_diff_for_test(dir.path(), None, false)
         .expect("git_diff should succeed");
-    assert!(diff.trim().is_empty(), "clean working tree should have empty diff; got: {diff:?}");
+    assert!(
+        diff.trim().is_empty(),
+        "clean working tree should have empty diff; got: {diff:?}"
+    );
 }
 
 #[test]
@@ -376,7 +444,10 @@ fn git_log_returns_initial_commit() {
         .expect("git_log should succeed");
 
     assert_eq!(commits.len(), 1, "should have exactly 1 commit");
-    let subject = commits[0].get("subject").and_then(|s| s.as_str()).unwrap_or("");
+    let subject = commits[0]
+        .get("subject")
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
     assert_eq!(subject, "Initial commit");
 }
 
@@ -396,20 +467,21 @@ fn git_commit_creates_commit_and_appears_in_log() {
         .expect("git_add should succeed");
 
     // Create the commit.
-    let (hash, files_changed) = cronymax::capability::git::git_commit_for_test(
-        dir.path(),
-        "feat: add feature",
-    )
-    .expect("git_commit should succeed");
+    let (hash, files_changed) =
+        cronymax::capability::git::git_commit_for_test(dir.path(), "feat: add feature")
+            .expect("git_commit should succeed");
 
     assert!(!hash.is_empty(), "commit hash should be non-empty");
     assert_eq!(files_changed, 1, "one file should be in the commit");
 
     // Verify log now has 2 commits.
-    let commits = cronymax::capability::git::git_log_for_test(dir.path(), 10)
-        .expect("git_log after commit");
+    let commits =
+        cronymax::capability::git::git_log_for_test(dir.path(), 10).expect("git_log after commit");
     assert_eq!(commits.len(), 2, "log should show 2 commits");
-    let latest_subject = commits[0].get("subject").and_then(|s| s.as_str()).unwrap_or("");
+    let latest_subject = commits[0]
+        .get("subject")
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
     assert_eq!(latest_subject, "feat: add feature");
 }
 
@@ -421,14 +493,20 @@ fn git_commit_creates_commit_and_appears_in_log() {
 fn second_get_or_create_sees_flushed_thread() {
     let auth = RuntimeAuthority::in_memory();
 
-    let space = Space { id: SpaceId::new(), name: "continuity".into(), compaction_threshold_pct: 80, compaction_recency_turns: 6 };
+    let space = Space {
+        id: SpaceId::new(),
+        name: "continuity".into(),
+        compaction_threshold_pct: 80,
+        compaction_recency_turns: 6,
+    };
     let sid = space.id;
     auth.upsert_space(space).unwrap();
 
     let session_id = SessionId("cont-session".into());
 
     // First "run": create session and flush a synthetic thread.
-    auth.get_or_create_session(session_id.clone(), sid, None).unwrap();
+    auth.get_or_create_session(session_id.clone(), sid, None)
+        .unwrap();
     let run1_thread = vec![
         ChatMessage::user("run-1 question"),
         ChatMessage::assistant_text("run-1 answer"),

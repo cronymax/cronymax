@@ -83,7 +83,9 @@ where
     F: Fn(S) -> Result<Transition<S>, E> + Send + Sync,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FnStep").field("label", &self.label).finish()
+        f.debug_struct("FnStep")
+            .field("label", &self.label)
+            .finish()
     }
 }
 
@@ -246,9 +248,10 @@ impl<S, E> Orchestrator<S, E> {
                 .graph
                 .node(current)
                 .ok_or(RunError::Graph(GraphError::UnknownNode(current)))?;
-            let transition = step
-                .execute(state)
-                .map_err(|source| RunError::Step { node: current, source })?;
+            let transition = step.execute(state).map_err(|source| RunError::Step {
+                node: current,
+                source,
+            })?;
 
             match transition {
                 Transition::Goto { state: s, next } => {
@@ -333,7 +336,10 @@ mod tests {
 
     impl State {
         fn new() -> Self {
-            Self { counter: 0, log: Vec::new() }
+            Self {
+                counter: 0,
+                log: Vec::new(),
+            }
         }
     }
 
@@ -379,14 +385,20 @@ mod tests {
             let next_b = next_b.clone();
             o.add_step(FnStep::new("a", move |mut s: State| {
                 s.log.push("a");
-                Ok(Transition::Goto { state: s, next: lookup(&next_b) })
+                Ok(Transition::Goto {
+                    state: s,
+                    next: lookup(&next_b),
+                })
             }))
         };
         let b = {
             let next_c = next_c.clone();
             o.add_step(FnStep::new("b", move |mut s: State| {
                 s.log.push("b");
-                Ok(Transition::Goto { state: s, next: lookup(&next_c) })
+                Ok(Transition::Goto {
+                    state: s,
+                    next: lookup(&next_c),
+                })
             }))
         };
         let c = o.add_step(FnStep::new("c", |mut s: State| {
@@ -457,7 +469,10 @@ mod tests {
         let mut o: Orchestrator<u32, std::convert::Infallible> = Orchestrator::new();
         let stray = NodeId::new();
         let a = o.add_step(FnStep::new("a", move |s: u32| {
-            Ok(Transition::Goto { state: s, next: stray })
+            Ok(Transition::Goto {
+                state: s,
+                next: stray,
+            })
         }));
         o.set_entry(a);
         let err = o.run(0, StepLimits::default()).unwrap_err();
@@ -471,15 +486,16 @@ mod tests {
         let a = {
             let me = me.clone();
             o.add_step(FnStep::new("loop", move |s: u32| {
-                Ok(Transition::Goto { state: s + 1, next: lookup(&me) })
+                Ok(Transition::Goto {
+                    state: s + 1,
+                    next: lookup(&me),
+                })
             }))
         };
         me.set(a).unwrap();
         o.allow_transition(a, a).unwrap();
         o.set_entry(a);
-        let err = o
-            .run(0, StepLimits { max_steps: Some(5) })
-            .unwrap_err();
+        let err = o.run(0, StepLimits { max_steps: Some(5) }).unwrap_err();
         assert!(matches!(err, RunError::StepLimitExceeded { limit: 5 }));
     }
 

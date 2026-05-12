@@ -31,4 +31,3 @@ std::string ToString(Actor actor);
 std::string ToString(RiskLevel risk);
 
 }  // namespace cronymax
-

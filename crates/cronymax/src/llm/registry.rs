@@ -95,7 +95,10 @@ impl LlmProviderRegistry {
         } else {
             ProviderFile::default()
         };
-        Ok(Self { path: path.to_owned(), file })
+        Ok(Self {
+            path: path.to_owned(),
+            file,
+        })
     }
 
     // ── Accessors ────────────────────────────────────────────────────────
@@ -119,11 +122,7 @@ impl LlmProviderRegistry {
 
     /// Add or replace a provider. If `set_as_default` is true, also
     /// updates `default_provider` to this id.
-    pub fn upsert(
-        &mut self,
-        entry: LlmProviderEntry,
-        set_as_default: bool,
-    ) -> anyhow::Result<()> {
+    pub fn upsert(&mut self, entry: LlmProviderEntry, set_as_default: bool) -> anyhow::Result<()> {
         if set_as_default {
             self.file.default_provider = Some(entry.id.clone());
         }
@@ -258,7 +257,9 @@ fn keychain_delete(_service: &str, _account: &str) -> anyhow::Result<()> {
 
 /// Write `data` to `path` atomically using a POSIX rename.
 fn atomic_write(path: &Path, data: &[u8]) -> anyhow::Result<()> {
-    let dir = path.parent().ok_or_else(|| anyhow::anyhow!("path has no parent"))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("path has no parent"))?;
     // Construct a temp path in the same directory to allow atomic rename.
     let unique = uuid::Uuid::new_v4().to_string();
     let tmp_path = dir.join(format!(".tmp-{unique}"));
@@ -340,7 +341,10 @@ mod tests {
         };
         reg.upsert(updated, false).unwrap();
         assert_eq!(reg.all().len(), 1);
-        assert_eq!(reg.get("openai").unwrap().base_url, "https://custom.openai.com/v1");
+        assert_eq!(
+            reg.get("openai").unwrap().base_url,
+            "https://custom.openai.com/v1"
+        );
     }
 
     #[test]

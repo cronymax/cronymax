@@ -3,19 +3,14 @@
  * This module carries the full Milkdown bundle, so it's only fetched
  * when the editor is first rendered in edit mode.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Editor, rootCtx, defaultValueCtx } from "@milkdown/core";
+
+import { defaultValueCtx, Editor, rootCtx } from "@milkdown/core";
 import { listener, listenerCtx } from "@milkdown/plugin-listener";
 import { commonmark } from "@milkdown/preset-commonmark";
 import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-function MilkdownInner({
-  initialValue,
-  onEmit,
-}: {
-  initialValue: string;
-  onEmit: (v: string) => void;
-}) {
+function MilkdownInner({ initialValue, onEmit }: { initialValue: string; onEmit: (v: string) => void }) {
   const onEmitRef = useRef(onEmit);
   useEffect(() => {
     onEmitRef.current = onEmit;

@@ -22,8 +22,7 @@ export function GitPushedCard({ event }: Props) {
     >
       <div
         style={{
-          background:
-            "var(--vscode-editor-inactiveSelectionBackground, #2d2d2d)",
+          background: "var(--vscode-editor-inactiveSelectionBackground, #2d2d2d)",
           padding: "4px 10px",
           display: "flex",
           alignItems: "center",
@@ -37,8 +36,7 @@ export function GitPushedCard({ event }: Props) {
         </code>
         <span
           style={{
-            color:
-              "var(--vscode-gitDecoration-addedResourceForeground, #81b88b)",
+            color: "var(--vscode-gitDecoration-addedResourceForeground, #81b88b)",
           }}
         >
           {commits_pushed} commit{commits_pushed !== 1 ? "s" : ""}

@@ -102,10 +102,7 @@ function applyEvent(state: StreamState, e: AppEvent): StreamState {
     };
     next.set(e.payload.doc_id, {
       ...prev,
-      reviews: [
-        ...prev.reviews,
-        e as Extract<AppEvent, { kind: "review_event" }>,
-      ],
+      reviews: [...prev.reviews, e as Extract<AppEvent, { kind: "review_event" }>],
       last_ts: e.ts_ms,
     });
     threads = next;

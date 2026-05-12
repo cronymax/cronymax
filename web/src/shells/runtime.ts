@@ -90,11 +90,7 @@ export const docType = {
     const raw = await runtime.send({ kind: "doc_type_load", name });
     return JSON.parse(raw);
   },
-  async save(
-    name: string,
-    display_name: string,
-    description: string,
-  ): Promise<{ ok: boolean }> {
+  async save(name: string, display_name: string, description: string): Promise<{ ok: boolean }> {
     const raw = await runtime.send({
       kind: "doc_type_save",
       name,
@@ -114,10 +110,7 @@ export const docType = {
 // ---------------------------------------------------------------------------
 
 export const flowRun = {
-  async start(
-    flow_id: string,
-    initial_input?: string,
-  ): Promise<{ run_id: string; subscription?: string }> {
+  async start(flow_id: string, initial_input?: string): Promise<{ run_id: string; subscription?: string }> {
     const pl: Record<string, unknown> = { flow_id };
     if (initial_input !== undefined) pl.initial_input = initial_input;
     const raw = await runtime.send({ kind: "start_run", payload: pl });
@@ -195,9 +188,9 @@ export const terminal = {
 
   /** Write raw bytes to the PTY. Fire-and-forget; errors are swallowed. */
   input(tid: string, data: string): void {
-    runtime
-      .send({ kind: "terminal_input", terminal_id: tid, data })
-      .catch(() => {});
+    runtime.send({ kind: "terminal_input", terminal_id: tid, data }).catch(() => {
+      /* ignore */
+    });
   },
 
   /** Write a command line (appends newline). Fire-and-forget. */
@@ -205,7 +198,7 @@ export const terminal = {
     return runtime.send({
       kind: "terminal_input",
       terminal_id: tid,
-      data: command + "\n",
+      data: `${command}\n`,
     });
   },
 
@@ -218,7 +211,9 @@ export const terminal = {
         cols,
         rows,
       })
-      .catch(() => {});
+      .catch(() => {
+        /* ignore */
+      });
   },
 
   /** Kill the running process in the PTY. */
@@ -231,10 +226,7 @@ export const terminal = {
    * `onData` receives decoded UTF-8 terminal output chunks.
    * Returns an unsubscribe function, or null if the runtime is unavailable.
    */
-  subscribeOutput(
-    tid: string,
-    onData: (data: string) => void,
-  ): (() => void) | null {
+  subscribeOutput(tid: string, onData: (data: string) => void): (() => void) | null {
     return runtime.subscribe(`terminal:${tid}`, (eventJson: string) => {
       try {
         const ev = JSON.parse(eventJson) as Record<string, unknown>;

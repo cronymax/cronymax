@@ -165,7 +165,11 @@ impl Default for AgentDef {
 
 impl RawAgentDef {
     fn into_agent_def(self, fallback_name: &str, source_path: PathBuf) -> AgentDef {
-        let name = if self.name.is_empty() { fallback_name.to_owned() } else { self.name };
+        let name = if self.name.is_empty() {
+            fallback_name.to_owned()
+        } else {
+            self.name
+        };
 
         let kind = match self.kind.as_str() {
             "reviewer" => AgentKind::Reviewer,
@@ -238,8 +242,7 @@ pub async fn load_agent_with_builtin(workspace_root: &Path, agent_id: &str) -> A
         let mut def = crate::crony::CronyBuiltin::def();
 
         // Apply optional peripheral overrides from Crony.agent.yaml.
-        let override_path =
-            agents_dir(workspace_root).join("Crony.agent.yaml");
+        let override_path = agents_dir(workspace_root).join("Crony.agent.yaml");
         if let Ok(yaml) = tokio::fs::read_to_string(&override_path).await {
             match serde_yml::from_str::<RawCronyOverride>(&yaml) {
                 Ok(ov) => {

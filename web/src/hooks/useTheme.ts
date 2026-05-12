@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { browser } from "@/shells/bridge";
-import { useBridgeEvent } from "./useBridgeEvent";
 import type { ThemeMode, ThemeResolved } from "@/types";
+import { useBridgeEvent } from "./useBridgeEvent";
 
 /**
  * `useTheme` — single source of truth for the renderer-side theme state.

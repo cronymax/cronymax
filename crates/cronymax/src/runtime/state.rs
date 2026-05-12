@@ -26,16 +26,7 @@ use crate::llm::ChatMessage;
 macro_rules! uuid_newtype {
     ($name:ident) => {
         #[derive(
-            Clone,
-            Copy,
-            Debug,
-            Eq,
-            Hash,
-            Ord,
-            PartialEq,
-            PartialOrd,
-            Serialize,
-            Deserialize,
+            Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
         )]
         #[serde(transparent)]
         pub struct $name(pub Uuid);
@@ -68,9 +59,7 @@ uuid_newtype!(ReviewId);
 /// Session identity is a caller-supplied string (the frontend's
 /// `cronymax_chat_tab_id`) so no UUID generation is needed on the
 /// Rust side. Stored as a newtype for type-safety.
-#[derive(
-    Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
-)]
+#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SessionId(pub String);
 
@@ -132,9 +121,7 @@ pub struct Session {
 /// `"space:<uuid>/conversation"`-style namespace) so the runtime can
 /// segment memory by Space, agent, or product feature without baking a
 /// scoping policy into this crate.
-#[derive(
-    Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
-)]
+#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MemoryNamespaceId(pub String);
 
@@ -241,7 +228,10 @@ impl RunStatus {
     /// True if the run has reached a terminal state and won't change
     /// further without an explicit caller action.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed { .. } | Self::Cancelled)
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed { .. } | Self::Cancelled
+        )
     }
 }
 

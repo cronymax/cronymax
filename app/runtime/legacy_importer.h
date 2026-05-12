@@ -19,25 +19,25 @@
 // before the runtime starts.
 
 #include <filesystem>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
-#include <nlohmann/json.hpp>
 
 namespace cronymax {
 
 // A single space descriptor handed to the importer.
 struct ImportSpaceInfo {
-  std::string space_id;          // UUID string matching Space::id
-  std::string space_name;        // human-readable name
+  std::string space_id;                  // UUID string matching Space::id
+  std::string space_name;                // human-readable name
   std::filesystem::path workspace_root;  // absolute path to workspace
 };
 
 // Counts returned by Run().
 struct ImportResult {
-  int spaces_seeded  = 0;  // spaces written to snapshot
-  int runs_imported  = 0;  // legacy run entries merged in
-  int runs_skipped   = 0;  // already present in snapshot
-  int parse_errors   = 0;  // state.json files that failed to parse
+  int spaces_seeded = 0;  // spaces written to snapshot
+  int runs_imported = 0;  // legacy run entries merged in
+  int runs_skipped = 0;   // already present in snapshot
+  int parse_errors = 0;   // state.json files that failed to parse
 };
 
 class LegacyImporter {

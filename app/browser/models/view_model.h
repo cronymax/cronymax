@@ -14,8 +14,8 @@
 #include <memory>
 #include <string>
 
-#include "browser/models/view_observer.h"
 #include "browser/models/space_manager.h"
+#include "browser/models/view_observer.h"
 #include "browser/tab/tab_manager.h"
 
 namespace cronymax {
@@ -36,9 +36,9 @@ class ViewModel {
   // NOTE: tabs_ is declared AFTER these lists so C++ destruction (reverse
   // order) destroys tabs_ first — allowing Tab::~ThemeAwareView() to safely
   // call RemoveThemeObserver() while theme_observers is still alive.
-  ViewObserverList<ThemeChanged>     theme_observers;
-  ViewObserverList<SpaceChanged>     space_observers;
-  ViewObserverList<TabsChanged>      tabs_observers;
+  ViewObserverList<ThemeChanged> theme_observers;
+  ViewObserverList<SpaceChanged> space_observers;
+  ViewObserverList<TabsChanged> tabs_observers;
   ViewObserverList<ActiveTabChanged> active_tab_observers;
 
   // ── TabManager ──────────────────────────────────────────────────────────

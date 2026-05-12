@@ -1,9 +1,10 @@
 /// <reference types="vitest" />
-import { defineConfig, type Plugin } from "vite";
-import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
-import svgr from "vite-plugin-svgr";
+
 import { resolve } from "node:path";
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig, type Plugin } from "vite";
+import svgr from "vite-plugin-svgr";
 
 // Vite emits `<script type="module" crossorigin ...>` and
 // `<link rel="stylesheet" crossorigin ...>` in production HTML. When the

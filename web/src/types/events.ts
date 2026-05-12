@@ -57,13 +57,7 @@ export const ErrorPayload = z.object({
 });
 
 export const SystemPayload = z.object({
-  subkind: z.enum([
-    "run_started",
-    "run_paused",
-    "run_completed",
-    "run_cancelled",
-    "flow_updated",
-  ]),
+  subkind: z.enum(["run_started", "run_paused", "run_completed", "run_cancelled", "flow_updated"]),
   cause: z.string().optional(), // e.g. "human_approval" for run_paused
 });
 

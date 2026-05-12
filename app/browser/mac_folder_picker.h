@@ -14,6 +14,7 @@ namespace cronymax {
 // `callback` is called on the calling thread's run-loop (main thread)
 // with the selected path, or an empty string on cancel/error.
 // Must be called from the main thread.
-void ShowNativeFolderPicker(std::function<void(const std::string& path)> callback);
+void ShowNativeFolderPicker(
+    std::function<void(const std::string& path)> callback);
 
 }  // namespace cronymax

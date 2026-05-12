@@ -35,7 +35,9 @@ pub fn register_git_tools(builder: &mut DispatcherBuilder, workspace_root: PathB
                 let r = r.clone();
                 async move {
                     match git_status(&r) {
-                        Ok(entries) => ToolOutcome::Output(serde_json::json!({ "entries": entries })),
+                        Ok(entries) => {
+                            ToolOutcome::Output(serde_json::json!({ "entries": entries }))
+                        }
                         Err(e) => ToolOutcome::Error(format!("git_status: {e}")),
                     }
                 }
@@ -117,10 +119,14 @@ pub fn register_git_tools(builder: &mut DispatcherBuilder, workspace_root: PathB
                         #[serde(default = "default_n")]
                         n: usize,
                     }
-                    fn default_n() -> usize { 10 }
+                    fn default_n() -> usize {
+                        10
+                    }
                     let a: Args = serde_json::from_str(&args).unwrap_or(Args { n: 10 });
                     match git_log(&r, a.n) {
-                        Ok(commits) => ToolOutcome::Output(serde_json::json!({ "commits": commits })),
+                        Ok(commits) => {
+                            ToolOutcome::Output(serde_json::json!({ "commits": commits }))
+                        }
                         Err(e) => ToolOutcome::Error(format!("git_log: {e}")),
                     }
                 }
@@ -152,7 +158,9 @@ pub fn register_git_tools(builder: &mut DispatcherBuilder, workspace_root: PathB
                 let r = r.clone();
                 async move {
                     #[derive(serde::Deserialize)]
-                    struct Args { paths: Vec<String> }
+                    struct Args {
+                        paths: Vec<String>,
+                    }
                     let a: Args = match serde_json::from_str(&args) {
                         Ok(v) => v,
                         Err(e) => return ToolOutcome::Error(format!("invalid git_add args: {e}")),
@@ -237,7 +245,9 @@ pub fn register_git_tools(builder: &mut DispatcherBuilder, workspace_root: PathB
                     }
                     let a: Args = match serde_json::from_str(&args) {
                         Ok(v) => v,
-                        Err(e) => return ToolOutcome::Error(format!("invalid git_commit args: {e}")),
+                        Err(e) => {
+                            return ToolOutcome::Error(format!("invalid git_commit args: {e}"))
+                        }
                     };
                     let effective_message = a.notes.as_deref().unwrap_or(&a.message);
                     match git_commit(&r, effective_message) {
@@ -294,7 +304,11 @@ pub fn register_git_tools(builder: &mut DispatcherBuilder, workspace_root: PathB
                         Some(b) => b.to_owned(),
                         None => match current_branch(&r) {
                             Ok(b) => b,
-                            Err(e) => return ToolOutcome::Error(format!("git_push: cannot determine branch: {e}")),
+                            Err(e) => {
+                                return ToolOutcome::Error(format!(
+                                    "git_push: cannot determine branch: {e}"
+                                ))
+                            }
                         },
                     };
                     match run_git_push(&r, remote, &branch).await {
@@ -337,7 +351,13 @@ fn git_status(root: &Path) -> anyhow::Result<Vec<serde_json::Value>> {
             (git2::Status::CONFLICTED, "conflicted"),
         ]
         .iter()
-        .filter_map(|(flag, name)| if status.contains(*flag) { Some(*name) } else { None })
+        .filter_map(|(flag, name)| {
+            if status.contains(*flag) {
+                Some(*name)
+            } else {
+                None
+            }
+        })
         .collect();
 
         if !flags.is_empty() {
@@ -356,10 +376,7 @@ fn git_diff(root: &Path, git_ref: Option<&str>, staged: bool) -> anyhow::Result<
 
     let diff = if staged {
         // Index vs HEAD
-        let head_tree = repo
-            .head()
-            .ok()
-            .and_then(|h| h.peel_to_tree().ok());
+        let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
         repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_opts))?
     } else {
         // Working tree vs a given ref (or HEAD)
@@ -413,7 +430,8 @@ fn git_add(root: &Path, paths: &[String]) -> anyhow::Result<Vec<String>> {
     let repo = open_repo(root)?;
     let mut index = repo.index()?;
     for path in paths {
-        index.add_path(Path::new(path))
+        index
+            .add_path(Path::new(path))
             .map_err(|e| anyhow::anyhow!("git add '{path}': {e}"))?;
     }
     index.write()?;
@@ -551,7 +569,11 @@ pub fn git_status_for_test(root: &Path) -> anyhow::Result<Vec<serde_json::Value>
 }
 
 /// Thin public wrapper for use by integration tests.
-pub fn git_diff_for_test(root: &Path, git_ref: Option<&str>, staged: bool) -> anyhow::Result<String> {
+pub fn git_diff_for_test(
+    root: &Path,
+    git_ref: Option<&str>,
+    staged: bool,
+) -> anyhow::Result<String> {
     git_diff(root, git_ref, staged)
 }
 

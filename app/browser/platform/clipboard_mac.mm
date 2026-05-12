@@ -15,7 +15,8 @@ void SetClipboardText(const std::string& text) {
 }
 
 void OpenUrlInBrowser(const std::string& url) {
-  NSURL* ns_url = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
+  NSURL* ns_url =
+      [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
   if (ns_url)
     [[NSWorkspace sharedWorkspace] openURL:ns_url];
 }

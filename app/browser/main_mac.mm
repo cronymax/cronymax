@@ -69,8 +69,7 @@ int main(int argc, char* argv[]) {
     // and without an opaque GPU clear color showing through.
     settings.background_color = 0x00000000;
 
-    CefRefPtr<cronymax::App> app(
-        new cronymax::App());
+    CefRefPtr<cronymax::App> app(new cronymax::App());
 
     if (!CefInitialize(main_args, settings, app.get(), nullptr)) {
       return CefGetExitCode();
@@ -139,4 +138,3 @@ int main(int argc, char* argv[]) {
 
   return 0;
 }
-

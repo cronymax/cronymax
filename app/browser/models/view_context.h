@@ -45,7 +45,8 @@ class SpaceContext {
  public:
   virtual std::string GetCurrentSpaceId() const = 0;
   virtual std::string GetCurrentSpaceName() const = 0;
-  virtual std::vector<std::pair<std::string, std::string>> GetSpaces() const = 0;
+  virtual std::vector<std::pair<std::string, std::string>> GetSpaces()
+      const = 0;
   virtual void SwitchSpace(const std::string& space_id) = 0;
   virtual void AddSpaceObserver(ViewObserver<SpaceChanged>* obs) = 0;
   virtual void RemoveSpaceObserver(ViewObserver<SpaceChanged>* obs) = 0;
@@ -90,7 +91,8 @@ class WindowActionContext {
 
 class OverlayActionContext {
  public:
-  virtual void OpenPopover(const std::string& url, int owner_browser_id = 0) = 0;
+  virtual void OpenPopover(const std::string& url,
+                           int owner_browser_id = 0) = 0;
   virtual void ClosePopover() = 0;
   virtual void ShowFloat(const std::string& url) = 0;
   virtual void DismissFloat() = 0;

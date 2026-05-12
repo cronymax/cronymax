@@ -24,8 +24,7 @@ export function GitCommitCard({ event }: Props) {
       {/* Header */}
       <div
         style={{
-          background:
-            "var(--vscode-editor-inactiveSelectionBackground, #2d2d2d)",
+          background: "var(--vscode-editor-inactiveSelectionBackground, #2d2d2d)",
           padding: "4px 10px",
           display: "flex",
           alignItems: "center",
@@ -34,9 +33,7 @@ export function GitCommitCard({ event }: Props) {
         }}
       >
         <span style={{ opacity: 0.6 }}>git commit</span>
-        <code style={{ color: "var(--vscode-textLink-foreground, #4ec9b0)" }}>
-          {shortHash}
-        </code>
+        <code style={{ color: "var(--vscode-textLink-foreground, #4ec9b0)" }}>{shortHash}</code>
         <span
           style={{
             flex: 1,
@@ -61,8 +58,7 @@ export function GitCommitCard({ event }: Props) {
             <div
               key={f}
               style={{
-                color:
-                  "var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d)",
+                color: "var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d)",
               }}
             >
               {f}

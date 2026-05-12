@@ -47,6 +47,7 @@ void SetStatusDotState(StatusDotState state);
 // Register a handler invoked on the main thread when the user clicks a
 // notification. Receives the `deeplink` string that was passed to
 // `PostNotification`. Setting an empty handler clears the registration.
-void SetNotificationClickHandler(std::function<void(const std::string& deeplink)> cb);
+void SetNotificationClickHandler(
+    std::function<void(const std::string& deeplink)> cb);
 
 }  // namespace cronymax::platform::macos

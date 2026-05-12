@@ -116,7 +116,9 @@ pub struct WriteFileRequest {
     pub create_dirs: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// Replace exactly one occurrence of `old_str` with `new_str` in a workspace file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -149,12 +151,8 @@ pub trait FilesystemCapability: Send + Sync + std::fmt::Debug {
     ) -> anyhow::Result<ReadFileResult>;
 
     /// Write a workspace file. The caller has already validated scope.
-    async fn write_file(
-        &self,
-        path: &Path,
-        content: &str,
-        create_dirs: bool,
-    ) -> anyhow::Result<()>;
+    async fn write_file(&self, path: &Path, content: &str, create_dirs: bool)
+        -> anyhow::Result<()>;
 
     /// List directory contents. The caller has already validated scope.
     async fn list_dir(&self, path: &Path) -> anyhow::Result<Vec<String>>;
@@ -260,8 +258,7 @@ impl FilesystemCapability for LocalFilesystem {
     /// (CI, container, and launchd plists all support them). Replace with a
     /// custom implementation for keychain integration.
     async fn read_secret(&self, name: &str) -> anyhow::Result<String> {
-        std::env::var(name)
-            .map_err(|_| anyhow::anyhow!("secret not found in environment: {name}"))
+        std::env::var(name).map_err(|_| anyhow::anyhow!("secret not found in environment: {name}"))
     }
 
     async fn str_replace(
@@ -309,7 +306,14 @@ fn truncate_for_error(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_owned()
     } else {
-        format!("{}…", &s[..s.char_indices().nth(max_chars).map(|(i, _)| i).unwrap_or(s.len())])
+        format!(
+            "{}…",
+            &s[..s
+                .char_indices()
+                .nth(max_chars)
+                .map(|(i, _)| i)
+                .unwrap_or(s.len())]
+        )
     }
 }
 

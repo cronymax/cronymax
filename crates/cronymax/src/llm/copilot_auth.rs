@@ -51,8 +51,12 @@ struct DeviceCodeResponse {
     interval: u64,
 }
 
-fn default_expires_in() -> u64 { 900 }
-fn default_interval() -> u64 { 5 }
+fn default_expires_in() -> u64 {
+    900
+}
+fn default_interval() -> u64 {
+    5
+}
 
 // ── Copilot token ────────────────────────────────────────────────────────────
 
@@ -92,10 +96,7 @@ pub async fn start_device_flow(
     client_id: &str,
 ) -> anyhow::Result<DeviceFlowCode> {
     let url = "https://github.com/login/device/code";
-    let params = [
-        ("client_id", client_id),
-        ("scope", "read:user"),
-    ];
+    let params = [("client_id", client_id), ("scope", "read:user")];
     let resp = http
         .post(url)
         .header("Accept", "application/json")
@@ -127,8 +128,8 @@ pub async fn poll_device_flow(
 ) -> anyhow::Result<String> {
     let url = "https://github.com/login/oauth/access_token";
     let interval_secs = device_code.interval.max(5);
-    let deadline = std::time::Instant::now()
-        + Duration::from_secs(device_code.expires_in.saturating_add(5));
+    let deadline =
+        std::time::Instant::now() + Duration::from_secs(device_code.expires_in.saturating_add(5));
 
     loop {
         tokio::time::sleep(Duration::from_secs(interval_secs)).await;
@@ -205,7 +206,10 @@ pub async fn exchange_for_copilot_token(
             + 900
     };
 
-    Ok(CopilotToken { token: resp.token, expires_at })
+    Ok(CopilotToken {
+        token: resp.token,
+        expires_at,
+    })
 }
 
 /// Returns `true` if the given `CopilotToken` should be refreshed (i.e.
@@ -240,7 +244,7 @@ mod tests {
     fn copilot_token_needs_refresh_when_expired() {
         let token = CopilotToken {
             token: "tok".into(),
-            expires_at: 0,  // already expired
+            expires_at: 0, // already expired
         };
         assert!(copilot_token_needs_refresh(&token));
     }
@@ -252,7 +256,10 @@ mod tests {
             .unwrap()
             .as_secs()
             + 30;
-        let token = CopilotToken { token: "tok".into(), expires_at: near_expiry };
+        let token = CopilotToken {
+            token: "tok".into(),
+            expires_at: near_expiry,
+        };
         assert!(copilot_token_needs_refresh(&token));
     }
 
@@ -263,7 +270,10 @@ mod tests {
             .unwrap()
             .as_secs()
             + 3600;
-        let token = CopilotToken { token: "tok".into(), expires_at: far_future };
+        let token = CopilotToken {
+            token: "tok".into(),
+            expires_at: far_future,
+        };
         assert!(!copilot_token_needs_refresh(&token));
     }
 

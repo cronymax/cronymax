@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef } from "react";
 import { flowRun } from "@/shells/runtime";
-import { useEventStream } from "./hooks/useEventStream";
-import { TextBubble } from "./components/TextBubble";
-import { DocumentCard } from "./components/DocumentCard";
+import { Composer } from "./components/Composer";
 import { DiffCard } from "./components/DiffCard";
+import { DocumentCard } from "./components/DocumentCard";
+import { ErrorBanners } from "./components/ErrorBanner";
 import { GitCommitCard } from "./components/GitCommitCard";
 import { GitPushedCard } from "./components/GitPushedCard";
 import { ReviewReply } from "./components/ReviewReply";
 import { RunDivider } from "./components/RunDivider";
-import { ErrorBanners } from "./components/ErrorBanner";
-import { Composer } from "./components/Composer";
+import { TextBubble } from "./components/TextBubble";
+import { useEventStream } from "./hooks/useEventStream";
 
 function readScopeFromUrl() {
   const p = new URLSearchParams(window.location.search);
@@ -64,14 +64,8 @@ export function App() {
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-2">
         <div className="mx-auto flex max-w-3xl flex-col gap-2">
-          {state.loading && (
-            <div className="self-center text-xs opacity-60">Loading…</div>
-          )}
-          {state.error && (
-            <div className="self-center text-xs text-red-300">
-              Failed to load: {state.error}
-            </div>
-          )}
+          {state.loading && <div className="self-center text-xs opacity-60">Loading…</div>}
+          {state.error && <div className="self-center text-xs text-red-300">Failed to load: {state.error}</div>}
           {state.timeline.map((e) => {
             if (e.kind === "text") {
               return <TextBubble key={e.id} event={e} />;
@@ -99,10 +93,7 @@ export function App() {
             }
             if (e.kind === "agent_status") {
               return (
-                <div
-                  key={e.id}
-                  className="self-start text-[11px] font-mono opacity-60"
-                >
+                <div key={e.id} className="self-start text-[11px] font-mono opacity-60">
                   {e.agent_id ?? "agent"} · {e.payload.status}
                   {e.payload.reason ? ` (${e.payload.reason})` : ""}
                 </div>
@@ -110,12 +101,8 @@ export function App() {
             }
             if (e.kind === "handoff") {
               return (
-                <div
-                  key={e.id}
-                  className="self-center text-[11px] font-mono opacity-70"
-                >
-                  {e.payload.from_agent} → {e.payload.to_agent} ·{" "}
-                  {e.payload.port}
+                <div key={e.id} className="self-center text-[11px] font-mono opacity-70">
+                  {e.payload.from_agent} → {e.payload.to_agent} · {e.payload.port}
                 </div>
               );
             }
@@ -138,18 +125,10 @@ export function App() {
   );
 }
 
-function RunPill({
-  run,
-}: {
-  run: { active: boolean; last_subkind: string | null };
-}) {
+function RunPill({ run }: { run: { active: boolean; last_subkind: string | null } }) {
   if (!run.last_subkind) return null;
-  const cls = run.active
-    ? "bg-emerald-700/40 text-emerald-200"
-    : "bg-cronymax-float text-cronymax-title/70";
+  const cls = run.active ? "bg-emerald-700/40 text-emerald-200" : "bg-cronymax-float text-cronymax-title/70";
   return (
-    <span className={`rounded px-2 py-0.5 text-[10px] uppercase ${cls}`}>
-      {run.last_subkind.replace("_", " ")}
-    </span>
+    <span className={`rounded px-2 py-0.5 text-[10px] uppercase ${cls}`}>{run.last_subkind.replace("_", " ")}</span>
   );
 }

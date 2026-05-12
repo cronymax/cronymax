@@ -11,14 +11,14 @@
 namespace cronymax {
 
 enum CornerMask : int {
-  kCornerNone        = 0,
-  kCornerTopLeft     = 1 << 0,
-  kCornerTopRight    = 1 << 1,
-  kCornerBottomLeft  = 1 << 2,
+  kCornerNone = 0,
+  kCornerTopLeft = 1 << 0,
+  kCornerTopRight = 1 << 1,
+  kCornerBottomLeft = 1 << 2,
   kCornerBottomRight = 1 << 3,
-  kCornerTop    = kCornerTopLeft | kCornerTopRight,
+  kCornerTop = kCornerTopLeft | kCornerTopRight,
   kCornerBottom = kCornerBottomLeft | kCornerBottomRight,
-  kCornerAll    = kCornerTop | kCornerBottom,
+  kCornerAll = kCornerTop | kCornerBottom,
 };
 
 // Web-layer draggable region (`-webkit-app-region: drag/no-drag`).
@@ -71,9 +71,7 @@ void SetAppAppearance(bool dark);
 // CEF panel's NSView. The view receives `cornerRadius`, `masksToBounds`,
 // and a 1 pt border colored with `border_argb`. Call once after the
 // view is realized and again from ApplyThemeChrome to retint.
-void InstallRoundedFrame(void* nsview,
-                         double radius,
-                         cef_color_t border_argb);
+void InstallRoundedFrame(void* nsview, double radius, cef_color_t border_argb);
 
 // refine-ui-theme-layout: returns "light" or "dark" based on the current
 // effective NSApp appearance. Called by MainWindow::ResolveAppearance
@@ -106,8 +104,10 @@ void RemoveSystemAppearanceObserver(void* token);
 // `window_nsview`, each painting `bg` at one card corner with a quarter-circle
 // cutout so the card appears rounded.  Because the card fills content_frame_
 // exactly, these punch views also visually round content_frame_'s corners.
-void StyleContentBrowserView(void* window_nsview, double radius,
-                             cef_color_t bg, const CefRect& card_rect);
+void StyleContentBrowserView(void* window_nsview,
+                             double radius,
+                             cef_color_t bg,
+                             const CefRect& card_rect);
 
 // No-op: corner rounding for content_frame_ is handled by the punch views
 // installed by StyleContentBrowserView (the card fills content_frame_ exactly,
@@ -169,8 +169,11 @@ void InstallTitleBarDragOverlay(void* nswindow_handle,
 // placed as the topmost NSView of the main window so it sits above the
 // main-tab content but below the popover child NSWindow.
 void ShowPopoverScrim(void* main_window_nsview,
-                     int pop_x, int pop_y, int pop_w, int pop_h,
-                     double corner_radius = 0.0);
+                      int pop_x,
+                      int pop_y,
+                      int pop_w,
+                      int pop_h,
+                      double corner_radius = 0.0);
 
 // Remove the scrim installed by ShowPopoverScrim.
 // `window_nsview` is CefWindow::GetWindowHandle() (the contentView NSView).
@@ -207,14 +210,20 @@ inline void StyleMainWindowTranslucent(void*, cef_color_t = 0) {}
 inline void SetMainWindowBackgroundColor(void*, cef_color_t) {}
 inline void SetAppAppearance(bool) {}
 inline void InstallRoundedFrame(void*, double, cef_color_t) {}
-inline const char* CurrentSystemAppearance() { return "dark"; }
+inline const char* CurrentSystemAppearance() {
+  return "dark";
+}
 inline void* AddSystemAppearanceObserver(void (*)(void*), void*) {
   return nullptr;
 }
 inline void RemoveSystemAppearanceObserver(void*) {}
-inline void StyleContentBrowserView(void*, double, cef_color_t, const CefRect&) {}
+inline void StyleContentBrowserView(void*,
+                                    double,
+                                    cef_color_t,
+                                    const CefRect&) {}
 // StyleContentFrame is already an inline no-op in the Apple section.
-inline void AddContentCardShadow(void*) {}inline void MakeBrowserViewTransparent(void*) {}
+inline void AddContentCardShadow(void*) {}
+inline void MakeBrowserViewTransparent(void*) {}
 inline void ApplyCardStyle(void*) {}
 inline void PerformWindowDrag(void*) {}
 inline void ApplyDraggableRegions(void*, const DragRegion*, size_t) {}
@@ -224,7 +233,9 @@ inline void InstallTitleBarDragOverlay(void*,
                                        size_t) {}
 inline void ShowPopoverScrim(void*, int, int, int, int, double = 0.0) {}
 inline void HidePopoverScrim(void*) {}
-inline void* CaptureLastChildNSView(void*) { return nullptr; }
+inline void* CaptureLastChildNSView(void*) {
+  return nullptr;
+}
 inline void StyleOverlayPanel(void*, double, int, cef_color_t) {}
 inline void SetOverlayWindowBackground(void*, cef_color_t) {}
 

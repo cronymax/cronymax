@@ -16,7 +16,7 @@ constexpr cef_color_t kBrowserViewFallbackBg = 0xFF0E1716;
 
 // Fixed-width delegate for the sidebar browser view.
 class SidebarBrowserViewDelegate : public CefBrowserViewDelegate {
-public:
+ public:
   SidebarBrowserViewDelegate() = default;
   CefSize GetPreferredSize(CefRefPtr<CefView> /*view*/) override {
     return CefSize(240, 900);
@@ -25,16 +25,18 @@ public:
     return CEF_RUNTIME_STYLE_ALLOY;
   }
 
-private:
+ private:
   IMPLEMENT_REFCOUNTING(SidebarBrowserViewDelegate);
   DISALLOW_COPY_AND_ASSIGN(SidebarBrowserViewDelegate);
 };
 
-} // namespace
+}  // namespace
 
-SidebarView::SidebarView(ResourceContext *resource_ctx, ThemeContext *theme_ctx,
+SidebarView::SidebarView(ResourceContext* resource_ctx,
+                         ThemeContext* theme_ctx,
                          CefRefPtr<ClientHandler> client_handler)
-    : resource_ctx_(resource_ctx), theme_ctx_(theme_ctx),
+    : resource_ctx_(resource_ctx),
+      theme_ctx_(theme_ctx),
       client_handler_(std::move(client_handler)) {}
 
 SidebarView::~SidebarView() = default;
@@ -52,7 +54,7 @@ CefRefPtr<CefBrowserView> SidebarView::Build() {
   return browser_view_;
 }
 
-void SidebarView::ApplyTheme(const ThemeChrome &chrome) {
+void SidebarView::ApplyTheme(const ThemeChrome& chrome) {
   if (browser_view_)
     browser_view_->SetBackgroundColor(chrome.bg_body);
 }
@@ -62,4 +64,4 @@ void SidebarView::SetVisible(bool visible) {
     browser_view_->SetVisible(visible);
 }
 
-} // namespace cronymax
+}  // namespace cronymax

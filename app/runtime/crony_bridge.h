@@ -46,11 +46,11 @@ namespace cronymax {
 // ---------------------------------------------------------------------------
 
 enum class RuntimeBridgeStatus {
-  kStopped,       // initial / after Stop()
-  kStarting,      // binary found, child spawned, handshake in progress
-  kReady,         // handshake complete, Invoke() accepted
-  kRestarting,    // child exited unexpectedly; respawn in progress
-  kFailed,        // unrecoverable: binary not found, or repeated crash
+  kStopped,     // initial / after Stop()
+  kStarting,    // binary found, child spawned, handshake in progress
+  kReady,       // handshake complete, Invoke() accepted
+  kRestarting,  // child exited unexpectedly; respawn in progress
+  kFailed,      // unrecoverable: binary not found, or repeated crash
 };
 
 const char* RuntimeBridgeStatusToString(RuntimeBridgeStatus s);
@@ -116,7 +116,8 @@ class RuntimeBridge {
 
   // Set the sandbox configuration that will be included in the next
   // RuntimeConfig JSON handed to the child process via stdin.
-  // Thread safe; must be called before Start() or Stop()+Start() to take effect.
+  // Thread safe; must be called before Start() or Stop()+Start() to take
+  // effect.
   void SetSandboxConfig(nlohmann::json config) {
     std::lock_guard<std::mutex> lock(mu_);
     sandbox_config_ = std::move(config);
@@ -135,16 +136,17 @@ class RuntimeBridge {
   // ---------- process management ----------
   bool SpawnChild(const std::filesystem::path& binary_path,
                   const std::string& config_json);
-  bool SpawnAndHandshake();  // spawn + handshake + start pump; called from Start() and supervisor
+  bool SpawnAndHandshake();  // spawn + handshake + start pump; called from
+                             // Start() and supervisor
   void KillChild();
   bool WaitForHandshake();
 
   // ---------- recv pump ----------
-  void PumpLoop();         // runs on pump_thread_
+  void PumpLoop();  // runs on pump_thread_
   void DispatchPayload(const std::string& payload);
 
   // ---------- supervisor ----------
-  void SupervisorLoop();   // runs on supervisor_thread_
+  void SupervisorLoop();  // runs on supervisor_thread_
 
   // ---------- state ----------
   mutable std::mutex mu_;

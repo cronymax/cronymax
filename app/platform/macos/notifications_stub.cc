@@ -9,10 +9,13 @@
 namespace cronymax::platform::macos {
 
 void RequestNotificationAuth(std::function<void(bool)> cb) {
-  if (cb) cb(false);
+  if (cb)
+    cb(false);
 }
 
-bool IsNotificationAuthorized() { return false; }
+bool IsNotificationAuthorized() {
+  return false;
+}
 
 void PostNotification(const std::string&,
                       const std::string&,

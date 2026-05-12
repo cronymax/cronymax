@@ -9,8 +9,8 @@
 #include <sstream>
 
 #include "event_bus/event_bus.h"
-#include "workspace/workspace_layout.h"
 #include "platform/macos/notifications.h"
+#include "workspace/workspace_layout.h"
 // (task 4.1) agent_runtime.h and flow_runtime.h removed — run lifecycle
 // now owned by the Rust runtime via GIPS / RuntimeProxy.
 
@@ -30,13 +30,11 @@ std::string MakeId() {
   const uint64_t a = rng();
   const uint64_t b = rng();
   char buf[37];
-  std::snprintf(buf, sizeof(buf),
-                "%08x-%04x-%04x-%04x-%012llx",
-                static_cast<uint32_t>(a >> 32),
-                static_cast<uint32_t>((a >> 16) & 0xffff),
-                static_cast<uint32_t>(a & 0xffff),
-                static_cast<uint32_t>(b >> 48),
-                static_cast<unsigned long long>(b & 0x0000ffffffffffff));
+  std::snprintf(
+      buf, sizeof(buf), "%08x-%04x-%04x-%04x-%012llx",
+      static_cast<uint32_t>(a >> 32), static_cast<uint32_t>((a >> 16) & 0xffff),
+      static_cast<uint32_t>(a & 0xffff), static_cast<uint32_t>(b >> 48),
+      static_cast<unsigned long long>(b & 0x0000ffffffffffff));
   return buf;
 }
 
@@ -44,13 +42,15 @@ std::string MakeId() {
 
 TerminalSession* Space::FindTerminal(const std::string& tid) {
   for (auto& t : terminals)
-    if (t->id == tid) return t.get();
+    if (t->id == tid)
+      return t.get();
   return nullptr;
 }
 
 TerminalSession* Space::ActiveTerminal() {
   if (!active_terminal_id.empty()) {
-    if (auto* t = FindTerminal(active_terminal_id)) return t;
+    if (auto* t = FindTerminal(active_terminal_id))
+      return t;
   }
   if (!terminals.empty()) {
     active_terminal_id = terminals.front()->id;
@@ -140,11 +140,11 @@ std::string SpaceManager::CreateSpace(const std::string& name,
   }
 
   SpaceRow row;
-  row.id         = MakeId();
-  row.name       = name;
-  row.root_path  = root_path.string();
+  row.id = MakeId();
+  row.name = name;
+  row.root_path = root_path.string();
   row.profile_id = profile_id.empty() ? "default" : profile_id;
-  row.created_at  = NowMs();
+  row.created_at = NowMs();
   row.last_active = NowMs();
 
   if (!store_.CreateSpace(row)) {
@@ -168,9 +168,8 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
   for (int i = 0; i < static_cast<int>(spaces_.size()); ++i) {
     if (spaces_[static_cast<size_t>(i)]->id == space_id) {
       const std::string old_id =
-          (active_index_ >= 0)
-              ? spaces_[static_cast<size_t>(active_index_)]->id
-              : "";
+          (active_index_ >= 0) ? spaces_[static_cast<size_t>(active_index_)]->id
+                               : "";
       active_index_ = i;
       store_.UpdateLastActive(space_id, NowMs());
 
@@ -226,10 +225,12 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
               if (e.payload.is_object()) {
                 if (e.payload.contains("body") && e.payload["body"].is_string())
                   body = e.payload["body"].get<std::string>();
-                else if (e.payload.contains("message") && e.payload["message"].is_string())
+                else if (e.payload.contains("message") &&
+                         e.payload["message"].is_string())
                   body = e.payload["message"].get<std::string>();
               }
-              if (body.empty()) body = "(" + kind + ")";
+              if (body.empty())
+                body = "(" + kind + ")";
               std::string deeplink = "cronymax://inbox/" + e.id;
               platform::macos::PostNotification(
                   /*title=*/kind, body, deeplink);
@@ -256,8 +257,8 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
           if (auto def = profile_store_.Get("default")) {
             profile = *def;
           } else {
-            profile.id           = "default";
-            profile.name         = "Default";
+            profile.id = "default";
+            profile.name = "Default";
             profile.allow_network = true;
           }
         }
@@ -280,12 +281,14 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
 bool SpaceManager::DeleteSpace(const std::string& space_id) {
   const int idx = [&]() -> int {
     for (int i = 0; i < static_cast<int>(spaces_.size()); ++i) {
-      if (spaces_[static_cast<size_t>(i)]->id == space_id) return i;
+      if (spaces_[static_cast<size_t>(i)]->id == space_id)
+        return i;
     }
     return -1;
   }();
 
-  if (idx < 0) return false;
+  if (idx < 0)
+    return false;
 
   // If deleting the active Space and others exist, switch first.
   if (idx == active_index_ && spaces_.size() > 1) {
@@ -327,7 +330,8 @@ const Space* SpaceManager::ActiveSpace() const {
 
 Space* SpaceManager::FindSpace(const std::string& space_id) {
   for (auto& sp : spaces_) {
-    if (sp->id == space_id) return sp.get();
+    if (sp->id == space_id)
+      return sp.get();
   }
   return nullptr;
 }
@@ -336,11 +340,10 @@ Space* SpaceManager::FindSpace(const std::string& space_id) {
 // Private helpers
 // ---------------------------------------------------------------------------
 
-std::unique_ptr<Space> SpaceManager::InstantiateSpace(
-    const SpaceRow& row) {
+std::unique_ptr<Space> SpaceManager::InstantiateSpace(const SpaceRow& row) {
   auto sp = std::make_unique<Space>();
-  sp->id         = row.id;
-  sp->name       = row.name;
+  sp->id = row.id;
+  sp->name = row.name;
   sp->profile_id = row.profile_id;
   sp->workspace_root = row.root_path;
   // (task 4.1) agent_runtime removed; run lifecycle is now owned by the

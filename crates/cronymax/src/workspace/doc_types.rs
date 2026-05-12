@@ -36,8 +36,14 @@ struct RawDocTypeYaml {
 /// Parse a `.yaml` file.
 fn parse_doc_type_yaml(text: &str) -> Option<DocTypeSchema> {
     let raw: RawDocTypeYaml = serde_yml::from_str(text).ok()?;
-    if raw.name.is_empty() { return None; }
-    let display_name = if raw.display_name.is_empty() { raw.name.clone() } else { raw.display_name };
+    if raw.name.is_empty() {
+        return None;
+    }
+    let display_name = if raw.display_name.is_empty() {
+        raw.name.clone()
+    } else {
+        raw.display_name
+    };
     Some(DocTypeSchema {
         name: raw.name,
         display_name,
@@ -56,17 +62,29 @@ fn parse_doc_type_yaml(text: &str) -> Option<DocTypeSchema> {
 /// ```
 fn parse_doc_type_markdown(text: &str) -> Option<DocTypeSchema> {
     let inner = text.trim_start();
-    if !inner.starts_with("---") { return None; }
+    if !inner.starts_with("---") {
+        return None;
+    }
     let rest = &inner[3..];
     let end = rest.find("\n---")?;
     let fm = &rest[..end];
     let body = rest[end + 4..].trim().to_owned();
 
     #[derive(Deserialize, Default)]
-    struct Fm { name: String, #[serde(default)] display_name: String }
+    struct Fm {
+        name: String,
+        #[serde(default)]
+        display_name: String,
+    }
     let fm: Fm = serde_yml::from_str(fm).ok()?;
-    if fm.name.is_empty() { return None; }
-    let display_name = if fm.display_name.is_empty() { fm.name.clone() } else { fm.display_name };
+    if fm.name.is_empty() {
+        return None;
+    }
+    let display_name = if fm.display_name.is_empty() {
+        fm.name.clone()
+    } else {
+        fm.display_name
+    };
     Some(DocTypeSchema {
         name: fm.name,
         display_name,
@@ -85,10 +103,7 @@ pub struct DocTypeRegistry {
 }
 
 impl DocTypeRegistry {
-    pub fn new(
-        builtin_dir: impl Into<PathBuf>,
-        workspace_dir: impl Into<PathBuf>,
-    ) -> Self {
+    pub fn new(builtin_dir: impl Into<PathBuf>, workspace_dir: impl Into<PathBuf>) -> Self {
         Self {
             builtin_dir: builtin_dir.into(),
             workspace_dir: workspace_dir.into(),
@@ -118,7 +133,10 @@ impl DocTypeRegistry {
     }
 
     pub fn is_user_defined(&self, name: &str) -> bool {
-        self.schemas.get(name).map(|s| s.user_defined).unwrap_or(false)
+        self.schemas
+            .get(name)
+            .map(|s| s.user_defined)
+            .unwrap_or(false)
     }
 
     /// Write a user-defined doc-type as a `.md` file and refresh.
@@ -162,24 +180,34 @@ impl DocTypeRegistry {
         Ok(())
     }
 
-    pub fn workspace_dir(&self) -> &Path { &self.workspace_dir }
-    pub fn builtin_dir(&self) -> &Path { &self.builtin_dir }
+    pub fn workspace_dir(&self) -> &Path {
+        &self.workspace_dir
+    }
+    pub fn builtin_dir(&self) -> &Path {
+        &self.builtin_dir
+    }
 }
 
-async fn scan_dir(
-    dir: &Path,
-    user: bool,
-    out: &mut HashMap<String, DocTypeSchema>,
-) {
-    let Ok(mut rd) = fs::read_dir(dir).await else { return };
+async fn scan_dir(dir: &Path, user: bool, out: &mut HashMap<String, DocTypeSchema>) {
+    let Ok(mut rd) = fs::read_dir(dir).await else {
+        return;
+    };
     while let Ok(Some(entry)) = rd.next_entry().await {
         let path = entry.path();
-        let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let fname = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let schema_opt = if fname.ends_with(".yaml") {
-            fs::read_to_string(&path).await.ok()
+            fs::read_to_string(&path)
+                .await
+                .ok()
                 .and_then(|t| parse_doc_type_yaml(&t))
         } else if fname.ends_with(".md") {
-            fs::read_to_string(&path).await.ok()
+            fs::read_to_string(&path)
+                .await
+                .ok()
                 .and_then(|t| parse_doc_type_markdown(&t))
         } else {
             None
@@ -195,7 +223,10 @@ fn validate_safe_name(name: &str) -> anyhow::Result<()> {
     if name.is_empty() || name.len() > 64 {
         anyhow::bail!("invalid doc-type name length");
     }
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         anyhow::bail!("doc-type name contains invalid characters");
     }
     if name.starts_with('-') {

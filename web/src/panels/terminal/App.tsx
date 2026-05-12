@@ -7,10 +7,10 @@
  * AI block-actions (Explain / Fix / Retry) now live in the chat panel via
  * $-mode shell blocks.
  */
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { browser } from "@/shells/bridge";
 import { terminal as rt_terminal } from "@/shells/runtime";
-import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { useStore } from "./store";
 import { XtermPane } from "./XtermPane";
 
@@ -47,7 +47,7 @@ export function App() {
       .then(async (res) => {
         if (cancelled) return;
         const items = res?.items ?? [];
-        items.forEach((t) => dispatch({ type: "ensurePane", tid: t.id }));
+        for (const t of items) dispatch({ type: "ensurePane", tid: t.id });
         const activeTid = res?.active ?? items[0]?.id ?? null;
         if (activeTid) {
           dispatch({ type: "setActive", tid: activeTid });
@@ -56,10 +56,7 @@ export function App() {
           // No terminals exist yet — create one for this panel.
           try {
             const newTid = await browser.send("terminal.new");
-            const tid =
-              typeof newTid === "string"
-                ? newTid
-                : (newTid as { id: string }).id;
+            const tid = typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
             dispatch({ type: "ensurePane", tid });
             dispatch({ type: "setActive", tid });
             await startTerminal(tid);
@@ -136,9 +133,7 @@ export function App() {
     <main className="flex h-screen flex-col bg-[#0d0f13] text-[#e8edf2]">
       {/* Title bar — shows "Terminal" label + current working directory */}
       <div className="flex shrink-0 items-center gap-2 border-b border-[#2a2d35] bg-[#161920] px-4 py-1.5">
-        <span className="shrink-0 font-mono text-xs font-semibold text-[#e8edf2]">
-          Terminal
-        </span>
+        <span className="shrink-0 font-mono text-xs font-semibold text-[#e8edf2]">Terminal</span>
         {activeCwd && (
           <span className="truncate rounded bg-[#1e2230] px-2 py-0.5 font-mono text-[11px] text-[#7ec8a0]">
             {abbreviatePath(activeCwd)}
@@ -149,11 +144,7 @@ export function App() {
       {/* Terminal with padding so it doesn't bleed to the panel edges */}
       <div className="flex-1 overflow-hidden p-4">
         {activeTid ? (
-          <XtermPane
-            key={activeTid}
-            tid={activeTid}
-            onCwdChange={handleCwdChange}
-          />
+          <XtermPane key={activeTid} tid={activeTid} onCwdChange={handleCwdChange} />
         ) : (
           <div className="flex h-full items-center justify-center text-xs text-[#6b7280]">
             No terminal yet — create one from the sidebar.

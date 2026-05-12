@@ -21,11 +21,7 @@ interface ThinkingBlockProps {
  *   with a "Thinking (N.Ns)" summary header and the accumulated thinking text
  *   inside, rendered via `<Streamdown>`.
  */
-export function ThinkingBlock({
-  thinkingText,
-  sealed,
-  elapsedMs,
-}: ThinkingBlockProps) {
+export function ThinkingBlock({ thinkingText, sealed, elapsedMs }: ThinkingBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const detailsRef = useRef<HTMLDetailsElement>(null);
 
@@ -52,9 +48,7 @@ export function ThinkingBlock({
   if (!thinkingText) return null;
 
   const truncated = thinkingText.length > MAX_THINKING_CHARS;
-  const displayText = truncated
-    ? thinkingText.slice(0, MAX_THINKING_CHARS) + "\n\n*… (truncated)*"
-    : thinkingText;
+  const displayText = truncated ? `${thinkingText.slice(0, MAX_THINKING_CHARS)}\n\n*… (truncated)*` : thinkingText;
   const elapsedSec = (elapsedMs / 1000).toFixed(1);
 
   return (

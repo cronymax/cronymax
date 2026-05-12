@@ -113,8 +113,7 @@ impl GipsTransport {
     /// runtime never auto-retries — that decision belongs to the host
     /// supervisor (task 1.3).
     pub fn bind<S: IntoServiceDescriptor>(service: S) -> Result<Self> {
-        let listener =
-            Listener::bind(service).context("gips Listener::bind failed")?;
+        let listener = Listener::bind(service).context("gips Listener::bind failed")?;
         Ok(Self::with_listener(listener))
     }
 
@@ -216,8 +215,10 @@ impl Transport for GipsTransport {
             Ok(Some(msg)) => Ok(msg),
             Ok(None) => Err(TransportError::Closed),
             Err(_elapsed) => {
-                warn!("recv idle timeout ({}s); assuming host disconnected",
-                      IDLE_TIMEOUT.as_secs());
+                warn!(
+                    "recv idle timeout ({}s); assuming host disconnected",
+                    IDLE_TIMEOUT.as_secs()
+                );
                 Err(TransportError::Closed)
             }
         }

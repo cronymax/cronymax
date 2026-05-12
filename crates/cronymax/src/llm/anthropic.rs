@@ -83,10 +83,7 @@ impl AnthropicProvider {
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
     async fn stream(&self, request: LlmRequest) -> anyhow::Result<LlmStream> {
-        let url = format!(
-            "{}/v1/messages",
-            self.config.base_url.trim_end_matches('/')
-        );
+        let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
 
         let model = if request.model.is_empty() {
             &self.config.default_model
@@ -131,11 +128,7 @@ impl LlmProvider for AnthropicProvider {
 
 // ── Wire request construction ─────────────────────────────────────────────────
 
-fn build_wire_request(
-    req: &LlmRequest,
-    model: &str,
-    max_tokens: u32,
-) -> serde_json::Value {
+fn build_wire_request(req: &LlmRequest, model: &str, max_tokens: u32) -> serde_json::Value {
     // Extract system message (first message with role=System).
     let system_text: Option<String> = req.messages.iter().find_map(|m| {
         if m.role == ChatRole::System {
@@ -394,7 +387,12 @@ fn process_sse_event(
                         .and_then(|s| s.as_str())
                         .unwrap_or("")
                         .to_owned();
-                    let acc = AccumToolUse { id, name, input_json: String::new(), index };
+                    let acc = AccumToolUse {
+                        id,
+                        name,
+                        input_json: String::new(),
+                        index,
+                    };
                     tool_uses.insert(index, acc);
                     BlockKind::ToolUse(index)
                 }
@@ -448,7 +446,11 @@ fn process_sse_event(
                         let _ = tx.send(LlmEvent::ToolCallDelta {
                             index: acc.index,
                             id: if is_first { Some(acc.id.clone()) } else { None },
-                            name: if is_first { Some(acc.name.clone()) } else { None },
+                            name: if is_first {
+                                Some(acc.name.clone())
+                            } else {
+                                None
+                            },
                             arguments_chunk: if partial.is_empty() {
                                 None
                             } else {
@@ -461,7 +463,12 @@ fn process_sse_event(
                     // Redacted thinking blocks — deliberately ignored.
                 }
                 _ => {
-                    debug!(index, delta_type, event = event_type, "anthropic: unknown block/delta combo");
+                    debug!(
+                        index,
+                        delta_type,
+                        event = event_type,
+                        "anthropic: unknown block/delta combo"
+                    );
                 }
             }
         }
@@ -482,7 +489,9 @@ fn process_sse_event(
                 "max_tokens" => FinishReason::Length,
                 other => FinishReason::Other(other.to_owned()),
             };
-            let _ = tx.send(LlmEvent::Done { finish_reason: finish });
+            let _ = tx.send(LlmEvent::Done {
+                finish_reason: finish,
+            });
             return Ok(true);
         }
 
@@ -492,7 +501,9 @@ fn process_sse_event(
                     .pointer("/error/message")
                     .and_then(|s| s.as_str())
                     .unwrap_or("unknown anthropic error");
-                let _ = tx.send(LlmEvent::Error { message: msg.to_owned() });
+                let _ = tx.send(LlmEvent::Error {
+                    message: msg.to_owned(),
+                });
             }
             return Ok(true);
         }
@@ -510,7 +521,7 @@ fn process_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::messages::{ToolCall};
+    use crate::llm::messages::ToolCall;
 
     fn make_request(messages: Vec<ChatMessage>) -> LlmRequest {
         LlmRequest {
@@ -578,7 +589,9 @@ mod tests {
     #[test]
     fn reasoning_effort_not_sent_to_anthropic() {
         let mut req = make_request(vec![ChatMessage::user("think")]);
-        req.thinking = Some(ThinkingConfig::ReasoningEffort { effort: "medium".into() });
+        req.thinking = Some(ThinkingConfig::ReasoningEffort {
+            effort: "medium".into(),
+        });
         let body = build_wire_request(&req, "claude-3-5-sonnet-20241022", 8192);
         assert!(body.get("thinking").is_none());
     }
@@ -612,7 +625,9 @@ mod tests {
                 r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I should think"}}"#,
             ),
         ]);
-        assert!(matches!(&events[0], LlmEvent::ThinkingDelta { content } if content == "I should think"));
+        assert!(
+            matches!(&events[0], LlmEvent::ThinkingDelta { content } if content == "I should think")
+        );
     }
 
     #[test]
@@ -657,6 +672,9 @@ mod tests {
                 r#"{"type":"content_block_delta","index":0,"delta":{"type":"redacted_thinking_delta","data":"abc"}}"#,
             ),
         ]);
-        assert!(events.is_empty(), "expected no events for redacted_thinking");
+        assert!(
+            events.is_empty(),
+            "expected no events for redacted_thinking"
+        );
     }
 }

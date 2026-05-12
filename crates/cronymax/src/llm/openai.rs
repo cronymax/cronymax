@@ -79,7 +79,10 @@ impl OpenAiProvider {
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     async fn stream(&self, request: LlmRequest) -> anyhow::Result<LlmStream> {
-        let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/chat/completions",
+            self.config.base_url.trim_end_matches('/')
+        );
         let body = WireRequest::from_request(&request, &self.config.default_model);
 
         let mut req = self
@@ -145,7 +148,10 @@ async fn pump(response: reqwest::Response, tx: mpsc::UnboundedSender<LlmEvent>) 
             if line.is_empty() || line.starts_with(':') {
                 continue;
             }
-            let payload = match line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:")) {
+            let payload = match line
+                .strip_prefix("data: ")
+                .or_else(|| line.strip_prefix("data:"))
+            {
                 Some(p) => p.trim_start(),
                 None => continue,
             };
@@ -290,9 +296,7 @@ impl<'a> WireRequest<'a> {
         let tools: Vec<WireTool> = req.tools.iter().map(WireTool::from).collect();
         let tool_choice = if tools.is_empty() { None } else { Some("auto") };
         let (reasoning_effort, thinking) = match &req.thinking {
-            Some(ThinkingConfig::ReasoningEffort { effort }) => {
-                (Some(effort.clone()), None)
-            }
+            Some(ThinkingConfig::ReasoningEffort { effort }) => (Some(effort.clone()), None),
             Some(ThinkingConfig::Budget { budget_tokens }) => (
                 None,
                 Some(serde_json::json!({
@@ -317,7 +321,6 @@ impl<'a> WireRequest<'a> {
         }
     }
 }
-
 
 #[derive(Serialize)]
 struct WireTool<'a> {

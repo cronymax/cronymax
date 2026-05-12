@@ -50,8 +50,12 @@ pub struct ApprovalRequest {
     pub deny_label: String,
 }
 
-fn default_allow() -> String { "Allow".into() }
-fn default_deny() -> String { "Deny".into() }
+fn default_allow() -> String {
+    "Allow".into()
+}
+fn default_deny() -> String {
+    "Deny".into()
+}
 
 /// The user's response to an [`ApprovalRequest`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -72,10 +76,7 @@ pub trait NotifyCapability: Send + Sync + std::fmt::Debug {
     async fn notify(&self, request: NotifyRequest) -> anyhow::Result<()>;
 
     /// Show an approval prompt and wait for the user's response.
-    async fn request_approval(
-        &self,
-        request: ApprovalRequest,
-    ) -> anyhow::Result<ApprovalResponse>;
+    async fn request_approval(&self, request: ApprovalRequest) -> anyhow::Result<ApprovalResponse>;
 
     /// Update the dock or status-bar badge count. `None` clears the
     /// badge.

@@ -47,7 +47,7 @@ export function parseBlockComments(md: string): BlockMarker[] {
   const lines = md.split("\n");
   for (let i = 0; i < lines.length; i += 1) {
     const m = BLOCK_MARKER_RE.exec(lines[i] ?? "");
-    if (m && m[1]) {
+    if (m?.[1]) {
       out.push({ blockId: m[1], line: i, raw: lines[i] ?? "" });
     }
   }
@@ -79,11 +79,7 @@ export function stripBlockComments(md: string): string {
  * Returns the new markdown string. If the block is not found, returns
  * the original string unchanged.
  */
-export function replaceBlockContent(
-  md: string,
-  blockId: string,
-  replacement: string,
-): string {
+export function replaceBlockContent(md: string, blockId: string, replacement: string): string {
   const lines = md.split("\n");
   let startIdx = -1;
   for (let i = 0; i < lines.length; i += 1) {
@@ -104,12 +100,7 @@ export function replaceBlockContent(
   // Trim a single trailing blank line in the replacement to keep paragraph
   // spacing consistent with the original block.
   const replacementLines = replacement.replace(/\n+$/, "").split("\n");
-  const out = [
-    ...lines.slice(0, startIdx),
-    ...replacementLines,
-    "",
-    ...lines.slice(endIdx),
-  ];
+  const out = [...lines.slice(0, startIdx), ...replacementLines, "", ...lines.slice(endIdx)];
   return out.join("\n");
 }
 
@@ -157,10 +148,7 @@ export const BLOCK_MARKER_REGEX = BLOCK_MARKER_RE;
 // rows, fenced code interiors, and HTML blocks — none of which need
 // special-casing under this single rule.
 
-function isTopLevelBlockOpener(
-  line: string,
-  prev: string | undefined,
-): boolean {
+function isTopLevelBlockOpener(line: string, prev: string | undefined): boolean {
   if (line.trim() === "") return false;
   if (BLOCK_MARKER_RE.test(line)) return false;
   return prev === undefined || prev.trim() === "";
@@ -176,10 +164,7 @@ function isTopLevelBlockOpener(
  * Newly-minted UUIDs come from `generateBlockId()`. Pass `idGenerator`
  * to override (used by the golden round-trip test for determinism).
  */
-export function assignMissingBlockIds(
-  md: string,
-  idGenerator: () => string = generateBlockId,
-): string {
+export function assignMissingBlockIds(md: string, idGenerator: () => string = generateBlockId): string {
   const lines = md.split("\n");
   const out: string[] = [];
   for (let i = 0; i < lines.length; i += 1) {

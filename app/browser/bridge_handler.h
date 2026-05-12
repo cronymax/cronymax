@@ -58,14 +58,17 @@ struct ShellCallbacks {
   // Each region: x,y,width,height in CSS pixels relative to the panel's
   // top-left, plus draggable flag. The native side installs an NSView
   // overlay that drags the window from union(drag) - union(no-drag).
-  struct DragRegion { int x, y, w, h; bool draggable; };
+  struct DragRegion {
+    int x, y, w, h;
+    bool draggable;
+  };
   std::function<void(const std::string& panel,
                      const std::vector<DragRegion>& regions)>
       set_drag_regions;
   // Broadcast a JS event to ALL chrome panel browser views (sidebar, topbar,
   // terminal, agent, graph, chat). Used for cross-panel lifecycle events.
-  std::function<void(const std::string& event,
-                     const std::string& json_payload)> broadcast_event;
+  std::function<void(const std::string& event, const std::string& json_payload)>
+      broadcast_event;
 
   // ── arc-style-tab-cards (Phase 2) ──────────────────────────────
   // Activate / close a tab by string id (TabManager world). Return false
@@ -84,8 +87,8 @@ struct ShellCallbacks {
   // Renderer push: replace the toolbar widgets for tab_id from a serialized
   // ToolbarState (kind-tagged). The dispatcher pre-validates that
   // payload.state.kind matches the tab's kind. Returns false on mismatch.
-  std::function<bool(const std::string& tab_id,
-                     const std::string& state_json)> set_toolbar_state;
+  std::function<bool(const std::string& tab_id, const std::string& state_json)>
+      set_toolbar_state;
   // Renderer push: set chrome (toolbar + card border) color for tab_id.
   // Empty string => clear (use default). Returns false if tab not found.
   std::function<bool(const std::string& tab_id,
@@ -97,9 +100,9 @@ struct ShellCallbacks {
   // for the calling browser. `tab_set_meta` stores one key on the calling
   // tab and also triggers a persist cycle.
   std::function<std::string(int browser_id)> this_tab_id;
-  std::function<bool(int browser_id,
-                     const std::string& key,
-                     const std::string& value)> tab_set_meta;
+  std::function<
+      bool(int browser_id, const std::string& key, const std::string& value)>
+      tab_set_meta;
 
   // Open a native folder-picker dialog. Calls `callback` on the main thread
   // with the selected path (or empty string on cancel). Used by
@@ -192,8 +195,9 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
 
   // Route a cronymax.runtime.ctrl process message from the renderer to the
   // Rust runtime (subscribe / unsubscribe / arbitrary control request).
-  // Called on the browser UI thread from ClientHandler::OnProcessMessageReceived.
-  // Returns true if the message was handled.
+  // Called on the browser UI thread from
+  // ClientHandler::OnProcessMessageReceived. Returns true if the message was
+  // handled.
   bool HandleRuntimeProcessMessage(CefRefPtr<CefBrowser> browser,
                                    CefRefPtr<CefFrame> frame,
                                    CefRefPtr<CefProcessMessage> message);
@@ -269,7 +273,7 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   // Called automatically from SetRuntimeProxy.
   void SetupCapabilityHandler();
 
-  SpaceManager* space_manager_;  // Owned by MainWindow.
+  SpaceManager* space_manager_;            // Owned by MainWindow.
   RuntimeProxy* runtime_proxy_ = nullptr;  // Set by MainWindow after startup.
   ShellCallbacks shell_cbs_;
   ThemeCallbacks theme_cbs_;
@@ -293,8 +297,8 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   // (task 4.2) Per-space RuntimeProxy event sub tokens and runtime sub IDs.
   // Key: space_id. Cleaned up by OnSpaceSwitch when space becomes inactive.
   struct SpaceRuntimeSub {
-    int64_t ev_token = -1;            // RuntimeProxy::SubscribeEvents token
-    std::string runtime_sub_id;       // Runtime-side subscription UUID
+    int64_t ev_token = -1;       // RuntimeProxy::SubscribeEvents token
+    std::string runtime_sub_id;  // Runtime-side subscription UUID
   };
   std::mutex space_subs_mu_;
   std::unordered_map<std::string, SpaceRuntimeSub> space_runtime_subs_;
@@ -311,7 +315,8 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   std::mutex renderer_subs_mu_;
   std::unordered_map<std::string, RendererSub> renderer_subs_;
 
-  // Helpers called on the UI thread to send replies / events back to the renderer.
+  // Helpers called on the UI thread to send replies / events back to the
+  // renderer.
   void SendRuntimeReply(CefRefPtr<CefBrowser> browser,
                         const std::string& corr_id,
                         const nlohmann::json& response,
@@ -322,4 +327,3 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
 };
 
 }  // namespace cronymax
-

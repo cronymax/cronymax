@@ -287,10 +287,7 @@ impl FlowGraph {
         self.required_inputs
             .iter()
             .filter_map(|(node_id, inputs)| {
-                if inputs
-                    .iter()
-                    .any(|(n, p)| n == producing_node && p == port)
-                {
+                if inputs.iter().any(|(n, p)| n == producing_node && p == port) {
                     Some(node_id.as_str())
                 } else {
                     None
@@ -305,10 +302,7 @@ impl FlowGraph {
         self.cycle_inputs
             .iter()
             .filter_map(|(node_id, inputs)| {
-                if inputs
-                    .iter()
-                    .any(|(n, p)| n == producing_node && p == port)
-                {
+                if inputs.iter().any(|(n, p)| n == producing_node && p == port) {
                     Some(node_id.as_str())
                 } else {
                     None
@@ -327,7 +321,7 @@ impl FlowGraph {
 /// Returns a set of `(from_node_id, to_node_id)` pairs that are back edges.
 /// (The port is not needed for classification — just whether the S→T
 /// edge goes to an ancestor.)
-fn detect_back_edges<'a>(nodes: &'a [FlowNode]) -> HashSet<(&'a str, &'a str)> {
+fn detect_back_edges(nodes: &[FlowNode]) -> HashSet<(&str, &str)> {
     // Build adjacency list: node_id → list of (target, port) reachable via routes_to.
     let outgoing: HashMap<&str, Vec<&str>> = nodes
         .iter()
@@ -419,10 +413,18 @@ pub struct FlowDefinition {
     pub graph: Option<FlowGraph>,
 }
 
-fn default_max_review_rounds() -> u32 { 3 }
-fn default_on_review_exhausted() -> String { "halt".into() }
-fn default_reviewer_timeout_secs() -> u32 { 60 }
-fn default_reviewer_enabled() -> bool { true }
+fn default_max_review_rounds() -> u32 {
+    3
+}
+fn default_on_review_exhausted() -> String {
+    "halt".into()
+}
+fn default_reviewer_timeout_secs() -> u32 {
+    60
+}
+fn default_reviewer_enabled() -> bool {
+    true
+}
 
 // ── FlowLoadError ─────────────────────────────────────────────────────────────
 
@@ -430,7 +432,10 @@ fn default_reviewer_enabled() -> bool { true }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum FlowLoadError {
     #[error("I/O error reading {path}: {source}")]
-    Io { path: PathBuf, source: Arc<std::io::Error> },
+    Io {
+        path: PathBuf,
+        source: Arc<std::io::Error>,
+    },
 
     #[error("YAML parse error in {path}: {message}")]
     Parse { path: PathBuf, message: String },
@@ -482,7 +487,9 @@ impl FlowDefinition {
     pub fn load_from_str(yaml: &str, path: &Path) -> Result<Self, FlowLoadError> {
         // Reject legacy `edges:` schema.
         if yaml.contains("\nedges:") || yaml.starts_with("edges:") {
-            return Err(FlowLoadError::LegacyEdgesSchema { path: path.to_owned() });
+            return Err(FlowLoadError::LegacyEdgesSchema {
+                path: path.to_owned(),
+            });
         }
 
         let mut def: FlowDefinition =
@@ -598,8 +605,7 @@ on_review_exhausted: approve
 
     #[test]
     fn defaults_applied_when_absent() {
-        let def =
-            FlowDefinition::load_from_str("name: Minimal\n", Path::new("min.yaml")).unwrap();
+        let def = FlowDefinition::load_from_str("name: Minimal\n", Path::new("min.yaml")).unwrap();
         assert_eq!(def.max_review_rounds, 3);
         assert_eq!(def.on_review_exhausted, "halt");
         assert!(def.reviewer_enabled);
@@ -748,7 +754,10 @@ nodes:
 "#;
         let def = FlowDefinition::load_from_str(yaml, Path::new("t.yaml")).unwrap();
         let output = def.output("rd-impl", "submit-for-testing").unwrap();
-        assert!(output.reviewers.is_empty(), "auto-approve: reviewers should be empty");
+        assert!(
+            output.reviewers.is_empty(),
+            "auto-approve: reviewers should be empty"
+        );
     }
 
     #[test]

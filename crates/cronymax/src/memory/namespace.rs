@@ -51,24 +51,27 @@ impl NamespaceStore {
         let ns_dir = dir.join(namespace_id);
         let path = ns_dir.join("entries.json");
 
-        let entries: BTreeMap<String, MemoryEntry> =
-            match tokio::fs::read_to_string(&path).await {
-                Ok(json) => match serde_json::from_str::<NamespaceDisk>(&json) {
-                    Ok(disk) => disk.entries,
-                    Err(e) => {
-                        warn!(path = %path.display(), error = %e, "namespace_store: failed to parse entries.json");
-                        BTreeMap::new()
-                    }
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        let entries: BTreeMap<String, MemoryEntry> = match tokio::fs::read_to_string(&path).await {
+            Ok(json) => match serde_json::from_str::<NamespaceDisk>(&json) {
+                Ok(disk) => disk.entries,
                 Err(e) => {
-                    warn!(path = %path.display(), error = %e, "namespace_store: failed to read entries.json");
+                    warn!(path = %path.display(), error = %e, "namespace_store: failed to parse entries.json");
                     BTreeMap::new()
                 }
-            };
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "namespace_store: failed to read entries.json");
+                BTreeMap::new()
+            }
+        };
 
         let index = Self::build_index(&entries);
-        Self { path, entries, index }
+        Self {
+            path,
+            entries,
+            index,
+        }
     }
 
     fn build_index(entries: &BTreeMap<String, MemoryEntry>) -> Bm25Index {
@@ -83,7 +86,11 @@ impl NamespaceStore {
             .unwrap_or(0);
         self.entries.insert(
             key.clone(),
-            MemoryEntry { key, value, updated_at_ms: now_ms },
+            MemoryEntry {
+                key,
+                value,
+                updated_at_ms: now_ms,
+            },
         );
         self.index = Self::build_index(&self.entries);
         self.flush().await
@@ -121,7 +128,11 @@ impl NamespaceStore {
             .filter(|r| r.key != "__summary__")
             .take(limit)
             .collect();
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results
     }
 
@@ -135,7 +146,9 @@ impl NamespaceStore {
         if let Some(parent) = self.path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let disk = NamespaceDisk { entries: self.entries.clone() };
+        let disk = NamespaceDisk {
+            entries: self.entries.clone(),
+        };
         let json = serde_json::to_string_pretty(&disk)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         tokio::fs::write(&self.path, json).await?;

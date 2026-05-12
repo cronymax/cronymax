@@ -38,9 +38,7 @@ function parseComputedColor(input: string): Rgba | null {
   probe.style.color = input;
   if (!probe.style.color) return null;
   const computed = getComputedStyle(probe).color;
-  const match = computed.match(
-    /^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/i,
-  );
+  const match = computed.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/i);
   if (!match) return null;
   return {
     r: Number(match[1]),
@@ -60,17 +58,11 @@ function toHex(color: Rgba): string {
 
 function srgbToLinear(value: number): number {
   const channel = value / 255;
-  return channel <= 0.04045
-    ? channel / 12.92
-    : ((channel + 0.055) / 1.055) ** 2.4;
+  return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
 }
 
 function luminance(color: Rgba): number {
-  return (
-    0.2126 * srgbToLinear(color.r) +
-    0.7152 * srgbToLinear(color.g) +
-    0.0722 * srgbToLinear(color.b)
-  );
+  return 0.2126 * srgbToLinear(color.r) + 0.7152 * srgbToLinear(color.g) + 0.0722 * srgbToLinear(color.b);
 }
 
 function contrastRatio(a: Rgba, b: Rgba): number {
@@ -100,16 +92,12 @@ function mix(a: Rgba, b: Rgba, weight: number): Rgba {
 }
 
 function neutralSurface(): Rgba | null {
-  const css = getComputedStyle(document.documentElement)
-    .getPropertyValue("--color-cronymax-base")
-    .trim();
+  const css = getComputedStyle(document.documentElement).getPropertyValue("--color-cronymax-base").trim();
   return css ? parseComputedColor(css) : null;
 }
 
 function readableText(): Rgba | null {
-  const css = getComputedStyle(document.documentElement)
-    .getPropertyValue("--color-cronymax-title")
-    .trim();
+  const css = getComputedStyle(document.documentElement).getPropertyValue("--color-cronymax-title").trim();
   return css ? parseComputedColor(css) : null;
 }
 
@@ -145,9 +133,7 @@ function normalizeSample(input: string | null): string | null {
 }
 
 function readMetaThemeColor(): string | null {
-  const m = document.head.querySelector<HTMLMetaElement>(
-    'meta[name="theme-color"]',
-  );
+  const m = document.head.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
   const v = m?.content?.trim();
   return v && v.length > 0 ? v : null;
 }
@@ -163,11 +149,7 @@ function effectiveColor(): string {
   return (
     normalizeSample(readMetaThemeColor()) ??
     normalizeSample(readBodyBg()) ??
-    normalizeSample(
-      getComputedStyle(document.documentElement)
-        .getPropertyValue("--color-cronymax-base")
-        .trim(),
-    ) ??
+    normalizeSample(getComputedStyle(document.documentElement).getPropertyValue("--color-cronymax-base").trim()) ??
     ""
   );
 }

@@ -45,13 +45,13 @@ impl ModelCapabilities {
     pub fn thinking_config(&self) -> Option<ThinkingConfig> {
         match &self.thinking {
             ThinkingSupport::None => None,
-            ThinkingSupport::Adaptive { .. } => {
-                Some(ThinkingConfig::Adaptive { summarized: true })
-            }
+            ThinkingSupport::Adaptive { .. } => Some(ThinkingConfig::Adaptive { summarized: true }),
             ThinkingSupport::Budget { min, max } => {
                 // Cap at min(max, 16000) but keep at least min.
                 let budget = (*max).min(16_000).max(*min);
-                Some(ThinkingConfig::Budget { budget_tokens: budget })
+                Some(ThinkingConfig::Budget {
+                    budget_tokens: budget,
+                })
             }
             ThinkingSupport::ReasoningEffort { levels } => {
                 let effort = levels
@@ -72,7 +72,10 @@ impl ModelCapabilities {
 /// probing fails or the model is not found in the `/models` response.
 fn static_capabilities(model_id: &str) -> ModelCapabilities {
     let thinking = if model_id.starts_with("claude-") {
-        ThinkingSupport::Adaptive { min_budget: 1024, max_budget: 32_000 }
+        ThinkingSupport::Adaptive {
+            min_budget: 1024,
+            max_budget: 32_000,
+        }
     } else if model_id.starts_with("o1-")
         || model_id.starts_with("o3-")
         || model_id.starts_with("o4-")
@@ -83,11 +86,17 @@ fn static_capabilities(model_id: &str) -> ModelCapabilities {
             levels: vec!["low".into(), "medium".into(), "high".into()],
         }
     } else if model_id.starts_with("gemini-2.") {
-        ThinkingSupport::Adaptive { min_budget: 512, max_budget: 24_576 }
+        ThinkingSupport::Adaptive {
+            min_budget: 512,
+            max_budget: 24_576,
+        }
     } else {
         ThinkingSupport::None
     };
-    ModelCapabilities { id: model_id.to_owned(), thinking }
+    ModelCapabilities {
+        id: model_id.to_owned(),
+        thinking,
+    }
 }
 
 // ── Cache helpers ────────────────────────────────────────────────────────────
@@ -125,7 +134,9 @@ fn load_cache(base_url: &str, model_id: &str) -> Option<ModelCapabilities> {
 /// Persist capability for `model_id` into the cache file (merge with existing
 /// entries for the same base_url so other models aren't evicted).
 fn save_cache(base_url: &str, caps: &ModelCapabilities) {
-    let Ok(path) = cache_path(base_url) else { return };
+    let Ok(path) = cache_path(base_url) else {
+        return;
+    };
     if let Some(dir) = path.parent() {
         if std::fs::create_dir_all(dir).is_err() {
             return;
@@ -202,11 +213,7 @@ async fn probe_models(
     }
     let body: ModelsResponse = resp.json().await.ok()?;
     let entry = body.data.into_iter().find(|m| m.id == model_id)?;
-    let sup = entry
-        .capabilities
-        .as_ref()?
-        .supports
-        .as_ref()?;
+    let sup = entry.capabilities.as_ref()?.supports.as_ref()?;
 
     let thinking = if sup.adaptive_thinking {
         ThinkingSupport::Adaptive {
@@ -227,7 +234,10 @@ async fn probe_models(
         return None; // no capability fields present
     };
 
-    Some(ModelCapabilities { id: model_id.to_owned(), thinking })
+    Some(ModelCapabilities {
+        id: model_id.to_owned(),
+        thinking,
+    })
 }
 
 // ── CapabilityResolver ───────────────────────────────────────────────────────
@@ -266,7 +276,10 @@ impl CapabilityResolver {
             return caps;
         }
 
-        warn!(model_id, base_url, "capabilities: probe failed, using static table");
+        warn!(
+            model_id,
+            base_url, "capabilities: probe failed, using static table"
+        );
 
         // 3. Static fallback
         let caps = static_capabilities(model_id);
@@ -292,7 +305,10 @@ mod tests {
     #[test]
     fn static_o4_mini_is_reasoning_effort() {
         let caps = static_capabilities("o4-mini");
-        assert!(matches!(caps.thinking, ThinkingSupport::ReasoningEffort { .. }));
+        assert!(matches!(
+            caps.thinking,
+            ThinkingSupport::ReasoningEffort { .. }
+        ));
         if let Some(ThinkingConfig::ReasoningEffort { effort }) = caps.thinking_config() {
             assert_eq!(effort, "medium");
         } else {
@@ -311,7 +327,10 @@ mod tests {
     fn budget_config_is_capped_at_16k() {
         let caps = ModelCapabilities {
             id: "test".into(),
-            thinking: ThinkingSupport::Budget { min: 1024, max: 32_000 },
+            thinking: ThinkingSupport::Budget {
+                min: 1024,
+                max: 32_000,
+            },
         };
         if let Some(ThinkingConfig::Budget { budget_tokens }) = caps.thinking_config() {
             assert_eq!(budget_tokens, 16_000);
@@ -324,7 +343,10 @@ mod tests {
     fn adaptive_config_has_summarized_true() {
         let caps = ModelCapabilities {
             id: "claude-opus-4".into(),
-            thinking: ThinkingSupport::Adaptive { min_budget: 1024, max_budget: 32_000 },
+            thinking: ThinkingSupport::Adaptive {
+                min_budget: 1024,
+                max_budget: 32_000,
+            },
         };
         if let Some(ThinkingConfig::Adaptive { summarized }) = caps.thinking_config() {
             assert!(summarized);

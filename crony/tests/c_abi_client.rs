@@ -17,9 +17,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crony::boundary::GipsTransport;
 use crony::ffi::{
-    crony_abi_version, crony_bytes_free, crony_client_close, crony_client_new,
-    crony_client_recv, crony_client_send, crony_string_free, CRONY_ABI_VERSION,
-    CRONY_OK,
+    crony_abi_version, crony_bytes_free, crony_client_close, crony_client_new, crony_client_recv,
+    crony_client_send, crony_string_free, CRONY_ABI_VERSION, CRONY_OK,
 };
 use cronymax::protocol::control::{ControlRequest, ControlResponse};
 use cronymax::protocol::dispatch::{run, EchoHandler};
@@ -94,12 +93,9 @@ fn abi_version_constant_is_stable() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c_abi_round_trips_through_gips() {
     let service = unique_service();
-    let transport = GipsTransport::bind(service.as_str())
-        .expect("bind GIPS listener");
+    let transport = GipsTransport::bind(service.as_str()).expect("bind GIPS listener");
 
-    let dispatch_task = tokio::spawn(async move {
-        run(transport, EchoHandler).await
-    });
+    let dispatch_task = tokio::spawn(async move { run(transport, EchoHandler).await });
 
     let service_name = service.clone();
     let client_task = tokio::task::spawn_blocking(move || unsafe {

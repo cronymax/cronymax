@@ -45,11 +45,13 @@ std::function<void(const std::string&)> g_click_handler;
 - (void)userNotificationCenter:(UNUserNotificationCenter*)center
     didReceiveNotificationResponse:(UNNotificationResponse*)response
              withCompletionHandler:(void (^)(void))completionHandler {
-  NSString* deeplink = response.notification.request.content.userInfo[@"deeplink"];
+  NSString* deeplink =
+      response.notification.request.content.userInfo[@"deeplink"];
   std::string deeplinkStr = deeplink ? deeplink.UTF8String : "";
   std::function<void(const std::string&)> cb;
   {
-    std::lock_guard<std::mutex> lock(cronymax::platform::macos::g_handler_mutex);
+    std::lock_guard<std::mutex> lock(
+        cronymax::platform::macos::g_handler_mutex);
     cb = cronymax::platform::macos::g_click_handler;
   }
   if (cb) {
@@ -67,25 +69,29 @@ namespace cronymax::platform::macos {
 namespace {
 
 CronymaxNotificationDelegate* SharedDelegate() {
-  static CronymaxNotificationDelegate* instance = [[CronymaxNotificationDelegate alloc] init];
+  static CronymaxNotificationDelegate* instance =
+      [[CronymaxNotificationDelegate alloc] init];
   return instance;
 }
 
 }  // namespace
 
 void RequestNotificationAuth(std::function<void(bool granted)> cb) {
-  UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+  UNUserNotificationCenter* center =
+      [UNUserNotificationCenter currentNotificationCenter];
   center.delegate = SharedDelegate();
   UNAuthorizationOptions opts = UNAuthorizationOptionAlert |
                                 UNAuthorizationOptionSound |
                                 UNAuthorizationOptionBadge;
   // Capture cb by value into the block.
   auto cb_copy = std::make_shared<std::function<void(bool)>>(std::move(cb));
-  [center requestAuthorizationWithOptions:opts
-                        completionHandler:^(BOOL granted, NSError* /*error*/) {
-                          g_authorized.store(granted, std::memory_order_release);
-                          if (cb_copy && *cb_copy) (*cb_copy)(granted);
-                        }];
+  [center
+      requestAuthorizationWithOptions:opts
+                    completionHandler:^(BOOL granted, NSError* /*error*/) {
+                      g_authorized.store(granted, std::memory_order_release);
+                      if (cb_copy && *cb_copy)
+                        (*cb_copy)(granted);
+                    }];
 }
 
 bool IsNotificationAuthorized() {
@@ -95,9 +101,12 @@ bool IsNotificationAuthorized() {
 void PostNotification(const std::string& title,
                       const std::string& body,
                       const std::string& deeplink) {
-  if (!IsNotificationAuthorized()) return;
-  UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
-  UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
+  if (!IsNotificationAuthorized())
+    return;
+  UNUserNotificationCenter* center =
+      [UNUserNotificationCenter currentNotificationCenter];
+  UNMutableNotificationContent* content =
+      [[UNMutableNotificationContent alloc] init];
   content.title = [NSString stringWithUTF8String:title.c_str()];
   content.body = [NSString stringWithUTF8String:body.c_str()];
   content.userInfo = @{
@@ -105,8 +114,8 @@ void PostNotification(const std::string& title,
   };
   // Identifier: timestamp-based; UNUserNotificationCenter dedups by identifier
   // within a short window if the same id is posted twice.
-  NSString* ident = [NSString stringWithFormat:@"cronymax-%@",
-                                               [[NSUUID UUID] UUIDString]];
+  NSString* ident =
+      [NSString stringWithFormat:@"cronymax-%@", [[NSUUID UUID] UUIDString]];
   UNNotificationRequest* req =
       [UNNotificationRequest requestWithIdentifier:ident
                                            content:content

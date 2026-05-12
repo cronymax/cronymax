@@ -21,13 +21,13 @@ namespace {
 // Forces Alloy runtime style — required when this BrowserView lives in a
 // window that already hosts other Alloy browsers (every cronymax window).
 class WebTabBrowserViewDelegate : public CefBrowserViewDelegate {
-public:
+ public:
   WebTabBrowserViewDelegate() = default;
   cef_runtime_style_t GetBrowserRuntimeStyle() override {
     return CEF_RUNTIME_STYLE_ALLOY;
   }
 
-private:
+ private:
   IMPLEMENT_REFCOUNTING(WebTabBrowserViewDelegate);
   DISALLOW_COPY_AND_ASSIGN(WebTabBrowserViewDelegate);
 };
@@ -36,12 +36,15 @@ private:
 constexpr int kVkReturn = 0x0D;
 constexpr int kVkEscape = 0x1B;
 
-} // namespace
+}  // namespace
 
-WebTabBehavior::WebTabBehavior(ClientHandler *client_handler,
-                               std::string initial_url, ThemeContext *theme_ctx)
-    : theme_ctx_(theme_ctx), client_handler_(client_handler),
-      initial_url_(std::move(initial_url)), current_url_(initial_url_),
+WebTabBehavior::WebTabBehavior(ClientHandler* client_handler,
+                               std::string initial_url,
+                               ThemeContext* theme_ctx)
+    : theme_ctx_(theme_ctx),
+      client_handler_(client_handler),
+      initial_url_(std::move(initial_url)),
+      current_url_(initial_url_),
       weak_factory_(this) {}
 
 WebTabBehavior::~WebTabBehavior() {
@@ -50,8 +53,8 @@ WebTabBehavior::~WebTabBehavior() {
   }
 }
 
-void WebTabBehavior::BuildToolbar(TabToolbar *toolbar,
-                                  TabContext * /*context*/) {
+void WebTabBehavior::BuildToolbar(TabToolbar* toolbar,
+                                  TabContext* /*context*/) {
   toolbar_ = toolbar;
 
   // Leading: back / forward / refresh.
@@ -69,8 +72,12 @@ void WebTabBehavior::BuildToolbar(TabToolbar *toolbar,
 
   h_refresh_ = toolbar->AddLeadingAction(IconId::kRefresh, "Refresh", [this]() {
     auto br = browser_view_ ? browser_view_->GetBrowser() : nullptr;
-    if (!br) return;
-    if (is_loading_) br->StopLoad(); else br->Reload();
+    if (!br)
+      return;
+    if (is_loading_)
+      br->StopLoad();
+    else
+      br->Reload();
   });
 
   // Trailing: new-tab placeholder.
@@ -90,7 +97,7 @@ void WebTabBehavior::BuildToolbar(TabToolbar *toolbar,
   toolbar->SetUrl(current_url_);
 }
 
-CefRefPtr<CefView> WebTabBehavior::BuildContent(TabContext *context) {
+CefRefPtr<CefView> WebTabBehavior::BuildContent(TabContext* context) {
   context_ = context;
   CefBrowserSettings settings;
   if (theme_ctx_)
@@ -113,7 +120,6 @@ CefRefPtr<CefView> WebTabBehavior::BuildContent(TabContext *context) {
 }
 
 void WebTabBehavior::RegisterBrowserListener() {
-
   if (!browser_view_)
     return;
   auto br = browser_view_->GetBrowser();
@@ -123,28 +129,28 @@ void WebTabBehavior::RegisterBrowserListener() {
   if (!client_handler_)
     return;
   ClientHandler::BrowserListener listener;
-  listener.on_address_change = [this](const std::string &u) {
+  listener.on_address_change = [this](const std::string& u) {
     OnAddressChange(u);
   };
-  listener.on_title_change = [this](const std::string &t) { OnTitleChange(t); };
+  listener.on_title_change = [this](const std::string& t) { OnTitleChange(t); };
   listener.on_loading_state_change = [this](bool il, bool cb, bool cf) {
     OnLoadingStateChange(il, cb, cf);
   };
-  listener.on_load_end = [this](const std::string &url) { OnLoadEnd(url); };
+  listener.on_load_end = [this](const std::string& url) { OnLoadEnd(url); };
   client_handler_->RegisterBrowserListener(browser_id_, std::move(listener));
 }
 
-void WebTabBehavior::ApplyToolbarState(const ToolbarState & /*state*/) {
+void WebTabBehavior::ApplyToolbarState(const ToolbarState& /*state*/) {
   // Web tabs author their own toolbar state from native browser events; no
   // renderer push is expected on this channel for web kind. (The schema
   // permits it for symmetry; we just no-op.)
 }
 
-void WebTabBehavior::ApplyTheme(const ThemeChrome & /*chrome*/) {
+void WebTabBehavior::ApplyTheme(const ThemeChrome& /*chrome*/) {
   // TabToolbar is a ThemeAwareView; it subscribes to the ThemeContext directly
   // via ToolbarBase::Build → Register(ctx). No manual propagation needed here.
-  // SetChromeColor overrides still flow via Tab → WebTabBehavior::SetChromeColor
-  // which calls toolbar_->SetChromeColor.
+  // SetChromeColor overrides still flow via Tab →
+  // WebTabBehavior::SetChromeColor which calls toolbar_->SetChromeColor.
 }
 
 void WebTabBehavior::FocusUrlField() {
@@ -152,7 +158,7 @@ void WebTabBehavior::FocusUrlField() {
     toolbar_->FocusUrlField();
 }
 
-void WebTabBehavior::Navigate(const std::string &url) {
+void WebTabBehavior::Navigate(const std::string& url) {
   std::string final_url = url;
   if (final_url.find("://") == std::string::npos) {
     final_url = "https://" + final_url;
@@ -183,17 +189,18 @@ void WebTabBehavior::Reload() {
   }
 }
 
-void WebTabBehavior::OnAddressChange(const std::string &url) {
+void WebTabBehavior::OnAddressChange(const std::string& url) {
   current_url_ = url;
   if (toolbar_)
     toolbar_->SetUrl(url);
 }
 
-void WebTabBehavior::OnTitleChange(const std::string &title) {
+void WebTabBehavior::OnTitleChange(const std::string& title) {
   current_title_ = title;
 }
 
-void WebTabBehavior::OnLoadingStateChange(bool is_loading, bool can_go_back,
+void WebTabBehavior::OnLoadingStateChange(bool is_loading,
+                                          bool can_go_back,
                                           bool can_go_forward) {
   is_loading_ = is_loading;
   can_go_back_ = can_go_back;
@@ -205,7 +212,7 @@ void WebTabBehavior::OnLoadingStateChange(bool is_loading, bool can_go_back,
   UpdateRefreshStopGlyph();
 }
 
-void WebTabBehavior::OnLoadEnd(const std::string &url) {
+void WebTabBehavior::OnLoadEnd(const std::string& url) {
   // Skip in-app panels (file:// URLs) and blank pages — they set their own
   // chrome theme via the tab.set_chrome_theme bridge.
   if (url.rfind("file://", 0) == 0)
@@ -303,4 +310,4 @@ void WebTabBehavior::UpdateRefreshStopGlyph() {
   }
 }
 
-} // namespace cronymax
+}  // namespace cronymax

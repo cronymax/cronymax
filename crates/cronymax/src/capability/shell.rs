@@ -107,20 +107,32 @@ pub fn classify_command(command: &str) -> RiskLevel {
     let lower = command.to_lowercase();
     let has = |s: &str| lower.contains(s);
 
-    if has("sudo ") || lower.trim() == "sudo"
-        || has("rm -rf") || has("rm -fr")
-        || has("chmod -r") || has("chown -r")
-        || has("/.ssh/") || has(" ~/.ssh") || has("$home/.ssh")
-        || has("/.aws/") || has(" ~/.aws") || has("$home/.aws")
+    if has("sudo ")
+        || lower.trim() == "sudo"
+        || has("rm -rf")
+        || has("rm -fr")
+        || has("chmod -r")
+        || has("chown -r")
+        || has("/.ssh/")
+        || has(" ~/.ssh")
+        || has("$home/.ssh")
+        || has("/.aws/")
+        || has(" ~/.aws")
+        || has("$home/.aws")
         || (has("curl ") && has("|") && (has(" sh") || has(" bash") || has(" zsh")))
         || (has("wget ") && has("|") && (has(" sh") || has(" bash") || has(" zsh")))
     {
         return RiskLevel::High;
     }
 
-    if has("ssh ") || has("scp ") || has("rsync ")
-        || has("curl ") || has("wget ")
-        || has("npm install") || has("pip install") || has("brew install")
+    if has("ssh ")
+        || has("scp ")
+        || has("rsync ")
+        || has("curl ")
+        || has("wget ")
+        || has("npm install")
+        || has("pip install")
+        || has("brew install")
     {
         return RiskLevel::Medium;
     }
@@ -200,9 +212,7 @@ impl ShellCapability for LocalShell {
                 stderr: format!("command timed out after {}s", timeout.as_secs()),
                 elapsed_ms,
             }),
-            Ok(Err(spawn_err)) => {
-                Err(anyhow::anyhow!("failed to spawn command: {spawn_err}"))
-            }
+            Ok(Err(spawn_err)) => Err(anyhow::anyhow!("failed to spawn command: {spawn_err}")),
             Ok(Ok(out)) => {
                 let max = self.max_output_bytes();
                 Ok(ShellResult {
@@ -219,9 +229,11 @@ impl ShellCapability for LocalShell {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn safe_env() -> impl Iterator<Item = (&'static str, String)> {
-    const KEEP: &[&str] =
-        &["PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM"];
-    KEEP.iter().filter_map(|&k| std::env::var(k).ok().map(move |v| (k, v)))
+    const KEEP: &[&str] = &[
+        "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM",
+    ];
+    KEEP.iter()
+        .filter_map(|&k| std::env::var(k).ok().map(move |v| (k, v)))
 }
 
 fn exit_status_from(status: &std::process::ExitStatus) -> ExitStatus {
@@ -243,7 +255,9 @@ fn normalize_path(path: &std::path::Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in path.components() {
         match c {
-            Component::ParentDir => { out.pop(); }
+            Component::ParentDir => {
+                out.pop();
+            }
             Component::CurDir => {}
             other => out.push(other),
         }

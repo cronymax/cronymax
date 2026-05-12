@@ -32,13 +32,14 @@ pub use agent_loader::{load_agent, AgentDef, AgentKind};
 pub use browser::{BrowserCapability, PageContent, PageInspectRequest};
 pub use dispatcher::HostCapabilityDispatcher;
 pub use filesystem::{
-    FilesystemCapability, LocalFilesystem, ReadFileRequest, ReadFileResult,
-    WorkspaceScope, WriteFileRequest,
+    FilesystemCapability, LocalFilesystem, ReadFileRequest, ReadFileResult, WorkspaceScope,
+    WriteFileRequest,
 };
 pub use notify::{ApprovalRequest, ApprovalResponse, NotifyCapability};
-pub use shell::{classify_command, ExitStatus, LocalShell, RiskLevel, ShellCapability,
-    ShellRequest, ShellResult};
+pub use shell::{
+    classify_command, ExitStatus, LocalShell, RiskLevel, ShellCapability, ShellRequest, ShellResult,
+};
 pub use test_runner::{
-    discover_tool_def, get_last_report_tool_def, run_suite_tool_def,
-    DiscoveredSuite, LastReportStore, RunnerKind, TestFailure, TestRunnerResult,
+    discover_tool_def, get_last_report_tool_def, run_suite_tool_def, DiscoveredSuite,
+    LastReportStore, RunnerKind, TestFailure, TestRunnerResult,
 };

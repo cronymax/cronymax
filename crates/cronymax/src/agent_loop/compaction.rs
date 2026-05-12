@@ -168,7 +168,7 @@ fn split_thread(thread: &[ChatMessage], recency_turns: usize) -> (usize, usize) 
                 break;
             }
         }
-        prev_role = Some(msg.role.clone());
+        prev_role = Some(msg.role);
     }
 
     // Ensure recency_start doesn't overlap with the prefix.
@@ -197,10 +197,7 @@ fn format_for_summary(messages: &[ChatMessage]) -> String {
 
 /// Drive the LLM stream to completion and collect all `Delta.content`
 /// chunks into a single string.
-async fn collect_text(
-    llm: Arc<dyn LlmProvider>,
-    request: LlmRequest,
-) -> anyhow::Result<String> {
+async fn collect_text(llm: Arc<dyn LlmProvider>, request: LlmRequest) -> anyhow::Result<String> {
     let mut stream = llm.stream(request).await?;
     let mut text = String::new();
     while let Some(event) = stream.next().await {

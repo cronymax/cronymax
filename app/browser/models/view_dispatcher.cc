@@ -14,20 +14,20 @@
 #include "browser/models/view_model.h"
 #include "browser/tab/tab.h"
 #include "browser/tab/tab_behavior.h"
-#include "browser/tab/web_tab_behavior.h"
 #include "browser/tab/tab_manager.h"
+#include "browser/tab/web_tab_behavior.h"
 #include "include/cef_parser.h"
 #include "include/cef_task.h"
 
 namespace cronymax {
 
-ViewDispatcher::ViewDispatcher(TabsContext*          tabs_ctx,
-                               SpaceContext*         space_ctx,
+ViewDispatcher::ViewDispatcher(TabsContext* tabs_ctx,
+                               SpaceContext* space_ctx,
                                OverlayActionContext* overlay_ctx,
-                               ResourceContext*      resource_ctx,
-                               ClientHandler*        client_handler,
-                               ViewModel*            model,
-                               DispatcherHost        host)
+                               ResourceContext* resource_ctx,
+                               ClientHandler* client_handler,
+                               ViewModel* model,
+                               DispatcherHost host)
     : tabs_ctx_(tabs_ctx),
       space_ctx_(space_ctx),
       overlay_ctx_(overlay_ctx),
@@ -52,7 +52,8 @@ void ViewDispatcher::Wire() {
       if (s.kind == TabKind::kWeb) {
         Tab* t = model_->tabs_->Get(s.id);
         auto* wb = t ? static_cast<WebTabBehavior*>(t->behavior()) : nullptr;
-        if (wb) entry["url"] = wb->current_url();
+        if (wb)
+          entry["url"] = wb->current_url();
       }
       tabs_arr.push_back(std::move(entry));
     }
@@ -66,15 +67,15 @@ void ViewDispatcher::Wire() {
   sh.new_tab = [this](const std::string& url) -> std::string {
     const std::string raw = url.empty() ? "https://www.google.com" : url;
     const TabId id = tabs_ctx_->OpenWebTab(raw);
-    if (id.empty()) return "{}";
+    if (id.empty())
+      return "{}";
     const std::string final_url =
         raw.find("://") == std::string::npos ? "https://" + raw : raw;
-    const std::string json =
-        nlohmann::json{{"id", id},
-                       {"url", final_url},
-                       {"title", ""},
-                       {"is_pinned", false}}
-            .dump();
+    const std::string json = nlohmann::json{
+        {"id", id},
+        {"url", final_url},
+        {"title", ""},
+        {"is_pinned", false}}.dump();
     host_.push_to_sidebar("shell.tab_created", json);
     return json;
   };
@@ -92,14 +93,16 @@ void ViewDispatcher::Wire() {
 
   sh.go_back = [this]() {
     Tab* tab = model_->tabs_->Active();
-    if (!tab || tab->kind() != TabKind::kWeb) return;
+    if (!tab || tab->kind() != TabKind::kWeb)
+      return;
     if (auto* wb = static_cast<WebTabBehavior*>(tab->behavior()))
       wb->GoBack();
   };
 
   sh.go_forward = [this]() {
     Tab* tab = model_->tabs_->Active();
-    if (!tab || tab->kind() != TabKind::kWeb) return;
+    if (!tab || tab->kind() != TabKind::kWeb)
+      return;
     if (auto* wb = static_cast<WebTabBehavior*>(tab->behavior()))
       wb->GoForward();
   };
@@ -117,13 +120,16 @@ void ViewDispatcher::Wire() {
 
   sh.popover_open_as_tab = [this]() {
     const std::string url = host_.get_popover_url();
-    if (url.empty()) return;
+    if (url.empty())
+      return;
     overlay_ctx_->ClosePopover();
     const TabId id = tabs_ctx_->OpenWebTab(url);
-    if (id.empty()) return;
+    if (id.empty())
+      return;
     host_.push_to_sidebar(
         "shell.tab_created",
-        nlohmann::json{{"id", id}, {"url", url}, {"title", ""}, {"is_pinned", false}}
+        nlohmann::json{
+            {"id", id}, {"url", url}, {"title", ""}, {"is_pinned", false}}
             .dump());
   };
 
@@ -133,7 +139,8 @@ void ViewDispatcher::Wire() {
 
   sh.reload = [this]() {
     Tab* tab = model_->tabs_->Active();
-    if (!tab || tab->kind() != TabKind::kWeb) return;
+    if (!tab || tab->kind() != TabKind::kWeb)
+      return;
     if (auto* wb = static_cast<WebTabBehavior*>(tab->behavior()))
       wb->Reload();
   };
@@ -144,29 +151,42 @@ void ViewDispatcher::Wire() {
 
   sh.window_drag = [this]() { host_.window_drag(); };
 
-  sh.broadcast_event = [this](const std::string& ev,
-                               const std::string& body) {
+  sh.broadcast_event = [this](const std::string& ev, const std::string& body) {
     host_.broadcast(ev, body);
   };
 
   auto kind_from_string = [](const std::string& s, TabKind* out) -> bool {
-    if (s == "web")      { *out = TabKind::kWeb;      return true; }
-    if (s == "chat")     { *out = TabKind::kChat;     return true; }
-    if (s == "terminal") { *out = TabKind::kTerminal; return true; }
-    if (s == "settings") { *out = TabKind::kSettings; return true; }
+    if (s == "web") {
+      *out = TabKind::kWeb;
+      return true;
+    }
+    if (s == "chat") {
+      *out = TabKind::kChat;
+      return true;
+    }
+    if (s == "terminal") {
+      *out = TabKind::kTerminal;
+      return true;
+    }
+    if (s == "settings") {
+      *out = TabKind::kSettings;
+      return true;
+    }
     return false;
   };
 
   sh.tab_activate_str = [this](const std::string& tab_id) -> bool {
     Tab* tab = model_->tabs_->Get(tab_id);
-    if (!tab) return false;
+    if (!tab)
+      return false;
     model_->tabs_->Activate(tab_id);
     return true;
   };
 
   sh.tab_close_str = [this](const std::string& tab_id) -> bool {
     Tab* tab = model_->tabs_->Get(tab_id);
-    if (!tab) return false;
+    if (!tab)
+      return false;
     const int closed_browser_id = tab->browser_id();
     host_.remove_tab_card(tab_id);
     host_.persist_tab_closed(tab_id);
@@ -179,7 +199,8 @@ void ViewDispatcher::Wire() {
                           nlohmann::json{{"id", tab_id}}.dump());
     if (model_->tabs_->active_tab_id().empty()) {
       const auto snap = model_->tabs_->Snapshot();
-      if (!snap.empty()) model_->tabs_->Activate(snap.front().id);
+      if (!snap.empty())
+        model_->tabs_->Activate(snap.front().id);
     }
     return true;
   };
@@ -195,24 +216,28 @@ void ViewDispatcher::Wire() {
     }
     bool created = false;
     TabId id = model_->tabs_->FindOrCreateSingleton(kind, &created);
-    if (!id.empty()) model_->tabs_->Activate(id);
+    if (!id.empty())
+      model_->tabs_->Activate(id);
     return nlohmann::json{{"tabId", id}, {"created", created}}.dump();
   };
 
   sh.new_tab_kind =
       [this, kind_from_string](const std::string& kind_s) -> std::string {
     TabKind kind;
-    if (!kind_from_string(kind_s, &kind)) return "{}";
+    if (!kind_from_string(kind_s, &kind))
+      return "{}";
     TabId id;
     if (kind == TabKind::kWeb) {
       id = tabs_ctx_->OpenWebTab("https://www.google.com");
     } else if (kind == TabKind::kTerminal || kind == TabKind::kChat) {
       id = model_->tabs_->Open(kind, OpenParams{});
-      if (!id.empty()) model_->tabs_->Activate(id);
+      if (!id.empty())
+        model_->tabs_->Activate(id);
     } else {
       return "{}";
     }
-    if (id.empty()) return "{}";
+    if (id.empty())
+      return "{}";
     int numeric = 0;
     static constexpr char kPrefix[] = "tab-";
     if (id.compare(0, sizeof(kPrefix) - 1, kPrefix) == 0) {
@@ -220,51 +245,59 @@ void ViewDispatcher::Wire() {
     }
     const std::string tab_url =
         (kind == TabKind::kWeb) ? "https://www.google.com" : "";
-    host_.push_to_sidebar(
-        "shell.tab_created",
-        nlohmann::json{{"id", numeric},
-                       {"url", tab_url},
-                       {"title", ""},
-                       {"is_pinned", false}}
-            .dump());
+    host_.push_to_sidebar("shell.tab_created",
+                          nlohmann::json{{"id", numeric},
+                                         {"url", tab_url},
+                                         {"title", ""},
+                                         {"is_pinned", false}}
+                              .dump());
     return nlohmann::json{{"tabId", id}, {"kind", kind_s}}.dump();
   };
 
   sh.set_toolbar_state = [this, kind_from_string](
-                              const std::string& tab_id,
-                              const std::string& state_json) -> bool {
+                             const std::string& tab_id,
+                             const std::string& state_json) -> bool {
     Tab* tab = model_->tabs_->Get(tab_id);
-    if (!tab) return false;
+    if (!tab)
+      return false;
     auto kind_at = state_json.find("\"kind\"");
-    if (kind_at == std::string::npos) return false;
+    if (kind_at == std::string::npos)
+      return false;
     auto colon = state_json.find(':', kind_at);
-    if (colon == std::string::npos) return false;
+    if (colon == std::string::npos)
+      return false;
     auto q1 = state_json.find('"', colon);
-    if (q1 == std::string::npos) return false;
+    if (q1 == std::string::npos)
+      return false;
     auto q2 = state_json.find('"', q1 + 1);
-    if (q2 == std::string::npos) return false;
+    if (q2 == std::string::npos)
+      return false;
     const std::string kind_s = state_json.substr(q1 + 1, q2 - q1 - 1);
     TabKind kind;
-    if (!kind_from_string(kind_s, &kind)) return false;
-    if (kind != tab->kind()) return false;
+    if (!kind_from_string(kind_s, &kind))
+      return false;
+    if (kind != tab->kind())
+      return false;
     tab->OnToolbarState(ToolbarState{kind, state_json});
     return true;
   };
 
   sh.set_chrome_theme = [this](const std::string& tab_id,
-                                const std::string& css) -> bool {
+                               const std::string& css) -> bool {
     Tab* tab = model_->tabs_->Get(tab_id);
-    if (!tab) return false;
+    if (!tab)
+      return false;
     tab->SetChromeTheme(css);
     return true;
   };
 
   sh.this_tab_id = [this](int browser_id) -> std::string {
-    Tab* t = model_->tabs_ ? model_->tabs_->FindByBrowserId(browser_id)
-                           : nullptr;
+    Tab* t =
+        model_->tabs_ ? model_->tabs_->FindByBrowserId(browser_id) : nullptr;
     nlohmann::json meta = nlohmann::json::object();
     if (t) {
-      for (const auto& [k, v] : t->meta()) meta[k] = v;
+      for (const auto& [k, v] : t->meta())
+        meta[k] = v;
     }
     return nlohmann::json{{"tabId", t ? t->tab_id() : ""},
                           {"meta", std::move(meta)}}
@@ -272,10 +305,11 @@ void ViewDispatcher::Wire() {
   };
 
   sh.tab_set_meta = [this](int browser_id, const std::string& key,
-                            const std::string& value) -> bool {
-    Tab* t = model_->tabs_ ? model_->tabs_->FindByBrowserId(browser_id)
-                           : nullptr;
-    if (!t) return false;
+                           const std::string& value) -> bool {
+    Tab* t =
+        model_->tabs_ ? model_->tabs_->FindByBrowserId(browser_id) : nullptr;
+    if (!t)
+      return false;
     t->SetMeta(key, value);
     host_.persist_sidebar_tabs();
     return true;
@@ -291,9 +325,9 @@ void ViewDispatcher::Wire() {
                                 {"displayName", s.display_name}};
         if (s.kind == TabKind::kWeb) {
           Tab* t = model_->tabs_->Get(s.id);
-          auto* wb =
-              t ? static_cast<WebTabBehavior*>(t->behavior()) : nullptr;
-          if (wb) entry["url"] = wb->current_url();
+          auto* wb = t ? static_cast<WebTabBehavior*>(t->behavior()) : nullptr;
+          if (wb)
+            entry["url"] = wb->current_url();
         }
         tabs_arr.push_back(std::move(entry));
       }

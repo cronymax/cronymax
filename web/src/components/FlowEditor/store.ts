@@ -112,9 +112,7 @@ export type Action =
   | {
       type: "updateEdge";
       index: number;
-      patch: Partial<
-        Pick<GraphEdge, "port" | "requires_human_approval" | "label">
-      >;
+      patch: Partial<Pick<GraphEdge, "port" | "requires_human_approval" | "label">>;
     }
   | { type: "deleteEdge"; index: number }
   | { type: "addEdge"; edge: GraphEdge }
@@ -160,27 +158,20 @@ function migrateFlowSpec(raw: FlowSpec): FlowSpec {
     .filter((n) => n && n.type === "agent")
     .map((n) => {
       const config = { ...(n.config ?? {}) } as Record<string, string>;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let produces: ProducesEntry[] = Array.isArray((n as any).produces)
-        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          [...((n as any).produces as ProducesEntry[])]
-        : [];
-      if (produces.length === 0 && config["produces"]) {
-        produces = [{ doc_type: config["produces"]!, reviewers: "" }];
+      let produces: ProducesEntry[] = Array.isArray(n.produces) ? [...n.produces] : [];
+      if (produces.length === 0 && config.produces) {
+        produces = [{ doc_type: config.produces!, reviewers: "" }];
       }
       // Strip old config keys.
-      delete config["produces"];
-      delete config["reviewers"];
+      delete config.produces;
+      delete config.reviewers;
       return { ...n, config, produces };
     });
 
   // Step 2: rename legacy "Chat" lead-node agent_name to "Crony".
   // The lead node is the one with the smallest id.
   if (nodes.length > 0) {
-    const leadIdx = nodes.reduce(
-      (minI, n, i) => (n.id < nodes[minI]!.id ? i : minI),
-      0,
-    );
+    const leadIdx = nodes.reduce((minI, n, i) => (n.id < nodes[minI]!.id ? i : minI), 0);
     const lead = nodes[leadIdx]!;
     if ((lead.config?.agent_name ?? lead.name) === "Chat") {
       nodes[leadIdx] = {
@@ -194,8 +185,7 @@ function migrateFlowSpec(raw: FlowSpec): FlowSpec {
   // Step 3: drain edge.reviewers → source node's matching ProducesEntry.
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
   const edges: GraphEdge[] = (raw.edges ?? []).map((e) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const edgeRevs = (e as any).reviewers as string | undefined;
+    const edgeRevs = (e as GraphEdge & { reviewers?: string }).reviewers;
     if (!edgeRevs || !e.port) return e;
     const src = nodeMap.get(e.from_id);
     if (!src) return e;
@@ -210,7 +200,7 @@ function migrateFlowSpec(raw: FlowSpec): FlowSpec {
           .map((s) => s.trim())
           .filter(Boolean),
       );
-      incoming.forEach((r) => existing.add(r));
+      for (const r of incoming) existing.add(r);
       src.produces[entryIdx] = {
         ...src.produces[entryIdx]!,
         reviewers: Array.from(existing).join(","),
@@ -218,8 +208,7 @@ function migrateFlowSpec(raw: FlowSpec): FlowSpec {
     } else {
       src.produces.push({ doc_type: e.port, reviewers: edgeRevs });
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { reviewers: _r, ...rest } = e as any;
+    const { reviewers: _r, ...rest } = e as GraphEdge & { reviewers?: string };
     return rest as GraphEdge;
   });
 
@@ -243,9 +232,7 @@ function sanitizeNodes(nodes: GraphNode[]): GraphNode[] {
 }
 
 function sanitizeEdges(edges: GraphEdge[], nodeIds: Set<number>): GraphEdge[] {
-  return (edges ?? []).filter(
-    (e) => nodeIds.has(e.from_id) && nodeIds.has(e.to_id),
-  );
+  return (edges ?? []).filter((e) => nodeIds.has(e.from_id) && nodeIds.has(e.to_id));
 }
 
 /**
@@ -290,9 +277,7 @@ function ensureCronyLeadNode(spec: FlowSpec): FlowSpec {
     const firstWorkflow = sorted[1];
     if (!firstWorkflow) return spec;
     const edges = spec.edges ?? [];
-    const hasLeadEdge = edges.some(
-      (e) => e.from_id === lead.id && e.to_id === firstWorkflow.id,
-    );
+    const hasLeadEdge = edges.some((e) => e.from_id === lead.id && e.to_id === firstWorkflow.id);
     if (hasLeadEdge) return spec;
     return {
       ...spec,
@@ -363,9 +348,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         nodes: state.nodes.filter((n) => n.id !== action.id),
-        edges: state.edges.filter(
-          (e) => e.from_id !== action.id && e.to_id !== action.id,
-        ),
+        edges: state.edges.filter((e) => e.from_id !== action.id && e.to_id !== action.id),
         selectedId: state.selectedId === action.id ? null : state.selectedId,
       };
     }
@@ -376,48 +359,35 @@ function reducer(state: State, action: Action): State {
     case "updateNodeName":
       return {
         ...state,
-        nodes: state.nodes.map((n) =>
-          n.id === action.id ? { ...n, name: action.name } : n,
-        ),
+        nodes: state.nodes.map((n) => (n.id === action.id ? { ...n, name: action.name } : n)),
       };
     case "updateNodeConfig":
       return {
         ...state,
         nodes: state.nodes.map((n) =>
-          n.id === action.id
-            ? { ...n, config: { ...n.config, [action.key]: action.value } }
-            : n,
+          n.id === action.id ? { ...n, config: { ...n.config, [action.key]: action.value } } : n,
         ),
       };
     case "updateNodeProduces":
       return {
         ...state,
-        nodes: state.nodes.map((n) =>
-          n.id === action.id ? { ...n, produces: action.produces } : n,
-        ),
+        nodes: state.nodes.map((n) => (n.id === action.id ? { ...n, produces: action.produces } : n)),
       };
     case "updateNodePosition":
       return {
         ...state,
-        nodes: state.nodes.map((n) =>
-          n.id === action.id ? { ...n, x: action.x, y: action.y } : n,
-        ),
+        nodes: state.nodes.map((n) => (n.id === action.id ? { ...n, x: action.x, y: action.y } : n)),
       };
     case "updateEdge":
       return {
         ...state,
-        edges: state.edges.map((e, i) =>
-          i === action.index ? { ...e, ...action.patch } : e,
-        ),
+        edges: state.edges.map((e, i) => (i === action.index ? { ...e, ...action.patch } : e)),
       };
     case "deleteEdge":
       return {
         ...state,
         edges: state.edges.filter((_, i) => i !== action.index),
-        selectedEdgeIndex:
-          state.selectedEdgeIndex === action.index
-            ? null
-            : state.selectedEdgeIndex,
+        selectedEdgeIndex: state.selectedEdgeIndex === action.index ? null : state.selectedEdgeIndex,
       };
     case "addEdge":
       return { ...state, edges: [...state.edges, action.edge] };
@@ -461,10 +431,7 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-export const { Provider, useStore } = createPanelStore<State, Action>(
-  reducer,
-  initial,
-);
+export const { Provider, useStore } = createPanelStore<State, Action>(reducer, initial);
 
 // ── localStorage helpers ──────────────────────────────────────────────────
 const FLOWS_KEY = "flows";
@@ -497,16 +464,14 @@ export function setActiveFlowName(name: string): void {
   else localStorage.removeItem(ACTIVE_FLOW_KEY);
 }
 
-export function migrateLegacy(
-  flows: Record<string, FlowSpec>,
-): Record<string, FlowSpec> {
+export function migrateLegacy(flows: Record<string, FlowSpec>): Record<string, FlowSpec> {
   try {
     const raw = localStorage.getItem(LEGACY_KEY);
     if (!raw) return flows;
     const obj = JSON.parse(raw) as FlowSpec;
     if (!obj || !Array.isArray(obj.nodes)) return flows;
-    if (!flows["default"]) {
-      flows["default"] = { nodes: obj.nodes, edges: obj.edges || [] };
+    if (!flows.default) {
+      flows.default = { nodes: obj.nodes, edges: obj.edges || [] };
       saveAllFlows(flows);
     }
   } catch {

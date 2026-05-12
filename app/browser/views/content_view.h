@@ -25,11 +25,12 @@ namespace cronymax {
 
 class ContentView : public ThemeAwareView,
                     public ViewObserver<ActiveTabChanged> {
-public:
+ public:
   struct Host {
     // Returns (tab_id, card_view, browser_view) for the current active tab.
     // card_view or browser_view may be null when no active tab exists.
-    std::function<std::tuple<std::string, CefRefPtr<CefView>,
+    std::function<std::tuple<std::string,
+                             CefRefPtr<CefView>,
                              CefRefPtr<CefBrowserView>>()>
         active_tab;
 
@@ -45,8 +46,10 @@ public:
     std::function<void()> update_popover_visibility;
   };
 
-  ContentView(TabsContext *tabs, ThemeContext *theme_ctx,
-              CefRefPtr<CefWindow> main_win, Host host);
+  ContentView(TabsContext* tabs,
+              ThemeContext* theme_ctx,
+              CefRefPtr<CefWindow> main_win,
+              Host host);
   ~ContentView() override;
 
   // Build and return the root content_outer_ panel.  Called once during
@@ -54,7 +57,7 @@ public:
   CefRefPtr<CefPanel> Build();
 
   // Remove a tab's card from content_panel_ (called when a tab is closed).
-  void RemoveCard(const std::string &tab_id);
+  void RemoveCard(const std::string& tab_id);
 
   // Adjust the vertical insets of content_outer_; used by popover open/close
   // to create breathing room around the floating content card.
@@ -69,20 +72,22 @@ public:
   // color painted by the punch views to mask the square IOSurface corners.
   // Called from MainWindow::on_browser_created and from ContentView itself.
   static void RoundCornersFor(CefRefPtr<CefBrowserView> bv,
-                              CefRefPtr<CefWindow> win, cef_color_t bg_body);
+                              CefRefPtr<CefWindow> win,
+                              cef_color_t bg_body);
 
   CefRefPtr<CefPanel> content_panel() const { return content_panel_; }
 
-  // Make both OnViewObserved overloads visible (ThemeAwareView + ActiveTabChanged).
+  // Make both OnViewObserved overloads visible (ThemeAwareView +
+  // ActiveTabChanged).
   using ThemeAwareView::OnViewObserved;
   // ShellObserver<ActiveTabChanged>
-  void OnViewObserved(const ActiveTabChanged &e) override;
+  void OnViewObserved(const ActiveTabChanged& e) override;
 
-private:
+ private:
   void ShowActiveCard();
 
-  TabsContext *tabs_;
-  ThemeContext *theme_ctx_;
+  TabsContext* tabs_;
+  ThemeContext* theme_ctx_;
   CefRefPtr<CefWindow> main_win_;
   Host host_;
 
@@ -99,4 +104,4 @@ private:
   std::map<std::string, CefRefPtr<CefView>> mounted_cards_;
 };
 
-} // namespace cronymax
+}  // namespace cronymax

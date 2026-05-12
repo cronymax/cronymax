@@ -1,0 +1,121 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
+  "root": false,
+  "extends": "//",
+  "linter": {
+    "includes": [
+      "**",
+      "!dist/**",
+      "!node_modules/**",
+      "!vite.config.js",
+      "!vite.config.d.ts",
+      "!**/*.tsbuildinfo",
+      "!src/shared/agent_runtime/**"
+    ]
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["src/**/*.{ts,tsx}"],
+      "javascript": {
+        "globals": [
+          "localStorage",
+          "setInterval",
+          "AbortController",
+          "KeyboardEvent",
+          "MouseEvent",
+          "clearInterval",
+          "setTimeout",
+          "alert",
+          "Event",
+          "HTMLDivElement",
+          "prompt",
+          "Request",
+          "document",
+          "window",
+          "console",
+          "HTMLTextAreaElement",
+          "HTMLElement",
+          "Headers",
+          "HTMLPreElement",
+          "confirm",
+          "EventTarget",
+          "StorageEvent",
+          "fetch",
+          "clearTimeout",
+          "Response",
+          "navigator",
+          "Promise",
+          "HTMLInputElement",
+          "URL",
+          "HTMLButtonElement"
+        ]
+      },
+      "linter": {
+        "rules": {
+          "a11y": {
+            "noStaticElementInteractions": "off",
+            "noSvgWithoutTitle": "off",
+            "useAltText": "off",
+            "useButtonType": "off",
+            "useKeyWithClickEvents": "off"
+          },
+          "complexity": {
+            "noBannedTypes": "error",
+            "noUselessThisAlias": "error",
+            "noUselessTypeConstraint": "error"
+          },
+          "correctness": {
+            "noUnusedVariables": "error",
+            "useExhaustiveDependencies": "off"
+          },
+          "style": {
+            "noCommonJs": "error",
+            "noNamespace": "error",
+            "noNonNullAssertion": "off",
+            "useArrayLiterals": "error",
+            "useAsConstAssertion": "error"
+          },
+          "suspicious": {
+            "noArrayIndexKey": "off",
+            "noEmptyBlockStatements": "warn",
+            "noExplicitAny": "warn",
+            "noExtraNonNullAssertion": "error",
+            "noMisleadingInstantiator": "error",
+            "noNonNullAssertedOptionalChain": "error",
+            "noTsIgnore": "error",
+            "noUnsafeDeclarationMerging": "error",
+            "noUnusedExpressions": "off",
+            "useNamespaceKeyword": "error"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/panels/chat/store.ts", "src/panels/terminal/XtermPane.tsx"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noControlCharactersInRegex": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/styles/**/*.css"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noDuplicateCustomProperties": "off"
+          }
+        }
+      }
+    }
+  ]
+}

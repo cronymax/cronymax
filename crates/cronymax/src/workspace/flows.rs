@@ -93,9 +93,15 @@ struct RawFlowYaml {
     pub nodes: Vec<FlowYamlNode>,
 }
 
-fn default_3() -> u32 { 3 }
-fn default_true() -> bool { true }
-fn default_60() -> u32 { 60 }
+fn default_3() -> u32 {
+    3
+}
+fn default_true() -> bool {
+    true
+}
+fn default_60() -> u32 {
+    60
+}
 
 /// Extract agent IDs from a raw `agents:` YAML value (list or map).
 fn extract_agent_ids(v: &serde_yml::Value) -> Vec<String> {
@@ -157,7 +163,11 @@ pub async fn load_flow_yaml(path: &Path, id: &str) -> Option<FlowYamlDoc> {
 /// Parse `flow.yaml` content from a string.
 pub fn parse_flow_yaml(yaml: &str, id: &str) -> Option<FlowYamlDoc> {
     let raw: RawFlowYaml = serde_yml::from_str(yaml).ok()?;
-    let name = if raw.name.is_empty() { id.to_owned() } else { raw.name };
+    let name = if raw.name.is_empty() {
+        id.to_owned()
+    } else {
+        raw.name
+    };
     let agents = extract_agent_ids(&raw.agents)
         .into_iter()
         .map(|s| FlowYamlAgent { id: s })
@@ -180,8 +190,12 @@ pub fn parse_flow_yaml(yaml: &str, id: &str) -> Option<FlowYamlDoc> {
 
 /// Returns the list of agent IDs from a `flow.yaml`, or empty on parse error.
 pub async fn load_flow_agents(path: &Path) -> Vec<String> {
-    let Ok(text) = fs::read_to_string(path).await else { return vec![] };
-    let Ok(raw) = serde_yml::from_str::<RawFlowYaml>(&text) else { return vec![] };
+    let Ok(text) = fs::read_to_string(path).await else {
+        return vec![];
+    };
+    let Ok(raw) = serde_yml::from_str::<RawFlowYaml>(&text) else {
+        return vec![];
+    };
     extract_agent_ids(&raw.agents)
 }
 
@@ -200,7 +214,11 @@ pub fn flow_yaml_to_string(doc: &FlowYamlDoc) -> String {
         let _ = writeln!(out, "max_review_rounds: {}", doc.max_review_rounds);
     }
     if doc.on_review_exhausted != "halt" {
-        let _ = writeln!(out, "on_review_exhausted: {}", json_string(&doc.on_review_exhausted));
+        let _ = writeln!(
+            out,
+            "on_review_exhausted: {}",
+            json_string(&doc.on_review_exhausted)
+        );
     }
     if !doc.reviewer_enabled {
         let _ = writeln!(out, "reviewer_enabled: false");
@@ -266,7 +284,11 @@ pub fn flow_yaml_to_string(doc: &FlowYamlDoc) -> String {
                 let _ = writeln!(out, "    max_cycles: {}", e.max_cycles);
             }
             if e.on_cycle_exhausted != "halt" {
-                let _ = writeln!(out, "    on_cycle_exhausted: {}", json_string(&e.on_cycle_exhausted));
+                let _ = writeln!(
+                    out,
+                    "    on_cycle_exhausted: {}",
+                    json_string(&e.on_cycle_exhausted)
+                );
             }
         }
     }

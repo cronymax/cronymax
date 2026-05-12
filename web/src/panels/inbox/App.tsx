@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { z } from "zod";
+import type { z } from "zod";
 import { browser } from "@/shells/bridge";
-import { InboxRowSchema, type AppEvent } from "@/types/events";
+import type { AppEvent, InboxRowSchema } from "@/types/events";
 
 type InboxRow = z.infer<typeof InboxRowSchema>;
 
@@ -20,9 +20,7 @@ const NEEDS_ACTION_KINDS = new Set(["review_event", "error", "handoff"]);
 
 export function App() {
   const [rows, setRows] = useState<InboxRow[]>([]);
-  const [stateFilter, setStateFilter] = useState<
-    "unread" | "read" | "snoozed" | "all"
-  >("unread");
+  const [stateFilter, setStateFilter] = useState<"unread" | "read" | "snoozed" | "all">("unread");
   const [unreadCount, setUnreadCount] = useState(0);
   const [needsActionCount, setNeedsActionCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +48,9 @@ export function App() {
 
   // Refresh when relevant new events arrive.
   useEffect(() => {
-    void browser.send("events.subscribe", {}).catch(() => {});
+    void browser.send("events.subscribe", {}).catch(() => {
+      /* ignore */
+    });
     const off = browser.on("event", (payload) => {
       const e = payload as AppEvent;
       if (NEEDS_ACTION_KINDS.has(e.kind)) {
@@ -98,9 +98,7 @@ export function App() {
               type="button"
               className={
                 "px-2 py-1 text-xs " +
-                (stateFilter === s
-                  ? "bg-cronymax-primary text-white"
-                  : "bg-cronymax-base hover:bg-cronymax-float")
+                (stateFilter === s ? "bg-cronymax-primary text-white" : "bg-cronymax-base hover:bg-cronymax-float")
               }
               onClick={() => setStateFilter(s)}
             >
@@ -110,18 +108,10 @@ export function App() {
         </div>
       </header>
 
-      {error && (
-        <div className="border-b border-red-500/40 bg-red-900/30 px-3 py-1 text-xs text-red-200">
-          {error}
-        </div>
-      )}
+      {error && <div className="border-b border-red-500/40 bg-red-900/30 px-3 py-1 text-xs text-red-200">{error}</div>}
 
       <div className="flex-1 overflow-y-auto">
-        {rows.length === 0 && (
-          <div className="p-4 text-center text-xs opacity-60">
-            (no items in “{stateFilter}”)
-          </div>
-        )}
+        {rows.length === 0 && <div className="p-4 text-center text-xs opacity-60">(no items in “{stateFilter}”)</div>}
         {rows.map((row) => (
           <Row
             key={row.event_id}
@@ -147,9 +137,7 @@ function Row({ row, onRead, onSnooze }: RowProps) {
     <div className="flex items-start gap-2 border-b border-cronymax-border px-3 py-2">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 text-xs">
-          <span className="rounded bg-cronymax-float px-1.5 py-0.5 font-mono">
-            {row.kind || "event"}
-          </span>
+          <span className="rounded bg-cronymax-float px-1.5 py-0.5 font-mono">{row.kind || "event"}</span>
           <span className="opacity-60 font-mono truncate">{row.flow_id}</span>
           <span
             className={
@@ -164,9 +152,7 @@ function Row({ row, onRead, onSnooze }: RowProps) {
             {row.state}
           </span>
         </div>
-        <div className="mt-1 font-mono text-[11px] opacity-50 truncate">
-          id: {row.event_id}
-        </div>
+        <div className="mt-1 font-mono text-[11px] opacity-50 truncate">id: {row.event_id}</div>
       </div>
       <div className="flex flex-col items-end gap-1">
         {row.state !== "read" && (

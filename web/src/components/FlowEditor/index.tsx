@@ -12,33 +12,33 @@
  * node positions are committed to the store on mouseup.
  */
 import {
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
-  type MouseEvent as ReactMouseEvent,
 } from "react";
-import { agentRegistry, docType, flow, flowRun } from "@/shells/runtime";
 import { Icon } from "@/components/Icon";
+import { agentRegistry, docType, flow, flowRun } from "@/shells/runtime";
 import {
-  Provider,
-  loadAllFlows,
-  saveAllFlows,
-  getActiveFlowName,
-  setActiveFlowName,
-  migrateLegacy,
-  syncLegacyKey,
-  useStore,
-  flowSpecFromDef,
-  SEED_CHAT_FLOW,
-  SEED_SOFTWARE_DEV_CYCLE_FLOW,
-  leadNodeId,
   type FlowSpec,
+  flowSpecFromDef,
   type GraphEdge,
   type GraphNode,
+  getActiveFlowName,
+  leadNodeId,
+  loadAllFlows,
+  migrateLegacy,
   type ProducesEntry,
+  Provider,
+  SEED_CHAT_FLOW,
+  SEED_SOFTWARE_DEV_CYCLE_FLOW,
+  saveAllFlows,
+  setActiveFlowName,
+  syncLegacyKey,
+  useStore,
 } from "./store";
 
 // Re-export Provider so main.tsx can keep importing it from here if desired.
@@ -59,10 +59,7 @@ const NODE_BG_CLS = "bg-cronymax-primary/15 border-cronymax-primary/40";
 function buildEdgeOffsets(edges: GraphEdge[]): number[] {
   const groupMap = new Map<string, number[]>();
   edges.forEach((e, i) => {
-    const key = [
-      Math.min(e.from_id, e.to_id),
-      Math.max(e.from_id, e.to_id),
-    ].join("-");
+    const key = [Math.min(e.from_id, e.to_id), Math.max(e.from_id, e.to_id)].join("-");
     const grp = groupMap.get(key) ?? [];
     grp.push(i);
     groupMap.set(key, grp);
@@ -106,11 +103,7 @@ function edgePath(from: GraphNode, to: GraphNode, vOffset: number): string {
 }
 
 /** Label anchor position above the visual midpoint of the edge. */
-function edgeLabelPos(
-  from: GraphNode,
-  to: GraphNode,
-  vOffset: number,
-): { x: number; y: number } {
+function edgeLabelPos(from: GraphNode, to: GraphNode, vOffset: number): { x: number; y: number } {
   const isForward = to.x + NODE_W / 2 >= from.x + NODE_W / 2;
   if (isForward) {
     const x1 = from.x + NODE_W;
@@ -182,11 +175,7 @@ function CheckboxDropdown({
         }
       >
         <span className="truncate">{displayText}</span>
-        <Icon
-          name={open ? "chevron-up" : "chevron-down"}
-          size={10}
-          aria-hidden="true"
-        />
+        <Icon name={open ? "chevron-up" : "chevron-down"} size={10} aria-hidden="true" />
       </button>
       {open && options.length > 0 && (
         <div className="absolute right-0 z-20 mt-0.5 min-w-[160px] rounded border border-cronymax-border bg-cronymax-float p-1 shadow-lg">
@@ -210,18 +199,10 @@ function CheckboxDropdown({
   );
 }
 
-function FieldGroup({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function FieldGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-3">
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-cronymax-caption">
-        {label}
-      </div>
+      <div className="mb-1 text-[11px] uppercase tracking-wide text-cronymax-caption">{label}</div>
       {children}
     </div>
   );
@@ -256,9 +237,7 @@ export function FlowEditor() {
     origX: number;
     origY: number;
   } | null>(null);
-  const [livePos, setLivePos] = useState<Map<number, { x: number; y: number }>>(
-    new Map(),
-  );
+  const [livePos, setLivePos] = useState<Map<number, { x: number; y: number }>>(new Map());
 
   const traceLogRef = useRef<HTMLPreElement>(null);
 
@@ -268,7 +247,7 @@ export function FlowEditor() {
     let needsSave = false;
     // Seed the "Chat" flow on first install (empty store).
     if (Object.keys(flows).length === 0) {
-      flows["Chat"] = { ...SEED_CHAT_FLOW };
+      flows.Chat = { ...SEED_CHAT_FLOW };
       needsSave = true;
     }
     // Always ensure the built-in software-dev-cycle preset is present,
@@ -297,18 +276,14 @@ export function FlowEditor() {
     flow
       .list()
       .then(async (res) => {
-        const wsFlows =
-          (res as { flows?: { id: string; name: string; builtin?: boolean }[] })
-            .flows ?? [];
+        const wsFlows = (res as { flows?: { id: string; name: string; builtin?: boolean }[] }).flows ?? [];
         const current = loadAllFlows();
         let changed = false;
         for (const meta of wsFlows) {
           if (meta.builtin) continue; // skip bundle presets
           if (current[meta.id]) continue; // workspace copy already in localStorage
           try {
-            const def = (await flow.load(meta.id)) as Parameters<
-              typeof flowSpecFromDef
-            >[0];
+            const def = (await flow.load(meta.id)) as Parameters<typeof flowSpecFromDef>[0];
             current[meta.id] = flowSpecFromDef(def);
             changed = true;
           } catch {
@@ -449,16 +424,10 @@ export function FlowEditor() {
     () => state.nodes.find((n) => n.id === state.selectedId) ?? null,
     [state.nodes, state.selectedId],
   );
-  const selectedEdge =
-    state.selectedEdgeIndex != null
-      ? (state.edges[state.selectedEdgeIndex] ?? null)
-      : null;
+  const selectedEdge = state.selectedEdgeIndex != null ? (state.edges[state.selectedEdgeIndex] ?? null) : null;
 
   // ── node operations ─────────────────────────────────────────────────────
-  const edgeOffsets = useMemo(
-    () => buildEdgeOffsets(state.edges),
-    [state.edges],
-  );
+  const edgeOffsets = useMemo(() => buildEdgeOffsets(state.edges), [state.edges]);
 
   const addAgentNode = useCallback(
     (agentName: string) => {
@@ -475,9 +444,7 @@ export function FlowEditor() {
       };
       const prev = [...state.nodes].reverse().find((n) => n.id !== id);
       // Auto-connect any new agent to the previous node regardless of kind.
-      const edge: GraphEdge | undefined = prev
-        ? { from_id: prev.id, to_id: id, port: "" }
-        : undefined;
+      const edge: GraphEdge | undefined = prev ? { from_id: prev.id, to_id: id, port: "" } : undefined;
       dispatch({ type: "addNode", node, nextId: id + 1, edge });
       setAgentPickerOpen(false);
     },
@@ -503,11 +470,7 @@ export function FlowEditor() {
 
   // ── flows (localStorage; backend persistence not yet wired) ─────────────
   const onSaveFlow = useCallback(() => {
-    const name = (
-      state.flowNameInput ||
-      state.activeFlowName ||
-      "default"
-    ).trim();
+    const name = (state.flowNameInput || state.activeFlowName || "default").trim();
     if (!name) {
       dispatch({ type: "appendTrace", chunk: "✗ Enter a flow name first.\n" });
       return;
@@ -524,13 +487,7 @@ export function FlowEditor() {
       active: name,
     });
     dispatch({ type: "appendTrace", chunk: `✓ Flow "${name}" saved.\n` });
-  }, [
-    state.flowNameInput,
-    state.activeFlowName,
-    state.nodes,
-    state.edges,
-    dispatch,
-  ]);
+  }, [state.flowNameInput, state.activeFlowName, state.nodes, state.edges, dispatch]);
 
   const onSelectFlow = useCallback(
     (name: string) => {
@@ -603,33 +560,22 @@ export function FlowEditor() {
         <input
           type="text"
           value={state.flowNameInput}
-          onChange={(e) =>
-            dispatch({ type: "setFlowNameInput", value: e.target.value })
-          }
+          onChange={(e) => dispatch({ type: "setFlowNameInput", value: e.target.value })}
           placeholder="flow name"
           className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs outline-none focus:border-cronymax-primary"
         />
         <div className="ml-auto flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => setAgentPickerOpen(true)}
-            className={btnCls}
-            title="Add a node"
-          >
+          <button type="button" onClick={() => setAgentPickerOpen(true)} className={btnCls} title="Add a node">
             + Node
           </button>
           <span className="mx-1 h-4 w-px bg-cronymax-border" />
-          <button
-            type="button"
-            onClick={onSaveFlow}
-            className={btnCls + " inline-flex items-center gap-1"}
-          >
+          <button type="button" onClick={onSaveFlow} className={`${btnCls} inline-flex items-center gap-1`}>
             <Icon name="save" size={12} aria-hidden="true" /> Save
           </button>
           <button
             type="button"
             onClick={onDeleteFlow}
-            className={btnCls + " inline-flex items-center gap-1"}
+            className={`${btnCls} inline-flex items-center gap-1`}
             title="Delete this flow"
             aria-label="Delete this flow"
           >
@@ -642,10 +588,7 @@ export function FlowEditor() {
           {activeRunId ? (
             <>
               <span className="text-cronymax-description">
-                run:{" "}
-                <code className="font-mono text-[10px]">
-                  {activeRunId.slice(0, 8)}…
-                </code>
+                run: <code className="font-mono text-[10px]">{activeRunId.slice(0, 8)}…</code>
               </span>
               <button
                 type="button"
@@ -658,7 +601,7 @@ export function FlowEditor() {
                   setActiveRunId(null);
                   dispatch({ type: "setRunning", running: false });
                 }}
-                className={btnDangerCls + " inline-flex items-center gap-1"}
+                className={`${btnDangerCls} inline-flex items-center gap-1`}
               >
                 Cancel
               </button>
@@ -675,17 +618,12 @@ export function FlowEditor() {
                   setActiveRunId(res.run_id);
                   dispatch({ type: "setRunning", running: true });
                 } catch (err) {
-                  console.warn(
-                    "[flow] flow.run.start failed:",
-                    (err as Error).message,
-                  );
+                  console.warn("[flow] flow.run.start failed:", (err as Error).message);
                 } finally {
                   setRunStarting(false);
                 }
               }}
-              className={
-                btnCls + " inline-flex items-center gap-1 disabled:opacity-50"
-              }
+              className={`${btnCls} inline-flex items-center gap-1 disabled:opacity-50`}
               title="Start a flow run for this flow"
             >
               {runStarting ? "Starting…" : "▶ Start Run"}
@@ -711,15 +649,7 @@ export function FlowEditor() {
             style={{ width: canvasSize.width, height: canvasSize.height }}
           >
             <defs>
-              <marker
-                id="arrowhead"
-                viewBox="0 0 8 8"
-                refX="7"
-                refY="4"
-                markerWidth="5"
-                markerHeight="5"
-                orient="auto"
-              >
+              <marker id="arrowhead" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto">
                 <path d="M0,0 L8,4 L0,8 Z" fill="rgba(124,124,140,0.75)" />
               </marker>
               <marker
@@ -742,12 +672,8 @@ export function FlowEditor() {
               const lp = edgeLabelPos(from, to, vOff);
               const portLabel = edge.port || "(no doc-type)";
               const gateLabel = edge.requires_human_approval ? " ✋" : "";
-              const sourceNode = effectiveNodes.find(
-                (n) => n.id === edge.from_id,
-              );
-              const producesEntry = sourceNode?.produces?.find(
-                (p) => p.doc_type === edge.port,
-              );
+              const sourceNode = effectiveNodes.find((n) => n.id === edge.from_id);
+              const producesEntry = sourceNode?.produces?.find((p) => p.doc_type === edge.port);
               const revList = (producesEntry?.reviewers ?? "")
                 .split(",")
                 .map((s) => s.trim())
@@ -755,9 +681,7 @@ export function FlowEditor() {
               const revLabel = revList.length > 0 ? revList.join(", ") : null;
               const boxH = revLabel ? 28 : 18;
               const isSel = state.selectedEdgeIndex === i;
-              const strokeColor = isSel
-                ? "rgb(124,158,255)"
-                : "rgba(124,124,140,0.65)";
+              const strokeColor = isSel ? "rgb(124,158,255)" : "rgba(124,124,140,0.65)";
               return (
                 <g key={i}>
                   <path
@@ -765,9 +689,7 @@ export function FlowEditor() {
                     stroke={strokeColor}
                     strokeWidth={isSel ? 2 : 1.5}
                     fill="none"
-                    markerEnd={
-                      isSel ? "url(#arrowhead-sel)" : "url(#arrowhead)"
-                    }
+                    markerEnd={isSel ? "url(#arrowhead-sel)" : "url(#arrowhead)"}
                     pointerEvents="none"
                   />
                   <rect
@@ -777,9 +699,7 @@ export function FlowEditor() {
                     height={boxH}
                     rx={3}
                     fill={isSel ? "rgba(124,158,255,0.18)" : "rgba(0,0,0,0.5)"}
-                    stroke={
-                      isSel ? "rgb(124,158,255)" : "rgba(124,124,140,0.35)"
-                    }
+                    stroke={isSel ? "rgb(124,158,255)" : "rgba(124,124,140,0.35)"}
                     style={{ cursor: "pointer" }}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -789,11 +709,7 @@ export function FlowEditor() {
                   <text
                     x={lp.x}
                     y={lp.y + 3}
-                    fill={
-                      edge.port
-                        ? "rgba(224,224,230,0.9)"
-                        : "rgba(224,224,230,0.45)"
-                    }
+                    fill={edge.port ? "rgba(224,224,230,0.9)" : "rgba(224,224,230,0.45)"}
                     fontSize={10}
                     textAnchor="middle"
                     pointerEvents="none"
@@ -819,10 +735,7 @@ export function FlowEditor() {
           </svg>
 
           {/* Nodes layer. */}
-          <div
-            className="relative"
-            style={{ width: canvasSize.width, height: canvasSize.height }}
-          >
+          <div className="relative" style={{ width: canvasSize.width, height: canvasSize.height }}>
             {effectiveNodes.map((n) => {
               const isSelected = state.selectedId === n.id;
               const isRunning = state.runningId === n.id;
@@ -855,9 +768,7 @@ export function FlowEditor() {
                   }
                 >
                   <div className="mb-1 flex items-center gap-1.5">
-                    <span className="rounded bg-black/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide">
-                      Agent
-                    </span>
+                    <span className="rounded bg-black/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide">Agent</span>
                     {isLead && (
                       <span
                         title="Lead agent: handles unaddressed messages and cannot be deleted."
@@ -866,9 +777,7 @@ export function FlowEditor() {
                         Lead
                       </span>
                     )}
-                    <span className="flex-1 truncate font-medium">
-                      {n.name}
-                    </span>
+                    <span className="flex-1 truncate font-medium">{n.name}</span>
                     {!isLead && (
                       <button
                         type="button"
@@ -964,10 +873,7 @@ export function FlowEditor() {
 
       {/* Trace bar */}
       <section
-        className={
-          "border-t border-cronymax-border bg-cronymax-float transition-all " +
-          (traceOpen ? "h-40" : "h-7")
-        }
+        className={`border-t border-cronymax-border bg-cronymax-float transition-all ${traceOpen ? "h-40" : "h-7"}`}
       >
         <div className="flex items-center justify-between border-b border-cronymax-border px-3 py-1 text-xs">
           <button
@@ -997,11 +903,7 @@ export function FlowEditor() {
 
       {/* Agent picker modal */}
       {agentPickerOpen && (
-        <AgentPicker
-          agents={state.agentCatalog}
-          onPick={addAgentNode}
-          onClose={() => setAgentPickerOpen(false)}
-        />
+        <AgentPicker agents={state.agentCatalog} onPick={addAgentNode} onClose={() => setAgentPickerOpen(false)} />
       )}
     </main>
   );
@@ -1030,9 +932,7 @@ function Inspector({
   onChangeName: (name: string) => void;
   onChangeConfig: (key: string, value: string) => void;
   onChangeProduces: (produces: ProducesEntry[]) => void;
-  onChangeEdge: (
-    patch: Partial<Pick<GraphEdge, "port" | "requires_human_approval">>,
-  ) => void;
+  onChangeEdge: (patch: Partial<Pick<GraphEdge, "port" | "requires_human_approval">>) => void;
   onDeleteEdge: () => void;
 }) {
   if (edge && edgeIndex != null) {
@@ -1063,12 +963,10 @@ function Inspector({
           </button>
         </div>
         <p className="px-3 py-2 text-xs text-cronymax-caption">
-          Click a node to edit the Agent it represents and its produced
-          documents (each with its own reviewer list).
+          Click a node to edit the Agent it represents and its produced documents (each with its own reviewer list).
         </p>
         <p className="px-3 py-2 text-xs text-cronymax-caption">
-          Click an edge label to set the doc-type carried over the edge or
-          require human approval.
+          Click an edge label to set the doc-type carried over the edge or require human approval.
         </p>
       </aside>
     );
@@ -1145,11 +1043,7 @@ function Inspector({
       </div>
       <div className="flex-1 overflow-auto px-3 py-2">
         <FieldGroup label="Display Label">
-          <input
-            className={INPUT_CLS}
-            value={node.name}
-            onChange={(e) => onChangeName(e.target.value)}
-          />
+          <input className={INPUT_CLS} value={node.name} onChange={(e) => onChangeName(e.target.value)} />
         </FieldGroup>
 
         <FieldGroup label="Agent">
@@ -1173,26 +1067,18 @@ function Inspector({
         <FieldGroup label="Produces">
           <div className="flex flex-col gap-2">
             {produces.map((entry, idx) => (
-              <div
-                key={idx}
-                className="rounded border border-cronymax-border/60 bg-cronymax-base p-2"
-              >
+              <div key={idx} className="rounded border border-cronymax-border/60 bg-cronymax-base p-2">
                 {/* Doc-type row */}
                 <div className="mb-1.5 flex items-center gap-1">
                   <select
-                    className={INPUT_CLS + " flex-1"}
+                    className={`${INPUT_CLS} flex-1`}
                     value={entry.doc_type}
-                    onChange={(e) =>
-                      updateEntry(idx, { doc_type: e.target.value })
-                    }
+                    onChange={(e) => updateEntry(idx, { doc_type: e.target.value })}
                   >
                     <option value="">(choose doc-type)</option>
-                    {entry.doc_type &&
-                      !state.docTypeCatalog.find(
-                        (d) => d.name === entry.doc_type,
-                      ) && (
-                        <option value={entry.doc_type}>{entry.doc_type}</option>
-                      )}
+                    {entry.doc_type && !state.docTypeCatalog.find((d) => d.name === entry.doc_type) && (
+                      <option value={entry.doc_type}>{entry.doc_type}</option>
+                    )}
                     {state.docTypeCatalog.map((d) => (
                       <option key={d.name} value={d.name}>
                         {d.display_name} ({d.name})
@@ -1211,9 +1097,7 @@ function Inspector({
                 {/* Per-entry reviewers */}
                 {state.agentCatalog.length > 0 && (
                   <>
-                    <div className="mb-0.5 text-[10px] uppercase tracking-wide text-cronymax-caption">
-                      Reviewers
-                    </div>
+                    <div className="mb-0.5 text-[10px] uppercase tracking-wide text-cronymax-caption">Reviewers</div>
                     <CheckboxDropdown
                       label="(no reviewers)"
                       options={state.agentCatalog.map((a) => ({
@@ -1224,9 +1108,7 @@ function Inspector({
                         .split(",")
                         .map((s) => s.trim())
                         .filter(Boolean)}
-                      onToggle={(agentName) =>
-                        toggleEntryReviewer(idx, agentName)
-                      }
+                      onToggle={(agentName) => toggleEntryReviewer(idx, agentName)}
                     />
                   </>
                 )}
@@ -1244,9 +1126,7 @@ function Inspector({
 
         {produces.length > 1 && state.agentCatalog.length > 0 && (
           <FieldGroup label="Batch Reviewers">
-            <p className="mb-1.5 text-[11px] text-cronymax-caption">
-              Toggle a reviewer across all documents at once:
-            </p>
+            <p className="mb-1.5 text-[11px] text-cronymax-caption">Toggle a reviewer across all documents at once:</p>
             <div className="flex flex-wrap gap-2">
               {state.agentCatalog.map((a) => {
                 const allHave =
@@ -1281,9 +1161,7 @@ function Inspector({
                       ref={(el) => {
                         if (el) el.indeterminate = someHave && !allHave;
                       }}
-                      onChange={(e) =>
-                        batchToggleReviewer(a.name, e.target.checked)
-                      }
+                      onChange={(e) => batchToggleReviewer(a.name, e.target.checked)}
                     />
                     <span>{a.name}</span>
                   </label>
@@ -1293,9 +1171,7 @@ function Inspector({
           </FieldGroup>
         )}
 
-        <div className="mt-4 text-[11px] text-cronymax-caption">
-          Node #{node.id}
-        </div>
+        <div className="mt-4 text-[11px] text-cronymax-caption">Node #{node.id}</div>
       </div>
     </aside>
   );
@@ -1313,9 +1189,7 @@ function EdgeInspector({
   edge: GraphEdge;
   onToggleCollapse: () => void;
   onClose: () => void;
-  onChangeEdge: (
-    patch: Partial<Pick<GraphEdge, "port" | "requires_human_approval">>,
-  ) => void;
+  onChangeEdge: (patch: Partial<Pick<GraphEdge, "port" | "requires_human_approval">>) => void;
   onDelete: () => void;
 }) {
   const from = state.nodes.find((n) => n.id === edge.from_id);
@@ -1357,10 +1231,9 @@ function EdgeInspector({
             onChange={(e) => onChangeEdge({ port: e.target.value })}
           >
             <option value="">(no document)</option>
-            {edge.port &&
-              !state.docTypeCatalog.find((d) => d.name === edge.port) && (
-                <option value={edge.port}>{edge.port}</option>
-              )}
+            {edge.port && !state.docTypeCatalog.find((d) => d.name === edge.port) && (
+              <option value={edge.port}>{edge.port}</option>
+            )}
             {state.docTypeCatalog.map((d) => (
               <option key={d.name} value={d.name}>
                 {d.display_name} ({d.name})
@@ -1374,9 +1247,7 @@ function EdgeInspector({
             <input
               type="checkbox"
               checked={!!edge.requires_human_approval}
-              onChange={(e) =>
-                onChangeEdge({ requires_human_approval: e.target.checked })
-              }
+              onChange={(e) => onChangeEdge({ requires_human_approval: e.target.checked })}
             />
             <span>Require human approval before transition</span>
           </label>
@@ -1405,10 +1276,7 @@ function AgentPicker({
   onClose: () => void;
 }) {
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
       <div
         className="w-[420px] max-h-[70vh] overflow-auto rounded-md border border-cronymax-border bg-cronymax-float p-3 shadow-xl"
         onClick={(e) => e.stopPropagation()}
@@ -1426,8 +1294,7 @@ function AgentPicker({
         </div>
         {agents.length === 0 ? (
           <p className="text-xs text-cronymax-caption">
-            No agents registered. Define agents under your workspace’s{" "}
-            <code>agents/</code> directory and reload.
+            No agents registered. Define agents under your workspace’s <code>agents/</code> directory and reload.
           </p>
         ) : (
           <ul className="flex flex-col gap-1">
@@ -1439,9 +1306,7 @@ function AgentPicker({
                   className="flex w-full items-center justify-between rounded border border-cronymax-border bg-cronymax-base px-2 py-1.5 text-left text-xs hover:bg-cronymax-float"
                 >
                   <span className="font-medium">{a.name}</span>
-                  <span className="text-[10px] text-cronymax-caption">
-                    {a.llm}
-                  </span>
+                  <span className="text-[10px] text-cronymax-caption">{a.llm}</span>
                 </button>
               </li>
             ))}

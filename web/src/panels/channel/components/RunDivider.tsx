@@ -1,10 +1,6 @@
 import type { AppEvent } from "@/types/events";
 
-export function RunDivider({
-  event,
-}: {
-  event: Extract<AppEvent, { kind: "system" }>;
-}) {
+export function RunDivider({ event }: { event: Extract<AppEvent, { kind: "system" }> }) {
   const label = event.payload.subkind.replace("_", " ");
   return (
     <div className="self-stretch flex items-center gap-2 text-[11px] uppercase tracking-wide text-cronymax-title/40 my-2">

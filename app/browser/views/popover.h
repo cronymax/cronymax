@@ -38,9 +38,9 @@ class Popover : public ThemeAwareView {
   // MainWindow* dependency. Same surface as the old PopoverCtrl::Host.
   struct Host {
     std::function<void(const std::string& url)> open_web_tab;
-    std::function<void(int top, int bottom)>    set_content_insets;
-    std::function<void()>                       refresh_drag_region;
-    std::function<void()>                       close_notify;
+    std::function<void(int top, int bottom)> set_content_insets;
+    std::function<void()> refresh_drag_region;
+    std::function<void()> close_notify;
   };
 
   // |theme_ctx|  — reads current chrome colors (ThemeAwareView subscription).
@@ -49,12 +49,12 @@ class Popover : public ThemeAwareView {
   // |main_win|   — needed for GetBounds (layout) and scrim.
   // |host|       — callbacks into MainWindow.
   Popover(ThemeContext* theme_ctx,
-          CefRefPtr<CefBrowserView>       content_bv,
+          CefRefPtr<CefBrowserView> content_bv,
           CefRefPtr<CefOverlayController> content_oc,
-          CefRefPtr<CefPanel>             chrome_panel,
+          CefRefPtr<CefPanel> chrome_panel,
           CefRefPtr<CefOverlayController> chrome_oc,
-          CefRefPtr<CefWindow>            main_win,
-          Host                            host);
+          CefRefPtr<CefWindow> main_win,
+          Host host);
 
   // Open the popover at |url|, pairing it to |owner_browser_id|.
   // Pass owner_browser_id=0 for a global popover (e.g. Settings).
@@ -99,33 +99,34 @@ class Popover : public ThemeAwareView {
   // Re-apply NSView corner masks after CEF layout / re-parenting.
   void ApplyCornerMasks();
 
-  // Recompute slot bounds from |total_rect| using the current with_chrome_ mode.
+  // Recompute slot bounds from |total_rect| using the current with_chrome_
+  // mode.
   void UpdateBounds(const CefRect& total_rect);
 
   // ---- Overlay slots ----
-  CefRefPtr<CefBrowserView>       content_bv_;
+  CefRefPtr<CefBrowserView> content_bv_;
   CefRefPtr<CefOverlayController> content_oc_;
-  CefRefPtr<CefPanel>             chrome_panel_;
+  CefRefPtr<CefPanel> chrome_panel_;
   CefRefPtr<CefOverlayController> chrome_oc_;
-  CefRefPtr<CefWindow>            main_win_;
-  Host                            host_;
+  CefRefPtr<CefWindow> main_win_;
+  Host host_;
 
   // ---- Chrome strip ----
   std::unique_ptr<PopoverToolbar> toolbar_;
-  ToolbarBase::ActionHandle h_reload_   = ToolbarBase::kInvalidHandle;
-  ToolbarBase::ActionHandle h_copy_     = ToolbarBase::kInvalidHandle;
+  ToolbarBase::ActionHandle h_reload_ = ToolbarBase::kInvalidHandle;
+  ToolbarBase::ActionHandle h_copy_ = ToolbarBase::kInvalidHandle;
   ToolbarBase::ActionHandle h_open_tab_ = ToolbarBase::kInvalidHandle;
   ToolbarBase::ActionHandle h_open_ext_ = ToolbarBase::kInvalidHandle;
-  ToolbarBase::ActionHandle h_close_    = ToolbarBase::kInvalidHandle;
+  ToolbarBase::ActionHandle h_close_ = ToolbarBase::kInvalidHandle;
 
   // ---- State ----
   std::string current_url_;
   cef_color_t chrome_bg_ = static_cast<cef_color_t>(0xFF182625);
-  int  owner_browser_id_ = 0;
-  bool is_builtin_       = false;
-  bool is_compact_       = false;
-  bool is_open_          = false;
-  bool with_chrome_      = false;
+  int owner_browser_id_ = 0;
+  bool is_builtin_ = false;
+  bool is_compact_ = false;
+  bool is_open_ = false;
+  bool with_chrome_ = false;
 };
 
 }  // namespace cronymax

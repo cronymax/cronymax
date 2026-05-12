@@ -24,25 +24,27 @@ class ClientHandler;
 class TabToolbar;
 
 class SimpleTabBehavior : public TabBehavior {
-public:
-  SimpleTabBehavior(ClientHandler *client_handler, TabKind kind,
-                    std::string icon, std::string display_name,
+ public:
+  SimpleTabBehavior(ClientHandler* client_handler,
+                    TabKind kind,
+                    std::string icon,
+                    std::string display_name,
                     std::string content_url);
   ~SimpleTabBehavior() override = default;
 
   TabKind Kind() const override { return kind_; }
   // Builtin panels (chat/terminal/settings) have no native toolbar.
   bool HasToolbar() const override { return false; }
-  void BuildToolbar(TabToolbar *toolbar, TabContext *context) override;
-  CefRefPtr<CefView> BuildContent(TabContext *context) override;
-  void ApplyToolbarState(const ToolbarState &state) override;
+  void BuildToolbar(TabToolbar* toolbar, TabContext* context) override;
+  CefRefPtr<CefView> BuildContent(TabContext* context) override;
+  void ApplyToolbarState(const ToolbarState& state) override;
   int BrowserId() const override;
 
   CefRefPtr<CefBrowserView> browser_view() const { return browser_view_; }
-  const std::string &display_name() const { return display_name_; }
+  const std::string& display_name() const { return display_name_; }
 
-private:
-  ClientHandler *client_handler_;
+ private:
+  ClientHandler* client_handler_;
   TabKind kind_;
   std::string icon_;
   std::string display_name_;
@@ -52,4 +54,4 @@ private:
   CefRefPtr<CefLabelButton> name_btn_;
 };
 
-} // namespace cronymax
+}  // namespace cronymax

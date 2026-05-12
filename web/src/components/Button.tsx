@@ -3,8 +3,7 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 type Variant = "ghost" | "primary" | "subtle";
 
 const VARIANTS: Record<Variant, string> = {
-  ghost:
-    "bg-transparent text-cronymax-caption hover:bg-cronymax-float hover:text-cronymax-title",
+  ghost: "bg-transparent text-cronymax-caption hover:bg-cronymax-float hover:text-cronymax-title",
   primary: "bg-cronymax-primary text-white hover:bg-cronymax-secondary",
   subtle: "bg-cronymax-float text-cronymax-title hover:bg-cronymax-border",
 };
@@ -14,12 +13,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children?: ReactNode;
 }
 
-export function Button({
-  variant = "subtle",
-  className = "",
-  children,
-  ...rest
-}: ButtonProps) {
+export function Button({ variant = "subtle", className = "", children, ...rest }: ButtonProps) {
   return (
     <button
       className={[
@@ -34,12 +28,7 @@ export function Button({
   );
 }
 
-export function IconButton({
-  variant = "ghost",
-  className = "",
-  children,
-  ...rest
-}: ButtonProps) {
+export function IconButton({ variant = "ghost", className = "", children, ...rest }: ButtonProps) {
   return (
     <button
       className={[

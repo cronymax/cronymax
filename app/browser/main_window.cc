@@ -13,27 +13,27 @@
 
 #include "include/base/cef_callback.h"
 #include "include/cef_app.h"
+#include "include/cef_menu_model.h"
+#include "include/cef_menu_model_delegate.h"
 #include "include/cef_parser.h"
-#include "runtime/legacy_importer.h"
 #include "include/cef_path_util.h"
 #include "include/views/cef_browser_view_delegate.h"
 #include "include/views/cef_fill_layout.h"
 #include "include/views/cef_menu_button.h"
 #include "include/views/cef_panel_delegate.h"
-#include "include/cef_menu_model.h"
-#include "include/cef_menu_model_delegate.h"
 #include "include/wrapper/cef_closure_task.h"
 #include "include/wrapper/cef_helpers.h"
+#include "runtime/legacy_importer.h"
 
 #include "browser/platform/view_style.h"
 
 #if defined(__APPLE__)
 #include "browser/icon_registry.h"
 #include "browser/mac_folder_picker.h"
+#include "browser/tab/simple_tab_behavior.h"
 #include "browser/tab/tab.h"
 #include "browser/tab/tab_behavior.h"
 #include "browser/tab/web_tab_behavior.h"
-#include "browser/tab/simple_tab_behavior.h"
 #endif
 
 namespace cronymax {
@@ -44,8 +44,10 @@ class SizedPanelDelegate : public CefPanelDelegate {
   explicit SizedPanelDelegate(CefSize preferred_size)
       : preferred_size_(preferred_size) {}
   CefSize GetPreferredSize(CefRefPtr<CefView> view) override {
-    (void)view; return preferred_size_;
+    (void)view;
+    return preferred_size_;
   }
+
  private:
   CefSize preferred_size_;
   IMPLEMENT_REFCOUNTING(SizedPanelDelegate);
@@ -62,6 +64,7 @@ class AlloyBrowserViewDelegate : public CefBrowserViewDelegate {
   cef_runtime_style_t GetBrowserRuntimeStyle() override {
     return CEF_RUNTIME_STYLE_ALLOY;
   }
+
  private:
   IMPLEMENT_REFCOUNTING(AlloyBrowserViewDelegate);
   DISALLOW_COPY_AND_ASSIGN(AlloyBrowserViewDelegate);
@@ -71,7 +74,9 @@ CefRefPtr<CefLabelButton> Button(CefButtonDelegate* delegate,
                                  const std::string& text) {
   return CefLabelButton::CreateLabelButton(delegate, text);
 }
-[[maybe_unused]] void EnsureButtonReferenced() { (void)&Button; }
+[[maybe_unused]] void EnsureButtonReferenced() {
+  (void)&Button;
+}
 
 std::string EncodeFilePathForUrl(const std::string& path) {
   static constexpr char kHex[] = "0123456789ABCDEF";
@@ -117,8 +122,10 @@ class FnButtonDelegate : public CefButtonDelegate {
   explicit FnButtonDelegate(std::function<void()> on_click)
       : on_click_(std::move(on_click)) {}
   void OnButtonPressed(CefRefPtr<CefButton>) override {
-    if (on_click_) on_click_();
+    if (on_click_)
+      on_click_();
   }
+
  private:
   std::function<void()> on_click_;
   IMPLEMENT_REFCOUNTING(FnButtonDelegate);
@@ -129,17 +136,18 @@ class FnButtonDelegate : public CefButtonDelegate {
 // handler then lets the handler call ShowMenu().
 class FnMenuButtonDelegate : public CefMenuButtonDelegate {
  public:
-  using PressFn = std::function<void(
-      CefRefPtr<CefMenuButton>,
-      const CefPoint&,
-      CefRefPtr<CefMenuButtonPressedLock>)>;
+  using PressFn = std::function<void(CefRefPtr<CefMenuButton>,
+                                     const CefPoint&,
+                                     CefRefPtr<CefMenuButtonPressedLock>)>;
   explicit FnMenuButtonDelegate(PressFn fn) : fn_(std::move(fn)) {}
   void OnMenuButtonPressed(CefRefPtr<CefMenuButton> btn,
                            const CefPoint& pt,
                            CefRefPtr<CefMenuButtonPressedLock> lock) override {
-    if (fn_) fn_(btn, pt, lock);
+    if (fn_)
+      fn_(btn, pt, lock);
   }
   void OnButtonPressed(CefRefPtr<CefButton>) override {}
+
  private:
   PressFn fn_;
   IMPLEMENT_REFCOUNTING(FnMenuButtonDelegate);
@@ -151,10 +159,13 @@ class FnMenuModelDelegate : public CefMenuModelDelegate {
  public:
   using ExecFn = std::function<void(int)>;
   explicit FnMenuModelDelegate(ExecFn fn) : fn_(std::move(fn)) {}
-  void ExecuteCommand(CefRefPtr<CefMenuModel>, int cmd,
+  void ExecuteCommand(CefRefPtr<CefMenuModel>,
+                      int cmd,
                       cef_event_flags_t) override {
-    if (fn_) fn_(cmd);
+    if (fn_)
+      fn_(cmd);
   }
+
  private:
   ExecFn fn_;
   IMPLEMENT_REFCOUNTING(FnMenuModelDelegate);
@@ -164,12 +175,13 @@ class FnMenuModelDelegate : public CefMenuModelDelegate {
 // std::function-backed CefTextfieldDelegate for the popover URL textfield.
 class FnTextfieldDelegate : public CefTextfieldDelegate {
  public:
-  using KeyFn = std::function<bool(CefRefPtr<CefTextfield>, const CefKeyEvent&)>;
+  using KeyFn =
+      std::function<bool(CefRefPtr<CefTextfield>, const CefKeyEvent&)>;
   explicit FnTextfieldDelegate(KeyFn fn) : fn_(std::move(fn)) {}
-  bool OnKeyEvent(CefRefPtr<CefTextfield> tf,
-                  const CefKeyEvent& ev) override {
+  bool OnKeyEvent(CefRefPtr<CefTextfield> tf, const CefKeyEvent& ev) override {
     return fn_ ? fn_(tf, ev) : false;
   }
+
  private:
   KeyFn fn_;
   IMPLEMENT_REFCOUNTING(FnTextfieldDelegate);
@@ -191,7 +203,8 @@ void PushToView(CefRefPtr<CefBrowserView> view,
   CefWindow::CreateTopLevelWindow(new MainWindow());
 }
 
-MainWindow::MainWindow() : client_handler_(new ClientHandler(&shell_model_.space_manager_)) {}
+MainWindow::MainWindow()
+    : client_handler_(new ClientHandler(&shell_model_.space_manager_)) {}
 
 void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   CEF_REQUIRE_UI_THREAD();
@@ -203,8 +216,9 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   CefGetPath(PK_DIR_RESOURCES, res_path);
 
   // Store the database in the user-data directory so it survives app-bundle
-  // rebuilds (the Chromium Framework Resources dir is wiped by COPY_MAC_FRAMEWORK
-  // on every cmake build). Fall back to Resources if user-data is unavailable.
+  // rebuilds (the Chromium Framework Resources dir is wiped by
+  // COPY_MAC_FRAMEWORK on every cmake build). Fall back to Resources if
+  // user-data is unavailable.
   std::filesystem::path db_dir;
   CefString user_data_str;
   if (CefGetPath(PK_USER_DATA, user_data_str) && !user_data_str.empty()) {
@@ -229,7 +243,8 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   }
 
   if (shell_model_.space_manager_.spaces().empty())
-    shell_model_.space_manager_.CreateSpace("Default", std::filesystem::current_path(), "default");
+    shell_model_.space_manager_.CreateSpace(
+        "Default", std::filesystem::current_path(), "default");
 
   // arc-style-tab-cards: TabManager owns every tab; per-kind *_view_
   // singletons are gone. All non-web kinds are singleton tabs whose
@@ -241,21 +256,23 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   // singletons.
   shell_model_.tabs_->RegisterSingletonKind(TabKind::kSettings);
   shell_model_.tabs_->SetKindContentUrl(TabKind::kChat,
-                           ResourceUrl("panels/chat/index.html"));
-  shell_model_.tabs_->SetKindContentUrl(TabKind::kTerminal,
-                           ResourceUrl("panels/terminal/index.html"));
-  shell_model_.tabs_->SetKindContentUrl(TabKind::kSettings,
-                           ResourceUrl("panels/settings/index.html"));
+                                        ResourceUrl("panels/chat/index.html"));
+  shell_model_.tabs_->SetKindContentUrl(
+      TabKind::kTerminal, ResourceUrl("panels/terminal/index.html"));
+  shell_model_.tabs_->SetKindContentUrl(
+      TabKind::kSettings, ResourceUrl("panels/settings/index.html"));
 
   // refine-ui-theme-layout: load persisted theme mode (defaults to
-  // "system") and seed shell_model_.current_chrome_ before BuildChrome so the title
-  // bar paints with the correct color on first frame.
+  // "system") and seed shell_model_.current_chrome_ before BuildChrome so the
+  // title bar paints with the correct color on first frame.
   {
-    std::string persisted = shell_model_.space_manager_.store().GetKv("ui.theme");
+    std::string persisted =
+        shell_model_.space_manager_.store().GetKv("ui.theme");
     if (persisted == "light" || persisted == "dark" || persisted == "system") {
       shell_model_.theme_mode_ = persisted;
     }
-    shell_model_.current_chrome_ = ViewModel::ChromeFor(shell_model_.ResolveAppearance());
+    shell_model_.current_chrome_ =
+        ViewModel::ChromeFor(shell_model_.ResolveAppearance());
   }
 
   BuildChrome(window);
@@ -265,36 +282,46 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   if (!RestoreSidebarTabs()) {
     TabId id = shell_model_.tabs_->Open(TabKind::kChat, OpenParams{});
     // Tab::Register() in Open() already seeded colors — no ApplyTheme needed.
-    if (!id.empty()) shell_model_.tabs_->Activate(id);
+    if (!id.empty())
+      shell_model_.tabs_->Activate(id);
   }
 
 #if defined(__APPLE__)
   // Arc-style: translucent NSWindow with hidden title bar. Posted onto the
   // UI runner so the NSWindow is fully realized first.
-  CefPostTask(TID_UI, base::BindOnce([](CefRefPtr<CefWindow> w,
-                                         cef_color_t bg) {
-                StyleMainWindowTranslucent(w->GetWindowHandle(), bg);
-              }, window, shell_model_.current_chrome_.bg_body));
+  CefPostTask(TID_UI, base::BindOnce(
+                          [](CefRefPtr<CefWindow> w, cef_color_t bg) {
+                            StyleMainWindowTranslucent(w->GetWindowHandle(),
+                                                       bg);
+                          },
+                          window, shell_model_.current_chrome_.bg_body));
   // refine-ui-theme-layout: install rounded 12 px frame + initial border
   // colour around the content panel. Posted so the NSView is realized.
-  CefPostTask(TID_UI, base::BindOnce([](CefRefPtr<MainWindow> self) {
-                self->ApplyThemeChrome(self->shell_model_.current_chrome_);
-              }, CefRefPtr<MainWindow>(this)));
+  CefPostTask(TID_UI,
+              base::BindOnce(
+                  [](CefRefPtr<MainWindow> self) {
+                    self->ApplyThemeChrome(self->shell_model_.current_chrome_);
+                  },
+                  CefRefPtr<MainWindow>(this)));
   // refine-ui-theme-layout: subscribe to the macOS appearance flip
   // notification so `system` mode tracks Light/Dark in real time.
   appearance_observer_ = AddSystemAppearanceObserver(
       [](void* user) {
         auto* self = reinterpret_cast<MainWindow*>(user);
         CefPostTask(TID_UI, base::BindOnce(
-            [](CefRefPtr<MainWindow> s) { s->OnSystemAppearanceChanged(); },
-            CefRefPtr<MainWindow>(self)));
+                                [](CefRefPtr<MainWindow> s) {
+                                  s->OnSystemAppearanceChanged();
+                                },
+                                CefRefPtr<MainWindow>(self)));
       },
       this);
   // native-title-bar: install the AppKit drag overlay above the title-bar
   // spacer once the initial layout has run and the spacer has real bounds.
   CefPostTask(TID_UI, base::BindOnce(
-      [](CefRefPtr<MainWindow> self) { self->RefreshTitleBarDragRegion(); },
-      CefRefPtr<MainWindow>(this)));
+                          [](CefRefPtr<MainWindow> self) {
+                            self->RefreshTitleBarDragRegion();
+                          },
+                          CefRefPtr<MainWindow>(this)));
 #endif
 
   shell_model_.space_manager_.SetSwitchCallback(
@@ -306,8 +333,9 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
         // via NotifyActiveTabChanged below. No explicit hide-all needed here.
         for (const auto& sp : shell_model_.space_manager_.spaces()) {
           if (sp->id == new_id) {
-            PushToSidebar("shell.space_changed",
-                          nlohmann::json{{"id", new_id}, {"name", sp->name}}.dump());
+            PushToSidebar(
+                "shell.space_changed",
+                nlohmann::json{{"id", new_id}, {"name", sp->name}}.dump());
             // Phase 9: space button label updated via TitleBarView observer
             // (SpaceChanged event fires in shell_model_.NotifySpaceChanged).
             break;
@@ -318,25 +346,27 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   // Wire runtime restart callback: on every space switch, restart the
   // Rust runtime with the new space's sandbox policy (design decision D4).
   shell_model_.space_manager_.SetRuntimeRestartCallback(
-      [this](const std::string& workspace_root,
-             const ProfileRecord& profile) {
+      [this](const std::string& workspace_root, const ProfileRecord& profile) {
         // Build the sandbox JSON that SpawnAndHandshake will inject.
         nlohmann::json sandbox;
         sandbox["workspace_root"] = workspace_root;
-        sandbox["allow_network"]  = profile.allow_network;
+        sandbox["allow_network"] = profile.allow_network;
         {
           auto arr = nlohmann::json::array();
-          for (const auto& p : profile.extra_read_paths) arr.push_back(p);
+          for (const auto& p : profile.extra_read_paths)
+            arr.push_back(p);
           sandbox["extra_read_paths"] = arr;
         }
         {
           auto arr = nlohmann::json::array();
-          for (const auto& p : profile.extra_write_paths) arr.push_back(p);
+          for (const auto& p : profile.extra_write_paths)
+            arr.push_back(p);
           sandbox["extra_write_paths"] = arr;
         }
         {
           auto arr = nlohmann::json::array();
-          for (const auto& p : profile.extra_deny_paths) arr.push_back(p);
+          for (const auto& p : profile.extra_deny_paths)
+            arr.push_back(p);
           sandbox["extra_deny_paths"] = arr;
         }
         runtime_bridge_->SetSandboxConfig(sandbox);
@@ -369,11 +399,13 @@ void MainWindow::OnWindowDestroyed(CefRefPtr<CefWindow> window) {
 }
 
 bool MainWindow::CanClose(CefRefPtr<CefWindow> window) {
-  (void)window; return true;
+  (void)window;
+  return true;
 }
 
 CefSize MainWindow::GetPreferredSize(CefRefPtr<CefView> view) {
-  (void)view; return CefSize(1440, 920);
+  (void)view;
+  return CefSize(1440, 920);
 }
 
 cef_runtime_style_t MainWindow::GetWindowRuntimeStyle() {
@@ -404,17 +436,21 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     };
     // run_file_dialog_ is assigned later in BuildChrome (after this block),
     // so capture by this-pointer and forward lazily at call time.
-    tb_host.run_file_dialog = [this](std::function<void(const std::string&)> cb) {
-      if (run_file_dialog_) run_file_dialog_(std::move(cb));
-    };
+    tb_host.run_file_dialog =
+        [this](std::function<void(const std::string&)> cb) {
+          if (run_file_dialog_)
+            run_file_dialog_(std::move(cb));
+        };
     // profile_picker_overlay_ is constructed in BuildOverlaySlots() which runs
     // after BuildChrome, so capture by pointer and forward lazily.
     tb_host.show_profile_picker = [this](const std::string& path) {
-      if (profile_picker_overlay_) profile_picker_overlay_->Show(path);
+      if (profile_picker_overlay_)
+        profile_picker_overlay_->Show(path);
     };
     titlebar_view_ = std::make_unique<TitleBarView>(
         /*space=*/this, /*window_ctx=*/this, /*overlay=*/this,
-        /*resources=*/this, /*theme_ctx=*/this, main_window_, std::move(tb_host));
+        /*resources=*/this, /*theme_ctx=*/this, main_window_,
+        std::move(tb_host));
     titlebar_panel_ = titlebar_view_->Build();
   }
   window->AddChildView(titlebar_panel_);
@@ -429,9 +465,9 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   root_layout->SetFlexForView(body_panel_, 1);
 
   // ── Sidebar (Phase 10: owned by SidebarView) ─────────────────────────────
-  sidebar_view_obj_ = std::make_unique<SidebarView>(/*resource_ctx=*/this,
-                                                     /*theme_ctx=*/this,
-                                                     client_handler_);
+  sidebar_view_obj_ =
+      std::make_unique<SidebarView>(/*resource_ctx=*/this,
+                                    /*theme_ctx=*/this, client_handler_);
   auto sv = sidebar_view_obj_->Build();
   body_panel_->AddChildView(sv);
   body_layout->SetFlexForView(sv, 0);
@@ -439,10 +475,11 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   // ── Content host (Phase 8: owned by ContentView) ─────────────────────────
   {
     ContentView::Host cv_host;
-    cv_host.active_tab = [this]()
-        -> std::tuple<std::string, CefRefPtr<CefView>, CefRefPtr<CefBrowserView>> {
+    cv_host.active_tab = [this]() -> std::tuple<std::string, CefRefPtr<CefView>,
+                                                CefRefPtr<CefBrowserView>> {
       Tab* active = shell_model_.tabs_ ? shell_model_.tabs_->Active() : nullptr;
-      if (!active || !active->card()) return {};
+      if (!active || !active->card())
+        return {};
       CefRefPtr<CefBrowserView> bv;
       if (active->kind() == TabKind::kWeb) {
         if (auto* wb = static_cast<WebTabBehavior*>(active->behavior()))
@@ -456,14 +493,18 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     cv_host.refresh_drag_region = [this]() {
       // Deferred so CEF's NSView re-parenting completes first.
       CefPostTask(TID_UI, base::BindOnce(
-          [](CefRefPtr<MainWindow> self) { self->RefreshTitleBarDragRegion(); },
-          CefRefPtr<MainWindow>(this)));
+                              [](CefRefPtr<MainWindow> self) {
+                                self->RefreshTitleBarDragRegion();
+                              },
+                              CefRefPtr<MainWindow>(this)));
     };
     cv_host.request_focus = [this]() {
       Tab* active = shell_model_.tabs_ ? shell_model_.tabs_->Active() : nullptr;
-      if (!active || active->kind() != TabKind::kWeb) return;
+      if (!active || active->kind() != TabKind::kWeb)
+        return;
       if (auto* wb = static_cast<WebTabBehavior*>(active->behavior()))
-        if (auto bv = wb->browser_view()) bv->RequestFocus();
+        if (auto bv = wb->browser_view())
+          bv->RequestFocus();
     };
     cv_host.update_popover_visibility = [this]() { UpdatePopoverVisibility(); };
     content_view_ = std::make_unique<ContentView>(
@@ -481,8 +522,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
                                      const std::string& json) {
     PushToSidebar(ev, json);
   };
-  disp_host.broadcast = [this](const std::string& ev,
-                                const std::string& json) {
+  disp_host.broadcast = [this](const std::string& ev, const std::string& json) {
     BroadcastToAllPanels(ev, json);
   };
   // Phase 8: show_active_tab removed from DispatcherHost — ContentView drives
@@ -495,7 +535,8 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     PersistTabClosed(id);
   };
   disp_host.remove_tab_card = [this](const std::string& tab_id) {
-    if (content_view_) content_view_->RemoveCard(tab_id);
+    if (content_view_)
+      content_view_->RemoveCard(tab_id);
   };
   disp_host.get_popover_owner_browser_id = [this]() {
     return popover_ ? popover_->owner_browser_id() : 0;
@@ -503,11 +544,13 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   disp_host.popover_reload = [this]() {
     if (popover_) {
       if (auto bv = popover_->content_view())
-        if (auto b = bv->GetBrowser()) b->Reload();
+        if (auto b = bv->GetBrowser())
+          b->Reload();
     }
   };
   disp_host.get_popover_url = [this]() -> std::string {
-    if (!popover_) return {};
+    if (!popover_)
+      return {};
     if (auto bv = popover_->content_view())
       if (auto b = bv->GetBrowser())
         return b->GetMainFrame()->GetURL().ToString();
@@ -522,15 +565,16 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   };
   disp_host.window_drag = [this]() {
 #if defined(__APPLE__)
-    if (main_window_) PerformWindowDrag(main_window_->GetWindowHandle());
+    if (main_window_)
+      PerformWindowDrag(main_window_->GetWindowHandle());
 #endif
   };
   disp_host.handle_theme_mode_change = [this](const std::string& mode) {
     CefPostTask(TID_UI, base::BindOnce(
-        [](CefRefPtr<MainWindow> self, std::string m) {
-          self->HandleThemeModeChange(m);
-        },
-        CefRefPtr<MainWindow>(this), mode));
+                            [](CefRefPtr<MainWindow> self, std::string m) {
+                              self->HandleThemeModeChange(m);
+                            },
+                            CefRefPtr<MainWindow>(this), mode));
   };
   // Wire run_file_dialog_ for the "Open Folder\u2026" titlebar command and the
   // space.open_folder bridge channel.  On macOS we use NSOpenPanel; the
@@ -549,10 +593,9 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
 
   dispatcher_ = std::make_unique<ViewDispatcher>(
       /*tabs_ctx=*/this, /*space_ctx=*/this,
-      /*overlay_ctx=*/this, /*resource_ctx=*/this,
-      client_handler_.get(), &shell_model_, std::move(disp_host));
+      /*overlay_ctx=*/this, /*resource_ctx=*/this, client_handler_.get(),
+      &shell_model_, std::move(disp_host));
   dispatcher_->Wire();
-
 
   // (task 4.2) Initialize the Rust runtime bridge and proxy. Start() finds
   // the cronymax-runtime binary in the app bundle, spawns it, and completes
@@ -560,7 +603,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   // binary is missing or the handshake fails the app continues without the
   // runtime (degraded mode — all runtime-backed channels return 503).
   runtime_bridge_ = std::make_unique<RuntimeBridge>();
-  runtime_proxy_  = std::make_unique<RuntimeProxy>();
+  runtime_proxy_ = std::make_unique<RuntimeProxy>();
   // (task 5.1 / 5.2) Run the one-shot legacy state importer before starting
   // the runtime so it sees the imported runs on its first load.
   // app_data_dir is declared here (outside the importer block) so the
@@ -584,17 +627,16 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
       std::vector<ImportSpaceInfo> space_infos;
       for (const auto& sp_ptr : shell_model_.space_manager_.spaces()) {
         ImportSpaceInfo info;
-        info.space_id      = sp_ptr->id;
-        info.space_name    = sp_ptr->name;
+        info.space_id = sp_ptr->id;
+        info.space_name = sp_ptr->name;
         info.workspace_root = sp_ptr->workspace_root;
         space_infos.push_back(std::move(info));
       }
       const auto res = importer.Run(space_infos);
-      LOG(INFO) << "[LegacyImporter] import done: "
-                << res.spaces_seeded << " spaces, "
-                << res.runs_imported  << " runs imported, "
-                << res.runs_skipped   << " already present, "
-                << res.parse_errors   << " parse errors";
+      LOG(INFO) << "[LegacyImporter] import done: " << res.spaces_seeded
+                << " spaces, " << res.runs_imported << " runs imported, "
+                << res.runs_skipped << " already present, " << res.parse_errors
+                << " parse errors";
     }
   }
   // Start the bridge on a background thread to avoid blocking the UI.
@@ -602,15 +644,19 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     if (runtime_bridge_->Start({}, app_data_dir)) {
       runtime_proxy_->Attach(runtime_bridge_.get());
       // Wire the proxy to the bridge handler on the UI thread.
-      CefPostTask(TID_UI, base::BindOnce(
-          [](CefRefPtr<MainWindow> self) {
-            self->client_handler_->SetRuntimeProxy(self->runtime_proxy_.get());
-            // Auto-subscribe to the initial active space's events.
-            if (auto* sp = self->shell_model_.space_manager_.ActiveSpace()) {
-              self->client_handler_->OnSpaceSwitch("", sp->id);
-            }
-          },
-          CefRefPtr<MainWindow>(this)));
+      CefPostTask(
+          TID_UI,
+          base::BindOnce(
+              [](CefRefPtr<MainWindow> self) {
+                self->client_handler_->SetRuntimeProxy(
+                    self->runtime_proxy_.get());
+                // Auto-subscribe to the initial active space's events.
+                if (auto* sp =
+                        self->shell_model_.space_manager_.ActiveSpace()) {
+                  self->client_handler_->OnSpaceSwitch("", sp->id);
+                }
+              },
+              CefRefPtr<MainWindow>(this)));
     } else {
       fprintf(stderr, "[MainWindow] RuntimeBridge failed to start: %s\n",
               runtime_bridge_->LastError().c_str());
@@ -637,7 +683,9 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     // Round the content corners now that the browser (and its NSView tree)
     // is fully initialized. ContentView::ShowActiveCard posts the same call
     // but GetBrowser() is null on a brand-new tab at that point.
-    Tab* t = shell_model_.tabs_ ? shell_model_.tabs_->FindByBrowserId(browser_id) : nullptr;
+    Tab* t = shell_model_.tabs_
+                 ? shell_model_.tabs_->FindByBrowserId(browser_id)
+                 : nullptr;
     if (t) {
       CefRefPtr<CefBrowserView> bv;
       if (t->kind() == TabKind::kWeb) {
@@ -652,34 +700,36 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     }
   };
 
-  client_handler_->on_title_change =
-      [this](int browser_id, const std::string& title) {
-        Tab* t = shell_model_.tabs_->FindByBrowserId(browser_id);
-        if (!t) return;
-        PushToSidebar("shell.tab_title_changed",
-                      nlohmann::json{{"id", t->tab_id()}, {"title", title}}.dump());
-      };
+  client_handler_->on_title_change = [this](int browser_id,
+                                            const std::string& title) {
+    Tab* t = shell_model_.tabs_->FindByBrowserId(browser_id);
+    if (!t)
+      return;
+    PushToSidebar("shell.tab_title_changed",
+                  nlohmann::json{{"id", t->tab_id()}, {"title", title}}.dump());
+  };
 
-  client_handler_->on_address_change =
-      [this](int browser_id, const std::string& url) {
-        // Mirror popover content URL into the native chrome strip textfield.
-        if (popover_ && popover_->IsOpen()) {
-          if (auto bv = popover_->content_view()) {
-            if (bv->GetBrowser() &&
-                bv->GetBrowser()->GetIdentifier() == browser_id) {
-              popover_->SetCurrentUrl(url);
-              return;
-            }
-          }
+  client_handler_->on_address_change = [this](int browser_id,
+                                              const std::string& url) {
+    // Mirror popover content URL into the native chrome strip textfield.
+    if (popover_ && popover_->IsOpen()) {
+      if (auto bv = popover_->content_view()) {
+        if (bv->GetBrowser() &&
+            bv->GetBrowser()->GetIdentifier() == browser_id) {
+          popover_->SetCurrentUrl(url);
+          return;
         }
-        Tab* t = shell_model_.tabs_->FindByBrowserId(browser_id);
-        if (!t) return;
-        PushToSidebar("shell.tab_url_changed",
-                      nlohmann::json{{"id", t->tab_id()}, {"url", url}}.dump());
-      };
+      }
+    }
+    Tab* t = shell_model_.tabs_->FindByBrowserId(browser_id);
+    if (!t)
+      return;
+    PushToSidebar("shell.tab_url_changed",
+                  nlohmann::json{{"id", t->tab_id()}, {"url", url}}.dump());
+  };
 
-  client_handler_->on_popup_request =
-      [this](int browser_id, const std::string& url) -> bool {
+  client_handler_->on_popup_request = [this](int browser_id,
+                                             const std::string& url) -> bool {
     OpenPopover(url, browser_id);
     return true;  // suppress native popup
   };
@@ -691,10 +741,12 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     Tab* active = shell_model_.tabs_ ? shell_model_.tabs_->Active() : nullptr;
     if (active && active->kind() == TabKind::kWeb) {
       if (auto* wb = static_cast<WebTabBehavior*>(active->behavior())) {
-        if (auto bv = wb->browser_view()) target = bv->GetBrowser();
+        if (auto bv = wb->browser_view())
+          target = bv->GetBrowser();
       }
     }
-    if (!target) return;
+    if (!target)
+      return;
     CefWindowInfo wi;
     CefBrowserSettings bs;
     target->GetHost()->ShowDevTools(wi, nullptr, bs, CefPoint());
@@ -705,21 +757,22 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   // overlay. The topbar pump is gone (Phase 9); sidebar still uses
   // -webkit-app-region: drag for its top strip.
   client_handler_->on_draggable_regions_changed =
-      [this](int browser_id,
-             const std::vector<CefDraggableRegion>& regions) {
-    auto _sv = sidebar_view();
-    if (!_sv) return;
-    auto b = _sv->GetBrowser();
-    if (!b || b->GetIdentifier() != browser_id) return;
-    std::vector<DragRegion> rs;
-    rs.reserve(regions.size());
-    for (const auto& r : regions) {
-      rs.push_back({r.bounds.x, r.bounds.y, r.bounds.width,
-                    r.bounds.height, r.draggable != 0});
-    }
-    ApplyDraggableRegions(b->GetHost()->GetWindowHandle(),
-                          rs.empty() ? nullptr : rs.data(), rs.size());
-  };
+      [this](int browser_id, const std::vector<CefDraggableRegion>& regions) {
+        auto _sv = sidebar_view();
+        if (!_sv)
+          return;
+        auto b = _sv->GetBrowser();
+        if (!b || b->GetIdentifier() != browser_id)
+          return;
+        std::vector<DragRegion> rs;
+        rs.reserve(regions.size());
+        for (const auto& r : regions) {
+          rs.push_back({r.bounds.x, r.bounds.y, r.bounds.width, r.bounds.height,
+                        r.draggable != 0});
+        }
+        ApplyDraggableRegions(b->GetHost()->GetWindowHandle(),
+                              rs.empty() ? nullptr : rs.data(), rs.size());
+      };
 #endif
   // native-views-mvc Phase 6: pre-allocate fixed overlay slots.
   BuildOverlaySlots();
@@ -752,60 +805,64 @@ void MainWindow::BuildOverlaySlots() {
   chrome_oc->SetVisible(false);
 
   Popover::Host phost;
-  phost.open_web_tab       = [this](const std::string& url) { OpenWebTab(url); };
+  phost.open_web_tab = [this](const std::string& url) { OpenWebTab(url); };
   phost.set_content_insets = [this](int top, int bottom) {
     SetContentOuterVInsets(top, bottom);
   };
   phost.refresh_drag_region = [this]() { RefreshTitleBarDragRegion(); };
   phost.close_notify = nullptr;
   popover_ = std::make_unique<Popover>(
-      /*theme_ctx=*/this,
-      content_bv, content_oc,
-      chrome_panel, chrome_oc,
+      /*theme_ctx=*/this, content_bv, content_oc, chrome_panel, chrome_oc,
       main_window_, std::move(phost));
 
   // One-time deferred styling: CEF defers addChildWindow: by one event-loop
   // tick, so the overlay NSWindow is not yet attached synchronously.
-  CefPostTask(TID_UI, base::BindOnce(
-      [](CefRefPtr<CefBrowserView> bv, CefRefPtr<CefWindow> w, cef_color_t bg) {
-        // Content slot: all-corners mask (will be overridden on first Show).
-        StyleOverlayBrowserView(bv->GetBrowser()
-                                    ? bv->GetBrowser()->GetHost()->GetWindowHandle()
-                                    : nullptr,
-                                12.0, kCornerAll, /*with_shadow=*/true);
-        // Chrome slot: top-corners mask + background.
-        void* main_nsv = reinterpret_cast<void*>(w->GetWindowHandle());
-        void* nsview = CaptureLastChildNSView(main_nsv);
-        if (nsview) {
-          StyleOverlayPanel(nsview, 12.0, kCornerTop, bg);
-          SetOverlayWindowBackground(nsview, 0x00000000);
-        }
-      },
-      content_bv, main_window_,
-      shell_model_.current_chrome_.bg_float != 0
-          ? shell_model_.current_chrome_.bg_float
-          : static_cast<cef_color_t>(0xFF182625)));
+  CefPostTask(TID_UI,
+              base::BindOnce(
+                  [](CefRefPtr<CefBrowserView> bv, CefRefPtr<CefWindow> w,
+                     cef_color_t bg) {
+                    // Content slot: all-corners mask (will be overridden on
+                    // first Show).
+                    StyleOverlayBrowserView(
+                        bv->GetBrowser()
+                            ? bv->GetBrowser()->GetHost()->GetWindowHandle()
+                            : nullptr,
+                        12.0, kCornerAll, /*with_shadow=*/true);
+                    // Chrome slot: top-corners mask + background.
+                    void* main_nsv =
+                        reinterpret_cast<void*>(w->GetWindowHandle());
+                    void* nsview = CaptureLastChildNSView(main_nsv);
+                    if (nsview) {
+                      StyleOverlayPanel(nsview, 12.0, kCornerTop, bg);
+                      SetOverlayWindowBackground(nsview, 0x00000000);
+                    }
+                  },
+                  content_bv, main_window_,
+                  shell_model_.current_chrome_.bg_float != 0
+                      ? shell_model_.current_chrome_.bg_float
+                      : static_cast<cef_color_t>(0xFF182625)));
 
   // ── Profile picker overlay (workspace-with-profile D9) ──────────────────
   ProfilePickerOverlay::Host ph;
   ph.run_file_dialog = run_file_dialog_;
-  ph.get_profiles    = [this]() -> std::vector<ProfileRecord> {
+  ph.get_profiles = [this]() -> std::vector<ProfileRecord> {
     return shell_model_.space_manager_.profile_store().List();
   };
   ph.create_space = [this](const std::string& path,
-                            const std::string& profile_id) -> std::string {
-    const auto new_id =
-        shell_model_.space_manager_.CreateSpace(std::filesystem::path(path),
-                                                profile_id);
-    if (new_id.empty()) return {};
+                           const std::string& profile_id) -> std::string {
+    const auto new_id = shell_model_.space_manager_.CreateSpace(
+        std::filesystem::path(path), profile_id);
+    if (new_id.empty())
+      return {};
     for (const auto& sp : shell_model_.space_manager_.spaces()) {
       if (sp->id == new_id) {
         return nlohmann::json{
-            {"id",           sp->id},
-            {"name",         sp->name},
-            {"profile_id",   sp->profile_id},
+            {"id", sp->id},
+            {"name", sp->name},
+            {"profile_id", sp->profile_id},
             {"workspace_root", sp->workspace_root.string()},
-        }.dump();
+        }
+            .dump();
       }
     }
     return nlohmann::json{{"id", new_id}}.dump();
@@ -828,34 +885,41 @@ std::string MainWindow::OpenWebTab(const std::string& url) {
   OpenParams params;
   params.url = final_url;
   TabId id = shell_model_.tabs_->Open(TabKind::kWeb, params);
-  if (id.empty()) return {};
+  if (id.empty())
+    return {};
   // Tab::Register() in Open() seeded theme colors automatically.
   PersistTabCreated(id, final_url, "");
-  shell_model_.tabs_->Activate(id);  // triggers NotifyActiveTabChanged → ContentView
+  shell_model_.tabs_->Activate(
+      id);  // triggers NotifyActiveTabChanged → ContentView
   return id;
 }
 
-// Phase 8: ShowActiveTab() removed — ContentView::OnShellEvent<ActiveTabChanged>
-// now drives card management via the observer.
+// Phase 8: ShowActiveTab() removed —
+// ContentView::OnShellEvent<ActiveTabChanged> now drives card management via
+// the observer.
 
 // ---------------------------------------------------------------------------
 // Popover (Phase 7: delegates to PopoverCtrl)
 // ---------------------------------------------------------------------------
 
 void MainWindow::OpenPopover(const std::string& url, int owner_browser_id) {
-  if (!main_window_ || !popover_) return;
+  if (!main_window_ || !popover_)
+    return;
   popover_->Open(url, owner_browser_id);
 }
 
 void MainWindow::ClosePopover() {
-  if (popover_) popover_->Close();
+  if (popover_)
+    popover_->Close();
 }
 
 void MainWindow::UpdatePopoverVisibility() {
-  if (!popover_) return;
+  if (!popover_)
+    return;
   // Re-implement visibility check here since TabsContext doesn't expose
   // browser_id directly.
-  if (!popover_->IsOpen()) return;
+  if (!popover_->IsOpen())
+    return;
   const int owner_id = popover_->owner_browser_id();
   bool visible = (owner_id == 0);
   if (!visible) {
@@ -878,8 +942,10 @@ void MainWindow::UpdatePopoverVisibility() {
 
 void MainWindow::OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
                                        const CefRect& new_bounds) {
-  (void)window; (void)new_bounds;
-  if (popover_ && popover_->IsOpen()) popover_->LayoutPopover();
+  (void)window;
+  (void)new_bounds;
+  if (popover_ && popover_->IsOpen())
+    popover_->LayoutPopover();
   RefreshTitleBarDragRegion();
 }
 
@@ -888,25 +954,33 @@ void MainWindow::OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
 // ---------------------------------------------------------------------------
 
 void MainWindow::ToggleSidebar() {
-  if (!sidebar_view_obj_) return;
+  if (!sidebar_view_obj_)
+    return;
   sidebar_visible_ = !sidebar_visible_;
   sidebar_view_obj_->SetVisible(sidebar_visible_);
   // Force a layout pass so the content area expands/contracts immediately.
-  if (body_panel_) body_panel_->Layout();
+  if (body_panel_)
+    body_panel_->Layout();
 #if defined(__APPLE__)
   // Re-raise the drag overlay; layout may have repositioned views.
   CefPostTask(TID_UI, base::BindOnce(
-      [](CefRefPtr<MainWindow> self) { self->RefreshTitleBarDragRegion(); },
-      CefRefPtr<MainWindow>(this)));
+                          [](CefRefPtr<MainWindow> self) {
+                            self->RefreshTitleBarDragRegion();
+                          },
+                          CefRefPtr<MainWindow>(this)));
 #endif
 }
 
 void MainWindow::OpenNewTabKind(const std::string& kind) {
   TabKind k;
-  if      (kind == "web")      k = TabKind::kWeb;
-  else if (kind == "terminal") k = TabKind::kTerminal;
-  else if (kind == "chat")     k = TabKind::kChat;
-  else return;
+  if (kind == "web")
+    k = TabKind::kWeb;
+  else if (kind == "terminal")
+    k = TabKind::kTerminal;
+  else if (kind == "chat")
+    k = TabKind::kChat;
+  else
+    return;
 
   TabId id;
   std::string url_for_event;
@@ -916,9 +990,11 @@ void MainWindow::OpenNewTabKind(const std::string& kind) {
   } else {
     id = shell_model_.tabs_->Open(k, OpenParams{});
     // Tab::Register() in Open() seeded theme colors automatically.
-    if (!id.empty()) shell_model_.tabs_->Activate(id);
+    if (!id.empty())
+      shell_model_.tabs_->Activate(id);
   }
-  if (id.empty()) return;
+  if (id.empty())
+    return;
 
   // Mirror the existing shell.tab_created (numeric-id) shape so the
   // sidebar's BrowserTab Zod schema accepts the event.
@@ -927,13 +1003,18 @@ void MainWindow::OpenNewTabKind(const std::string& kind) {
   if (id.compare(0, sizeof(kPrefix) - 1, kPrefix) == 0) {
     numeric = std::atoi(id.c_str() + sizeof(kPrefix) - 1);
   }
-  std::string created = nlohmann::json{{"id", numeric}, {"url", url_for_event}, {"title", ""}, {"is_pinned", false}}.dump();
+  std::string created = nlohmann::json{
+      {"id", numeric},
+      {"url", url_for_event},
+      {"title", ""},
+      {"is_pinned", false}}.dump();
   PushToSidebar("shell.tab_created", created);
 }
 
 void MainWindow::RefreshTitleBarDragRegion() {
   // Phase 9: delegated to TitleBarView.
-  if (titlebar_view_) titlebar_view_->RefreshDragRegion();
+  if (titlebar_view_)
+    titlebar_view_->RefreshDragRegion();
 }
 
 // ---------------------------------------------------------------------------
@@ -945,27 +1026,29 @@ namespace {
 void PushToView(CefRefPtr<CefBrowserView> view,
                 const std::string& event_name,
                 const std::string& json_payload) {
-  if (!view) return;
+  if (!view)
+    return;
   if (!CefCurrentlyOn(TID_UI)) {
-    CefPostTask(TID_UI, base::BindOnce(&PushToView, view, event_name,
-                                       json_payload));
+    CefPostTask(TID_UI,
+                base::BindOnce(&PushToView, view, event_name, json_payload));
     return;
   }
   auto browser = view->GetBrowser();
   if (!browser) {
-    fprintf(stderr, "[PushToView] ev=%s GetBrowser()=NULL\n", event_name.c_str());
+    fprintf(stderr, "[PushToView] ev=%s GetBrowser()=NULL\n",
+            event_name.c_str());
     fflush(stderr);
     return;
   }
   auto frame = browser->GetMainFrame();
   if (!frame) {
-    fprintf(stderr, "[PushToView] ev=%s GetMainFrame()=NULL\n", event_name.c_str());
+    fprintf(stderr, "[PushToView] ev=%s GetMainFrame()=NULL\n",
+            event_name.c_str());
     fflush(stderr);
     return;
   }
-  const std::string js =
-      "window.cronymax?.browser?.onDispatch?.(" +
-      ("'" + event_name + "'") + "," + json_payload + ");";
+  const std::string js = "window.cronymax?.browser?.onDispatch?.(" +
+                         ("'" + event_name + "'") + "," + json_payload + ");";
   fprintf(stderr, "[PushToView] ev=%s bid=%d ExecuteJavaScript\n",
           event_name.c_str(), browser->GetIdentifier());
   fflush(stderr);
@@ -985,11 +1068,13 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
   // CefBrowserView::GetBrowser() and TabManager are only safe on TID_UI, so
   // if we are not already on the UI thread, re-schedule the call there.
   if (!CefCurrentlyOn(TID_UI)) {
-    CefPostTask(TID_UI, base::BindOnce(
-        [](CefRefPtr<MainWindow> self, std::string ev, std::string body) {
-          self->BroadcastToAllPanels(ev, body);
-        },
-        CefRefPtr<MainWindow>(this), event_name, json_payload));
+    CefPostTask(
+        TID_UI,
+        base::BindOnce(
+            [](CefRefPtr<MainWindow> self, std::string ev, std::string body) {
+              self->BroadcastToAllPanels(ev, body);
+            },
+            CefRefPtr<MainWindow>(this), event_name, json_payload));
     return;
   }
 
@@ -999,10 +1084,11 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
     PushToView(popover_->content_view(), event_name, json_payload);
   // Phase 9: per-kind *_view_ singletons are gone. Broadcast to every
   // tab's content browser via the TabManager.
-  if (!shell_model_.tabs_) return;
+  if (!shell_model_.tabs_)
+    return;
   const auto snap = shell_model_.tabs_->Snapshot();
-  fprintf(stderr, "[BroadcastToAllPanels] ev=%s tabs=%zu\n",
-          event_name.c_str(), snap.size());
+  fprintf(stderr, "[BroadcastToAllPanels] ev=%s tabs=%zu\n", event_name.c_str(),
+          snap.size());
   fflush(stderr);
   for (const auto& s : snap) {
     Tab* t = shell_model_.tabs_->Get(s.id);
@@ -1027,8 +1113,7 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
       }
     }
     fprintf(stderr, "[BroadcastToAllPanels] tab=%s kind=%s bv=%s\n",
-            s.id.c_str(), TabKindToString(s.kind),
-            bv ? "ok" : "NULL");
+            s.id.c_str(), TabKindToString(s.kind), bv ? "ok" : "NULL");
     fflush(stderr);
     PushToView(bv, event_name, json_payload);
   }
@@ -1037,12 +1122,18 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
 /*static*/ std::string MainWindow::JsEsc(const std::string& s) {
   std::string out;
   for (char c : s) {
-    if      (c == '\\') out += "\\\\";
-    else if (c == '"')  out += "\\\"";
-    else if (c == '\'') out += "\\'";
-    else if (c == '\n') out += "\\n";
-    else if (c == '\r') out += "\\r";
-    else                out += c;
+    if (c == '\\')
+      out += "\\\\";
+    else if (c == '"')
+      out += "\\\"";
+    else if (c == '\'')
+      out += "\\'";
+    else if (c == '\n')
+      out += "\\n";
+    else if (c == '\r')
+      out += "\\r";
+    else
+      out += c;
   }
   return out;
 }
@@ -1102,7 +1193,8 @@ std::string MainWindow::ResourceUrl(const std::string& relative_path) const {
     std::error_code ec;
     const auto normalized =
         std::filesystem::absolute(candidate, ec).lexically_normal();
-    if (ec) continue;
+    if (ec)
+      continue;
     if (std::filesystem::exists(normalized, ec) && !ec) {
       return FileUrlFromPath(normalized);
     }
@@ -1127,7 +1219,8 @@ void MainWindow::PersistTabCreated(const std::string& tab_id,
                                    const std::string& url,
                                    const std::string& title) {
   Space* sp = shell_model_.space_manager_.ActiveSpace();
-  if (!sp) return;
+  if (!sp)
+    return;
   BrowserTabRow row;
   row.space_id = sp->id;
   row.url = url;
@@ -1142,15 +1235,20 @@ void MainWindow::PersistTabCreated(const std::string& tab_id,
 }
 
 void MainWindow::PersistTabTitlesIfChanged() {
-  if (!shell_model_.tabs_) return;
+  if (!shell_model_.tabs_)
+    return;
   for (const auto& s : shell_model_.tabs_->Snapshot()) {
-    if (s.kind != TabKind::kWeb) continue;
+    if (s.kind != TabKind::kWeb)
+      continue;
     auto it = tab_db_ids_.find(s.id);
-    if (it == tab_db_ids_.end()) continue;
+    if (it == tab_db_ids_.end())
+      continue;
     Tab* t = shell_model_.tabs_->Get(s.id);
-    if (!t) continue;
+    if (!t)
+      continue;
     auto* wb = static_cast<WebTabBehavior*>(t->behavior());
-    if (!wb) continue;
+    if (!wb)
+      continue;
     const std::string& title = wb->current_title();
     const std::string& url = wb->current_url();
     auto last = tab_persisted_titles_.find(s.id);
@@ -1170,7 +1268,8 @@ void MainWindow::PersistTabTitlesIfChanged() {
 
 void MainWindow::PersistTabClosed(const std::string& tab_id) {
   auto it = tab_db_ids_.find(tab_id);
-  if (it == tab_db_ids_.end()) return;
+  if (it == tab_db_ids_.end())
+    return;
   shell_model_.space_manager_.store().DeleteTab(it->second);
   tab_db_ids_.erase(it);
   tab_persisted_titles_.erase(tab_id);
@@ -1181,33 +1280,40 @@ void MainWindow::PersistTabClosed(const std::string& tab_id) {
 // ---------------------------------------------------------------------------
 
 void MainWindow::PersistSidebarTabs() {
-  if (!shell_model_.tabs_) return;
+  if (!shell_model_.tabs_)
+    return;
   nlohmann::json obj = nlohmann::json::object();
   nlohmann::json arr = nlohmann::json::array();
   for (const auto& s : shell_model_.tabs_->Snapshot()) {
-    if (s.kind != TabKind::kChat && s.kind != TabKind::kTerminal) continue;
+    if (s.kind != TabKind::kChat && s.kind != TabKind::kTerminal)
+      continue;
     nlohmann::json entry;
-    entry["id"]          = s.id;
-    entry["kind"]        = TabKindToString(s.kind);
+    entry["id"] = s.id;
+    entry["kind"] = TabKindToString(s.kind);
     entry["displayName"] = s.display_name;
     nlohmann::json meta_obj = nlohmann::json::object();
-    for (const auto& [k, v] : s.meta) meta_obj[k] = v;
+    for (const auto& [k, v] : s.meta)
+      meta_obj[k] = v;
     entry["meta"] = meta_obj;
     arr.push_back(std::move(entry));
   }
-  obj["tabs"]        = std::move(arr);
+  obj["tabs"] = std::move(arr);
   obj["activeTabId"] = shell_model_.tabs_->active_tab_id();
   shell_model_.space_manager_.store().SetKv("ui.sidebar_tabs", obj.dump());
 }
 
 bool MainWindow::RestoreSidebarTabs() {
-  const std::string raw = shell_model_.space_manager_.store().GetKv("ui.sidebar_tabs");
-  if (raw.empty()) return false;
+  const std::string raw =
+      shell_model_.space_manager_.store().GetKv("ui.sidebar_tabs");
+  if (raw.empty())
+    return false;
   nlohmann::json obj;
   obj = nlohmann::json::parse(raw, nullptr, /*allow_exceptions=*/false);
-  if (obj.is_discarded()) return false;
+  if (obj.is_discarded())
+    return false;
   const auto& arr = obj.value("tabs", nlohmann::json::array());
-  if (!arr.is_array() || arr.empty()) return false;
+  if (!arr.is_array() || arr.empty())
+    return false;
 
   std::string active_id = obj.value("activeTabId", std::string{});
   std::string first_id;
@@ -1223,21 +1329,25 @@ bool MainWindow::RestoreSidebarTabs() {
       kind = TabKind::kTerminal;
       kind_from_string_ok = true;
     }
-    if (!kind_from_string_ok) continue;
+    if (!kind_from_string_ok)
+      continue;
 
     OpenParams params;
     params.display_name = entry.value("displayName", std::string{});
     const auto& meta_obj = entry.value("meta", nlohmann::json::object());
     if (meta_obj.is_object()) {
       for (const auto& [k, v] : meta_obj.items()) {
-        if (v.is_string()) params.meta[k] = v.get<std::string>();
+        if (v.is_string())
+          params.meta[k] = v.get<std::string>();
       }
     }
 
     const TabId id = shell_model_.tabs_->Open(kind, params);
-    if (id.empty()) continue;
+    if (id.empty())
+      continue;
     // Tab::Register() in Open() already seeded theme colors.
-    if (first_id.empty()) first_id = id;
+    if (first_id.empty())
+      first_id = id;
     // Note: restored tabs get new IDs (TabManager::NewId), so we can't
     // map the stored activeTabId directly. We activate by position index.
   }
@@ -1246,7 +1356,8 @@ bool MainWindow::RestoreSidebarTabs() {
   // was a chat, first terminal if terminal). For simplicity just activate
   // the first restored tab.
   const std::string activate_id = first_id;
-  if (!activate_id.empty()) shell_model_.tabs_->Activate(activate_id);
+  if (!activate_id.empty())
+    shell_model_.tabs_->Activate(activate_id);
   return !first_id.empty();
 }
 
@@ -1260,15 +1371,17 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
   shell_model_.current_chrome_ = chrome;
   // Native panels: titlebar + body share the chrome fill so the visual
   // chrome is one continuous region (per refine-ui-theme-layout design).
-  if (body_panel_) body_panel_->SetBackgroundColor(chrome.bg_body);
+  if (body_panel_)
+    body_panel_->SetBackgroundColor(chrome.bg_body);
 #if defined(__APPLE__)
-  // Phase 9: macOS window background + appearance set by TitleBarView::ApplyTheme.
-  // Phase 8: corner-punch views handled by ContentView::ApplyTheme.
-  // No-op block retained for documentation only.
+  // Phase 9: macOS window background + appearance set by
+  // TitleBarView::ApplyTheme. Phase 8: corner-punch views handled by
+  // ContentView::ApplyTheme. No-op block retained for documentation only.
 #endif
   // Broadcast to renderers so each panel's installThemeMirror flips the
   // <html data-theme="…"> attribute and React listeners refresh.
-  BroadcastToAllPanels("theme.changed", shell_model_.ThemeStateJson(/*include_chrome=*/true));
+  BroadcastToAllPanels("theme.changed",
+                       shell_model_.ThemeStateJson(/*include_chrome=*/true));
   // native-views-mvc Phase 4.5: notify subscribed view observers.
   // ThemeAwareView subscribers (titlebar, sidebar, content, popover, tabs)
   // receive ApplyTheme() via OnEvent() — no direct calls needed.
@@ -1276,7 +1389,8 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
 }
 
 void MainWindow::HandleThemeModeChange(const std::string& mode) {
-  if (mode != "system" && mode != "light" && mode != "dark") return;
+  if (mode != "system" && mode != "light" && mode != "dark")
+    return;
   shell_model_.theme_mode_ = mode;
   shell_model_.space_manager_.store().SetKv("ui.theme", mode);
   ApplyThemeChrome(ViewModel::ChromeFor(shell_model_.ResolveAppearance()));
@@ -1284,12 +1398,14 @@ void MainWindow::HandleThemeModeChange(const std::string& mode) {
 
 void MainWindow::OnSystemAppearanceChanged() {
   // Only react in `system` mode; explicit Light/Dark pins ignore the OS.
-  if (shell_model_.theme_mode_ != "system") return;
+  if (shell_model_.theme_mode_ != "system")
+    return;
   ApplyThemeChrome(ViewModel::ChromeFor(shell_model_.ResolveAppearance()));
 }
 
 void MainWindow::SetContentOuterVInsets(int top, int bottom) {
-  if (content_view_) content_view_->SetVInsets(top, bottom);
+  if (content_view_)
+    content_view_->SetVInsets(top, bottom);
 }
 
 // ---------------------------------------------------------------------------
@@ -1324,8 +1440,7 @@ void MainWindow::SwitchSpace(const std::string& space_id) {
   shell_model_.space_manager_.SwitchTo(space_id);
 }
 
-std::vector<std::pair<std::string, std::string>>
-MainWindow::GetSpaces() const {
+std::vector<std::pair<std::string, std::string>> MainWindow::GetSpaces() const {
   std::vector<std::pair<std::string, std::string>> result;
   for (const auto& sp : shell_model_.space_manager_.spaces())
     result.emplace_back(sp->id, sp->name);
@@ -1358,8 +1473,7 @@ void MainWindow::AddActiveTabObserver(ViewObserver<ActiveTabChanged>* obs) {
   shell_model_.active_tab_observers.AddObserver(obs);
 }
 
-void MainWindow::RemoveActiveTabObserver(
-    ViewObserver<ActiveTabChanged>* obs) {
+void MainWindow::RemoveActiveTabObserver(ViewObserver<ActiveTabChanged>* obs) {
   shell_model_.active_tab_observers.RemoveObserver(obs);
 }
 

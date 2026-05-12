@@ -12,16 +12,16 @@
 
 namespace cronymax {
 
-const char *TabKindToString(TabKind kind) {
+const char* TabKindToString(TabKind kind) {
   switch (kind) {
-  case TabKind::kWeb:
-    return "web";
-  case TabKind::kChat:
-    return "chat";
-  case TabKind::kTerminal:
-    return "terminal";
-  case TabKind::kSettings:
-    return "settings";
+    case TabKind::kWeb:
+      return "web";
+    case TabKind::kChat:
+      return "chat";
+    case TabKind::kTerminal:
+      return "terminal";
+    case TabKind::kSettings:
+      return "settings";
   }
   return "unknown";
 }
@@ -45,11 +45,11 @@ static cef_color_t TextColorForBg(cef_color_t bg) {
   const float g = ((bg >> 8) & 0xFF) / 255.0f;
   const float b = ((bg >> 0) & 0xFF) / 255.0f;
   const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-  return lum > 0.45f ? static_cast<cef_color_t>(0xFF13201E)  // dark text
-                     : static_cast<cef_color_t>(0xFFE8F2F0); // light text
+  return lum > 0.45f ? static_cast<cef_color_t>(0xFF13201E)   // dark text
+                     : static_cast<cef_color_t>(0xFFE8F2F0);  // light text
 }
 
-cef_color_t ParseCssColorOrDefault(const std::string &css,
+cef_color_t ParseCssColorOrDefault(const std::string& css,
                                    cef_color_t fallback) {
   if (css.empty()) {
     return fallback;
@@ -68,9 +68,9 @@ cef_color_t ParseCssColorOrDefault(const std::string &css,
   }
   return fallback;
 }
-} // namespace
+}  // namespace
 
-void Tab::Build(ThemeContext *theme_ctx) {
+void Tab::Build(ThemeContext* theme_ctx) {
   assert(!built_ && "Tab::Build called twice");
   built_ = true;
 
@@ -109,7 +109,7 @@ void Tab::Build(ThemeContext *theme_ctx) {
     Register(theme_ctx);
 }
 
-void Tab::OnToolbarState(const ToolbarState &state) {
+void Tab::OnToolbarState(const ToolbarState& state) {
   if (state.kind != kind_) {
     // Caller is responsible for the kind/tab mismatch check; reject silently.
     return;
@@ -119,9 +119,11 @@ void Tab::OnToolbarState(const ToolbarState &state) {
   }
 }
 
-void Tab::SetToolbarState(const ToolbarState &state) { OnToolbarState(state); }
+void Tab::SetToolbarState(const ToolbarState& state) {
+  OnToolbarState(state);
+}
 
-void Tab::SetChromeTheme(const std::string &css_color_or_empty) {
+void Tab::SetChromeTheme(const std::string& css_color_or_empty) {
   chrome_override_ = css_color_or_empty;
   const cef_color_t toolbar_bg =
       ParseCssColorOrDefault(css_color_or_empty, default_chrome_argb_);
@@ -147,7 +149,7 @@ void Tab::SetChromeTheme(const std::string &css_color_or_empty) {
   }
 }
 
-void Tab::ApplyTheme(const ThemeChrome &chrome) {
+void Tab::ApplyTheme(const ThemeChrome& chrome) {
   text_fg_ = chrome.text_title;
   surface_bg_ = chrome.bg_float;
   // Keep default_chrome_argb_ in sync for SetChromeTheme fallback.
@@ -162,6 +164,8 @@ void Tab::RequestClose() {
   // Hooked up by TabManager in a later phase. Intentional no-op for now.
 }
 
-int Tab::browser_id() const { return behavior_ ? behavior_->BrowserId() : 0; }
+int Tab::browser_id() const {
+  return behavior_ ? behavior_->BrowserId() : 0;
+}
 
-} // namespace cronymax
+}  // namespace cronymax

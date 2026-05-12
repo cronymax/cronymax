@@ -57,6 +57,7 @@ jobs:
         run: bun install --frozen-lockfile
         env:
           HUSKY: "0"
+          LEFTHOOK: "0"
 
       - name: Typecheck
         run: bun run --cwd web typecheck

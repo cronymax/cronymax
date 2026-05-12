@@ -13,23 +13,20 @@
 // The fixture files live in `web/test/fixtures/markdown/` and are kept
 // small so test failures are easy to read in CI output.
 
-import { readFileSync, readdirSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
 import {
   assignMissingBlockIds,
+  BLOCK_MARKER_REGEX,
   parseBlockComments,
   stripBlockComments,
-  BLOCK_MARKER_REGEX,
 } from "../src/panels/workbench/blockIds";
 
-const FIXTURE_DIR = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "fixtures/markdown",
-);
+const FIXTURE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/markdown");
 
 function loadFixtures(): Array<{ name: string; content: string }> {
   return readdirSync(FIXTURE_DIR)
@@ -72,9 +69,7 @@ describe("blockIds: golden round-trip", () => {
       // Stripping is idempotent.
       expect(stripBlockComments(stripped)).toBe(stripped);
       // Non-marker line count is preserved.
-      const before = content
-        .split("\n")
-        .filter((l) => !BLOCK_MARKER_REGEX.test(l)).length;
+      const before = content.split("\n").filter((l) => !BLOCK_MARKER_REGEX.test(l)).length;
       const after = stripped.split("\n").length;
       expect(after).toBe(before);
     });
