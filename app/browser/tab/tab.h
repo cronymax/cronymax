@@ -34,6 +34,7 @@ enum class TabKind {
   kWeb = 0,
   kChat,
   kTerminal,
+  kFlows,
   kSettings,
 };
 

@@ -20,6 +20,8 @@ const char* TabKindToString(TabKind kind) {
       return "chat";
     case TabKind::kTerminal:
       return "terminal";
+    case TabKind::kFlows:
+      return "flows";
     case TabKind::kSettings:
       return "settings";
   }

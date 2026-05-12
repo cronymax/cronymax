@@ -246,6 +246,12 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
           params.display_name.empty() ? std::string("Chat")
                                       : params.display_name,
           resolve_url("about:blank"));
+    case TabKind::kFlows:
+      if (!client_handler_)
+        return nullptr;
+      return std::make_unique<SimpleTabBehavior>(
+          client_handler_, kind, std::string("\xE2\x9A\x99"), "Flows",
+          resolve_url("about:blank"));
     case TabKind::kSettings:
       if (!client_handler_)
         return nullptr;

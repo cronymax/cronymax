@@ -338,7 +338,7 @@ void ShowPopoverScrim(void* main_window_nsview_ptr,
 
   if (CALayer* sl = scrim.layer) {
     sl.shadowOpacity = 0.0f;
-    sl.backgroundColor = [NSColor colorWithWhite:0 alpha:0.25f].CGColor;
+    sl.backgroundColor = [NSColor colorWithWhite:0 alpha:0.35f].CGColor;
     // Round the scrim corners to match the card corner radius so the
     // bg_body-colored corner punch views below show through at each corner,
     // preserving the rounded-card appearance while the overlay is visible.

@@ -27,7 +27,7 @@
     "editor.defaultFormatter": "biomejs.biome"
   },
   "biome.enabled": true,
-  "cSpell.words": ["cronymax", "fcntl", "oneshot"],
+  "cSpell.words": ["cronymax", "fcntl", "ollama", "oneshot"],
   "chat.tools.terminal.autoApprove": {
     "openspec": true,
     "git submodule": true

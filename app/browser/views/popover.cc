@@ -81,7 +81,7 @@ void Popover::BuildChromeStrip() {
                                             });
 
   h_open_ext_ =
-      toolbar_->AddTrailingAction(IconId::kTabWeb, "Open in browser", [this]() {
+      toolbar_->AddTrailingAction(IconId::kOpenInWindow, "Open in browser", [this]() {
         if (!current_url_.empty())
           platform::OpenUrlInBrowser(current_url_);
       });

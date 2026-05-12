@@ -260,6 +260,8 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   shell_model_.tabs_->SetKindContentUrl(
       TabKind::kTerminal, ResourceUrl("panels/terminal/index.html"));
   shell_model_.tabs_->SetKindContentUrl(
+      TabKind::kFlows, ResourceUrl("panels/flows/index.html"));
+  shell_model_.tabs_->SetKindContentUrl(
       TabKind::kSettings, ResourceUrl("panels/settings/index.html"));
 
   // refine-ui-theme-layout: load persisted theme mode (defaults to

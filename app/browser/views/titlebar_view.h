@@ -89,6 +89,7 @@ class TitleBarView : public ThemeAwareView, public ViewObserver<SpaceChanged> {
   CefRefPtr<CefLabelButton> btn_web_;
   CefRefPtr<CefLabelButton> btn_term_;
   CefRefPtr<CefLabelButton> btn_chat_;
+  CefRefPtr<CefLabelButton> btn_flows_;
   CefRefPtr<CefLabelButton> btn_settings_;
 };
 

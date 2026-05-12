@@ -31,15 +31,15 @@ enum class IconId {
   kNewTab,
   kClose,
   kSettings,
+  kFlows,
   kTabTerminal,
   kTabChat,
-  kTabAgent,
-  kTabGraph,
   kTabWeb,
   kRestart,
   kSidebarToggle,  // layout-sidebar-left — hide/show sidebar
   kCopy,           // copy — clipboard copy action
   kOpenInProduct,
+  kOpenInWindow,
   kCount,  // sentinel
 };
 

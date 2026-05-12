@@ -48,10 +48,12 @@ IconId IconIdForKind(TabKind kind) {
       return IconId::kTabTerminal;
     case TabKind::kChat:
       return IconId::kTabChat;
-    case TabKind::kSettings:
-      return IconId::kSettings;
     case TabKind::kWeb:
       return IconId::kTabWeb;
+    case TabKind::kFlows:
+      return IconId::kFlows;
+    case TabKind::kSettings:
+      return IconId::kSettings;
   }
   return IconId::kSettings;
 }
