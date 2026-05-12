@@ -21,18 +21,18 @@
 
   /* Backgrounds */
   --color-cronymax-body: #0e1716;
-  --color-cronymax-base: #131f1d;
-  --color-cronymax-float: #182625;
-  --color-cronymax-mask: rgba(2, 8, 8, 0.52);
+  --color-cronymax-base: #292929;
+  --color-cronymax-float: #0a0a0a;
+  --color-cronymax-mask: rgba(0, 0, 0, 0.55);
 
   /* Fills */
   --color-cronymax-active: #22b8a7;
-  --color-cronymax-disabled: rgba(220, 236, 232, 0.08);
-  --color-cronymax-focus: rgba(34, 184, 167, 0.26);
-  --color-cronymax-hover: rgba(34, 184, 167, 0.12);
-  --color-cronymax-pressed: rgba(34, 184, 167, 0.2);
-  --color-cronymax-selected: rgba(34, 184, 167, 0.16);
-  --color-cronymax-tag: #183b37;
+  --color-cronymax-disabled: #5f5f5f;
+  --color-cronymax-focus: rgba(235, 235, 235, 0.12);
+  --color-cronymax-hover: rgba(235, 235, 235, 0.08);
+  --color-cronymax-pressed: rgba(235, 235, 235, 0.12);
+  --color-cronymax-selected: rgba(76, 136, 255, 0.15);
+  --color-cronymax-tag: rgba(235, 235, 235, 0.1);
 
   /* Texts */
   --color-cronymax-title: #e8f2f0;
@@ -41,8 +41,8 @@
   --color-cronymax-placeholder: #7c918c;
 
   /* Lines */
-  --color-cronymax-border: #29403d;
-  --color-cronymax-divider: #1f302e;
+  --color-cronymax-border: rgba(235, 235, 235, 0.15);
+  --color-cronymax-divider: rgba(207, 207, 207, 0.15);
 
   /* Functions */
   --color-cronymax-info: #78a9ff;
@@ -174,18 +174,18 @@
 
     /* Backgrounds */
     --color-cronymax-body: #0e1716;
-    --color-cronymax-base: #131f1d;
-    --color-cronymax-float: #182625;
-    --color-cronymax-mask: rgba(2, 8, 8, 0.52);
+    --color-cronymax-base: #292929;
+    --color-cronymax-float: #0a0a0a;
+    --color-cronymax-mask: rgba(0, 0, 0, 0.55);
 
     /* Fills */
     --color-cronymax-active: #22b8a7;
-    --color-cronymax-disabled: rgba(220, 236, 232, 0.08);
-    --color-cronymax-focus: rgba(34, 184, 167, 0.26);
-    --color-cronymax-hover: rgba(34, 184, 167, 0.12);
-    --color-cronymax-pressed: rgba(34, 184, 167, 0.2);
-    --color-cronymax-selected: rgba(34, 184, 167, 0.16);
-    --color-cronymax-tag: #183b37;
+    --color-cronymax-disabled: #5f5f5f;
+    --color-cronymax-focus: rgba(235, 235, 235, 0.12);
+    --color-cronymax-hover: rgba(235, 235, 235, 0.08);
+    --color-cronymax-pressed: rgba(235, 235, 235, 0.12);
+    --color-cronymax-selected: rgba(76, 136, 255, 0.15);
+    --color-cronymax-tag: rgba(235, 235, 235, 0.1);
 
     /* Texts */
     --color-cronymax-title: #e8f2f0;
@@ -194,8 +194,8 @@
     --color-cronymax-placeholder: #7c918c;
 
     /* Lines */
-    --color-cronymax-border: #29403d;
-    --color-cronymax-divider: #1f302e;
+    --color-cronymax-border: rgba(235, 235, 235, 0.15);
+    --color-cronymax-divider: rgba(207, 207, 207, 0.15);
 
     /* Functions */
     --color-cronymax-info: #78a9ff;

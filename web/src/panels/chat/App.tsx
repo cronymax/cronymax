@@ -1755,7 +1755,7 @@ export function App() {
         <div className="relative">
           {/* ── Slash / @ picker ──────────────────────────────────────── */}
           {picker && pickerItems.length > 0 && (
-            <div className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-lg border border-cronymax-border bg-cronymax-body shadow-lg overflow-hidden">
+            <div className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-lg border border-cronymax-border bg-cronymax-float shadow-lg overflow-hidden">
               <div className="px-2 pt-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-cronymax-caption">
                 {picker.type === "slash" ? "Commands" : "Agents"}
               </div>
@@ -1793,7 +1793,7 @@ export function App() {
           {/* Editor card */}
           <div
             className={
-              "flex flex-col rounded-xl border bg-cronymax-body transition-colors " +
+              "flex flex-col rounded-xl border bg-cronymax-base transition-colors " +
               (inputMode === "shell"
                 ? "border-amber-500/70 bg-amber-500/5"
                 : "border-cronymax-border focus-within:border-cronymax-primary/60")
