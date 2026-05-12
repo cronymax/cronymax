@@ -37,7 +37,9 @@
 pub mod authority;
 pub mod handler;
 pub mod persistence;
+pub mod sessions;
 pub mod state;
+pub mod prompt;
 
 pub use authority::{
     AuthorityError, ReviewHandle, ReviewResolution, RuntimeAuthority,
@@ -50,5 +52,5 @@ pub use persistence::{
 pub use state::{
     Agent, AgentId, HistoryEntry, MemoryEntry, MemoryNamespace,
     MemoryNamespaceId, PendingReview, PermissionState, ReviewId, Run, RunId,
-    RunStatus, Snapshot, Space, SpaceId,
+    RunStatus, Session, SessionId, Snapshot, Space, SpaceId,
 };

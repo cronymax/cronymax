@@ -44,9 +44,10 @@ use crate::protocol::SubscriptionId;
 use super::persistence::{Persistence, PersistenceError};
 use super::state::{
     Agent, AgentId, MemoryEntry, MemoryNamespace, MemoryNamespaceId,
-    PendingReview, PermissionState, ReviewId, Run, RunId, RunStatus, Snapshot,
-    Space, SpaceId,
+    PendingReview, PermissionState, ReviewId, Run, RunId, RunStatus, Session,
+    SessionId, Snapshot, Space, SpaceId,
 };
+use crate::llm::ChatMessage;
 
 /// Resolution payload delivered to a [`ReviewHandle::completion`]
 /// receiver once the host calls [`RuntimeAuthority::resolve_review`].
@@ -187,6 +188,91 @@ impl RuntimeAuthority {
         Ok(())
     }
 
+    // -- Session management -------------------------------------------------
+
+    /// Look up an existing session or create a new one for the given
+    /// `(session_id, space_id)` pair. Returns a clone of the session's
+    /// current LLM thread so the caller can initialise a `ReactLoop`.
+    pub fn get_or_create_session(
+        &self,
+        session_id: impl Into<SessionId>,
+        space_id: SpaceId,
+        name: Option<String>,
+    ) -> Result<Vec<ChatMessage>, AuthorityError> {
+        let session_id = session_id.into();
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        if !inner.snapshot.spaces.contains_key(&space_id) {
+            return Err(AuthorityError::UnknownSpace(space_id));
+        }
+        let thread = inner
+            .snapshot
+            .sessions
+            .entry(session_id.clone())
+            .or_insert_with(|| Session {
+                id: session_id,
+                space_id,
+                name,
+                agent_id: None,
+                thread: Vec::new(),
+                run_ids: Vec::new(),
+                read_namespace: None,
+                write_namespace: None,
+                created_at_ms: now,
+                updated_at_ms: now,
+            })
+            .thread
+            .clone();
+        self.persistence.save(&inner.snapshot)?;
+        Ok(thread)
+    }
+
+    /// Append `run_id` to the session's `run_ids` list. Called after
+    /// a run has been created so the session knows which runs belong
+    /// to it.
+    pub fn attach_run_to_session(
+        &self,
+        session_id: &SessionId,
+        run_id: RunId,
+    ) -> Result<(), AuthorityError> {
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        if let Some(session) = inner.snapshot.sessions.get_mut(session_id) {
+            if !session.run_ids.contains(&run_id) {
+                session.run_ids.push(run_id);
+                session.updated_at_ms = now;
+            }
+        }
+        self.persistence.save(&inner.snapshot)?;
+        Ok(())
+    }
+
+    /// Flush the final LLM context window back into `Session.thread`.
+    /// Called by the agent loop after every run (success or failure).
+    /// If the session no longer exists (e.g. was deleted mid-run), the
+    /// flush is silently dropped.
+    pub fn flush_thread(
+        &self,
+        session_id: &SessionId,
+        thread: Vec<ChatMessage>,
+    ) -> Result<(), AuthorityError> {
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        if let Some(session) = inner.snapshot.sessions.get_mut(session_id) {
+            session.thread = thread;
+            session.updated_at_ms = now;
+            self.persistence.save(&inner.snapshot)?;
+        }
+        Ok(())
+    }
+
+    /// Return a clone of the session's current thread (for inspection /
+    /// compaction logic). Returns `None` if the session doesn't exist.
+    pub fn session_thread(&self, session_id: &SessionId) -> Option<Vec<ChatMessage>> {
+        let inner = self.inner.lock();
+        inner.snapshot.sessions.get(session_id).map(|s| s.thread.clone())
+    }
+
     // -- Subscriptions ------------------------------------------------------
 
     /// Open a new event subscription for `topic`. Returns the id and
@@ -229,6 +315,17 @@ impl RuntimeAuthority {
         agent_id: Option<AgentId>,
         spec: serde_json::Value,
     ) -> Result<RunId, AuthorityError> {
+        self.start_run_with_session(space_id, agent_id, spec, None)
+    }
+
+    /// Like `start_run` but associates the run with an existing session.
+    pub fn start_run_with_session(
+        &self,
+        space_id: SpaceId,
+        agent_id: Option<AgentId>,
+        spec: serde_json::Value,
+        session_id: Option<SessionId>,
+    ) -> Result<RunId, AuthorityError> {
         let now = now_ms();
         let mut inner = self.inner.lock();
         if !inner.snapshot.spaces.contains_key(&space_id) {
@@ -250,6 +347,7 @@ impl RuntimeAuthority {
             id: RunId::new(),
             space_id,
             agent_id,
+            session_id: session_id.clone(),
             status: RunStatus::Pending,
             spec,
             history: Vec::new(),
@@ -257,6 +355,16 @@ impl RuntimeAuthority {
             updated_at_ms: now,
         };
         let id = run.id;
+        // Append run_id to the session (if any) while still holding the lock
+        // so the session and run are written atomically.
+        if let Some(ref sid) = session_id {
+            if let Some(session) = inner.snapshot.sessions.get_mut(sid) {
+                if !session.run_ids.contains(&id) {
+                    session.run_ids.push(id);
+                    session.updated_at_ms = now;
+                }
+            }
+        }
         inner.snapshot.runs.insert(id, run);
         self.persistence.save(&inner.snapshot)?;
         Self::emit_locked(
@@ -613,6 +721,33 @@ impl RuntimeAuthority {
         Ok(())
     }
 
+    /// Update `read_namespace`, `write_namespace`, or both fields on
+    /// the named session. `target` must be `"read"`, `"write"`, or
+    /// `"both"`. Returns `false` if the session does not exist.
+    pub fn update_session_namespaces(
+        &self,
+        session_id: &SessionId,
+        target: &str,
+        namespace_id: MemoryNamespaceId,
+    ) -> bool {
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        let Some(session) = inner.snapshot.sessions.get_mut(session_id) else {
+            return false;
+        };
+        match target {
+            "read" => session.read_namespace = Some(namespace_id),
+            "write" => session.write_namespace = Some(namespace_id),
+            "both" | _ => {
+                session.read_namespace = Some(namespace_id.clone());
+                session.write_namespace = Some(namespace_id);
+            }
+        }
+        session.updated_at_ms = now;
+        let _ = self.persistence.save(&inner.snapshot);
+        true
+    }
+
     // -- Diagnostic logging -------------------------------------------------
 
     /// Emit a runtime log event to all matching subscribers. Used by
@@ -721,7 +856,7 @@ fn run_topic(id: RunId) -> String {
     format!("run:{id}")
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -737,7 +872,7 @@ mod tests {
 
     fn auth() -> (RuntimeAuthority, SpaceId) {
         let auth = RuntimeAuthority::in_memory();
-        let space = Space { id: SpaceId::new(), name: "scratch".into() };
+        let space = Space { id: SpaceId::new(), name: "scratch".into(), compaction_threshold_pct: 80, compaction_recency_turns: 6 };
         let space_id = space.id;
         auth.upsert_space(space).unwrap();
         (auth, space_id)
@@ -840,7 +975,7 @@ mod tests {
         // First boot: create a run, pause it.
         let store = Arc::new(InMemoryPersistence::default());
         let auth = RuntimeAuthority::rehydrate(store.clone()).unwrap();
-        let space = Space { id: SpaceId::new(), name: "s".into() };
+        let space = Space { id: SpaceId::new(), name: "s".into(), compaction_threshold_pct: 80, compaction_recency_turns: 6 };
         let space_id = space.id;
         auth.upsert_space(space).unwrap();
         let run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();

@@ -36,15 +36,37 @@ pub enum ControlRequest {
     ///
     /// `payload` is JSON-shaped at this layer; concrete fields land in
     /// task 4.2 once `RunSpec` is defined in `cronymax::runs`.
+    ///
+    /// `session_id` is the frontend's `cronymax_chat_tab_id` — when
+    /// provided the run is associated with that session and the LLM
+    /// context window is seeded from `Session.thread`. When absent the
+    /// run behaves as a standalone invocation (no thread continuity).
+    ///
+    /// `agent_id` selects which agent definition to use for the run.
+    /// When absent or `""`, falls through to the builtin Crony agent.
     StartRun {
         space_id: String,
         payload: serde_json::Value,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        session_name: Option<String>,
+        #[serde(default)]
+        agent_id: Option<String>,
     },
 
     /// Cancel an in-flight run.
     CancelRun { run_id: String },
 
-    /// Pause an in-flight run (cooperative).
+    /// Swap the memory namespace bound to a session, taking effect on the
+    /// next run with that session_id. `target` controls which namespace is
+    /// updated: `"read"`, `"write"`, or `"both"`.
+    SwapMemory {
+        session_id: String,
+        /// Which side to update: `"read"`, `"write"`, or `"both"`.
+        target: String,
+        namespace_id: String,
+    },
     PauseRun { run_id: String },
 
     /// Resume a paused or awaiting-approval run.

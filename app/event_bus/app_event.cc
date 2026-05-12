@@ -6,25 +6,31 @@ namespace cronymax::event_bus {
 
 const char* AppEventKindToString(AppEventKind k) {
   switch (k) {
-    case AppEventKind::kText:          return "text";
-    case AppEventKind::kAgentStatus:   return "agent_status";
-    case AppEventKind::kDocumentEvent: return "document_event";
-    case AppEventKind::kReviewEvent:   return "review_event";
-    case AppEventKind::kHandoff:       return "handoff";
-    case AppEventKind::kError:         return "error";
-    case AppEventKind::kSystem:        return "system";
+    case AppEventKind::kText:             return "text";
+    case AppEventKind::kAgentStatus:      return "agent_status";
+    case AppEventKind::kDocumentEvent:    return "document_event";
+    case AppEventKind::kReviewEvent:      return "review_event";
+    case AppEventKind::kHandoff:          return "handoff";
+    case AppEventKind::kError:            return "error";
+    case AppEventKind::kSystem:           return "system";
+    case AppEventKind::kFileEdited:       return "file_edited";
+    case AppEventKind::kGitCommitCreated: return "git_commit_created";
+    case AppEventKind::kGitPushed:        return "git_pushed";
   }
   return "system";
 }
 
 bool AppEventKindFromString(const std::string& s, AppEventKind* out) {
-  if (s == "text")           { *out = AppEventKind::kText;          return true; }
-  if (s == "agent_status")   { *out = AppEventKind::kAgentStatus;   return true; }
-  if (s == "document_event") { *out = AppEventKind::kDocumentEvent; return true; }
-  if (s == "review_event")   { *out = AppEventKind::kReviewEvent;   return true; }
-  if (s == "handoff")        { *out = AppEventKind::kHandoff;       return true; }
-  if (s == "error")          { *out = AppEventKind::kError;         return true; }
-  if (s == "system")         { *out = AppEventKind::kSystem;        return true; }
+  if (s == "text")             { *out = AppEventKind::kText;             return true; }
+  if (s == "agent_status")     { *out = AppEventKind::kAgentStatus;      return true; }
+  if (s == "document_event")   { *out = AppEventKind::kDocumentEvent;    return true; }
+  if (s == "review_event")     { *out = AppEventKind::kReviewEvent;      return true; }
+  if (s == "handoff")          { *out = AppEventKind::kHandoff;          return true; }
+  if (s == "error")            { *out = AppEventKind::kError;            return true; }
+  if (s == "system")           { *out = AppEventKind::kSystem;           return true; }
+  if (s == "file_edited")      { *out = AppEventKind::kFileEdited;       return true; }
+  if (s == "git_commit_created") { *out = AppEventKind::kGitCommitCreated; return true; }
+  if (s == "git_pushed")       { *out = AppEventKind::kGitPushed;        return true; }
   return false;
 }
 
@@ -38,6 +44,7 @@ std::string AppEvent::ToJson() const {
   if (!flow_id.empty())  j["flow_id"]  = flow_id;
   if (!run_id.empty())   j["run_id"]   = run_id;
   if (!agent_id.empty()) j["agent_id"] = agent_id;
+  if (!session_id.empty()) j["session_id"] = session_id;
   j["payload"] = payload.is_object() ? payload : nlohmann::json::object();
   return j.dump();
 }

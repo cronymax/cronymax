@@ -3,6 +3,9 @@ import { flowRun } from "@/shells/runtime";
 import { useEventStream } from "./hooks/useEventStream";
 import { TextBubble } from "./components/TextBubble";
 import { DocumentCard } from "./components/DocumentCard";
+import { DiffCard } from "./components/DiffCard";
+import { GitCommitCard } from "./components/GitCommitCard";
+import { GitPushedCard } from "./components/GitPushedCard";
 import { ReviewReply } from "./components/ReviewReply";
 import { RunDivider } from "./components/RunDivider";
 import { ErrorBanners } from "./components/ErrorBanner";
@@ -115,6 +118,15 @@ export function App() {
                   {e.payload.port}
                 </div>
               );
+            }
+            if (e.kind === "file_edited") {
+              return <DiffCard key={e.id} event={e} />;
+            }
+            if (e.kind === "git_commit_created") {
+              return <GitCommitCard key={e.id} event={e} />;
+            }
+            if (e.kind === "git_pushed") {
+              return <GitPushedCard key={e.id} event={e} />;
             }
             return null;
           })}

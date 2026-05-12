@@ -36,6 +36,8 @@ async fn full_run_lifecycle_round_trips_through_persistence() {
         let space = Space {
             id: cronymax::SpaceId::new(),
             name: "e2e".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
         };
         space_id = space.id;
         auth.upsert_space(space).expect("upsert space");

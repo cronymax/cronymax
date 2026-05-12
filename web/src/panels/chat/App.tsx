@@ -11,6 +11,7 @@ import {
   type ClipboardEvent,
 } from "react";
 import { Streamdown } from "streamdown";
+import { ThinkingBlock } from "./ThinkingBlock";
 import { browser } from "@/shells/bridge";
 import {
   useStore,
@@ -31,6 +32,7 @@ import {
 } from "./store";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
 import { TraceViewer } from "./TraceViewer";
+import { PromptPopover } from "./PromptPopover";
 import { useSelectionTooltip } from "./useSelectionTooltip";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import {
@@ -60,6 +62,61 @@ interface PickerState {
   query: string;
   /** Caret offset at which the trigger started, so we can splice the replacement */
   triggerStart: number;
+}
+
+/**
+ * Strip YAML front-matter from a .prompt.md file and return the
+ * human-readable description (from the `description:` field) plus the
+ * cleaned body to use as prompt content.
+ */
+function parseFrontmatter(raw: string): {
+  description?: string;
+  content: string;
+} {
+  if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n"))
+    return { content: raw };
+  const end = raw.indexOf("\n---", 4);
+  if (end === -1) return { content: raw };
+  const fm = raw.slice(4, end);
+  // raw[end]='\n', raw[end+1..end+3]='---'; slice past them and strip leading blank lines.
+  const afterClose = raw.slice(end + 4).replace(/^[\r\n]+/, "");
+  const descMatch = fm.match(/^description:\s*(.+)$/m);
+  return { description: descMatch?.[1]?.trim(), content: afterClose };
+}
+
+/**
+ * Render a user message string, wrapping `/slug` tokens (prompt pill
+ * references) as visually distinct inline badges.
+ */
+function UserMessageContent({
+  text,
+  onPillClick,
+}: {
+  text: string;
+  onPillClick?: (label: string) => void;
+}) {
+  const pillRe = /^\/[a-z0-9_][a-z0-9_-]*$/i;
+  // Split preserving whitespace separators so we can re-render them as-is.
+  const words = text.split(/([ \t]+)/);
+  return (
+    <>
+      {words.map((word, i) =>
+        pillRe.test(word) ? (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onPillClick?.(word.slice(1))}
+            className="inline-flex items-center rounded-md bg-cronymax-primary/15 border border-cronymax-primary/30 px-1.5 py-0 text-[11px] font-mono text-cronymax-primary align-middle mr-0.5 cursor-pointer hover:bg-cronymax-primary/25 transition-colors"
+          >
+            <span className="opacity-60">/</span>
+            {word.slice(1)}
+          </button>
+        ) : (
+          <span key={i}>{word}</span>
+        ),
+      )}
+    </>
+  );
 }
 
 /** Reads custom slash-command prompts stored in localStorage. */
@@ -173,12 +230,18 @@ function ConversationBlockView({
   block,
   isStreaming,
   isHighlighted,
+  workspacePrompts = [],
 }: {
   block: ConversationBlock;
   isStreaming: boolean;
   isHighlighted?: boolean;
+  workspacePrompts?: PickerItem[];
 }) {
   const pinnedComments = block.comments.filter((c) => c.pinnedToPrompt);
+  const [activePillLabel, setActivePillLabel] = useState<string | null>(null);
+  const activePillPrompt = activePillLabel
+    ? workspacePrompts.find((p) => p.label === activePillLabel)
+    : null;
   return (
     <div
       className={`py-4 space-y-2 transition-all duration-500${
@@ -209,12 +272,44 @@ function ConversationBlockView({
           </div>
         )}
         <div className="whitespace-pre-wrap break-words text-sm text-cronymax-title">
-          {block.userContent}
+          <UserMessageContent
+            text={block.userContent}
+            onPillClick={(label) =>
+              setActivePillLabel((prev) => (prev === label ? null : label))
+            }
+          />
         </div>
       </div>
 
+      {/* Prompt pill popover (read-only) — shown when a /slug pill is clicked */}
+      {activePillPrompt && (
+        <div className="relative">
+          <PromptPopover
+            prompt={{
+              id: activePillPrompt.id,
+              label: activePillPrompt.label,
+              content: activePillPrompt.content ?? "",
+            }}
+            onClose={() => setActivePillLabel(null)}
+          />
+        </div>
+      )}
+
       {/* Trace */}
       <TraceViewer entries={block.traceEntries} startExpanded={isStreaming} />
+
+      {/* Thinking block — show animated dots while running (before content arrives),
+           then collapsible summary once sealed. Hidden only after completion
+           when no thinking content was produced. */}
+      {(block.thinkingText ||
+        block.thinkingSealed ||
+        block.status === "running") && (
+        <ThinkingBlock
+          thinkingText={block.thinkingText}
+          sealed={block.thinkingSealed}
+          elapsedMs={block.thinkingElapsedMs}
+        />
+      )}
 
       {/* Assistant response */}
       {(block.assistantContent || block.status === "running") && (
@@ -358,11 +453,13 @@ function BlockView({
   isStreaming,
   onShellAction,
   isHighlighted,
+  workspacePrompts,
 }: {
   block: Block;
   isStreaming: boolean;
   onShellAction: (action: string, b: ShellBlock) => void;
   isHighlighted?: boolean;
+  workspacePrompts?: PickerItem[];
 }) {
   if (block.kind === "conversation") {
     return (
@@ -370,6 +467,7 @@ function BlockView({
         block={block}
         isStreaming={isStreaming}
         isHighlighted={isHighlighted}
+        workspacePrompts={workspacePrompts}
       />
     );
   }
@@ -478,6 +576,8 @@ export function App() {
   const [attachedPrompts, setAttachedPrompts] = useState<
     { id: string; label: string; content: string }[]
   >([]);
+  /** ID of the pill whose PromptPopover is currently open (null = none). */
+  const [activePillId, setActivePillId] = useState<string | null>(null);
 
   // Load workspace prompts + root + provider models on mount.
   useEffect(() => {
@@ -485,12 +585,16 @@ export function App() {
       .send("workspace.prompts.list")
       .then((res) => {
         setWorkspacePrompts(
-          res.prompts.map((p) => ({
-            id: `ws-${p.name}`,
-            label: p.name,
-            description: p.content.slice(0, 70).replace(/\n/g, " ").trim(),
-            content: p.content,
-          })),
+          res.prompts.map((p) => {
+            const { description, content } = parseFrontmatter(p.content);
+            return {
+              id: `ws-${p.name}`,
+              label: p.name,
+              description:
+                description ?? content.slice(0, 70).replace(/\n/g, " ").trim(),
+              content,
+            };
+          }),
         );
       })
       .catch(() => undefined);
@@ -613,19 +717,7 @@ export function App() {
   // ── agent catalog ─────────────────────────────────────────────────────
   const refreshAgents = useCallback(async () => {
     try {
-      let res = await agentRegistry.list();
-      const names = (res.agents ?? []).map((a) => a.name);
-      if (names.length === 0) {
-        await agentRegistry.save({
-          name: "Chat",
-          llm: "",
-          system_prompt: "You are a helpful assistant.",
-          memory_namespace: "",
-          tools_csv: "",
-        });
-        res = await agentRegistry.list();
-        names.splice(0, names.length, ...(res.agents ?? []).map((a) => a.name));
-      }
+      const res = await agentRegistry.list();
       dispatch({ type: "setAgents", agents: res.agents ?? [] });
       setAgentLoadError(null);
     } catch (err) {
@@ -695,6 +787,7 @@ export function App() {
         blocks: data.blocks,
         terminalTid: data.terminalTid,
         model,
+        agentId: data.agentId,
         migrationNotice,
       });
       const { flows, selected } = loadFlowsList();
@@ -726,6 +819,7 @@ export function App() {
             blocks: d.blocks,
             terminalTid: d.terminalTid,
             model: d.model || loadSelectedModel(),
+            agentId: d.agentId,
             migrationNotice: mn,
           });
         }
@@ -1044,6 +1138,10 @@ export function App() {
         status: "running",
         comments: [],
         createdAt: Date.now(),
+        thinkingText: "",
+        thinkingSealed: false,
+        thinkingStartedAt: null,
+        thinkingElapsedMs: 0,
       };
       dispatch({ type: "createBlock", block });
       dispatch({ type: "setRunningBlockId", id: blockId });
@@ -1052,6 +1150,8 @@ export function App() {
       dispatch({ type: "clearPinnedComments" });
 
       let assistantText = "";
+      let thinkingStartedAt: number | null = null;
+      let thinkingSealed = false;
       const seenSeqs = new Set<number>();
       let runId = "";
 
@@ -1078,7 +1178,26 @@ export function App() {
           if (pRunId && runId && pRunId !== runId) return;
           const kind = pl.kind as string | undefined;
 
-          if (kind === "token") {
+          if (kind === "thinking_token") {
+            const delta = pl.delta as string | undefined;
+            if (delta) {
+              if (thinkingStartedAt === null) {
+                thinkingStartedAt = Date.now();
+              }
+              dispatch({
+                type: "appendThinkingDelta",
+                id: blockId,
+                delta,
+                now: thinkingStartedAt,
+              });
+            }
+          } else if (kind === "token") {
+            // First text token seals the thinking block if thinking is in progress.
+            if (thinkingStartedAt !== null && !thinkingSealed) {
+              thinkingSealed = true;
+              const elapsedMs = Date.now() - thinkingStartedAt;
+              dispatch({ type: "sealThinkingBlock", id: blockId, elapsedMs });
+            }
             const content = (pl.delta ?? pl.content) as string | undefined;
             if (content) {
               assistantText += content;
@@ -1096,6 +1215,12 @@ export function App() {
               status === "cancelled"
             ) {
               dispatch({ type: "clearAwaitingApproval" });
+              // Seal any pending thinking block before finalizing.
+              if (thinkingStartedAt !== null && !thinkingSealed) {
+                thinkingSealed = true;
+                const elapsedMs = Date.now() - thinkingStartedAt;
+                dispatch({ type: "sealThinkingBlock", id: blockId, elapsedMs });
+              }
               if (!assistantText) {
                 assistantText =
                   status === "succeeded" ? "(completed)" : "(no output)";
@@ -1181,7 +1306,22 @@ export function App() {
               (pl.trace as Record<string, unknown> | undefined) ?? pl;
             const traceKind = trace.kind as string | undefined;
 
-            if (traceKind === "assistant_turn") {
+            if (traceKind === "run_start") {
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "run_start",
+                  model: (trace.model as string | undefined) ?? "",
+                  systemPrompt:
+                    (trace.system_prompt as string | undefined) ?? "",
+                  userInput: (trace.user_input as string | undefined) ?? "",
+                  tools: (trace.tools as string[] | undefined) ?? [],
+                  turnsLimit: (trace.turns_limit as number | undefined) ?? 0,
+                  ts: Date.now(),
+                },
+              });
+            } else if (traceKind === "assistant_turn") {
               dispatch({
                 type: "appendTraceEntry",
                 id: blockId,
@@ -1237,6 +1377,29 @@ export function App() {
                   kind: "approval_resolved",
                   reviewId: resolvedId,
                   decision,
+                  ts: Date.now(),
+                },
+              });
+            } else if (traceKind === "reflection") {
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "reflection",
+                  turn: (trace.turn as number | undefined) ?? 0,
+                  text: (trace.text as string | undefined) ?? "",
+                  ts: Date.now(),
+                },
+              });
+            } else if (traceKind === "memory_write") {
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "memory_write",
+                  namespace: (trace.namespace as string | undefined) ?? "",
+                  key: (trace.key as string | undefined) ?? "",
+                  source: (trace.source as string | undefined) ?? "",
                   ts: Date.now(),
                 },
               });
@@ -1298,7 +1461,11 @@ export function App() {
         if (workspaceRoot) {
           body = `[Workspace: ${workspaceRoot}]\n\n${body}`;
         }
-        runId = await agentRun(body);
+        runId = await agentRun(body, {
+          session_id: chatId,
+          agent_id: state.agentId || undefined,
+          model_override: state.model || undefined,
+        });
         if (!runId) throw new Error("runtime did not return run_id");
         await browser
           .send("events.subscribe", { run_id: runId })
@@ -1382,6 +1549,7 @@ export function App() {
         blocks: state.blocks,
         terminalTid: state.terminalTid,
         model: state.model,
+        agentId: state.agentId || undefined,
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1405,16 +1573,32 @@ export function App() {
       if (!typed && attachedPrompts.length === 0) return;
       if (inputRef.current) inputRef.current.value = "";
       setInputMode("chat");
-      // Prepend any attached prompt contents, then the user's typed text.
+      // Collect content from explicitly-attached picker pills.
       const parts = attachedPrompts.map((p) => p.content);
-      if (typed) parts.push(typed);
+      const attachedIds = new Set(attachedPrompts.map((p) => p.id));
+      // Auto-resolve any /slug tokens typed directly in the textarea.
+      // This lets the user type "/opsx-explore <question>" without opening
+      // the picker — the content is injected exactly as if picked.
+      const pillRe = /^\/([a-z0-9_][a-z0-9_-]*)$/i;
+      let remaining = typed;
+      for (const word of typed.split(/\s+/)) {
+        const m = word.match(pillRe);
+        if (!m) continue;
+        const hit = workspacePrompts.find((p) => p.label === m[1]);
+        if (hit?.content && !attachedIds.has(hit.id)) {
+          parts.unshift(hit.content);
+          attachedIds.add(hit.id);
+          remaining = remaining.replace(word, "").trim();
+        }
+      }
+      if (remaining) parts.push(remaining);
       // Build a concise display label (pill names + typed text, no content dump).
       const displayParts = attachedPrompts.map((p) => `/${p.label}`);
       if (typed) displayParts.push(typed);
       setAttachedPrompts([]);
       void onRun(parts.join("\n\n"), displayParts.join(" ") || typed);
     },
-    [onRun, picker, attachedPrompts],
+    [onRun, picker, attachedPrompts, workspacePrompts],
   );
 
   // ── picker items ────────────────────────────────────────────────────────
@@ -1472,9 +1656,10 @@ export function App() {
           el.value = "";
           el.style.height = "auto";
         } else if (item.content) {
-          // Attach as a pill — don't dump the full content into the textarea.
+          // Always attach as a pill so the user can type additional context
+          // before submitting. The pill content is prepended to their message
+          // in onSubmit. Focus the textarea so they can start typing immediately.
           setAttachedPrompts((prev) => {
-            // Deduplicate by id.
             if (prev.some((p) => p.id === item.id)) return prev;
             return [
               ...prev,
@@ -1631,6 +1816,7 @@ export function App() {
             isStreaming={b.id === runningBlockId && b.kind === "conversation"}
             onShellAction={onShellAction}
             isHighlighted={b.id === highlightedBlockId}
+            workspacePrompts={workspacePrompts}
           />
         ))}
       </div>
@@ -1801,22 +1987,63 @@ export function App() {
           >
             {/* Attached prompt pills (VS-Code-style slash command references) */}
             {attachedPrompts.length > 0 && (
-              <div className="flex flex-wrap gap-1 px-2.5 pt-2 pb-0">
+              <div className="relative flex flex-wrap gap-1 px-2.5 pt-2 pb-0">
+                {/* PromptPopover rendered above the pill row */}
+                {activePillId !== null &&
+                  (() => {
+                    const activePill = attachedPrompts.find(
+                      (p) => p.id === activePillId,
+                    );
+                    if (!activePill) return null;
+                    return (
+                      <PromptPopover
+                        key={activePillId}
+                        prompt={activePill}
+                        onClose={() => setActivePillId(null)}
+                        onSave={async (label, content) => {
+                          const res = await browser.send(
+                            "workspace.prompt.save",
+                            { name: label, content },
+                          );
+                          if (!res.ok)
+                            throw new Error(res.error ?? "Save failed");
+                          setAttachedPrompts((prev) =>
+                            prev.map((p) =>
+                              p.id === activePillId ? { ...p, content } : p,
+                            ),
+                          );
+                          setActivePillId(null);
+                        }}
+                      />
+                    );
+                  })()}
                 {attachedPrompts.map((p) => (
                   <span
                     key={p.id}
-                    className="inline-flex items-center gap-1 rounded-md bg-cronymax-primary/15 border border-cronymax-primary/30 px-1.5 py-0.5 text-[11px] font-mono text-cronymax-primary"
+                    className={
+                      "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-mono cursor-pointer transition " +
+                      (activePillId === p.id
+                        ? "bg-cronymax-primary/25 border-cronymax-primary/60 text-cronymax-primary"
+                        : "bg-cronymax-primary/15 border-cronymax-primary/30 text-cronymax-primary hover:bg-cronymax-primary/25")
+                    }
+                    onClick={() =>
+                      setActivePillId((prev) => (prev === p.id ? null : p.id))
+                    }
                   >
                     <span className="opacity-70">/</span>
                     {p.label}
                     <button
                       type="button"
                       className="ml-0.5 opacity-50 hover:opacity-100 leading-none"
-                      onClick={() =>
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActivePillId((prev) =>
+                          prev === p.id ? null : prev,
+                        );
                         setAttachedPrompts((prev) =>
                           prev.filter((x) => x.id !== p.id),
-                        )
-                      }
+                        );
+                      }}
                     >
                       ×
                     </button>

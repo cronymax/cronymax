@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::capability::filesystem::{FilesystemCapability, ReadFileResult};
+use crate::capability::filesystem::{FilesystemCapability, ReadFileResult, StrReplaceResult};
 use super::broker::{Actor, PermissionBroker};
 use super::policy::SandboxPolicy;
 
@@ -66,5 +66,18 @@ impl<F: FilesystemCapability> FilesystemCapability for PolicyFilesystem<F> {
         // Secret access is not path-based; always allow (secrets are managed
         // by the host and are not subject to filesystem sandbox rules).
         self.inner.read_secret(name).await
+    }
+
+    async fn str_replace(
+        &self,
+        path: &Path,
+        old_str: &str,
+        new_str: &str,
+    ) -> anyhow::Result<StrReplaceResult> {
+        let decision = self.broker.check_write(Actor::Agent, path, &self.policy);
+        if !decision.allowed {
+            anyhow::bail!("sandbox policy denied write access to '{}': {}", path.display(), decision.reason);
+        }
+        self.inner.str_replace(path, old_str, new_str).await
     }
 }

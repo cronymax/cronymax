@@ -29,18 +29,22 @@ struct Entry {
 /// All methods require `&mut self`; the caller should hold this in a
 /// `tokio::sync::Mutex` when sharing across tasks.
 #[derive(Debug, Default)]
-pub struct SessionManager {
+pub struct PtySessionManager {
     sessions: HashMap<String, Entry>,
 }
 
 impl std::fmt::Debug for Entry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Entry").field("session", &self.session).finish()
+        f.debug_struct("Entry")
+            .field("session", &self.session)
+            .finish()
     }
 }
 
-impl SessionManager {
-    pub fn new() -> Self { Self::default() }
+impl PtySessionManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Spawn a new PTY shell and register it under the given `id`.
     ///
@@ -63,8 +67,7 @@ impl SessionManager {
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (exit_tx, mut exit_rx) = oneshot::channel::<i32>();
 
-        let session = PtySession::start(&cwd, shell, cols, rows, out_tx, exit_tx)
-            .await?;
+        let session = PtySession::start(&cwd, shell, cols, rows, out_tx, exit_tx).await?;
 
         // Forward output bytes to caller via background task.
         tokio::spawn(async move {
@@ -89,14 +92,18 @@ impl SessionManager {
 
     /// Write bytes to the PTY's stdin.
     pub fn write(&self, id: &str, data: &[u8]) -> anyhow::Result<()> {
-        let entry = self.sessions.get(id)
+        let entry = self
+            .sessions
+            .get(id)
             .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
         entry.session.write(data)
     }
 
     /// Resize the PTY window.
     pub fn resize(&self, id: &str, cols: u16, rows: u16) -> anyhow::Result<()> {
-        let entry = self.sessions.get(id)
+        let entry = self
+            .sessions
+            .get(id)
             .ok_or_else(|| anyhow::anyhow!("session not found: {id}"))?;
         entry.session.resize(cols, rows)
     }
@@ -110,7 +117,8 @@ impl SessionManager {
     }
 
     pub fn is_running(&self, id: &str) -> bool {
-        self.sessions.get(id)
+        self.sessions
+            .get(id)
             .map(|e| e.session.is_running())
             .unwrap_or(false)
     }
@@ -120,9 +128,11 @@ impl SessionManager {
     }
 }
 
-/// Thread-safe wrapper around [`SessionManager`].
-pub type SharedSessionManager = Arc<Mutex<SessionManager>>;
+/// Thread-safe wrapper around [`PtySessionManager`].
+pub type SharedPtySessionManager = Arc<Mutex<PtySessionManager>>;
 
-pub fn new_shared() -> SharedSessionManager {
-    Arc::new(Mutex::new(SessionManager::new()))
+impl PtySessionManager {
+    pub fn new_shared() -> SharedPtySessionManager {
+        Arc::new(Mutex::new(PtySessionManager::new()))
+    }
 }

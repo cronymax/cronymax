@@ -70,6 +70,15 @@ export interface Thread {
 
 export type TraceEntry =
   | {
+      kind: "run_start";
+      model: string;
+      systemPrompt: string;
+      userInput: string;
+      tools: string[];
+      turnsLimit: number;
+      ts: number;
+    }
+  | {
       kind: "assistant_turn";
       turnId: number;
       text: string;
@@ -103,6 +112,19 @@ export type TraceEntry =
       reviewId: string;
       decision: "approve" | "reject";
       ts: number;
+    }
+  | {
+      kind: "reflection";
+      turn: number;
+      text: string;
+      ts: number;
+    }
+  | {
+      kind: "memory_write";
+      namespace: string;
+      key: string;
+      source: string;
+      ts: number;
     };
 
 export interface ConversationBlock {
@@ -121,6 +143,14 @@ export interface ConversationBlock {
   comments: Comment[];
   thread?: Thread;
   createdAt: number;
+  /** Accumulated thinking/reasoning content from an extended-thinking model. */
+  thinkingText: string;
+  /** True once the model emits its first text token, sealing the thinking phase. */
+  thinkingSealed: boolean;
+  /** Timestamp (Date.now()) of the first thinking token; null if no thinking. */
+  thinkingStartedAt: number | null;
+  /** Elapsed ms from first thinking token to first text token (set on seal). */
+  thinkingElapsedMs: number;
 }
 
 export interface ShellBlock {
@@ -165,6 +195,8 @@ export interface State {
   activeView: ActiveView;
   /** Selected model for new runs */
   model: string;
+  /** Selected agent id for new runs */
+  agentId: string;
   agents: AgentSummary[];
   flows: string[];
   selectedFlow: string;
@@ -187,6 +219,7 @@ export type Action =
       blocks: Block[];
       terminalTid: string | null;
       model: string;
+      agentId?: string;
       migrationNotice?: string;
     }
   | { type: "createBlock"; block: Block }
@@ -215,6 +248,7 @@ export type Action =
   | { type: "pinComment"; comment: Comment }
   | { type: "unpinComment"; commentId: string }
   | { type: "setModel"; model: string }
+  | { type: "setAgentId"; agentId: string }
   | { type: "setActiveView"; view: ActiveView }
   | { type: "setAgents"; agents: AgentSummary[] }
   | { type: "setFlows"; flows: string[]; selected: string }
@@ -228,7 +262,9 @@ export type Action =
       args: unknown;
     }
   | { type: "clearAwaitingApproval" }
-  | { type: "clearHistory" };
+  | { type: "clearHistory" }
+  | { type: "appendThinkingDelta"; id: string; delta: string; now: number }
+  | { type: "sealThinkingBlock"; id: string; elapsedMs: number };
 
 // ── Shell output processor ────────────────────────────────────────────
 //
@@ -258,6 +294,7 @@ const initial: State = {
   attachments: [],
   activeView: { kind: "main" },
   model: "",
+  agentId: "",
   agents: [],
   flows: [],
   selectedFlow: "",
@@ -277,6 +314,7 @@ function reducer(state: State, action: Action): State {
         blocks: action.blocks,
         terminalTid: action.terminalTid,
         model: action.model || state.model,
+        agentId: action.agentId ?? state.agentId,
         migrationNotice: action.migrationNotice ?? null,
         activeView: { kind: "main" },
       };
@@ -418,6 +456,9 @@ function reducer(state: State, action: Action): State {
     case "setModel":
       return { ...state, model: action.model };
 
+    case "setAgentId":
+      return { ...state, agentId: action.agentId };
+
     case "setActiveView":
       return { ...state, activeView: action.view };
 
@@ -450,6 +491,32 @@ function reducer(state: State, action: Action): State {
     case "clearAwaitingApproval":
       return { ...state, awaitingApproval: null };
 
+    case "appendThinkingDelta": {
+      const idx = state.blocks.findIndex((b) => b.id === action.id);
+      if (idx < 0) return state;
+      const blk = state.blocks[idx] as ConversationBlock;
+      const next = state.blocks.slice();
+      next[idx] = {
+        ...blk,
+        thinkingText: blk.thinkingText + action.delta,
+        thinkingStartedAt: blk.thinkingStartedAt ?? action.now,
+      };
+      return { ...state, blocks: next };
+    }
+
+    case "sealThinkingBlock": {
+      const idx = state.blocks.findIndex((b) => b.id === action.id);
+      if (idx < 0) return state;
+      const blk = state.blocks[idx] as ConversationBlock;
+      const next = state.blocks.slice();
+      next[idx] = {
+        ...blk,
+        thinkingSealed: true,
+        thinkingElapsedMs: action.elapsedMs,
+      };
+      return { ...state, blocks: next };
+    }
+
     case "clearHistory":
       return { ...state, blocks: [], activeView: { kind: "main" } };
 
@@ -479,6 +546,7 @@ interface PersistedChatData {
   blocks: Block[];
   terminalTid: string | null;
   model: string;
+  agentId?: string;
 }
 
 export function loadChatsList(): ChatListRow[] {
@@ -516,7 +584,14 @@ export function loadChatData(id: string): {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const { traceContent: _tc, ...rest } = b as any;
           void _tc;
-          return { ...rest, traceEntries: [] } as ConversationBlock;
+          return {
+            ...rest,
+            traceEntries: [],
+            thinkingText: rest.thinkingText ?? "",
+            thinkingSealed: rest.thinkingSealed ?? false,
+            thinkingStartedAt: rest.thinkingStartedAt ?? null,
+            thinkingElapsedMs: rest.thinkingElapsedMs ?? 0,
+          } as ConversationBlock;
         }),
       };
       localStorage.setItem(chatStorageKeyV3(id), JSON.stringify(migrated));
@@ -553,6 +628,10 @@ export function loadChatData(id: string): {
             status: "ok",
             comments: [],
             createdAt: Date.now(),
+            thinkingText: "",
+            thinkingSealed: false,
+            thinkingStartedAt: null,
+            thinkingElapsedMs: 0,
           });
           pendingUser = null;
         }

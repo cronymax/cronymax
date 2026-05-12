@@ -9,14 +9,12 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use crate::llm::{
-    ChatMessage, ChatRole, FinishReason, LlmEvent, LlmProvider, LlmRequest,
+    ChatMessage, ChatRole, FinishReason, LlmEvent, LlmProvider, LlmRequest, ThinkingConfig,
     ToolCall,
 };
 use crate::protocol::events::RuntimeEventPayload;
-use crate::runtime::authority::{
-    AuthorityError, ReviewResolution, RuntimeAuthority,
-};
-use crate::runtime::state::{PermissionState, RunId, RunStatus};
+use crate::runtime::authority::{AuthorityError, ReviewResolution, RuntimeAuthority};
+use crate::runtime::state::{PermissionState, RunId, RunStatus, SessionId};
 
 use super::tools::{ToolDispatcher, ToolOutcome};
 
@@ -37,6 +35,44 @@ pub enum LoopError {
     Cancelled,
 }
 
+/// Reflection trigger condition.
+#[derive(Clone, Debug)]
+pub enum ReflectionTrigger {
+    /// Fire every N completed turns.
+    EveryNTurns(usize),
+    /// Fire after N consecutive tool failures in a row.
+    OnConsecutiveFailures(usize),
+    /// Fire when either condition is met.
+    Both {
+        every_n_turns: usize,
+        on_consecutive_failures: usize,
+    },
+}
+
+/// Configuration for the in-loop reflection pass. When present on a
+/// `LoopConfig`, the `ReactLoop` will fire a self-assessment prompt
+/// at the configured trigger and append a `[REFLECTION]` sentinel
+/// message to the history.
+#[derive(Clone, Debug)]
+pub struct ReflectionConfig {
+    pub trigger: ReflectionTrigger,
+    /// Override for the reflection prompt template. When `None`, the
+    /// loop uses the default template embedded in the Crony builtin.
+    pub prompt_template: Option<String>,
+    /// Set to `false` to disable reflection without removing the config.
+    pub enabled: bool,
+}
+
+impl Default for ReflectionConfig {
+    fn default() -> Self {
+        Self {
+            trigger: ReflectionTrigger::EveryNTurns(4),
+            prompt_template: None,
+            enabled: true,
+        }
+    }
+}
+
 /// Per-run loop configuration. Cheap to clone; the underlying
 /// provider/dispatcher are `Arc`-internal.
 #[derive(Clone)]
@@ -48,6 +84,25 @@ pub struct LoopConfig {
     pub temperature: Option<f32>,
     pub llm: Arc<dyn LlmProvider>,
     pub tools: Arc<dyn ToolDispatcher>,
+    /// Optional thinking/reasoning config. When `Some`, it is attached to
+    /// every `LlmRequest` so the model emits thinking tokens.
+    pub thinking: Option<ThinkingConfig>,
+    /// Prior conversation thread from the session. When `Some` and
+    /// non-empty, this replaces the default `[system, user]` history
+    /// seed — the user message is appended to the end of this thread
+    /// instead. When `None` or empty, the loop starts fresh.
+    pub initial_thread: Option<Vec<ChatMessage>>,
+    /// Session to flush the thread back to on completion.
+    pub session_id: Option<SessionId>,
+    /// Optional reflection configuration. When `Some`, the loop fires a
+    /// self-assessment pass at the configured trigger and appends a
+    /// `[REFLECTION]` sentinel message to the history.
+    pub reflection: Option<ReflectionConfig>,
+    /// Namespace to write reflection summaries and compaction summaries to.
+    pub write_namespace: Option<crate::runtime::state::MemoryNamespaceId>,
+    /// Memory manager shared with the runtime. `None` disables persistence-
+    /// backed memory operations (write, search, summary).
+    pub memory_manager: Option<Arc<crate::memory::MemoryManager>>,
 }
 
 impl std::fmt::Debug for LoopConfig {
@@ -58,8 +113,23 @@ impl std::fmt::Debug for LoopConfig {
             .field("user_input_len", &self.user_input.len())
             .field("max_turns", &self.max_turns)
             .field("temperature", &self.temperature)
+            .field("thinking", &self.thinking.as_ref().map(|_| "<config>"))
             .field("llm", &"<provider>")
             .field("tools", &"<dispatcher>")
+            .field(
+                "has_initial_thread",
+                &self.initial_thread.as_ref().map(|t| t.len()),
+            )
+            .field(
+                "session_id",
+                &self.session_id.as_ref().map(|s| s.to_string()),
+            )
+            .field("reflection", &self.reflection.as_ref().map(|r| r.enabled))
+            .field(
+                "write_namespace",
+                &self.write_namespace.as_ref().map(|n| n.0.as_str()),
+            )
+            .field("has_memory_manager", &self.memory_manager.is_some())
             .finish()
     }
 }
@@ -74,25 +144,37 @@ pub struct ReactLoop {
     /// Monotonically increasing turn counter, also used as the
     /// `turn_id` field in `Token` events so the UI can group deltas.
     turn: u64,
+    /// Number of consecutive tool invocation failures (reset on success).
+    consecutive_failures: usize,
 }
 
 impl ReactLoop {
-    pub fn new(
-        authority: RuntimeAuthority,
-        run_id: RunId,
-        config: LoopConfig,
-    ) -> Self {
-        let mut history = Vec::with_capacity(2);
-        if let Some(sys) = &config.system_prompt {
-            history.push(ChatMessage::system(sys.clone()));
-        }
-        history.push(ChatMessage::user(config.user_input.clone()));
+    pub fn new(authority: RuntimeAuthority, run_id: RunId, config: LoopConfig) -> Self {
+        let history = if let Some(prior) = config.initial_thread.as_ref().filter(|t| !t.is_empty())
+        {
+            // Continue from a prior session thread: append the new user
+            // message to the end of the existing conversation. The thread
+            // already contains the system prompt from the first run, so we
+            // don't add it again.
+            let mut h = prior.clone();
+            h.push(ChatMessage::user(config.user_input.clone()));
+            h
+        } else {
+            // Fresh start: seed with system prompt (if any) + user message.
+            let mut h = Vec::with_capacity(2);
+            if let Some(sys) = &config.system_prompt {
+                h.push(ChatMessage::system(sys.clone()));
+            }
+            h.push(ChatMessage::user(config.user_input.clone()));
+            h
+        };
         Self {
             authority,
             run_id,
             config,
             history,
             turn: 0,
+            consecutive_failures: 0,
         }
     }
 
@@ -104,7 +186,38 @@ impl ReactLoop {
         // RunStatus event with status="running".
         self.authority.mark_run_running(self.run_id)?;
 
+        // Emit run_start trace as the first event so the UI can display
+        // what the agent received before any LLM call.
+        let tool_names: Vec<String> = self
+            .config
+            .tools
+            .definitions()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        self.authority.emit_for_run(
+            self.run_id,
+            RuntimeEventPayload::Trace {
+                run_id: self.run_id.to_string(),
+                trace: serde_json::json!({
+                    "kind": "run_start",
+                    "model": self.config.model,
+                    "system_prompt": self.config.system_prompt.as_deref().unwrap_or(""),
+                    "user_input": self.config.user_input,
+                    "tools": tool_names,
+                    "turns_limit": self.config.max_turns,
+                }),
+            },
+        );
+
         let outcome = self.drive().await;
+
+        // Flush thread back to session (success or failure) so that the
+        // next run in this session sees a continuous conversation.
+        if let Some(ref sid) = self.config.session_id.clone() {
+            let _ = self.authority.flush_thread(sid, self.history.clone());
+        }
+
         match &outcome {
             Ok(()) => {
                 // `complete_run` is idempotent if a Terminal tool
@@ -134,26 +247,60 @@ impl ReactLoop {
             self.turn += 1;
             let turn_id = self.turn;
 
+            // ── Reflection trigger (task 6.3) ─────────────────────────────
+            if let Some(ref rcfg) = self.config.reflection.clone() {
+                if rcfg.enabled {
+                    let should_reflect = match &rcfg.trigger {
+                        ReflectionTrigger::EveryNTurns(n) => *n > 0 && self.turn % (*n as u64) == 0,
+                        ReflectionTrigger::OnConsecutiveFailures(n) => {
+                            *n > 0 && self.consecutive_failures >= *n
+                        }
+                        ReflectionTrigger::Both {
+                            every_n_turns,
+                            on_consecutive_failures,
+                        } => {
+                            (*every_n_turns > 0 && self.turn % (*every_n_turns as u64) == 0)
+                                || (*on_consecutive_failures > 0
+                                    && self.consecutive_failures >= *on_consecutive_failures)
+                        }
+                    };
+                    if should_reflect {
+                        self.run_reflection_pass(rcfg).await;
+                    }
+                }
+            }
+
             let req = LlmRequest {
                 model: self.config.model.clone(),
                 messages: self.history.clone(),
                 tools: self.config.tools.definitions(),
                 temperature: self.config.temperature,
+                thinking: self.config.thinking.clone(),
             };
 
-            let mut stream = self
-                .config
-                .llm
-                .stream(req)
-                .await
-                .map_err(|e| { info!(run = %self.run_id, error = %e, "llm stream failed"); LoopError::Provider(e) })?;
+            let mut stream = self.config.llm.stream(req).await.map_err(|e| {
+                info!(run = %self.run_id, error = %e, "llm stream failed");
+                LoopError::Provider(e)
+            })?;
 
             let mut text = String::new();
+            let mut thinking_buf = String::new(); // accumulated thinking; NOT added to history
             let mut calls: BTreeMap<usize, AccumCall> = BTreeMap::new();
             let mut finish: Option<FinishReason> = None;
 
             while let Some(event) = stream.next().await {
                 match event {
+                    LlmEvent::ThinkingDelta { content } => {
+                        thinking_buf.push_str(&content);
+                        self.authority.emit_for_run(
+                            self.run_id,
+                            RuntimeEventPayload::ThinkingToken {
+                                run_id: self.run_id.to_string(),
+                                turn_id: turn_id.to_string(),
+                                delta: content,
+                            },
+                        );
+                    }
                     LlmEvent::Delta { content } => {
                         text.push_str(&content);
                         self.authority.emit_for_run(
@@ -328,12 +475,24 @@ impl ReactLoop {
         }
 
         let (result_value, terminal) = match outcome {
-            ToolOutcome::Output(v) => (v, false),
-            ToolOutcome::Error(e) => (serde_json::json!({"error": e}), false),
-            ToolOutcome::Terminal(v) => (v, true),
+            ToolOutcome::Output(v) => {
+                self.consecutive_failures = 0;
+                (v, false)
+            }
+            ToolOutcome::Error(e) => {
+                self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+                (serde_json::json!({"error": e}), false)
+            }
+            ToolOutcome::Terminal(v) => {
+                self.consecutive_failures = 0;
+                (v, true)
+            }
             ToolOutcome::NeedsApproval { .. } => {
                 // dispatch_approved should never re-return NeedsApproval.
-                (serde_json::json!({"error": "tool repeatedly needs approval"}), false)
+                (
+                    serde_json::json!({"error": "tool repeatedly needs approval"}),
+                    false,
+                )
             }
         };
 
@@ -364,6 +523,87 @@ impl ReactLoop {
         } else {
             Ok(ToolStepResult::Continue)
         }
+    }
+
+    /// Fire a reflection pass: call the LLM with the reflection prompt plus a
+    /// truncated recent history, append the result as a `[REFLECTION]` system
+    /// message, and optionally persist it to the write namespace (task 6.4).
+    ///
+    /// This is best-effort: failures are logged but do not abort the loop.
+    async fn run_reflection_pass(&mut self, cfg: &ReflectionConfig) {
+        // Build the reflection prompt from the template or default.
+        let template = cfg
+            .prompt_template
+            .as_deref()
+            .unwrap_or(crate::crony::prompts::REFLECT_PROMPT);
+
+        // Include the last 6 messages as context (truncate to keep token use low).
+        let context_messages: Vec<_> = self.history.iter().rev().take(6).rev().cloned().collect();
+
+        let mut reflect_history = context_messages;
+        reflect_history.push(ChatMessage::user(template.to_owned()));
+
+        let req = LlmRequest {
+            model: self.config.model.clone(),
+            messages: reflect_history,
+            tools: vec![], // No tools during reflection.
+            temperature: Some(0.3),
+            thinking: None,
+        };
+
+        let text = match self.config.llm.stream(req).await {
+            Ok(mut stream) => {
+                let mut buf = String::new();
+                while let Some(event) = stream.next().await {
+                    match event {
+                        LlmEvent::Delta { content } => buf.push_str(&content),
+                        LlmEvent::Done { .. } => break,
+                        LlmEvent::Error { message } => {
+                            warn!(run = %self.run_id, error = %message, "reflection_pass: llm error");
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                buf
+            }
+            Err(e) => {
+                warn!(run = %self.run_id, error = %e, "reflection_pass: stream failed");
+                return;
+            }
+        };
+
+        if text.is_empty() {
+            return;
+        }
+
+        let sentinel = format!("[REFLECTION] {text}");
+        info!(run = %self.run_id, turn = self.turn, "reflection_pass: appended to history");
+
+        // Append as a system message so the LLM sees it as context, not output.
+        self.history.push(ChatMessage::system(sentinel.clone()));
+
+        // Emit a trace event so the UI can show the reflection.
+        self.authority.emit_for_run(
+            self.run_id,
+            RuntimeEventPayload::Trace {
+                run_id: self.run_id.to_string(),
+                trace: serde_json::json!({
+                    "kind": "reflection",
+                    "turn": self.turn,
+                    "text": text,
+                }),
+            },
+        );
+
+        // Persist to write namespace if configured (task 6.4).
+        if let (Some(ns), Some(mgr)) = (&self.config.write_namespace, &self.config.memory_manager) {
+            let key = format!("reflect/turn_{}", self.turn);
+            let _ = mgr.write(&ns.0, key, sentinel).await;
+        }
+
+        // Reset consecutive failure counter after reflection.
+        self.consecutive_failures = 0;
     }
 }
 
@@ -413,7 +653,12 @@ mod tests {
 
     fn make_authority() -> (RuntimeAuthority, SpaceId) {
         let auth = RuntimeAuthority::in_memory();
-        let space = Space { id: SpaceId::new(), name: "test".into() };
+        let space = Space {
+            id: SpaceId::new(),
+            name: "test".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
         let sid = space.id;
         auth.upsert_space(space).unwrap();
         (auth, sid)
@@ -431,6 +676,12 @@ mod tests {
             temperature: None,
             llm,
             tools,
+            thinking: None,
+            initial_thread: None,
+            session_id: None,
+            reflection: None,
+            write_namespace: None,
+            memory_manager: None,
         }
     }
 
@@ -515,7 +766,10 @@ mod tests {
         );
         let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
         let cfg = make_config(llm.clone(), Arc::new(EchoDispatcher));
-        ReactLoop::new(auth.clone(), run_id, cfg).run().await.unwrap();
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
 
         assert!(auth.run_status(run_id).unwrap().is_terminal());
         // Exactly one LLM turn (user message → stop)
@@ -535,10 +789,15 @@ mod tests {
         );
         let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
         // Subscribe before the loop runs.
-        let SubscribeOutcome { id: _, mut receiver } =
-            auth.subscribe(format!("run:{run_id}"));
+        let SubscribeOutcome {
+            id: _,
+            mut receiver,
+        } = auth.subscribe(format!("run:{run_id}"));
         let cfg = make_config(llm.clone(), Arc::new(EchoDispatcher));
-        ReactLoop::new(auth.clone(), run_id, cfg).run().await.unwrap();
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
         // Drain all events and count Token ones.
         let mut token_deltas: Vec<String> = Vec::new();
         while let Ok(ev) = receiver.try_recv() {
@@ -566,7 +825,10 @@ mod tests {
 
         let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
         let cfg = make_config(llm.clone(), Arc::new(EchoDispatcher));
-        ReactLoop::new(auth.clone(), run_id, cfg).run().await.unwrap();
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
 
         assert!(auth.run_status(run_id).unwrap().is_terminal());
         let reqs = llm.requests();
@@ -592,7 +854,10 @@ mod tests {
         );
         let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
         let cfg = make_config(llm.clone(), Arc::new(TerminalDispatcher));
-        ReactLoop::new(auth.clone(), run_id, cfg).run().await.unwrap();
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
 
         assert!(auth.run_status(run_id).unwrap().is_terminal());
         // Only one LLM turn — terminal tool fires before a second call
@@ -613,18 +878,22 @@ mod tests {
                 .done(FinishReason::ToolCalls),
         );
         // Turn 2: after approval the loop continues and stops
-        llm.push(MockScript::new().delta("Approved and done.").done(FinishReason::Stop));
+        llm.push(
+            MockScript::new()
+                .delta("Approved and done.")
+                .done(FinishReason::Stop),
+        );
 
         let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
         // Subscribe to watch for PermissionRequest events.
-        let SubscribeOutcome { id: _, mut receiver } =
-            auth.subscribe(format!("run:{run_id}"));
+        let SubscribeOutcome {
+            id: _,
+            mut receiver,
+        } = auth.subscribe(format!("run:{run_id}"));
 
         let auth2 = auth.clone();
         let cfg = make_config(llm.clone(), Arc::new(ApprovalDispatcher));
-        let loop_task = tokio::spawn(async move {
-            ReactLoop::new(auth2, run_id, cfg).run().await
-        });
+        let loop_task = tokio::spawn(async move { ReactLoop::new(auth2, run_id, cfg).run().await });
 
         // Wait until the run transitions to AwaitingReview (PermissionRequest event).
         let review_id: ReviewId = loop {
@@ -660,17 +929,21 @@ mod tests {
                 .done(FinishReason::ToolCalls),
         );
         // After rejection the tool result is an error message; model stops.
-        llm.push(MockScript::new().delta("Understood.").done(FinishReason::Stop));
+        llm.push(
+            MockScript::new()
+                .delta("Understood.")
+                .done(FinishReason::Stop),
+        );
 
         let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
-        let SubscribeOutcome { id: _, mut receiver } =
-            auth.subscribe(format!("run:{run_id}"));
+        let SubscribeOutcome {
+            id: _,
+            mut receiver,
+        } = auth.subscribe(format!("run:{run_id}"));
 
         let auth2 = auth.clone();
         let cfg = make_config(llm.clone(), Arc::new(ApprovalDispatcher));
-        let loop_task = tokio::spawn(async move {
-            ReactLoop::new(auth2, run_id, cfg).run().await
-        });
+        let loop_task = tokio::spawn(async move { ReactLoop::new(auth2, run_id, cfg).run().await });
 
         let review_id: ReviewId = loop {
             let ev = receiver.recv().await.expect("subscription channel closed");
@@ -682,8 +955,13 @@ mod tests {
             }
         };
 
-        auth.resolve_review(run_id, review_id, PermissionState::Rejected, Some("not allowed".into()))
-            .unwrap();
+        auth.resolve_review(
+            run_id,
+            review_id,
+            PermissionState::Rejected,
+            Some("not allowed".into()),
+        )
+        .unwrap();
 
         loop_task.await.unwrap().unwrap();
         assert!(auth.run_status(run_id).unwrap().is_terminal());

@@ -3,6 +3,7 @@
 # when failures are found, and eventually produces a test-report for human
 # approval. Re-invoked on patch-notes from RD to continue the fix cycle.
 name: qa
+description: "QA engineer — runs the test suite, files bug-reports, and produces a test-report."
 kind: producer
 llm:
   provider: openai

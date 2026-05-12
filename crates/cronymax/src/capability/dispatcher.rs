@@ -24,6 +24,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -123,11 +124,24 @@ impl std::fmt::Debug for RegisteredTool {
 /// Fluent builder for [`HostCapabilityDispatcher`].
 pub struct DispatcherBuilder {
     tools: HashMap<String, RegisteredTool>,
+    /// When non-empty, only tools whose names appear here are included in
+    /// the built dispatcher. Empty = allow all registered tools.
+    allowed_tools: HashSet<String>,
 }
 
 impl DispatcherBuilder {
     pub fn new() -> Self {
-        Self { tools: HashMap::new() }
+        Self { tools: HashMap::new(), allowed_tools: HashSet::new() }
+    }
+
+    /// Restrict the built dispatcher to only the named tools.
+    /// If `names` is empty this is a no-op (all tools remain available).
+    /// Call before `build()`.
+    pub fn set_allowed_tools(&mut self, names: Vec<String>) -> &mut Self {
+        if !names.is_empty() {
+            self.allowed_tools = names.into_iter().collect();
+        }
+        self
     }
 
     // ── Low-level registration ────────────────────────────────────────────
@@ -350,6 +364,49 @@ impl DispatcherBuilder {
                 match p.write_file(&resolved, &req.content, req.create_dirs).await {
                     Ok(()) => ToolOutcome::Output(serde_json::json!({ "written": true })),
                     Err(e) => ToolOutcome::Error(format!("write_file failed: {e}")),
+                }
+            }
+        });
+
+        // str_replace
+        let sr_provider = provider.clone();
+        let sr_scope = scope.clone();
+        let sr_def = ToolDef {
+            name: "str_replace".into(),
+            description:
+                "Replace exactly one occurrence of `old_str` with `new_str` in a workspace file. \
+                 Fails with an error if `old_str` matches zero or more than one location. \
+                 Returns a unified diff of the change."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path relative to workspace root" },
+                    "old_str": { "type": "string", "description": "Exact text to replace (must appear exactly once)" },
+                    "new_str": { "type": "string", "description": "Replacement text" }
+                },
+                "required": ["path", "old_str", "new_str"]
+            }),
+        };
+        self.register(sr_def, false, move |args| {
+            let p = sr_provider.clone();
+            let s = sr_scope.clone();
+            async move {
+                let req: crate::capability::filesystem::StrReplaceRequest =
+                    match serde_json::from_str(&args) {
+                        Ok(r) => r,
+                        Err(e) => return ToolOutcome::Error(format!("invalid str_replace args: {e}")),
+                    };
+                let resolved = match s.resolve(&req.path) {
+                    Ok(r) => r,
+                    Err(e) => return ToolOutcome::Error(format!("scope violation: {e}")),
+                };
+                match p.str_replace(&resolved, &req.old_str, &req.new_str).await {
+                    Ok(result) => ToolOutcome::Output(serde_json::json!({
+                        "path": result.path,
+                        "diff": result.diff,
+                    })),
+                    Err(e) => ToolOutcome::Error(format!("str_replace failed: {e}")),
                 }
             }
         });
@@ -738,7 +795,35 @@ impl DispatcherBuilder {
     }
 
     pub fn build(self) -> HostCapabilityDispatcher {
-        HostCapabilityDispatcher { tools: self.tools }
+        let tools = if self.allowed_tools.is_empty() {
+            self.tools
+        } else {
+            self.tools
+                .into_iter()
+                .filter(|(name, _)| self.allowed_tools.contains(name))
+                .collect()
+        };
+        HostCapabilityDispatcher { tools }
+    }
+
+    /// Register `search_workspace`, `grep_workspace`, and `glob_files` tools.
+    pub fn register_search(
+        &mut self,
+        workspace_root: std::path::PathBuf,
+    ) {
+        use super::code_search::{register_glob_files, register_grep_workspace, register_search_workspace};
+        register_search_workspace(self, workspace_root.clone());
+        register_grep_workspace(self, workspace_root.clone());
+        register_glob_files(self, workspace_root);
+    }
+
+    /// Register all git tools.
+    pub fn register_git(
+        &mut self,
+        workspace_root: std::path::PathBuf,
+    ) {
+        use super::git::register_git_tools;
+        register_git_tools(self, workspace_root);
     }
 }
 
@@ -834,6 +919,46 @@ mod tests {
             id: "c3".into(),
             name: "no_such_tool".into(),
             arguments: "{}".into(),
+        };
+        assert!(matches!(
+            dispatcher.dispatch(&call).await,
+            ToolOutcome::Error(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn empty_allow_list_returns_all_tools() {
+        let mut builder = DispatcherBuilder::new();
+        builder.register_shell(Arc::new(OkShell), false);
+        // set_allowed_tools with empty vec → no-op, all tools pass through
+        builder.set_allowed_tools(vec![]);
+        let dispatcher = builder.build();
+        let defs = dispatcher.definitions();
+        assert!(defs.iter().any(|d| d.name == "run_shell"), "run_shell should be present");
+    }
+
+    #[tokio::test]
+    async fn non_empty_allow_list_restricts_tools() {
+        let mut builder = DispatcherBuilder::new();
+        builder.register_shell(Arc::new(OkShell), false);
+        builder.set_allowed_tools(vec!["run_shell".into()]);
+        let dispatcher = builder.build();
+        let defs = dispatcher.definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "run_shell");
+    }
+
+    #[tokio::test]
+    async fn dispatch_on_unlisted_tool_returns_error() {
+        let mut builder = DispatcherBuilder::new();
+        builder.register_shell(Arc::new(OkShell), false);
+        // only allow "read_file" which was never registered
+        builder.set_allowed_tools(vec!["read_file".into()]);
+        let dispatcher = builder.build();
+        let call = ToolCall {
+            id: "c4".into(),
+            name: "run_shell".into(),
+            arguments: r#"{"command":"echo hi"}"#.into(),
         };
         assert!(matches!(
             dispatcher.dispatch(&call).await,

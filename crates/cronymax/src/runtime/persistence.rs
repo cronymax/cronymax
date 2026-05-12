@@ -135,13 +135,14 @@ mod tests {
 
     fn sample_snapshot() -> Snapshot {
         let mut snap = Snapshot::default();
-        let space = Space { id: SpaceId::new(), name: "scratch".into() };
+        let space = Space { id: SpaceId::new(), name: "scratch".into(), compaction_threshold_pct: 80, compaction_recency_turns: 6 };
         let space_id = space.id;
         snap.spaces.insert(space_id, space);
         let run = Run {
             id: RunId::new(),
             space_id,
             agent_id: None,
+            session_id: None,
             status: RunStatus::Paused,
             spec: serde_json::json!({"input": "hello"}),
             history: vec![],
@@ -184,7 +185,7 @@ mod tests {
         let mut a = Snapshot::default();
         a.spaces.insert(
             SpaceId::new(),
-            Space { id: SpaceId::new(), name: "first".into() },
+            Space { id: SpaceId::new(), name: "first".into(), compaction_threshold_pct: 80, compaction_recency_turns: 6 },
         );
         p.save(&a).unwrap();
         let b = Snapshot { spaces: BTreeMap::new(), ..Snapshot::default() };

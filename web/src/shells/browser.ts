@@ -380,6 +380,12 @@ export const Channels = {
     }),
   }),
 
+  // Saves a single prompt file to <workspace>/.cronymax/prompts/<name>.prompt.md.
+  "workspace.prompt.save": chan({
+    req: z.object({ name: z.string(), content: z.string() }),
+    res: z.object({ ok: z.boolean(), error: z.string().optional() }),
+  }),
+
   // ── LLM providers (managed list, persisted in kv_config) ──────────
   // Storage is opaque on the C++ side: the frontend owns the JSON
   // schema for the provider list. `raw` is a JSON array string of

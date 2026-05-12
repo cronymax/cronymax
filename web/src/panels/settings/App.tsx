@@ -26,10 +26,7 @@ import { Flows } from "@/components/FlowEditor";
 import { Icon } from "@/components/Icon";
 import { useStore, type PermissionRequest } from "./store";
 
-import { Editor, rootCtx, defaultValueCtx } from "@milkdown/core";
-import { listener, listenerCtx } from "@milkdown/plugin-listener";
-import { commonmark } from "@milkdown/preset-commonmark";
-import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
+import { WysiwygMarkdown } from "@/components/WysiwygMarkdown";
 
 // ── types ─────────────────────────────────────────────────────────────────
 
@@ -884,6 +881,8 @@ interface AgentDetail {
   system_prompt: string;
   memory_namespace: string;
   tools: string[];
+  builtin?: boolean;
+  prompt_sealed?: boolean;
 }
 
 const EMPTY_DETAIL: AgentDetail = {
@@ -893,6 +892,156 @@ const EMPTY_DETAIL: AgentDetail = {
   memory_namespace: "",
   tools: [],
 };
+
+/** Canonical tool groups for the agent tools checkbox UI. */
+const TOOL_GROUPS: { label: string; tools: string[] }[] = [
+  { label: "Shell", tools: ["run_shell", "run_terminal"] },
+  {
+    label: "Filesystem",
+    tools: ["read_file", "write_file", "str_replace", "list_dir"],
+  },
+  {
+    label: "Search",
+    tools: ["search_workspace", "grep_workspace", "glob_files"],
+  },
+  {
+    label: "Git",
+    tools: [
+      "git_status",
+      "git_diff",
+      "git_log",
+      "git_add",
+      "git_reset",
+      "git_commit",
+      "git_push",
+    ],
+  },
+  {
+    label: "Workflow",
+    tools: ["submit_document", "notify", "request_approval", "mention"],
+  },
+  {
+    label: "Testing",
+    tools: ["discover_tests", "run_suite", "get_last_report"],
+  },
+];
+
+/** Flat set of all known tools (for "Other" bucket detection). */
+const ALL_KNOWN_TOOLS = new Set(TOOL_GROUPS.flatMap((g) => g.tools));
+
+/**
+ * Grouped checkbox list for selecting which tools an agent may use.
+ *
+ * `value=[]` means "all tools" (Space defaults). When ALL known groups are
+ * fully checked, the value is saved as `[]`; otherwise the explicit list is
+ * saved.
+ */
+function ToolCheckboxes({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (v: string[]) => void;
+}) {
+  // Derive "unknown" tools from the current value that aren't in any group.
+  const unknownTools = value.filter((t) => !ALL_KNOWN_TOOLS.has(t));
+
+  // When value === [], treat all known tools as checked.
+  const effectiveSet = new Set(
+    value.length === 0 ? TOOL_GROUPS.flatMap((g) => g.tools) : value,
+  );
+
+  function toggle(tool: string) {
+    const next = new Set(effectiveSet);
+    if (next.has(tool)) {
+      next.delete(tool);
+    } else {
+      next.add(tool);
+    }
+    // If all known tools are checked, save as []
+    const allKnown = TOOL_GROUPS.flatMap((g) => g.tools);
+    const allChecked = allKnown.every((t) => next.has(t));
+    onChange(allChecked ? [] : [...next]);
+  }
+
+  function toggleGroup(group: { label: string; tools: string[] }) {
+    const allChecked = group.tools.every((t) => effectiveSet.has(t));
+    const next = new Set(effectiveSet);
+    if (allChecked) {
+      group.tools.forEach((t) => next.delete(t));
+    } else {
+      group.tools.forEach((t) => next.add(t));
+    }
+    const allKnown = TOOL_GROUPS.flatMap((g) => g.tools);
+    const allChecked2 = allKnown.every((t) => next.has(t));
+    onChange(allChecked2 ? [] : [...next]);
+  }
+
+  return (
+    <div className="space-y-2">
+      {TOOL_GROUPS.map((group) => {
+        const groupChecked = group.tools.every((t) => effectiveSet.has(t));
+        const groupPartial =
+          !groupChecked && group.tools.some((t) => effectiveSet.has(t));
+        return (
+          <div key={group.label}>
+            <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-semibold text-cronymax-title">
+              <input
+                type="checkbox"
+                checked={groupChecked}
+                ref={(el) => {
+                  if (el) el.indeterminate = groupPartial;
+                }}
+                onChange={() => toggleGroup(group)}
+                className="accent-cronymax-primary"
+              />
+              {group.label}
+            </label>
+            <div className="ml-4 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+              {group.tools.map((tool) => (
+                <label
+                  key={tool}
+                  className="flex cursor-pointer items-center gap-1 text-[11px] text-cronymax-caption"
+                >
+                  <input
+                    type="checkbox"
+                    checked={effectiveSet.has(tool)}
+                    onChange={() => toggle(tool)}
+                    className="accent-cronymax-primary"
+                  />
+                  {tool}
+                </label>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      {unknownTools.length > 0 && (
+        <div>
+          <span className="text-[11px] font-semibold text-cronymax-title">
+            Other
+          </span>
+          <div className="ml-4 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+            {unknownTools.map((tool) => (
+              <label
+                key={tool}
+                className="flex cursor-pointer items-center gap-1 text-[11px] text-cronymax-caption"
+              >
+                <input
+                  type="checkbox"
+                  checked={effectiveSet.has(tool)}
+                  onChange={() => toggle(tool)}
+                  className="accent-cronymax-primary"
+                />
+                {tool}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AgentsTab() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
@@ -1141,101 +1290,125 @@ function AgentsTab() {
             <h2 className="mb-3 text-sm font-semibold">
               {creating ? "New agent" : `Edit: ${selected}`}
             </h2>
-            <Field label="Name (file basename)">
-              <input
-                className={inputCls}
-                value={draft.name}
-                disabled={!creating}
-                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                placeholder="my_worker"
-              />
-              {!creating && (
-                <p className="mt-1 text-[10px] text-cronymax-caption">
-                  Rename by deleting and recreating.
+            {draft.prompt_sealed ? (
+              <>
+                <p className="mb-4 rounded border border-cronymax-border bg-cronymax-float px-3 py-2 text-xs text-cronymax-caption">
+                  Built-in agent — configuration is sealed and read-only.
                 </p>
-              )}
-            </Field>
-            <Field label="LLM model">
-              {activeProvider ? (
-                <ModelSelect
-                  value={draft.llm}
-                  onChange={(v) => setDraft({ ...draft, llm: v })}
-                  provider={activeProvider}
-                />
-              ) : (
-                <input
-                  className={inputCls}
-                  value={draft.llm}
-                  onChange={(e) => setDraft({ ...draft, llm: e.target.value })}
-                  placeholder="(uses provider default)"
-                />
-              )}
-            </Field>
-            <Field label="Memory namespace (optional)">
-              <input
-                className={inputCls}
-                value={draft.memory_namespace}
-                onChange={(e) =>
-                  setDraft({ ...draft, memory_namespace: e.target.value })
-                }
-                placeholder="(defaults to agent name)"
-              />
-            </Field>
-            <Field label="System prompt">
-              <WysiwygMarkdownField
-                value={draft.system_prompt}
-                onChange={(v) => setDraft({ ...draft, system_prompt: v })}
-              />
-            </Field>
-            <Field label="Tools (comma-separated; empty = Space defaults)">
-              <input
-                className={inputCls}
-                value={draft.tools.join(",")}
-                onChange={(e) =>
-                  setDraft({
-                    ...draft,
-                    tools: e.target.value
-                      .split(",")
-                      .map((s) => s.trim())
-                      .filter(Boolean),
-                  })
-                }
-                placeholder="terminal_exec, file_read"
-              />
-            </Field>
-            {error && <p className="mb-3 text-xs text-red-300">{error}</p>}
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void onSave()}
-                disabled={busy}
-                className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-              >
-                {creating ? "Create" : "Save"}
-              </button>
-              {!creating && (
-                <button
-                  type="button"
-                  onClick={() => void onDelete()}
-                  disabled={busy}
-                  className="rounded border border-red-500/50 bg-red-500/10 px-3 py-1 text-xs text-red-300 hover:bg-red-500/20 disabled:opacity-50"
-                >
-                  Delete
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setDraft(null);
-                  setCreating(false);
-                  setSelected(null);
-                  setError(null);
-                }}
-                className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs hover:bg-cronymax-float"
-              >
-                Cancel
-              </button>
-            </div>
+                <Field label="System prompt">
+                  <pre className="whitespace-pre-wrap rounded border border-cronymax-border bg-cronymax-base px-3 py-2 text-xs text-cronymax-body">
+                    {draft.system_prompt}
+                  </pre>
+                </Field>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraft(null);
+                      setCreating(false);
+                      setSelected(null);
+                      setError(null);
+                    }}
+                    className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs hover:bg-cronymax-float"
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <Field label="Name (file basename)">
+                  <input
+                    className={inputCls}
+                    value={draft.name}
+                    disabled={!creating}
+                    onChange={(e) =>
+                      setDraft({ ...draft, name: e.target.value })
+                    }
+                    placeholder="my_worker"
+                  />
+                  {!creating && (
+                    <p className="mt-1 text-[10px] text-cronymax-caption">
+                      Rename by deleting and recreating.
+                    </p>
+                  )}
+                </Field>
+                <Field label="LLM model">
+                  {activeProvider ? (
+                    <ModelSelect
+                      value={draft.llm}
+                      onChange={(v) => setDraft({ ...draft, llm: v })}
+                      provider={activeProvider}
+                    />
+                  ) : (
+                    <input
+                      className={inputCls}
+                      value={draft.llm}
+                      onChange={(e) =>
+                        setDraft({ ...draft, llm: e.target.value })
+                      }
+                      placeholder="(uses provider default)"
+                    />
+                  )}
+                </Field>
+                <Field label="Memory namespace (optional)">
+                  <input
+                    className={inputCls}
+                    value={draft.memory_namespace}
+                    onChange={(e) =>
+                      setDraft({ ...draft, memory_namespace: e.target.value })
+                    }
+                    placeholder="(defaults to agent name)"
+                  />
+                </Field>
+                <Field label="System prompt">
+                  <WysiwygMarkdown
+                    value={draft.system_prompt}
+                    onChange={(v) => setDraft({ ...draft, system_prompt: v })}
+                    readOnly={false}
+                  />
+                </Field>
+                <Field label="Tools (empty = Space defaults, all checked)">
+                  <ToolCheckboxes
+                    value={draft.tools}
+                    onChange={(v) => setDraft({ ...draft, tools: v })}
+                  />
+                </Field>
+                {error && <p className="mb-3 text-xs text-red-300">{error}</p>}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void onSave()}
+                    disabled={busy}
+                    className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {creating ? "Create" : "Save"}
+                  </button>
+                  {!creating && (
+                    <button
+                      type="button"
+                      onClick={() => void onDelete()}
+                      disabled={busy}
+                      className="rounded border border-red-500/50 bg-red-500/10 px-3 py-1 text-xs text-red-300 hover:bg-red-500/20 disabled:opacity-50"
+                    >
+                      Delete
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraft(null);
+                      setCreating(false);
+                      setSelected(null);
+                      setError(null);
+                    }}
+                    className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs hover:bg-cronymax-float"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
       </section>
@@ -1589,92 +1762,6 @@ function ProfilesTab() {
 
 // ── Doc Types tab ─────────────────────────────────────────────────────────
 
-/**
- * Inner Milkdown editor — must be rendered inside a MilkdownProvider.
- * Initialised once with `initialValue`; calls `onEmit` on every change.
- */
-function WysiwygInner({
-  initialValue,
-  onEmit,
-}: {
-  initialValue: string;
-  onEmit: (v: string) => void;
-}) {
-  const onEmitRef = useRef(onEmit);
-  useEffect(() => {
-    onEmitRef.current = onEmit;
-  });
-
-  useEditor((root) =>
-    Editor.make()
-      .config((ctx) => {
-        ctx.set(rootCtx, root);
-        ctx.set(defaultValueCtx, initialValue);
-        ctx.get(listenerCtx).markdownUpdated((_, markdown) => {
-          onEmitRef.current(markdown);
-        });
-      })
-      .use(commonmark)
-      .use(listener),
-  );
-
-  return <Milkdown />;
-}
-
-/**
- * WYSIWYG Markdown editor backed by Milkdown/ProseMirror.
- * Renders Markdown as rich text that the user can edit directly.
- *
- * When `value` changes from the outside (e.g. a different doc type is
- * selected), the editor is remounted to pick up the new initial content.
- */
-function WysiwygMarkdownField({
-  value,
-  onChange,
-  disabled = false,
-}: {
-  value: string;
-  onChange?: (v: string) => void;
-  disabled?: boolean;
-  placeholder?: string;
-}) {
-  // Track the last markdown emitted by the editor so we can distinguish
-  // an external value change (user selected a different doc type) from
-  // an internal one (user typed in the editor). Only external changes
-  // trigger a remount.
-  const lastEmitted = useRef<string>(value);
-  const [editorKey, setEditorKey] = useState(0);
-
-  useEffect(() => {
-    if (value !== lastEmitted.current) {
-      lastEmitted.current = value;
-      setEditorKey((k) => k + 1);
-    }
-  }, [value]);
-
-  const handleEmit = useCallback(
-    (md: string) => {
-      lastEmitted.current = md;
-      onChange?.(md);
-    },
-    [onChange],
-  );
-
-  return (
-    <div
-      className={
-        "cronymax-wysiwyg rounded border border-cronymax-border " +
-        "bg-cronymax-base overflow-auto " +
-        (disabled ? "pointer-events-none opacity-60" : "")
-      }
-    >
-      <MilkdownProvider key={editorKey}>
-        <WysiwygInner initialValue={value} onEmit={handleEmit} />
-      </MilkdownProvider>
-    </div>
-  );
-}
-
 interface DocTypeSummary {
   name: string;
   display_name: string;
@@ -1883,15 +1970,17 @@ function DocTypesTab() {
               />
             </Field>
             <Field label="Description">
-              <WysiwygMarkdownField
+              <WysiwygMarkdown
                 value={draft.description}
                 onChange={
                   editable
                     ? (v) => setDraft({ ...draft, description: v })
                     : undefined
                 }
-                disabled={!editable}
-                placeholder="Describe what this document type represents (Markdown supported)"
+                readOnly={!editable}
+                className={
+                  !editable ? "pointer-events-none opacity-60" : undefined
+                }
               />
             </Field>
             {error && <p className="mb-3 text-xs text-red-300">{error}</p>}

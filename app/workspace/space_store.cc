@@ -139,6 +139,23 @@ void SpaceStore::ApplySchema() {
       kind    TEXT PRIMARY KEY,
       enabled INTEGER NOT NULL DEFAULT 1
     );
+
+    -- Workspace code index: FTS5 full-text search over file content.
+    -- Each row represents one file; the content column holds the raw text.
+    CREATE VIRTUAL TABLE IF NOT EXISTS code_index USING fts5(
+      path UNINDEXED,
+      content,
+      tokenize = 'trigram'
+    );
+
+    -- Metadata table used by the incremental indexer to skip files that
+    -- haven't changed since the last index pass.
+    CREATE TABLE IF NOT EXISTS code_index_meta (
+      path        TEXT PRIMARY KEY,
+      mtime_ns    INTEGER NOT NULL DEFAULT 0,
+      size_bytes  INTEGER NOT NULL DEFAULT 0,
+      indexed_at  INTEGER NOT NULL DEFAULT 0
+    );
   )";
   sqlite3_exec(db_, sql, nullptr, nullptr, nullptr);
 

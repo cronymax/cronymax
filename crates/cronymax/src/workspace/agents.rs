@@ -25,6 +25,10 @@ pub struct AgentDef {
     /// Structured llm.model.
     #[serde(default)]
     pub llm_model: String,
+    /// Short one-line description of the agent's role (shown in `${agents}` listings).
+    /// If empty, the first sentence of `system_prompt` is used as fallback.
+    #[serde(default)]
+    pub description: String,
     #[serde(default)]
     pub system_prompt: String,
     /// Defaults to `name` if empty.
@@ -44,6 +48,8 @@ struct RawAgentYaml {
     kind: String,
     #[serde(default)]
     llm: serde_yml::Value,
+    #[serde(default)]
+    description: String,
     #[serde(default)]
     system_prompt: String,
     #[serde(default)]
@@ -85,6 +91,7 @@ fn parse_agent_yaml(yaml: &str) -> Option<AgentDef> {
         llm,
         llm_provider,
         llm_model,
+        description: raw.description,
         system_prompt: raw.system_prompt,
         memory_namespace,
         tools: raw.tools,
@@ -134,6 +141,31 @@ impl AgentRegistry {
     pub fn names(&self) -> Vec<String> {
         let mut v: Vec<_> = self.agents.keys().cloned().collect();
         v.sort();
+        v
+    }
+
+    /// Sorted list of `(name, description)` pairs for use in the `${agents}`
+    /// prompt variable. When `description` is empty, the first sentence of
+    /// `system_prompt` is used as a fallback.
+    pub fn entries(&self) -> Vec<(String, String)> {
+        let mut v: Vec<_> = self.agents
+            .iter()
+            .map(|(name, def)| {
+                let desc = if !def.description.is_empty() {
+                    def.description.clone()
+                } else {
+                    // Derive from first sentence of system_prompt.
+                    def.system_prompt
+                        .split(['.', '\n'])
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_owned()
+                };
+                (name.clone(), desc)
+            })
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }
 

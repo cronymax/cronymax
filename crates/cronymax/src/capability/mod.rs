@@ -19,8 +19,10 @@
 
 pub mod agent_loader;
 pub mod browser;
+pub mod code_search;
 pub mod dispatcher;
 pub mod filesystem;
+pub mod git;
 pub mod notify;
 pub mod shell;
 pub mod submit_document;

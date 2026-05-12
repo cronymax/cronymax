@@ -2,6 +2,7 @@
 # to detect testability gaps before implementation begins. Responds with
 # structured JSON so the review aggregator can extract specific comments.
 name: qa-critic
+description: "QA critic — reviews tech-specs for testability gaps; responds with structured JSON."
 kind: reviewer
 llm:
   provider: openai

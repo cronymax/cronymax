@@ -28,7 +28,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::workspace_layout::WorkspaceLayout;
+use crate::workspace::Workspace;
 use crate::flow::definition::{FlowDefinition, FlowGraph};
 use crate::flow::trace::{TraceEvent, TraceKind, TraceWriter};
 
@@ -275,7 +275,7 @@ pub type EventEmitter = Box<dyn Fn(&str, &str) + Send + Sync + 'static>;
 
 /// Manages active flow runs for one Space.
 pub struct FlowRuntime {
-    layout: WorkspaceLayout,
+    layout: Workspace,
     runs: RwLock<HashMap<String, Arc<RwLock<FlowRunState>>>>,
     event_emitter: RwLock<Option<EventEmitter>>,
     trace_writers: RwLock<HashMap<String, Arc<TraceWriter>>>,
@@ -293,7 +293,7 @@ impl std::fmt::Debug for FlowRuntime {
 impl FlowRuntime {
     pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
         Self {
-            layout: WorkspaceLayout::new(workspace_root),
+            layout: Workspace::new(workspace_root),
             runs: RwLock::new(HashMap::new()),
             event_emitter: RwLock::new(None),
             trace_writers: RwLock::new(HashMap::new()),
@@ -1289,7 +1289,7 @@ nodes:
         let rt = FlowRuntime::new(dir.path());
         let flow = make_simple_flow();
         let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
-        let layout = WorkspaceLayout::new(dir.path());
+        let layout = Workspace::new(dir.path());
         let path = layout.run_state_file("test-flow", &run_id);
         assert!(path.exists(), "state.json should be written immediately");
     }

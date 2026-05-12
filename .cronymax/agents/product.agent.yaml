@@ -1,5 +1,6 @@
 # Product manager agent. Owns the PRD; the entry agent in `simple-prd-to-spec`.
 name: product
+description: "Product manager — writes Product Requirements Documents (PRDs) for features."
 kind: worker
 llm: gpt-4o-mini
 system_prompt: |

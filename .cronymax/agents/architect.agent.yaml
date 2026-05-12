@@ -1,5 +1,6 @@
 # Software architect. Reads a PRD, produces a tech-spec.
 name: architect
+description: "Software architect — reads a PRD and produces a detailed tech-spec."
 kind: worker
 llm: gpt-4o-mini
 system_prompt: |

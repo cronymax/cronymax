@@ -147,7 +147,7 @@ if(CRONYMAX_BUILD_RUST)
     app/runtime/legacy_importer.cc
   )
   target_link_libraries(cronymax_runtime_bridge
-    PUBLIC cronymax_common Cronymax::Crony nlohmann_json
+    PUBLIC cronymax_common Cronymax::Crony nlohmann_json z iconv
   )
   target_include_directories(cronymax_runtime_bridge
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app

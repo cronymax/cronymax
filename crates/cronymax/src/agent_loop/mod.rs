@@ -25,8 +25,10 @@
 //! so subscribers see exactly the same event stream regardless of
 //! which provider/dispatcher backed the run.
 
+pub mod compaction;
 pub mod react;
 pub mod tools;
 
+pub use compaction::{maybe_compact, token_estimate, DEFAULT_RECENCY_TURNS, DEFAULT_THRESHOLD_PCT};
 pub use react::{LoopConfig, LoopError, ReactLoop};
 pub use tools::{ToolDispatcher, ToolOutcome};

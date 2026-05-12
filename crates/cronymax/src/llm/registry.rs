@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 pub enum LlmProviderKind {
     OpenaiCompat,
     GithubCopilot,
+    Anthropic,
     None,
 }
 

@@ -1004,6 +1004,15 @@ bool BridgeHandler::HandleRuntimeProcessMessage(
               {"model",         model},
               {"provider_kind", provider_kind},
           };
+          // If the frontend passed a model_override inside payload, use it
+          // to override the provider's default_model while keeping other LLM
+          // fields (base_url, api_key, provider_kind) from the active provider.
+          if (req["payload"].contains("model_override")) {
+            const std::string mo = req["payload"].value("model_override", std::string{});
+            if (!mo.empty())
+              req["payload"]["llm"]["model"] = mo;
+            req["payload"].erase("model_override");
+          }
         }
       }
     }
@@ -1422,6 +1431,63 @@ bool BridgeHandler::HandleWorkspace(std::string_view channel,
       }
     }
     callback->Success(nlohmann::json{{"prompts", arr}}.dump());
+    return true;
+  }
+
+  if (channel == "workspace.prompt.save") {
+    auto jp2 = nlohmann::json::parse(payload, nullptr, false);
+    if (!jp2.is_object()) {
+      callback->Failure(400, "invalid payload");
+      return true;
+    }
+
+    // Extract name and content fields.
+    std::string name, content;
+    {
+      auto it = jp2.find("name");
+      if (it == jp2.end() || !it->is_string()) {
+        callback->Failure(400, "name required");
+        return true;
+      }
+      name = it->get<std::string>();
+    }
+    {
+      auto it = jp2.find("content");
+      if (it == jp2.end() || !it->is_string()) {
+        callback->Failure(400, "content required");
+        return true;
+      }
+      content = it->get<std::string>();
+    }
+
+    // Validate name: reject path-traversal characters.
+    if (name.empty() ||
+        name.find('/') != std::string::npos ||
+        name.find('\\') != std::string::npos ||
+        name.find("..") != std::string::npos ||
+        name.find('\0') != std::string::npos) {
+      callback->Success(nlohmann::json{{"ok", false}, {"error", "invalid name"}}.dump());
+      return true;
+    }
+
+    const auto prompts_dir = sp->workspace_root / ".cronymax" / "prompts";
+    std::error_code ec;
+    std::filesystem::create_directories(prompts_dir, ec);
+    if (ec) {
+      callback->Success(nlohmann::json{{"ok", false}, {"error", ec.message()}}.dump());
+      return true;
+    }
+
+    const auto target = prompts_dir / (name + ".prompt.md");
+    std::ofstream f(target, std::ios::out | std::ios::trunc);
+    if (!f) {
+      callback->Success(nlohmann::json{{"ok", false}, {"error", "failed to open file for writing"}}.dump());
+      return true;
+    }
+    f << content;
+    f.close();
+
+    callback->Success(nlohmann::json{{"ok", true}}.dump());
     return true;
   }
 
@@ -2054,9 +2120,73 @@ void BridgeHandler::OnSpaceSwitch(const std::string& old_space_id,
           SpaceRuntimeSub sub;
           sub.runtime_sub_id = resp.value("subscription", std::string{});
           sub.ev_token = runtime_proxy_->SubscribeEvents(
-              [this](const nlohmann::json& event) {
+              [this, new_space_id](const nlohmann::json& event) {
                 if (shell_cbs_.broadcast_event)
                   shell_cbs_.broadcast_event("event", event.dump());
+
+                // (task 6.3) For file_edited, git_commit_created, git_pushed:
+                // also write to the AppEvent bus so events.list/subscribe
+                // picks them up in the channel panel.
+                // Runtime events arrive as: { tag:"event", subscription, event:
+                //   { kind, run_id, session_id, payload:{ ... } } }
+                if (!event.contains("event") || !event["event"].is_object())
+                  return;
+                const auto& inner = event["event"];
+                if (!inner.contains("payload") || !inner["payload"].is_object())
+                  return;
+                const auto& pl = inner["payload"];
+                const std::string kind_str = pl.value("kind", std::string{});
+
+                event_bus::AppEventKind target_kind;
+                bool is_target = false;
+                if (kind_str == "file_edited") {
+                  target_kind = event_bus::AppEventKind::kFileEdited;
+                  is_target = true;
+                } else if (kind_str == "git_commit_created") {
+                  target_kind = event_bus::AppEventKind::kGitCommitCreated;
+                  is_target = true;
+                } else if (kind_str == "git_pushed") {
+                  target_kind = event_bus::AppEventKind::kGitPushed;
+                  is_target = true;
+                }
+
+                if (!is_target) return;
+
+                Space* sp = nullptr;
+                for (const auto& s : space_manager_->spaces()) {
+                  if (s->id == new_space_id) { sp = s.get(); break; }
+                }
+                if (!sp || !sp->event_bus) return;
+
+                event_bus::AppEvent evt;
+                evt.kind = target_kind;
+                evt.space_id = new_space_id;
+                evt.run_id = pl.value("run_id", std::string{});
+                evt.session_id = pl.value("session_id", std::string{});
+
+                // Build the payload from the Rust payload fields
+                nlohmann::json payload_obj = nlohmann::json::object();
+                if (kind_str == "file_edited") {
+                  payload_obj["path"] = pl.value("path", std::string{});
+                  payload_obj["diff"] = pl.value("diff", std::string{});
+                  if (!evt.session_id.empty())
+                    payload_obj["session_id"] = evt.session_id;
+                } else if (kind_str == "git_commit_created") {
+                  payload_obj["hash"] = pl.value("hash", std::string{});
+                  payload_obj["message"] = pl.value("message", std::string{});
+                  payload_obj["files_changed"] = pl.contains("files_changed")
+                      ? pl["files_changed"] : nlohmann::json::array();
+                  if (!evt.session_id.empty())
+                    payload_obj["session_id"] = evt.session_id;
+                } else if (kind_str == "git_pushed") {
+                  payload_obj["remote"] = pl.value("remote", std::string{});
+                  payload_obj["branch"] = pl.value("branch", std::string{});
+                  payload_obj["commits_pushed"] = pl.value("commits_pushed", 0);
+                  if (!evt.session_id.empty())
+                    payload_obj["session_id"] = evt.session_id;
+                }
+                evt.payload = std::move(payload_obj);
+                sp->event_bus->Append(std::move(evt));
               });
           std::lock_guard<std::mutex> g(space_subs_mu_);
           space_runtime_subs_[new_space_id] = std::move(sub);

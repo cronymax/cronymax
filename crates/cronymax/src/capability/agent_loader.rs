@@ -14,15 +14,30 @@
 //! The default is intentionally permissive so ad-hoc / legacy runs are not
 //! broken by the absence of an agent definition file.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use tracing::warn;
 
+use crate::agent_loop::react::ReflectionConfig;
+
+// ── PromptSource ─────────────────────────────────────────────────────────────
+
+/// Indicates whether an agent's system prompt came from a binary-embedded
+/// builtin or a user-editable YAML file on disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PromptSource {
+    /// Prompt is sealed inside the binary via `include_str!`.
+    Builtin,
+    /// Prompt was loaded from the given on-disk YAML path.
+    UserYaml(PathBuf),
+}
+
 // ── AgentDef ─────────────────────────────────────────────────────────────────
 
 /// Parsed subset of `<agent>.agent.yaml` that the Rust runtime cares about.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct AgentDef {
     /// Human-readable name from the YAML `name:` field.
     /// Defaults to the file stem if absent.
@@ -45,6 +60,11 @@ pub struct AgentDef {
     /// message so the LLM understands both its persona and the flow context.
     pub system_prompt: String,
 
+    /// Indicates where the system prompt originated. `Builtin` means
+    /// the prompt is sealed inside the binary; `UserYaml` means it came
+    /// from an editable YAML file.
+    pub prompt_source: PromptSource,
+
     /// Optional memory namespace. Defaults to the agent id when empty.
     pub memory_namespace: String,
 
@@ -52,6 +72,19 @@ pub struct AgentDef {
     /// tool set registered for the run. Non-empty means only the listed
     /// tool names will be available.
     pub tools: Vec<String>,
+
+    /// When `true` (default), the runtime appends a minimal workspace context
+    /// block to the agent's system prompt before each run. Set to `false` in
+    /// the YAML to opt out (e.g. pure document-processor agents).
+    pub inject_workspace: bool,
+
+    /// User-extensible template variables injected into the system prompt
+    /// by the prompt var renderer (e.g. `${my_var}`).
+    pub vars: HashMap<String, String>,
+
+    /// Optional in-loop reflection configuration. When `Some`, the
+    /// `ReactLoop` fires a self-assessment pass at the trigger interval.
+    pub reflection: Option<ReflectionConfig>,
 }
 
 /// The two legal agent kinds.
@@ -89,10 +122,49 @@ struct RawAgentDef {
     memory_namespace: String,
     #[serde(default)]
     tools: Vec<String>,
+    #[serde(default = "default_true")]
+    inject_workspace: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Peripheral-only override for the Crony builtin agent. Only the fields
+/// in the allowlist (`memory_namespace`, `vars`, `reflection.enabled`) may
+/// be set. The prompt fields are intentionally absent.
+#[derive(Debug, Default, Deserialize)]
+struct RawCronyOverride {
+    #[serde(default)]
+    memory_namespace: Option<String>,
+    #[serde(default)]
+    vars: Option<HashMap<String, String>>,
+    /// Shorthand for `reflection.enabled`. A full reflection object is not
+    /// supported in the override — only the enabled flag.
+    #[serde(default, rename = "reflection_enabled")]
+    reflection_enabled: Option<bool>,
+}
+
+impl Default for AgentDef {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            kind: AgentKind::Worker,
+            llm_provider: String::new(),
+            llm_model: String::new(),
+            system_prompt: String::new(),
+            prompt_source: PromptSource::UserYaml(PathBuf::new()),
+            memory_namespace: String::new(),
+            tools: Vec::new(),
+            inject_workspace: true,
+            vars: HashMap::new(),
+            reflection: None,
+        }
+    }
 }
 
 impl RawAgentDef {
-    fn into_agent_def(self, fallback_name: &str) -> AgentDef {
+    fn into_agent_def(self, fallback_name: &str, source_path: PathBuf) -> AgentDef {
         let name = if self.name.is_empty() { fallback_name.to_owned() } else { self.name };
 
         let kind = match self.kind.as_str() {
@@ -127,8 +199,12 @@ impl RawAgentDef {
             llm_provider,
             llm_model,
             system_prompt: self.system_prompt,
+            prompt_source: PromptSource::UserYaml(source_path),
             memory_namespace: self.memory_namespace,
             tools: self.tools,
+            inject_workspace: self.inject_workspace,
+            vars: HashMap::new(),
+            reflection: None,
         }
     }
 }
@@ -146,6 +222,55 @@ impl RawAgentDef {
 pub async fn load_agent(workspace_root: &Path, agent_id: &str) -> AgentDef {
     let path = agents_dir(workspace_root).join(format!("{agent_id}.agent.yaml"));
     load_from_path(&path, agent_id).await
+}
+
+/// Load an agent definition, intercepting the builtin Crony agent id.
+///
+/// When `agent_id` is `""` or `"crony"` (case-insensitive), this returns
+/// `CronyBuiltin::def()` augmented with any peripheral overrides from
+/// `.cronymax/agents/crony.agent.yaml` (allowlist: `reflection`, `vars`,
+/// `memory_namespace`). The `prompt_source` is always forced to
+/// `PromptSource::Builtin` — the sealed prompt cannot be overridden.
+///
+/// For all other `agent_id` values, this delegates to `load_agent`.
+pub async fn load_agent_with_builtin(workspace_root: &Path, agent_id: &str) -> AgentDef {
+    if agent_id.is_empty() || agent_id.eq_ignore_ascii_case("crony") {
+        let mut def = crate::crony::CronyBuiltin::def();
+
+        // Apply optional peripheral overrides from Crony.agent.yaml.
+        let override_path =
+            agents_dir(workspace_root).join("Crony.agent.yaml");
+        if let Ok(yaml) = tokio::fs::read_to_string(&override_path).await {
+            match serde_yml::from_str::<RawCronyOverride>(&yaml) {
+                Ok(ov) => {
+                    if let Some(ns) = ov.memory_namespace {
+                        if !ns.is_empty() {
+                            def.memory_namespace = ns;
+                        }
+                    }
+                    if let Some(vars) = ov.vars {
+                        def.vars.extend(vars);
+                    }
+                    if let Some(enabled) = ov.reflection_enabled {
+                        if let Some(ref mut r) = def.reflection {
+                            r.enabled = enabled;
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        path = %override_path.display(),
+                        error = %e,
+                        "agent_loader: failed to parse crony.agent.yaml override"
+                    );
+                }
+            }
+        }
+        // Always enforce sealed prompt source.
+        def.prompt_source = PromptSource::Builtin;
+        return def;
+    }
+    load_agent(workspace_root, agent_id).await
 }
 
 /// Build the agents directory path `<workspace_root>/.cronymax/agents/`.
@@ -173,7 +298,7 @@ async fn load_from_path(path: &Path, fallback_name: &str) -> AgentDef {
     };
 
     match serde_yml::from_str::<RawAgentDef>(&yaml) {
-        Ok(raw) => raw.into_agent_def(fallback_name),
+        Ok(raw) => raw.into_agent_def(fallback_name, path.to_path_buf()),
         Err(e) => {
             warn!(path = %path.display(), error = %e, "agent_loader: failed to parse agent yaml");
             AgentDef {
@@ -203,7 +328,7 @@ tools:
   - write_file
 "#;
         let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
-        let def = raw.into_agent_def("coder");
+        let def = raw.into_agent_def("coder", PathBuf::new());
         assert_eq!(def.name, "coder");
         assert_eq!(def.kind, AgentKind::Worker);
         assert_eq!(def.llm_model, "gpt-4o");
@@ -223,7 +348,7 @@ llm:
 system_prompt: "Review the PRD for completeness."
 "#;
         let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
-        let def = raw.into_agent_def("pm");
+        let def = raw.into_agent_def("pm", PathBuf::new());
         assert_eq!(def.kind, AgentKind::Reviewer);
         assert_eq!(def.llm_provider, "copilot");
         assert_eq!(def.llm_model, "claude-3-5-sonnet");
@@ -234,9 +359,18 @@ system_prompt: "Review the PRD for completeness."
     fn empty_yaml_gives_defaults() {
         let yaml = "{}";
         let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
-        let def = raw.into_agent_def("my-agent");
+        let def = raw.into_agent_def("my-agent", PathBuf::new());
         assert_eq!(def.name, "my-agent");
         assert_eq!(def.kind, AgentKind::Worker);
         assert!(def.system_prompt.is_empty());
+        assert!(def.inject_workspace, "inject_workspace defaults to true");
+    }
+
+    #[test]
+    fn inject_workspace_false_is_respected() {
+        let yaml = "inject_workspace: false\nname: critic\n";
+        let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
+        let def = raw.into_agent_def("critic", PathBuf::new());
+        assert!(!def.inject_workspace);
     }
 }

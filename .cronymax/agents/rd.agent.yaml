@@ -4,6 +4,7 @@
 # on_approved_reschedule between phases. Also receives bug-reports from QA
 # and produces patch-notes in the test-fix cycle.
 name: rd
+description: "R&D engineer — produces tech-spec, code-description, and submit-for-testing; drives the fix cycle."
 kind: producer
 llm:
   provider: copilot

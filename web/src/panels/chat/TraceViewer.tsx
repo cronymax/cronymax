@@ -14,23 +14,31 @@ function fmtRelTs(base: number, ts: number): string {
 }
 
 const GLYPHS: Record<TraceEntry["kind"], string> = {
+  run_start: "◉",
   assistant_turn: "◎",
   tool_start: "▶",
   tool_done: "✓",
   approval_request: "⏸",
   approval_resolved: "✔",
+  reflection: "🪞",
+  memory_write: "💾",
 };
 
 const GLYPH_COLORS: Record<TraceEntry["kind"], string> = {
+  run_start: "text-cronymax-caption",
   assistant_turn: "text-cronymax-primary",
   tool_start: "text-amber-400",
   tool_done: "text-green-400",
   approval_request: "text-orange-400",
   approval_resolved: "text-green-300",
+  reflection: "text-purple-400",
+  memory_write: "text-sky-400",
 };
 
 function entryLabel(entry: TraceEntry): string {
   switch (entry.kind) {
+    case "run_start":
+      return `${entry.model} · ${entry.tools.length} tools · max ${entry.turnsLimit} turns`;
     case "assistant_turn":
       return `turn ${entry.turnId}${entry.finishReason ? ` (${entry.finishReason})` : ""}`;
     case "tool_start":
@@ -41,11 +49,17 @@ function entryLabel(entry: TraceEntry): string {
       return `approval: ${entry.tool}`;
     case "approval_resolved":
       return `${entry.decision === "approve" ? "approved" : "denied"}: ${entry.reviewId.slice(0, 8)}`;
+    case "reflection":
+      return `reflection · turn ${entry.turn}`;
+    case "memory_write":
+      return `memory → ${entry.namespace}/${entry.key} (${entry.source})`;
   }
 }
 
 function entryDetail(entry: TraceEntry): unknown {
   switch (entry.kind) {
+    case "run_start":
+      return { systemPrompt: entry.systemPrompt, tools: entry.tools };
     case "assistant_turn":
       return { text: entry.text };
     case "tool_start":
@@ -56,12 +70,27 @@ function entryDetail(entry: TraceEntry): unknown {
       return entry.args;
     case "approval_resolved":
       return { reviewId: entry.reviewId, decision: entry.decision };
+    case "reflection":
+      return { text: entry.text };
+    case "memory_write":
+      return {
+        namespace: entry.namespace,
+        key: entry.key,
+        source: entry.source,
+      };
   }
 }
 
 /** Entries that are "child" rows (indented under their tool_start). */
 function isChildEntry(entry: TraceEntry): boolean {
   return entry.kind === "tool_done";
+}
+
+/** Sort entries so run_start always appears first. */
+function sortedEntries(entries: TraceEntry[]): TraceEntry[] {
+  const runStart = entries.filter((e) => e.kind === "run_start");
+  const rest = entries.filter((e) => e.kind !== "run_start");
+  return [...runStart, ...rest];
 }
 
 function totalDuration(entries: TraceEntry[]): string {
@@ -79,7 +108,10 @@ function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
   const glyph = GLYPHS[entry.kind];
   const glyphColor = GLYPH_COLORS[entry.kind];
   const label = entryLabel(entry);
-  const detail = entryDetail(entry);
+
+  // run_start shows system prompt as plain text + tool list, not JSON
+  const isRunStart = entry.kind === "run_start";
+  const detail = isRunStart ? null : entryDetail(entry);
 
   return (
     <div className={indented ? "ml-4" : ""}>
@@ -96,15 +128,38 @@ function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
         <span className="flex-1 truncate font-mono text-[11px] text-cronymax-caption">
           {label}
         </span>
-        <span className="shrink-0 font-mono text-[10px] text-cronymax-caption opacity-60">
-          {fmtRelTs(base, entry.ts)}
-        </span>
+        {!isRunStart && (
+          <span className="shrink-0 font-mono text-[10px] text-cronymax-caption opacity-60">
+            {fmtRelTs(base, entry.ts)}
+          </span>
+        )}
         <span className="shrink-0 text-[10px] text-cronymax-caption opacity-40">
           {open ? "▾" : "▸"}
         </span>
       </button>
 
-      {open && (
+      {open && isRunStart && entry.kind === "run_start" && (
+        <div className="ml-6 mt-0.5 space-y-1">
+          <div className="text-[10px] text-cronymax-caption opacity-70 font-mono">
+            Tools: {entry.tools.join(", ") || "(none)"}
+          </div>
+          <pre className="max-h-[240px] overflow-y-auto rounded bg-cronymax-base px-2 py-1 font-mono text-[10px] text-cronymax-caption whitespace-pre-wrap break-all">
+            {entry.systemPrompt || "(no system prompt)"}
+          </pre>
+          {entry.userInput && (
+            <>
+              <div className="text-[10px] text-cronymax-caption opacity-70 font-mono mt-1">
+                User message:
+              </div>
+              <pre className="max-h-[240px] overflow-y-auto rounded bg-cronymax-base px-2 py-1 font-mono text-[10px] text-cronymax-caption whitespace-pre-wrap break-all">
+                {entry.userInput}
+              </pre>
+            </>
+          )}
+        </div>
+      )}
+
+      {open && !isRunStart && (
         <pre className="ml-6 max-h-[200px] overflow-y-auto rounded bg-cronymax-base px-2 py-1 font-mono text-[10px] text-cronymax-caption whitespace-pre-wrap break-all">
           {JSON.stringify(detail, null, 2)}
         </pre>
@@ -144,7 +199,7 @@ export function TraceViewer({ entries, startExpanded }: Props) {
       {/* Waterfall rows */}
       {!collapsed && (
         <div className="border-t border-cronymax-border px-1 py-1 space-y-0.5">
-          {entries.map((entry, i) => (
+          {sortedEntries(entries).map((entry, i) => (
             <TraceRow key={i} entry={entry} base={base} />
           ))}
         </div>

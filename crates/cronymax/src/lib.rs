@@ -19,10 +19,11 @@
 pub mod agent_loop;
 pub mod capability;
 pub mod config;
-pub mod document;
+pub mod crony;
 pub mod flow;
 pub mod lifecycle;
 pub mod llm;
+pub mod memory;
 pub mod protocol;
 pub mod runtime;
 pub mod sandbox;
@@ -36,7 +37,7 @@ pub use runtime::{
     Agent, AgentId, AuthorityError, InMemoryPersistence, JsonFilePersistence,
     MemoryEntry, MemoryNamespace, MemoryNamespaceId, PendingReview, Persistence,
     PermissionState, ReviewId, Run, RunId, RunStatus, RuntimeAuthority,
-    RuntimeHandler, Snapshot, Space, SpaceId,
+    RuntimeHandler, Session, SessionId, Snapshot, Space, SpaceId,
 };
 
 /// Cronymax crate version surfaced for diagnostics and handshakes.

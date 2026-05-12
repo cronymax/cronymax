@@ -26,6 +26,8 @@ use super::stream::UnboundedReceiverStream;
 use super::messages::{FinishReason, LlmRequest, ToolDef};
 use super::provider::{LlmEvent, LlmProvider, LlmStream};
 
+use crate::llm::messages::ThinkingConfig;
+
 /// Per-instance configuration. `model` is the *default* model used
 /// when an [`LlmRequest`] doesn't override it; today the loop always
 /// passes a model so this acts as a fallback only.
@@ -171,6 +173,12 @@ fn parse_chunk(payload: &str, tx: &mpsc::UnboundedSender<LlmEvent>) -> anyhow::R
         return Ok(());
     };
     if let Some(delta) = choice.delta {
+        // Thinking/reasoning content (OpenAI-compat proxies: LiteLLM, OpenRouter, Together)
+        if let Some(rc) = delta.reasoning_content {
+            if !rc.is_empty() {
+                let _ = tx.send(LlmEvent::ThinkingDelta { content: rc });
+            }
+        }
         if let Some(content) = delta.content {
             if !content.is_empty() {
                 let _ = tx.send(LlmEvent::Delta { content });
@@ -264,6 +272,12 @@ struct WireRequest<'a> {
     tool_choice: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// OpenAI o-series: `"low"`, `"medium"`, or `"high"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
+    /// Anthropic-style thinking block (passed through by some compat proxies).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<serde_json::Value>,
 }
 
 impl<'a> WireRequest<'a> {
@@ -275,6 +289,22 @@ impl<'a> WireRequest<'a> {
         };
         let tools: Vec<WireTool> = req.tools.iter().map(WireTool::from).collect();
         let tool_choice = if tools.is_empty() { None } else { Some("auto") };
+        let (reasoning_effort, thinking) = match &req.thinking {
+            Some(ThinkingConfig::ReasoningEffort { effort }) => {
+                (Some(effort.clone()), None)
+            }
+            Some(ThinkingConfig::Budget { budget_tokens }) => (
+                None,
+                Some(serde_json::json!({
+                    "type": "enabled",
+                    "budget_tokens": budget_tokens,
+                })),
+            ),
+            // Adaptive thinking is Anthropic-native; silently ignore it here
+            // so OpenAI-compat endpoints don't reject the request.
+            Some(ThinkingConfig::Adaptive { .. }) => (None, None),
+            None => (None, None),
+        };
         Self {
             model,
             messages: req.messages.iter().map(WireChatMessage::from).collect(),
@@ -282,6 +312,8 @@ impl<'a> WireRequest<'a> {
             tools,
             tool_choice,
             temperature: req.temperature,
+            reasoning_effort,
+            thinking,
         }
     }
 }
@@ -332,6 +364,10 @@ struct WireChoice {
 struct WireDelta {
     #[serde(default)]
     content: Option<String>,
+    /// OpenAI-compat `reasoning_content` field emitted by LiteLLM, OpenRouter,
+    /// Together, etc. when a reasoning model is proxied. Empty/null → skip.
+    #[serde(default)]
+    reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<WireToolCallDelta>>,
 }

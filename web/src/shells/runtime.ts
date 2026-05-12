@@ -28,6 +28,8 @@ export interface AgentEntry {
   name: string;
   kind: string;
   llm: string;
+  builtin?: boolean;
+  prompt_sealed?: boolean;
 }
 
 export interface AgentDetail extends AgentEntry {
@@ -147,9 +149,30 @@ export const flowRun = {
  * Start an agent run for a given task string.
  * The browser process injects LLM config and workspace context.
  * Returns the run_id assigned by the Rust runtime.
+ *
+ * Pass `session_id` (e.g. the chat tab id) to enable session continuity:
+ * the runtime will seed the new run from the prior thread and flush the
+ * updated thread back to the session on completion.
+ *
+ * Pass `agent_id` to route to a specific agent definition (e.g. `"crony"`).
+ * Pass `model_override` to override the provider's default model for this run.
  */
-export async function agentRun(task: string): Promise<string> {
-  const raw = await runtime.send({ kind: "start_run", payload: { task } });
+export async function agentRun(
+  task: string,
+  opts?: {
+    session_id?: string;
+    session_name?: string;
+    agent_id?: string;
+    model_override?: string;
+  },
+): Promise<string> {
+  const payload: Record<string, unknown> = { task };
+  if (opts?.model_override) payload.model_override = opts.model_override;
+  const req: Record<string, unknown> = { kind: "start_run", payload };
+  if (opts?.session_id) req.session_id = opts.session_id;
+  if (opts?.session_name) req.session_name = opts.session_name;
+  if (opts?.agent_id) req.agent_id = opts.agent_id;
+  const raw = await runtime.send(req);
   const res = JSON.parse(raw) as { run_id?: string };
   if (!res.run_id) throw new Error("runtime did not return run_id");
   return res.run_id;

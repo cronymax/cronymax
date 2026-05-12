@@ -40,7 +40,7 @@ pub enum RuntimeError {
     #[error("runtime is not running")]
     NotRunning,
 
-    #[error("runtime initialisation failed: {0}")]
+    #[error("runtime initialization failed: {0}")]
     Init(String),
 }
 
@@ -60,7 +60,7 @@ pub struct Runtime {
     /// transport (and vice-versa).
     terminal_managers: Arc<parking_lot::Mutex<std::collections::HashMap<
         String,
-        crate::terminal::SharedSessionManager,
+        crate::terminal::SharedPtySessionManager,
     >>>,
 }
 

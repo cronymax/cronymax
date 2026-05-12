@@ -20,6 +20,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::llm::ChatMessage;
+
 /// Construct a strongly-typed UUID newtype with the usual deriveables.
 macro_rules! uuid_newtype {
     ($name:ident) => {
@@ -63,6 +65,69 @@ uuid_newtype!(RunId);
 uuid_newtype!(AgentId);
 uuid_newtype!(ReviewId);
 
+/// Session identity is a caller-supplied string (the frontend's
+/// `cronymax_chat_tab_id`) so no UUID generation is needed on the
+/// Rust side. Stored as a newtype for type-safety.
+#[derive(
+    Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct SessionId(pub String);
+
+impl From<&str> for SessionId {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
+impl From<String> for SessionId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A persistent conversation session. Sits between a Space and its
+/// Runs: `Space → Session → Run`. The `thread` field is the
+/// authoritative LLM context window that survives across runs.
+///
+/// `id` equals the frontend's `cronymax_chat_tab_id` — the frontend
+/// owns session identity; the runtime only stores what it's told.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Session {
+    pub id: SessionId,
+    pub space_id: SpaceId,
+    /// Human-readable name (auto-derived from the first user message,
+    /// or explicitly set by the user). `None` until a name is known.
+    pub name: Option<String>,
+    /// Pinned agent definition, if any. When set, `start_run` on this
+    /// session uses this agent's config as a default.
+    pub agent_id: Option<AgentId>,
+    /// The authoritative LLM context window — persisted across runs so
+    /// the model sees a continuous conversation. Distinct from
+    /// `Run.history` which is an append-only audit trail.
+    #[serde(default)]
+    pub thread: Vec<ChatMessage>,
+    /// All run ids created in this session, in creation order.
+    #[serde(default)]
+    pub run_ids: Vec<RunId>,
+    /// Namespace the agent reads memory from. `None` uses the session-default
+    /// namespace derived from the session id.
+    #[serde(default)]
+    pub read_namespace: Option<MemoryNamespaceId>,
+    /// Namespace the agent writes memory to. `None` uses the session-default
+    /// namespace derived from the session id.
+    #[serde(default)]
+    pub write_namespace: Option<MemoryNamespaceId>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
 /// Memory namespace ids are caller-supplied strings (e.g. a
 /// `"space:<uuid>/conversation"`-style namespace) so the runtime can
 /// segment memory by Space, agent, or product feature without baking a
@@ -99,6 +164,22 @@ impl std::fmt::Display for MemoryNamespaceId {
 pub struct Space {
     pub id: SpaceId,
     pub name: String,
+    /// Compact session thread when token estimate reaches this percentage
+    /// of the context window (0 disables, default 80).
+    #[serde(default = "default_compaction_threshold_pct")]
+    pub compaction_threshold_pct: u8,
+    /// Number of recent user+assistant turn-pairs to preserve verbatim
+    /// after compaction (default 6).
+    #[serde(default = "default_compaction_recency_turns")]
+    pub compaction_recency_turns: usize,
+}
+
+fn default_compaction_threshold_pct() -> u8 {
+    80
+}
+
+fn default_compaction_recency_turns() -> usize {
+    6
 }
 
 /// A long-lived agent definition the runtime can spawn runs from.
@@ -182,6 +263,10 @@ pub struct Run {
     /// Optional because a run may be a multi-agent flow that doesn't
     /// pin to a single agent definition.
     pub agent_id: Option<AgentId>,
+    /// Session this run belongs to. `None` for legacy runs that were
+    /// created before session management was introduced.
+    #[serde(default)]
+    pub session_id: Option<SessionId>,
     pub status: RunStatus,
     /// The original `start_run` payload — preserved verbatim so a
     /// rehydrated runtime can reconstruct the run's initial intent.
@@ -243,8 +328,13 @@ pub struct Snapshot {
     #[serde(default)]
     pub agents: BTreeMap<AgentId, Agent>,
     #[serde(default)]
-    pub runs: BTreeMap<RunId, Run>,
+    pub sessions: BTreeMap<SessionId, Session>,
     #[serde(default)]
+    pub runs: BTreeMap<RunId, Run>,
+    /// Legacy in-snapshot memory. Deserialized for migration to the
+    /// standalone `MemoryManager` (schema v1 → v2), then cleared and
+    /// no longer written to disk.
+    #[serde(default, skip_serializing)]
     pub memory: BTreeMap<MemoryNamespaceId, MemoryNamespace>,
     #[serde(default)]
     pub reviews: BTreeMap<ReviewId, PendingReview>,
@@ -256,6 +346,7 @@ impl Default for Snapshot {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
             spaces: BTreeMap::new(),
             agents: BTreeMap::new(),
+            sessions: BTreeMap::new(),
             runs: BTreeMap::new(),
             memory: BTreeMap::new(),
             reviews: BTreeMap::new(),
@@ -266,7 +357,7 @@ impl Default for Snapshot {
 /// Current authoritative on-disk schema version. Bump this on any
 /// breaking change to [`Snapshot`] and add a migration arm to
 /// [`migrate_snapshot`].
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 /// Migrate a freshly-loaded [`Snapshot`] from its on-disk
 /// `schema_version` up to [`SNAPSHOT_SCHEMA_VERSION`]. Returns an
@@ -288,6 +379,12 @@ pub fn migrate_snapshot(mut snap: Snapshot) -> Result<Snapshot, SnapshotMigratio
     // upgrade is just stamping the new version.
     if snap.schema_version == 0 {
         snap.schema_version = 1;
+    }
+    // 1 → 2: `memory` field migrated to standalone MemoryManager on disk.
+    // The `memory` BTreeMap is kept for deserialization (so `MemoryManager::new`
+    // can migrate existing entries) but is no longer written back to disk.
+    if snap.schema_version == 1 {
+        snap.schema_version = 2;
     }
     Ok(snap)
 }

@@ -1,4 +1,7 @@
-//! Rust port of the C++ `DocumentStore`.
+//! Document store for flow runs.
+//!
+//! Provides POSIX-flock-safe, atomic, history-snapshotting document I/O
+//! under `<workspace>/.cronymax/flows/<flow>/docs/`.
 //!
 //! Layout under `<flow_dir>/`:
 //!   docs/<name>.md                    — current revision

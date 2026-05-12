@@ -67,6 +67,27 @@ export const SystemPayload = z.object({
   cause: z.string().optional(), // e.g. "human_approval" for run_paused
 });
 
+export const FileEditedPayload = z.object({
+  path: z.string().min(1),
+  /** Unified diff of the change. Empty for full-file writes. */
+  diff: z.string().default(""),
+  session_id: z.string().optional(),
+});
+
+export const GitCommitCreatedPayload = z.object({
+  hash: z.string(),
+  message: z.string(),
+  files_changed: z.array(z.string()),
+  session_id: z.string().optional(),
+});
+
+export const GitPushedPayload = z.object({
+  remote: z.string(),
+  branch: z.string(),
+  commits_pushed: z.number().int().nonnegative(),
+  session_id: z.string().optional(),
+});
+
 // ── AppEvent envelope (tagged union) ────────────────────────────────────
 
 const Base = {
@@ -98,7 +119,32 @@ export const AppEventSchema = z.discriminatedUnion("kind", [
   z.object({ ...Base, kind: z.literal("handoff"), payload: HandoffPayload }),
   z.object({ ...Base, kind: z.literal("error"), payload: ErrorPayload }),
   z.object({ ...Base, kind: z.literal("system"), payload: SystemPayload }),
+  z.object({
+    ...Base,
+    kind: z.literal("file_edited"),
+    payload: FileEditedPayload,
+  }),
+  z.object({
+    ...Base,
+    kind: z.literal("git_commit_created"),
+    payload: GitCommitCreatedPayload,
+  }),
+  z.object({
+    ...Base,
+    kind: z.literal("git_pushed"),
+    payload: GitPushedPayload,
+  }),
 ]);
+
+// ── Runtime streaming events (not stored in EventBus) ───────────────────────
+
+/** Thinking/reasoning token delta from an extended-thinking model turn. */
+export const ThinkingTokenPayload = z.object({
+  run_id: z.string(),
+  turn_id: z.string(),
+  delta: z.string(),
+});
+export type ThinkingTokenPayload = z.infer<typeof ThinkingTokenPayload>;
 
 export type AppEvent = z.infer<typeof AppEventSchema>;
 export type AppEventKind = AppEvent["kind"];

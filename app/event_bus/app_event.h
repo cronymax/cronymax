@@ -19,6 +19,9 @@ enum class AppEventKind {
   kHandoff,
   kError,
   kSystem,
+  kFileEdited,
+  kGitCommitCreated,
+  kGitPushed,
 };
 
 const char* AppEventKindToString(AppEventKind k);
@@ -36,6 +39,7 @@ struct AppEvent {
   std::string flow_id;     // empty when not scoped
   std::string run_id;      // empty when not scoped
   std::string agent_id;    // empty when not scoped
+  std::string session_id;  // empty when not in a session
   AppEventKind kind = AppEventKind::kSystem;
   nlohmann::json payload = nlohmann::json::object();  // object
 

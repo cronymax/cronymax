@@ -113,6 +113,22 @@ pub struct ToolDef {
     pub parameters: serde_json::Value,
 }
 
+/// Thinking / reasoning configuration attached to an [`LlmRequest`].
+///
+/// The provider translates this into the correct wire representation:
+/// - [`ThinkingConfig::Adaptive`] → Anthropic `{"type":"adaptive","display":"summarized"}`
+/// - [`ThinkingConfig::Budget`]   → Anthropic/compat `{"type":"enabled","budget_tokens":N}`
+/// - [`ThinkingConfig::ReasoningEffort`] → OpenAI `{"reasoning_effort":"medium"}`
+#[derive(Clone, Debug)]
+pub enum ThinkingConfig {
+    /// Adaptive summarised thinking (Anthropic claude-* models).
+    Adaptive { summarized: bool },
+    /// Fixed token budget (Anthropic and compatible proxies).
+    Budget { budget_tokens: u32 },
+    /// Reasoning effort level (OpenAI o1-*, o3-*, o4-* models).
+    ReasoningEffort { effort: String },
+}
+
 /// Inbound request to the provider. `tools` may be empty for plain
 /// chat completion.
 #[derive(Clone, Debug)]
@@ -123,6 +139,9 @@ pub struct LlmRequest {
     /// Sampling temperature (`None` lets the provider apply its own
     /// default).
     pub temperature: Option<f32>,
+    /// Optional thinking/reasoning config. When `Some`, the provider
+    /// includes the appropriate thinking parameters in the request.
+    pub thinking: Option<ThinkingConfig>,
 }
 
 impl LlmRequest {
@@ -132,11 +151,17 @@ impl LlmRequest {
             messages,
             tools: Vec::new(),
             temperature: None,
+            thinking: None,
         }
     }
 
     pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
         self.tools = tools;
+        self
+    }
+
+    pub fn with_thinking(mut self, thinking: ThinkingConfig) -> Self {
+        self.thinking = Some(thinking);
         self
     }
 }
