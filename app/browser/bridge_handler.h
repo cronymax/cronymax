@@ -9,10 +9,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "browser/models/space_manager.h"
 #include "include/cef_process_message.h"
 #include "include/wrapper/cef_message_router.h"
 #include "runtime/crony_proxy.h"
+#include "runtime/space_manager.h"
 
 namespace cronymax {
 
@@ -49,6 +49,9 @@ struct ShellCallbacks {
   std::function<void()> go_forward;
   // Reload the active web tab
   std::function<void()> reload;
+  // Open a URL in the user's default system browser (not in the app).
+  // Used for OAuth flows where the app must not navigate its own popover.
+  std::function<void(const std::string& url)> open_external;
   // Restart the terminal panel (clears blocks + restarts PTY)
   std::function<void()> terminal_restart;
   // Begin a native window drag (used by web chrome to make blank areas

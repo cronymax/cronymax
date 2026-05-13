@@ -1,4 +1,4 @@
-#include "browser/models/space_manager.h"
+#include "runtime/space_manager.h"
 
 #include <algorithm>
 #include <chrono>
@@ -10,7 +10,6 @@
 
 #include "event_bus/event_bus.h"
 #include "platform/macos/notifications.h"
-#include "workspace/workspace_layout.h"
 // (task 4.1) agent_runtime.h and flow_runtime.h removed — run lifecycle
 // now owned by the Rust runtime via GIPS / RuntimeProxy.
 
@@ -177,10 +176,6 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
       // the .cronymax/ skeleton and EventBus on first activation.
       Space* sp = spaces_[static_cast<size_t>(i)].get();
       if (!sp->event_bus) {
-        WorkspaceLayout layout(sp->workspace_root);
-        std::string err;
-        layout.EnsureSkeleton(&err);  // best-effort; ignore err for now
-
         // EventBus: typed event store for the channel view, inbox, and
         // status dot. Borrows the SpaceStore's sqlite3 handle.
         // (task 4.1) FlowRuntime initialization removed; run lifecycle is
@@ -259,6 +254,7 @@ bool SpaceManager::SwitchTo(const std::string& space_id) {
           } else {
             profile.id = "default";
             profile.name = "Default";
+            profile.memory_id = "default";
             profile.allow_network = true;
           }
         }

@@ -295,7 +295,7 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
             model: model.clone(),
             system_prompt: Some(system_message.clone()),
             user_input: "Continue with your assigned task as described above.".to_owned(),
-            max_turns: 50,
+            max_turns: 99999,
             temperature: None,
             llm,
             tools,
@@ -321,6 +321,9 @@ pub struct RuntimeHandler {
     authority: RuntimeAuthority,
     /// Workspace roots passed at construction time (from `StoragePaths`).
     workspace_roots: Vec<PathBuf>,
+    /// Profile+workspace-scoped cache dir (`workspace_cache_dir` from `StoragePaths`).
+    /// Used to construct the `ChatStore`.
+    workspace_cache_dir: Option<PathBuf>,
     /// Sandbox policy derived from `RuntimeConfig.sandbox`; `None` = permissive.
     sandbox_policy: Option<Arc<SandboxPolicy>>,
     /// Kept once `on_connected` runs so subscribe-spawned fan-out tasks
@@ -393,6 +396,7 @@ impl RuntimeHandler {
         Self {
             authority,
             workspace_roots,
+            workspace_cache_dir: None,
             sandbox_policy: sandbox_policy.map(Arc::new),
             sink: Mutex::new(None),
             fanout: Mutex::new(HashMap::new()),
@@ -402,6 +406,12 @@ impl RuntimeHandler {
                 .unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new()))),
             memory_manager,
         }
+    }
+
+    /// Configure the workspace cache directory (from `StoragePaths.workspace_cache_dir`).
+    /// Call this before the handler is used for `start_run`.
+    pub fn set_workspace_cache_dir(&mut self, dir: PathBuf) {
+        self.workspace_cache_dir = Some(dir);
     }
 
     pub fn authority(&self) -> &RuntimeAuthority {
@@ -584,18 +594,32 @@ impl Handler for RuntimeHandler {
                     };
 
                 // Resolve session: if session_id present, upsert the session
-                // and retrieve the prior conversation thread.
+                // and retrieve the prior conversation thread from the ChatStore
+                // (or fall back to the snapshot if ChatStore is not configured).
                 let (maybe_session_id, prior_thread) = if let Some(ref sid) = session_id {
                     let s_id = SessionId::from(sid.as_str());
-                    let thread = match self.authority.get_or_create_session(
+                    // Always upsert so run_ids tracking still works.
+                    let _ = self.authority.get_or_create_session(
                         s_id.clone(),
                         space,
                         session_name.clone(),
-                    ) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            warn!(%e, session_id = %s_id, "start_run: get_or_create_session failed");
-                            Vec::new()
+                    );
+                    // Load history from ChatStore if available, else fall back
+                    // to the snapshot thread (legacy / no workspace_cache_dir).
+                    let thread = if let Some(ref cache_dir) = self.workspace_cache_dir {
+                        let store = crate::runtime::chat_store::ChatStore::new(cache_dir);
+                        store.load_history(&s_id)
+                    } else {
+                        match self.authority.get_or_create_session(
+                            s_id.clone(),
+                            space,
+                            session_name.clone(),
+                        ) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warn!(%e, session_id = %s_id, "start_run: get_or_create_session failed");
+                                Vec::new()
+                            }
                         }
                     };
                     (Some(s_id), thread)
@@ -963,6 +987,7 @@ impl Handler for RuntimeHandler {
 
                         let authority = self.authority.clone();
                         let memory_manager = self.memory_manager.clone();
+                        let workspace_cache_dir_clone = self.workspace_cache_dir.clone();
                         let is_copilot = provider_kind == "github_copilot";
                         let is_anthropic = provider_kind == "anthropic";
                         tokio::spawn(async move {
@@ -1106,7 +1131,7 @@ impl Handler for RuntimeHandler {
                                 model,
                                 system_prompt: effective_system_prompt,
                                 user_input,
-                                max_turns: 50,
+                                max_turns: 99999,
                                 temperature: None,
                                 llm,
                                 tools,
@@ -1116,7 +1141,7 @@ impl Handler for RuntimeHandler {
                                 } else {
                                     Some(effective_thread)
                                 },
-                                session_id: maybe_session_id,
+                                session_id: maybe_session_id.clone(),
                                 reflection: chat_agent_def
                                     .as_ref()
                                     .and_then(|d| d.reflection.clone()),
@@ -1132,8 +1157,22 @@ impl Handler for RuntimeHandler {
                             };
                             let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
                             info!(%run_id, ok = result.is_ok(), "react_loop: finished");
-                            if let Err(e) = result {
+                            if let Err(e) = &result {
                                 info!(%run_id, error = %e, "react_loop: failed with error");
+                            }
+                            // If a ChatStore is configured, append the final session thread
+                            // to history.jsonl. The ReactLoop already flushed to the authority
+                            // snapshot internally; we read it back here to write the JSONL copy.
+                            if let (Some(ref sid), Some(ref cache_dir)) =
+                                (&maybe_session_id, &workspace_cache_dir_clone)
+                            {
+                                if let Some(thread) = authority.session_thread(sid) {
+                                    if !thread.is_empty() {
+                                        let store =
+                                            crate::runtime::chat_store::ChatStore::new(cache_dir);
+                                        let _ = store.append_turns(sid, &thread);
+                                    }
+                                }
                             }
                         });
                         ControlResponse::RunStarted {
@@ -2147,6 +2186,55 @@ impl Handler for RuntimeHandler {
                             message: e.to_string(),
                         },
                     },
+                }
+            }
+
+            ControlRequest::MentionParse {
+                workspace_root,
+                flow_id,
+                text,
+            } => {
+                use crate::workspace::{load_flow_agents, Workspace};
+                let path = Workspace::new(&workspace_root).flow_file(&flow_id);
+                let known: std::collections::HashSet<String> =
+                    load_flow_agents(&path).await.into_iter().collect();
+
+                // @mention parser: @[a-zA-Z_][a-zA-Z0-9_-]*
+                let chars: Vec<char> = text.chars().collect();
+                let mut mentions: Vec<serde_json::Value> = Vec::new();
+                let mut unknown: Vec<serde_json::Value> = Vec::new();
+                let mut i = 0usize;
+                while i < chars.len() {
+                    if chars[i] != '@' {
+                        i += 1;
+                        continue;
+                    }
+                    // Skip if preceded by alphanumeric / '_'
+                    if i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
+                        i += 1;
+                        continue;
+                    }
+                    let mut j = i + 1;
+                    if j >= chars.len() || (!chars[j].is_alphabetic() && chars[j] != '_') {
+                        i += 1;
+                        continue;
+                    }
+                    while j < chars.len()
+                        && (chars[j].is_alphanumeric() || chars[j] == '_' || chars[j] == '-')
+                    {
+                        j += 1;
+                    }
+                    let name: String = chars[i + 1..j].iter().collect();
+                    if known.contains(&name) {
+                        mentions.push(serde_json::Value::String(name));
+                    } else {
+                        unknown.push(serde_json::Value::String(name));
+                    }
+                    i = j;
+                }
+
+                ControlResponse::Data {
+                    payload: serde_json::json!({ "mentions": mentions, "unknown": unknown }),
                 }
             }
         }

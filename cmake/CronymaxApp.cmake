@@ -36,6 +36,9 @@ set(CRONYMAX_APP_SRCS
   app/browser/models/view_model.cc
   app/browser/models/view_dispatcher.h
   app/browser/models/view_dispatcher.cc
+  # optimize-storage-layout: per-profile CefRequestContext manager
+  app/browser/models/profile_context_manager.h
+  app/browser/models/profile_context_manager.cc
   # unified-toolbar: merged Popover (replaces PopoverOverlay + PopoverCtrl)
   app/browser/views/popover.h
   app/browser/views/popover.cc
@@ -48,12 +51,8 @@ set(CRONYMAX_APP_SRCS
   app/browser/views/titlebar_view.cc
   app/browser/views/sidebar_view.h
   app/browser/views/sidebar_view.cc
-  app/browser/models/profile_store.cc
-  app/browser/models/profile_store.h
   app/browser/views/profile_picker_overlay.cc
   app/browser/views/profile_picker_overlay.h
-  app/browser/models/space_manager.cc
-  app/browser/models/space_manager.h
   # unified-icons: semantic icon registry + native button factories.
   app/browser/icon_data.h
   app/browser/icon_registry.h
@@ -84,9 +83,12 @@ if(APPLE)
     app/browser/platform/view_style_mac.mm
     app/browser/platform/clipboard.h
     app/browser/platform/clipboard_mac.mm
+    app/browser/platform/open_url_mac.h
+    app/browser/platform/open_url_mac.mm
     # workspace-with-profile: native NSOpenPanel folder picker.
-    app/browser/mac_folder_picker.h
-    app/browser/mac_folder_picker.mm
+    app/browser/platform/mac_folder_picker.h
+    app/browser/platform/mac_folder_picker.mm
+    # OAuth helper: open a URL in the system browser without navigating the app.
     # unified-icons: macOS implementation — NSImage rasterisation of embedded SVGs.
     app/browser/icon_registry_mac.mm
   )
@@ -152,7 +154,7 @@ endif()
 
 set_target_properties(cronymax_app PROPERTIES
   OUTPUT_NAME "cronymax"
-  MACOSX_BUNDLE_GUI_IDENTIFIER  "dev.prototype.cronymax"
+  MACOSX_BUNDLE_GUI_IDENTIFIER  "app.cronymax"
   MACOSX_BUNDLE_BUNDLE_NAME     "cronymax"
   MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
 )

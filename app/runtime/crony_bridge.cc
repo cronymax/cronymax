@@ -16,6 +16,9 @@
 
 #include "runtime/crony_bridge.h"
 
+#include "runtime/layout_migrator.h"
+#include "runtime/workspace_id.h"
+
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -296,6 +299,15 @@ bool RuntimeBridge::Start(const std::filesystem::path& runtime_dir,
   service_name_ = kDefaultServiceName;
   lock.unlock();
 
+  // Run the one-shot layout migration before spawning the runtime.
+  // This moves the legacy flat layout ($appDataDir/runtime-state.json) into
+  // the profile-scoped layout ($appDataDir/profiles/default/) if needed.
+  if (!app_data_dir_.empty()) {
+    LayoutMigrator migrator(app_data_dir_);
+    migrator
+        .Run();  // non-fatal if it fails; runtime will start with empty state
+  }
+
   if (!SpawnAndHandshake()) {
     return false;
   }
@@ -312,10 +324,16 @@ bool RuntimeBridge::Start(const std::filesystem::path& runtime_dir,
 bool RuntimeBridge::SpawnAndHandshake() {
   std::filesystem::path bin;
   std::filesystem::path app_data;
+  std::string profile_id;
+  std::string memory_id;
+  std::filesystem::path workspace_root;
   {
     std::lock_guard lock(mu_);
     bin = runtime_binary_;
     app_data = app_data_dir_;
+    profile_id = profile_id_.empty() ? "default" : profile_id_;
+    memory_id = memory_id_.empty() ? profile_id : memory_id_;
+    workspace_root = workspace_root_;
   }
 
   // Kill any stale runtime from a previous crashed session.  If an old
@@ -346,18 +364,38 @@ bool RuntimeBridge::SpawnAndHandshake() {
 #endif
 
   // Build the RuntimeConfig JSON that is piped to the child's stdin.
-  // workspace_roots is empty here; capability scoping is enforced on the
-  // host side in bridge_handler.cc (task 4.3).
+  // Storage layout:
+  //   $appDataDir/<profile_id>/                     — CEF webview cache
+  //   $appDataDir/cronymax/Profiles/<profile_id>/  — runtime profile data
+  //   $appDataDir/cronymax/Memories/<memory_id>/   — runtime memory caches
+  //   $appDataDir/cronymax/logs/                    — application logs
   std::error_code ec;
-  std::filesystem::create_directories(app_data, ec);
-  std::filesystem::create_directories(app_data / "cache", ec);
-  std::filesystem::create_directories(app_data / "logs", ec);
+  const auto cronymax_dir = app_data / "cronymax";
+  const auto profile_data = cronymax_dir / "Profiles" / profile_id;
+  const auto profile_memory = cronymax_dir / "Memories" / memory_id;
+  const auto webview_profile = app_data / profile_id;
+  const auto logs_dir = cronymax_dir / "logs";
+  const auto ws_id = workspace_root.empty() ? std::string("default")
+                                            : WorkspaceId(workspace_root);
+  const auto ws_cache = profile_data / "workspaces" / ws_id;
+
+  // Ensure all required subdirectories exist before spawning.
+  std::filesystem::create_directories(profile_data, ec);
+  std::filesystem::create_directories(profile_memory, ec);
+  std::filesystem::create_directories(logs_dir, ec);
+  std::filesystem::create_directories(webview_profile, ec);
+  std::filesystem::create_directories(ws_cache / "chats", ec);
+  std::filesystem::create_directories(ws_cache / "pty", ec);
+  std::filesystem::create_directories(profile_data / "cache", ec);
 
   nlohmann::json cfg;
   cfg["storage"]["workspace_roots"] = nlohmann::json::array();
-  cfg["storage"]["app_data_dir"] = app_data.string();
-  cfg["storage"]["cache_dir"] = (app_data / "cache").string();
-  cfg["logging"]["log_dir"] = (app_data / "logs").string();
+  if (!workspace_root.empty())
+    cfg["storage"]["workspace_roots"].push_back(workspace_root.string());
+  cfg["storage"]["app_data_dir"] = profile_data.string();
+  cfg["storage"]["workspace_cache_dir"] = ws_cache.string();
+  cfg["storage"]["cache_dir"] = (profile_data / "cache").string();
+  cfg["logging"]["log_dir"] = logs_dir.string();
   cfg["logging"]["filter"] = nullptr;
   cfg["host_protocol"]["major"] = 0;
   cfg["host_protocol"]["minor"] = 1;

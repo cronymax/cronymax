@@ -365,7 +365,7 @@ export function ProvidersTab() {
       /* ok */
     }
     try {
-      await browser.send("shell.popover_open", { url: dc.verification_uri });
+      await browser.send("shell.open_external", { url: dc.verification_uri });
     } catch {
       try {
         window.open(dc.verification_uri, "_blank", "noopener,noreferrer");

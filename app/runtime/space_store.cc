@@ -1,4 +1,4 @@
-#include "workspace/space_store.h"
+#include "runtime/space_store.h"
 
 #include <cassert>
 #include <chrono>

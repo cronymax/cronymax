@@ -16,6 +16,7 @@
 
 #include "browser/models/view_context.h"
 #include "browser/tab/tab.h"
+#include "include/cef_request_context.h"
 
 namespace cronymax {
 
@@ -59,6 +60,13 @@ class TabManager {
   // unit tests; required for any kind that hosts a browser.
   void SetClientHandler(ClientHandler* client_handler) {
     client_handler_ = client_handler;
+  }
+
+  // Set the profile-scoped CefRequestContext used for all subsequently
+  // created browser views.  Call this once at startup and again on every
+  // profile switch so that new tabs inherit the active profile's context.
+  void SetRequestContext(CefRefPtr<CefRequestContext> ctx) {
+    request_context_ = std::move(ctx);
   }
 
   // Register a kind as a singleton. FindOrCreateSingleton requires this.
@@ -136,6 +144,7 @@ class TabManager {
   ChangeCallback on_change_;
   ClientHandler* client_handler_ = nullptr;
   ThemeContext* theme_ctx_ = nullptr;
+  CefRefPtr<CefRequestContext> request_context_;
 };
 
 }  // namespace cronymax

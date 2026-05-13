@@ -272,6 +272,19 @@ pub enum ControlRequest {
         block_id: String,
         suggestion: String,
     },
+
+    // ── Mention parsing ───────────────────────────────────────────────────
+    /// Parse `@mention` tokens in `text` against the agent list defined in
+    /// `flow.yaml` for `flow_id`. Returns `{mentions:[name], unknown:[name]}`.
+    ///
+    /// The Rust runtime loads the `flow.yaml` to obtain the known agent list,
+    /// then applies the same `@[a-zA-Z_][a-zA-Z0-9_-]*` regex as the old C++
+    /// handler — so the C++ side no longer needs to parse YAML.
+    MentionParse {
+        workspace_root: String,
+        flow_id: String,
+        text: String,
+    },
 }
 
 /// Reply to a [`ControlRequest`].

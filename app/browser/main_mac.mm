@@ -69,6 +69,32 @@ int main(int argc, char* argv[]) {
     // and without an opaque GPU clear color showing through.
     settings.background_color = 0x00000000;
 
+    // root_cache_path = $appDataDir so PK_USER_DATA resolves to the app's
+    // bundle-scoped Application Support directory.
+    // cache_path = $appDataDir/default for the global/default CEF profile.
+    // Per-profile request contexts use cache_path = $appDataDir/<profile_id>
+    // (direct child of root_cache_path as required by CEF).
+    {
+      NSArray<NSString*>* appSupportDirs = NSSearchPathForDirectoriesInDomains(
+          NSApplicationSupportDirectory, NSUserDomainMask, YES);
+      if (appSupportDirs.count > 0) {
+        NSString* bundleId =
+            [[NSBundle mainBundle] bundleIdentifier] ?: @"app.cronymax";
+        NSString* appDataDir =
+            [appSupportDirs[0] stringByAppendingPathComponent:bundleId];
+        NSString* defaultContextPath =
+            [appDataDir stringByAppendingPathComponent:@"default"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:defaultContextPath
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil];
+        CefString(&settings.root_cache_path) =
+            std::string([appDataDir UTF8String]);
+        CefString(&settings.cache_path) =
+            std::string([defaultContextPath UTF8String]);
+      }
+    }
+
     CefRefPtr<cronymax::App> app(new cronymax::App());
 
     if (!CefInitialize(main_args, settings, app.get(), nullptr)) {

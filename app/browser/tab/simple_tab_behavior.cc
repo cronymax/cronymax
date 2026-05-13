@@ -106,7 +106,7 @@ CefRefPtr<CefView> SimpleTabBehavior::BuildContent(TabContext* /*context*/) {
                                     : kBrowserViewBg;
   }
   browser_view_ = CefBrowserView::CreateBrowserView(
-      client_handler_, content_url_, settings, nullptr, nullptr,
+      client_handler_, content_url_, settings, nullptr, request_context_,
       new SimpleBrowserViewDelegate());
   if (theme_ctx_) {
     Register(theme_ctx_);

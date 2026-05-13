@@ -23,6 +23,7 @@
 #include "browser/tab/tab_behavior.h"
 #include "browser/toolbar/toolbar_base.h"
 #include "include/base/cef_weak_ptr.h"
+#include "include/cef_request_context.h"
 #include "include/views/cef_browser_view.h"
 
 namespace cronymax {
@@ -56,6 +57,12 @@ class WebTabBehavior : public TabBehavior {
   // Programmatically focus + select the URL pill (Cmd-L target — Phase 12).
   void FocusUrlField();
 
+  // Set the profile-scoped request context used when creating the browser
+  // view.  Must be called before BuildContent().
+  void SetRequestContext(CefRefPtr<CefRequestContext> ctx) {
+    request_context_ = std::move(ctx);
+  }
+
  private:
   // Called by the per-browser listener once the browser is realized.
   void OnAddressChange(const std::string& url);
@@ -85,6 +92,7 @@ class WebTabBehavior : public TabBehavior {
   bool can_go_forward_ = false;
   int browser_id_ = 0;
 
+  CefRefPtr<CefRequestContext> request_context_;
   CefRefPtr<CefBrowserView> browser_view_;
 
   // Non-owning pointer to the toolbar (owned by Tab).

@@ -11,6 +11,9 @@
 #include "browser/bridge_handler.h"
 #include "browser/client_handler.h"
 #include "browser/models/view_context.h"
+#if defined(__APPLE__)
+#include "browser/platform/open_url_mac.h"
+#endif
 #include "browser/models/view_model.h"
 #include "browser/tab/tab.h"
 #include "browser/tab/tab_behavior.h"
@@ -136,6 +139,10 @@ void ViewDispatcher::Wire() {
   sh.popover_navigate = [this](const std::string& url) {
     host_.popover_navigate_url(url);
   };
+
+#if defined(__APPLE__)
+  sh.open_external = [](const std::string& url) { OpenUrlExternal(url); };
+#endif
 
   sh.reload = [this]() {
     Tab* tab = model_->tabs_->Active();

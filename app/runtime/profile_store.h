@@ -13,6 +13,9 @@ namespace cronymax {
 struct ProfileRecord {
   std::string id;    // e.g. "locked-work"
   std::string name;  // e.g. "Locked Work"
+  // Logical memory namespace id for runtime memory storage. This can differ
+  // from profile id to support hot-swapped memory backends per profile.
+  std::string memory_id;
   bool allow_network = true;
   std::vector<std::string> extra_read_paths;
   std::vector<std::string> extra_write_paths;
@@ -22,6 +25,9 @@ struct ProfileRecord {
 /// Rules used to mutate a profile (passed to Create / Update).
 struct ProfileRules {
   std::string name;
+  // Optional override for ProfileRecord.memory_id. Empty means default to
+  // profile id on create, or keep existing value on update.
+  std::string memory_id;
   bool allow_network = true;
   std::vector<std::string> extra_read_paths;
   std::vector<std::string> extra_write_paths;

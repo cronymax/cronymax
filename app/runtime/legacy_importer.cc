@@ -47,10 +47,11 @@ std::string MapLegacyStatus(const std::string& legacy) {
 
 // ---------------------------------------------------------------------------
 
-LegacyImporter::LegacyImporter(std::filesystem::path app_data_dir)
-    : app_data_dir_(std::move(app_data_dir)),
+LegacyImporter::LegacyImporter(std::filesystem::path user_data_dir)
+    : app_data_dir_(user_data_dir / "cronymax" / "profiles" / "default"),
       snapshot_path_(app_data_dir_ / "runtime-state.json"),
-      marker_path_(app_data_dir_ / "migrations" / "rust-runtime-v1.done") {}
+      marker_path_(user_data_dir / "cronymax" / "profiles" / "migrations" /
+                   "rust-runtime-v1.done") {}
 
 bool LegacyImporter::AlreadyDone() const {
   std::error_code ec;

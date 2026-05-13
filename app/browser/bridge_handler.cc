@@ -8,7 +8,6 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -17,19 +16,18 @@
 
 #include "event_bus/app_event.h"
 #include "event_bus/event_bus.h"
-#include "workspace/flow_yaml.h"
 // (task 4.1) flow_runtime.h, trace_event.h, trace_writer.h removed —
 // run lifecycle is now owned by the Rust runtime over GIPS.
 // (task 5.0) sandbox, flow C++ modules removed — logic now lives in the
 // Rust runtime (crates/cronymax).
 // (Phase 2) file_broker.h removed — file I/O proxied to Rust FileBroker.
+// flow_yaml.h removed — mention parsing moved to Rust MentionParse IPC.
 #include "common/path_utils.h"
 #include "common/types.h"
 #include "include/base/cef_callback.h"
 #include "include/cef_process_message.h"
 #include "include/wrapper/cef_closure_task.h"
 #include "include/wrapper/cef_helpers.h"
-#include "workspace/workspace_layout.h"
 
 namespace cronymax {
 namespace {
@@ -1388,6 +1386,14 @@ bool BridgeHandler::HandleShell(CefRefPtr<CefBrowser> browser,
     return true;
   }
 
+  if (channel == "shell.open_external") {
+    const std::string url = get("url");
+    if (!url.empty() && shell_cbs_.open_external)
+      shell_cbs_.open_external(url);
+    callback->Success("ok");
+    return true;
+  }
+
   if (channel == "shell.popover_close") {
     if (shell_cbs_.popover_close)
       shell_cbs_.popover_close();
@@ -1671,8 +1677,7 @@ bool BridgeHandler::HandleWorkspace(std::string_view channel,
 // All agent.registry.*, flow.*, doc_type.*, and flow.run.* channels are now
 // handled via the direct renderer↔runtime IPC path
 // (HandleRuntimeProcessMessage). The only remaining cefQuery channel here is
-// mention.user_input, which is pure C++ logic and does not touch the Rust
-// runtime.
+// mention.user_input, forwarded to the Rust runtime as "mention_parse".
 // ---------------------------------------------------------------------------
 
 bool BridgeHandler::HandleRegistry(std::string_view channel,
@@ -1704,45 +1709,33 @@ bool BridgeHandler::HandleRegistry(std::string_view channel,
   // -------------------------------------------------------------------------
   if (channel == "mention.user_input") {
     const auto flow_id = extract_field("flow_id");
-    const auto text = extract_field("text");
     if (flow_id.empty()) {
       callback->Failure(400, "flow_id required");
       return true;
     }
-    WorkspaceLayout layout(sp->workspace_root);
-    std::set<std::string> known;
-    const auto flow_yaml = layout.FlowFile(flow_id);
-    std::error_code yaml_ec;
-    if (std::filesystem::exists(flow_yaml, yaml_ec)) {
-      for (const auto& agent_id : LoadFlowAgents(flow_yaml))
-        known.insert(agent_id);
+    if (!runtime_proxy_) {
+      callback->Failure(503, "runtime not available");
+      return true;
     }
-    // Inline @mention parser: @[a-zA-Z_][a-zA-Z0-9_-]*
-    nlohmann::json mentions = nlohmann::json::array();
-    nlohmann::json unknown_arr = nlohmann::json::array();
-    for (size_t i = 0; i < text.size(); ++i) {
-      if (text[i] != '@')
-        continue;
-      if (i > 0 &&
-          (std::isalnum((unsigned char)text[i - 1]) || text[i - 1] == '_'))
-        continue;
-      size_t j = i + 1;
-      if (j >= text.size() ||
-          (!std::isalpha((unsigned char)text[j]) && text[j] != '_'))
-        continue;
-      while (j < text.size() && (std::isalnum((unsigned char)text[j]) ||
-                                 text[j] == '_' || text[j] == '-'))
-        ++j;
-      std::string name = text.substr(i + 1, j - i - 1);
-      if (known.count(name))
-        mentions.push_back(name);
-      else
-        unknown_arr.push_back(name);
-    }
-    callback->Success(nlohmann::json{
-        {"mentions", mentions},
-        {"unknown",
-         unknown_arr}}.dump());
+    const std::string workspace_root = sp->workspace_root.string();
+    const std::string text = extract_field("text");
+    runtime_proxy_->SendControl(
+        {
+            {"kind", "mention_parse"},
+            {"workspace_root", workspace_root},
+            {"flow_id", flow_id},
+            {"text", text},
+        },
+        [callback](nlohmann::json resp, bool is_error) {
+          if (is_error) {
+            callback->Failure(500,
+                              resp.value("error", nlohmann::json{})
+                                  .value("message", "mention parse error"));
+            return;
+          }
+          const auto& p = resp.contains("payload") ? resp["payload"] : resp;
+          callback->Success(p.dump());
+        });
     return true;
   }
 
@@ -2452,6 +2445,7 @@ nlohmann::json ProfileRecordToJson(const ProfileRecord& r) {
   return nlohmann::json{
       {"id", r.id},
       {"name", r.name},
+      {"memory_id", r.memory_id},
       {"allow_network", r.allow_network},
       {"extra_read_paths", to_arr(r.extra_read_paths)},
       {"extra_write_paths", to_arr(r.extra_write_paths)},
@@ -2483,6 +2477,7 @@ bool BridgeHandler::HandleProfiles(CefRefPtr<CefBrowser> browser,
     }
     ProfileRules rules;
     rules.name = jp.value("name", std::string{});
+    rules.memory_id = jp.value("memory_id", std::string{});
     rules.allow_network = jp.value("allow_network", true);
     if (rules.name.empty()) {
       callback->Failure(400, "name required");
@@ -2532,6 +2527,7 @@ bool BridgeHandler::HandleProfiles(CefRefPtr<CefBrowser> browser,
     }
     ProfileRules rules;
     rules.name = jp.value("name", std::string{});
+    rules.memory_id = jp.value("memory_id", std::string{});
     rules.allow_network = jp.value("allow_network", true);
     if (rules.name.empty()) {
       callback->Failure(400, "name required");

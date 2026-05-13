@@ -12,6 +12,7 @@ pub mod agents;
 pub mod doc_types;
 pub mod file_broker;
 pub mod flows;
+pub mod prompts;
 
 pub use agents::{AgentDef, AgentRegistry};
 pub use doc_types::{DocTypeRegistry, DocTypeSchema};
@@ -20,6 +21,7 @@ pub use flows::{
     load_flow_agents, load_flow_yaml, parse_flow_yaml, FlowYamlDoc, FlowYamlEdge, FlowYamlNode,
     FlowYamlNodeOutput,
 };
+pub use prompts::PromptFile;
 
 /// Resolves all `.cronymax/` paths for a single workspace root.
 #[derive(Clone, Debug)]
@@ -61,6 +63,14 @@ impl Workspace {
 
     pub fn conflicts_dir(&self) -> PathBuf {
         self.cronymax_dir().join("conflicts")
+    }
+
+    pub fn prompts_dir(&self) -> PathBuf {
+        self.cronymax_dir().join("prompts")
+    }
+
+    pub fn prompt_file(&self, slug: &str) -> PathBuf {
+        self.prompts_dir().join(format!("{slug}.prompt.md"))
     }
 
     // ── flow paths ────────────────────────────────────────────────────────
@@ -126,7 +136,7 @@ impl Workspace {
 
     // ── first-touch skeleton materialisation ─────────────────────────────
 
-    /// Creates the `.cronymax/{flows,agents,doc-types,conflicts}/` skeleton
+    /// Creates the `.cronymax/{flows,agents,doc-types,conflicts,prompts}/` skeleton
     /// if absent and writes a `version: 1` marker when no version file exists.
     /// Idempotent. Returns `Ok(())` on success.
     pub async fn ensure_skeleton(&self) -> anyhow::Result<()> {
@@ -135,6 +145,7 @@ impl Workspace {
             self.agents_dir(),
             self.doc_types_dir(),
             self.conflicts_dir(),
+            self.prompts_dir(),
         ] {
             fs::create_dir_all(&dir).await?;
         }

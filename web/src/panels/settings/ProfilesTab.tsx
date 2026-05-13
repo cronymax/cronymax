@@ -6,6 +6,7 @@ import { Field, inputCls } from "./App";
 interface ProfileRecord {
   id: string;
   name: string;
+  memory_id: string;
   allow_network: boolean;
   extra_read_paths: string[];
   extra_write_paths: string[];
@@ -26,6 +27,7 @@ function ProfileForm({
   isDefault: boolean;
 }) {
   const [name, setName] = useState(initial.name);
+  const [memoryId, setMemoryId] = useState(initial.memory_id || initial.id || "default");
   const [allowNet, setAllowNet] = useState(initial.allow_network);
   const [reads, setReads] = useState(initial.extra_read_paths.join("\n"));
   const [writes, setWrites] = useState(initial.extra_write_paths.join("\n"));
@@ -64,6 +66,7 @@ function ProfileForm({
       await onSave({
         ...initial,
         name: name.trim(),
+        memory_id: (memoryId || initial.id || "default").trim(),
         allow_network: allowNet,
         extra_read_paths: splitPaths(reads),
         extra_write_paths: splitPaths(writes),
@@ -107,6 +110,18 @@ function ProfileForm({
         {isDefault && (
           <p className="mt-1 text-[11px] text-cronymax-caption">The default profile name cannot be changed.</p>
         )}
+      </Field>
+      <Field label="Memory ID">
+        <input
+          className={inputCls}
+          value={memoryId}
+          onChange={(e) => setMemoryId(e.target.value)}
+          placeholder={initial.id || "default"}
+          spellCheck={false}
+        />
+        <p className="mt-1 text-[11px] text-cronymax-caption">
+          Runtime memory path uses this ID: cronymax/Memories/&lt;memory_id&gt;
+        </p>
       </Field>
       <Field label="Network">
         <label className="flex items-center gap-2">
@@ -207,6 +222,7 @@ function NewProfileForm({ onCreated }: { onCreated: () => void }) {
   const blank: ProfileRecord = {
     id: "",
     name: "",
+    memory_id: "default",
     allow_network: true,
     extra_read_paths: [],
     extra_write_paths: [],
@@ -220,6 +236,7 @@ function NewProfileForm({ onCreated }: { onCreated: () => void }) {
       onSave={async (r) => {
         await browser.send("profiles.create", {
           name: r.name,
+          memory_id: r.memory_id,
           allow_network: r.allow_network,
           extra_read_paths: r.extra_read_paths,
           extra_write_paths: r.extra_write_paths,
@@ -258,6 +275,7 @@ export function ProfilesTab() {
       await browser.send("profiles.update", {
         id: r.id,
         name: r.name,
+        memory_id: r.memory_id,
         allow_network: r.allow_network,
         extra_read_paths: r.extra_read_paths,
         extra_write_paths: r.extra_write_paths,

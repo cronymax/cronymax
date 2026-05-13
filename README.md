@@ -197,11 +197,54 @@ web/                 Frontend monorepo (bun + Vite)
   <panel>/index.html   Vite entry per panel (Shape A multi-entry)
   shell/, terminal/, …   Legacy vanilla panels (being migrated)
 cmake/               CronymaxApp.cmake (CEF + app + web targets)
-openspec/            Active spec-driven changes (see openspec/changes/)
+openspace/           Active spec-driven changes (see openspec/changes/)
 cef/         Upstream CEF source (git submodule, chromiumembedded/cef)
 .cef-cache/  Cached CEF binary archive download (gitignored)
 tools/               native_probe and other CLI utilities
 ```
+
+## Data Storage Layout
+
+All persisted app data lives under `~/Library/Application Support/app.cronymax/`
+(referred to as `$userDataDir` below).
+
+- CEF profile cache/cookies live at direct children of `$userDataDir/`.
+- Runtime-owned data lives under `$userDataDir/cronymax/`.
+
+```
+$userDataDir/
+  <profile_id>/              CefRequestContext cookie/cache storage per profile
+  cronymax/                  All runtime-owned persistent data
+    Profiles/
+      <profile_id>/          One directory per sandbox profile (default: "default")
+        runtime-state.json   Session snapshot (Rust Snapshot, schema v3+)
+        workspaces/
+          <ws_id>/           16-char hex SHA-256 of canonical workspace path
+            chats/
+              <session_id>/
+                meta.json    Lightweight session metadata
+                history.jsonl  Append-only LLM chat turns
+            pty/             PTY history files per session
+      migrations/            One-shot migration marker files
+    Memories/
+      <memory_id>/          Runtime memory cache directory per profile
+    logs/                    Runtime process logs
+  <other CEF dirs>           Chromium cache files (not managed by the app)
+```
+
+`<ws_id>` is derived as `lowercase_hex(sha256(canonical_workspace_path_utf8)[0..8])` — 16 characters.
+
+**Migration from pre-v4 layouts:** On first launch the `LayoutMigrator` runs
+automatically and moves data forward through each layout version in order
+(V0 → V1 → V2 → V3 → V4). Existing data is never deleted until after a successful
+move. Sentinels at `$userDataDir/runtimes/migrations/layout-v2.done` and
+`$userDataDir/cronymax/runtimes/migrations/layout-v3.done` and
+`$userDataDir/cronymax/profiles/migrations/layout-v4.done` prevent re-running.
+
+**Workspace-local prompts:** Place `*.prompt.md` files under
+`<workspace>/.cronymax/prompts/` to make them available as named prompt
+templates. Optional YAML frontmatter (`name`, `description`, `tags`) is parsed
+on load.
 
 ## Prototype Boundaries
 

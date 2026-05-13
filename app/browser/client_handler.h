@@ -6,11 +6,11 @@
 #include <vector>
 
 #include "browser/bridge_handler.h"
-#include "browser/models/space_manager.h"
 #include "include/cef_client.h"
 #include "include/cef_drag_handler.h"
 #include "include/cef_keyboard_handler.h"
 #include "include/wrapper/cef_message_router.h"
+#include "runtime/space_manager.h"
 
 namespace cronymax {
 

@@ -8,7 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "common/uuid_v7.h"
-#include "workspace/space_store.h"
+#include "runtime/space_store.h"
 
 // MIGRATION (rust-runtime-migration, group 10): the host-owned event
 // bus and the SQLite events table are being removed. Semantic events

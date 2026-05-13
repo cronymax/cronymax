@@ -6,9 +6,9 @@
 #include <string>
 #include <vector>
 
-#include "browser/models/profile_store.h"
 #include "event_bus/event_bus.h"
-#include "workspace/space_store.h"
+#include "runtime/profile_store.h"
+#include "runtime/space_store.h"
 
 namespace cronymax {
 

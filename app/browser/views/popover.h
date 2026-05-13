@@ -41,7 +41,8 @@ class Popover : public ThemeAwareView {
     std::function<void(int top, int bottom)> set_content_insets;
     std::function<void()> refresh_drag_region;
     std::function<void()> close_notify;
-    // Returns the current sidebar width in pts (0 when hidden, 240 when visible).
+    // Returns the current sidebar width in pts (0 when hidden, 240 when
+    // visible).
     std::function<int()> get_sidebar_width;
   };
 

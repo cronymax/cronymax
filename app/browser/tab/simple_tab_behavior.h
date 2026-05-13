@@ -16,6 +16,7 @@
 #include "browser/models/view_observer.h"
 #include "browser/tab/tab.h"
 #include "browser/tab/tab_behavior.h"
+#include "include/cef_request_context.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_label_button.h"
 
@@ -46,6 +47,12 @@ class SimpleTabBehavior : public TabBehavior {
   CefRefPtr<CefBrowserView> browser_view() const { return browser_view_; }
   const std::string& display_name() const { return display_name_; }
 
+  // Set the profile-scoped request context used when creating the browser
+  // view.  Must be called before BuildContent().
+  void SetRequestContext(CefRefPtr<CefRequestContext> ctx) {
+    request_context_ = std::move(ctx);
+  }
+
  private:
   ClientHandler* client_handler_;
   ThemeContext* theme_ctx_;
@@ -54,6 +61,7 @@ class SimpleTabBehavior : public TabBehavior {
   std::string display_name_;
   std::string content_url_;
 
+  CefRefPtr<CefRequestContext> request_context_;
   CefRefPtr<CefBrowserView> browser_view_;
   CefRefPtr<CefLabelButton> name_btn_;
 };

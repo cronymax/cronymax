@@ -100,7 +100,12 @@ pub struct Session {
     /// The authoritative LLM context window — persisted across runs so
     /// the model sees a continuous conversation. Distinct from
     /// `Run.history` which is an append-only audit trail.
-    #[serde(default)]
+    ///
+    /// This field is retained for schema v2 → v3 migration (so that an
+    /// existing snapshot's inline thread can be moved to `history.jsonl`).
+    /// After migration the field is always empty in the snapshot on disk
+    /// because chat turns are written to `ChatStore` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thread: Vec<ChatMessage>,
     /// All run ids created in this session, in creation order.
     #[serde(default)]
@@ -347,7 +352,7 @@ impl Default for Snapshot {
 /// Current authoritative on-disk schema version. Bump this on any
 /// breaking change to [`Snapshot`] and add a migration arm to
 /// [`migrate_snapshot`].
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 
 /// Migrate a freshly-loaded [`Snapshot`] from its on-disk
 /// `schema_version` up to [`SNAPSHOT_SCHEMA_VERSION`]. Returns an
@@ -375,6 +380,17 @@ pub fn migrate_snapshot(mut snap: Snapshot) -> Result<Snapshot, SnapshotMigratio
     // can migrate existing entries) but is no longer written back to disk.
     if snap.schema_version == 1 {
         snap.schema_version = 2;
+    }
+    // 2 → 3: Chat session threads extracted from Snapshot into per-session
+    // `history.jsonl` files managed by `ChatStore`.
+    // The actual file-write migration cannot happen inside this function because
+    // `migrate_snapshot` does not have access to the workspace_cache_dir. The
+    // migration of on-disk files is handled by `JsonFilePersistence::load` after
+    // calling this function. Here we just stamp the version; the `thread` field
+    // is `skip_serializing_if = Vec::is_empty` so it will be omitted on the
+    // next save once the authority's flush_thread writes nothing back.
+    if snap.schema_version == 2 {
+        snap.schema_version = 3;
     }
     Ok(snap)
 }

@@ -3,7 +3,7 @@
 
 #import <Cocoa/Cocoa.h>
 
-#include "browser/mac_folder_picker.h"
+#include "browser/platform/mac_folder_picker.h"
 
 namespace cronymax {
 

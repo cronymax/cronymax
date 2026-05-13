@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "browser/client_handler.h"
+#include "browser/models/profile_context_manager.h"
 #include "browser/models/view_context.h"
 #include "browser/models/view_dispatcher.h"
 #include "browser/models/view_model.h"
@@ -112,6 +113,11 @@ class MainWindow : public CefWindowDelegate,
   // binary is located and the handshake succeeds.
   std::unique_ptr<RuntimeBridge> runtime_bridge_;
   std::unique_ptr<RuntimeProxy> runtime_proxy_;
+
+  // Per-profile CefRequestContext manager.  Initialized in BuildChrome once
+  // app_data_dir is known.  Used to wire profile-scoped webview storage into
+  // tab browser views and overlay browser views.
+  std::unique_ptr<ProfileContextManager> profile_ctx_manager_;
   // arc-style-tab-cards: TabManager lives in shell_model_.tabs_.
 
   // Layout views.

@@ -103,7 +103,7 @@ CefRefPtr<CefView> WebTabBehavior::BuildContent(TabContext* context) {
   if (theme_ctx_)
     settings.background_color = theme_ctx_->GetCurrentChrome().bg_body;
   browser_view_ = CefBrowserView::CreateBrowserView(
-      client_handler_, initial_url_, settings, nullptr, nullptr,
+      client_handler_, initial_url_, settings, nullptr, request_context_,
       new WebTabBrowserViewDelegate());
 
   // Hook a per-browser listener once the browser is realized. We can't get

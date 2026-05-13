@@ -162,12 +162,15 @@ impl Runtime {
             policy
         });
 
-        let handler = Arc::new(RuntimeHandler::with_policy_and_managers(
+        let mut handler = RuntimeHandler::with_policy_and_managers(
             self.authority.clone(),
             self.config.storage.workspace_roots.clone(),
             sandbox_policy,
             Some(Arc::clone(&self.terminal_managers)),
-        ));
+        );
+        // Wire in workspace_cache_dir so ChatStore is used for session history.
+        handler.set_workspace_cache_dir(self.config.storage.workspace_cache_dir.clone());
+        let handler = Arc::new(handler);
         session::spawn_session(transport, handler)
     }
 
@@ -196,6 +199,7 @@ mod tests {
             storage: StoragePaths {
                 workspace_roots: vec![PathBuf::from("/tmp/ws")],
                 app_data_dir: PathBuf::from("/tmp/app"),
+                workspace_cache_dir: PathBuf::from("/tmp/app/workspaces/default"),
                 cache_dir: PathBuf::from("/tmp/cache"),
             },
             logging: LogConfig {

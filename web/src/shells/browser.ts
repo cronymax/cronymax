@@ -94,6 +94,10 @@ export const Channels = {
     req: z.object({ url: z.string() }),
     res: EmptySchema,
   }),
+  "shell.open_external": chan({
+    req: z.object({ url: z.string() }),
+    res: EmptySchema,
+  }),
   "shell.window_drag": chan({ req: EmptySchema, res: EmptySchema }),
   "shell.tabs_list": chan({ req: EmptySchema, res: TabsListSnapshotSchema }),
   "shell.tab_new": chan({
@@ -492,6 +496,7 @@ export const Channels = {
       z.object({
         id: z.string(),
         name: z.string(),
+        memory_id: z.string(),
         allow_network: z.boolean(),
         extra_read_paths: z.array(z.string()),
         extra_write_paths: z.array(z.string()),
@@ -502,6 +507,7 @@ export const Channels = {
   "profiles.create": chan({
     req: z.object({
       name: z.string(),
+      memory_id: z.string().optional(),
       allow_network: z.boolean(),
       extra_read_paths: z.array(z.string()),
       extra_write_paths: z.array(z.string()),
@@ -513,6 +519,7 @@ export const Channels = {
     req: z.object({
       id: z.string(),
       name: z.string(),
+      memory_id: z.string().optional(),
       allow_network: z.boolean(),
       extra_read_paths: z.array(z.string()),
       extra_write_paths: z.array(z.string()),

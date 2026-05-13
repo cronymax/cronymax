@@ -1,4 +1,4 @@
-#include "browser/models/profile_store.h"
+#include "runtime/profile_store.h"
 
 #include <algorithm>
 #include <cctype>
@@ -16,6 +16,7 @@ const char* kDefaultYaml =
     "# Built-in default profile. Cannot be deleted.\n"
     "id: default\n"
     "name: Default\n"
+    "memory_id: default\n"
     "allow_network: true\n"
     "extra_read_paths: []\n"
     "extra_write_paths: []\n"
@@ -123,6 +124,7 @@ ProfileStoreError ProfileStore::Create(const ProfileRules& rules,
   ProfileRecord rec;
   rec.id = id;
   rec.name = rules.name;
+  rec.memory_id = rules.memory_id.empty() ? id : rules.memory_id;
   rec.allow_network = rules.allow_network;
   rec.extra_read_paths = rules.extra_read_paths;
   rec.extra_write_paths = rules.extra_write_paths;
@@ -155,7 +157,16 @@ ProfileStoreError ProfileStore::Update(const std::string& id,
 
   ProfileRecord rec;
   rec.id = id;
+  if (const auto existing = Get(id)) {
+    rec.memory_id = existing->memory_id;
+  }
   rec.name = rules.name;
+  if (!rules.memory_id.empty()) {
+    rec.memory_id = rules.memory_id;
+  }
+  if (rec.memory_id.empty()) {
+    rec.memory_id = id;
+  }
   rec.allow_network = rules.allow_network;
   rec.extra_read_paths = rules.extra_read_paths;
   rec.extra_write_paths = rules.extra_write_paths;
@@ -210,6 +221,9 @@ ProfileRecord ProfileStore::ParseYaml(const std::filesystem::path& path,
   ProfileRecord rec;
   rec.id = id;
   rec.name = doc["name"] ? doc["name"].as<std::string>() : id;
+  rec.memory_id = doc["memory_id"] ? doc["memory_id"].as<std::string>() : id;
+  if (rec.memory_id.empty())
+    rec.memory_id = id;
   rec.allow_network =
       doc["allow_network"] ? doc["allow_network"].as<bool>() : true;
 
@@ -234,6 +248,7 @@ void ProfileStore::WriteYaml(const std::filesystem::path& path,
   out << YAML::BeginMap;
   out << YAML::Key << "id" << YAML::Value << rec.id;
   out << YAML::Key << "name" << YAML::Value << rec.name;
+  out << YAML::Key << "memory_id" << YAML::Value << rec.memory_id;
   out << YAML::Key << "allow_network" << YAML::Value << rec.allow_network;
 
   auto emit_list = [&](const char* key, const std::vector<std::string>& v) {

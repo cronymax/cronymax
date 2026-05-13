@@ -17,7 +17,6 @@
 #include <string>
 #include <vector>
 
-#include "browser/models/profile_store.h"
 #include "browser/models/theme_aware_view.h"
 #include "browser/models/view_context.h"
 #include "include/views/cef_label_button.h"
@@ -26,6 +25,7 @@
 #include "include/views/cef_panel.h"
 #include "include/views/cef_textfield.h"
 #include "include/views/cef_window.h"
+#include "runtime/profile_store.h"
 
 namespace cronymax {
 

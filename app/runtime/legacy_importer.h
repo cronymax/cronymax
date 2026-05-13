@@ -10,10 +10,10 @@
 //   <workspace_root>/.cronymax/flows/<flow_id>/runs/<run_id>/state.json
 //
 // Target layout (Rust JsonFilePersistence):
-//   <app_data_dir>/runtime-state.json  (Snapshot JSON)
+//   <userDataDir>/runtimes/default/runtime-state.json  (Snapshot JSON)
 //
 // Marker file written when import is done (task 5.2):
-//   <app_data_dir>/migrations/rust-runtime-v1.done
+//   <userDataDir>/runtimes/migrations/rust-runtime-v1.done
 //
 // Thread safety: not thread-safe; call from a single background thread
 // before the runtime starts.
@@ -42,7 +42,10 @@ struct ImportResult {
 
 class LegacyImporter {
  public:
-  explicit LegacyImporter(std::filesystem::path app_data_dir);
+  // `user_data_dir` is PK_USER_DATA (~/Library/Application Support/<bundleId>).
+  // Snapshot is written to user_data_dir/runtimes/default/runtime-state.json;
+  // marker is user_data_dir/runtimes/migrations/rust-runtime-v1.done.
+  explicit LegacyImporter(std::filesystem::path user_data_dir);
 
   // Returns true if the migration marker exists — i.e. import has already
   // run and should not repeat.

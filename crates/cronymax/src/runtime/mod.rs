@@ -35,6 +35,7 @@
 //! the rest of the runtime is pure Rust.
 
 pub mod authority;
+pub mod chat_store;
 pub mod handler;
 pub mod persistence;
 pub mod prompt;

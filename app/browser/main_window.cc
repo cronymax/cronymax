@@ -1,4 +1,5 @@
 #include "browser/main_window.h"
+#include "browser/models/profile_context_manager.h"
 #include "browser/models/view_model.h"
 
 #include <cctype>
@@ -29,7 +30,7 @@
 
 #if defined(__APPLE__)
 #include "browser/icon_registry.h"
-#include "browser/mac_folder_picker.h"
+#include "browser/platform/mac_folder_picker.h"
 #include "browser/tab/simple_tab_behavior.h"
 #include "browser/tab/tab.h"
 #include "browser/tab/tab_behavior.h"
@@ -259,8 +260,8 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
                                         ResourceUrl("panels/chat/index.html"));
   shell_model_.tabs_->SetKindContentUrl(
       TabKind::kTerminal, ResourceUrl("panels/terminal/index.html"));
-  shell_model_.tabs_->SetKindContentUrl(
-      TabKind::kFlows, ResourceUrl("panels/flows/index.html"));
+  shell_model_.tabs_->SetKindContentUrl(TabKind::kFlows,
+                                        ResourceUrl("panels/flows/index.html"));
   shell_model_.tabs_->SetKindContentUrl(
       TabKind::kSettings, ResourceUrl("panels/settings/index.html"));
 
@@ -340,6 +341,15 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
                 nlohmann::json{{"id", new_id}, {"name", sp->name}}.dump());
             // Phase 9: space button label updated via TitleBarView observer
             // (SpaceChanged event fires in shell_model_.NotifySpaceChanged).
+
+            // Task 7.5: Update TabManager's request context so new tabs
+            // opened after this switch get the new profile's webview storage.
+            {
+              const std::string pid =
+                  sp->profile_id.empty() ? DEFAULT_PROFILE_ID : sp->profile_id;
+              shell_model_.tabs_->SetRequestContext(
+                  profile_ctx_manager_->GetContextForProfile(pid));
+            }
             break;
           }
         }
@@ -372,6 +382,15 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
           sandbox["extra_deny_paths"] = arr;
         }
         runtime_bridge_->SetSandboxConfig(sandbox);
+
+        // Task 8.3: Update the profile context so that SpawnAndHandshake
+        // computes the correct profile-scoped and workspace-scoped paths.
+        runtime_bridge_->SetProfileContext(
+            profile.id.empty() ? DEFAULT_PROFILE_ID : profile.id,
+            profile.memory_id.empty()
+                ? (profile.id.empty() ? DEFAULT_PROFILE_ID : profile.id)
+                : profile.memory_id,
+            std::filesystem::path(workspace_root));
 
         // Restart the runtime bridge on a background thread so the UI
         // thread is not blocked (the switch UX shows a loading indicator
@@ -610,17 +629,19 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   // the runtime so it sees the imported runs on its first load.
   // app_data_dir is declared here (outside the importer block) so the
   // runtime bridge start thread can capture it by value.
+  //
+  // PK_USER_DATA = CefSettings.root_cache_path = $appDataDir, so reading it
+  // directly gives the real application data root.
   std::filesystem::path app_data_dir;
   {
     CefString _ud;
     if (CefGetPath(PK_USER_DATA, _ud) && !_ud.empty()) {
-      app_data_dir = std::filesystem::path(_ud.ToString()) / "runtime";
+      app_data_dir = std::filesystem::path(_ud.ToString());
     } else {
       CefString _res;
       CefGetPath(PK_DIR_RESOURCES, _res);
       app_data_dir = (_res.empty() ? std::filesystem::current_path()
-                                   : std::filesystem::path(_res.ToString())) /
-                     "runtime";
+                                   : std::filesystem::path(_res.ToString()));
     }
   }
   {
@@ -641,7 +662,46 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
                 << " parse errors";
     }
   }
+
+  // Initialize the per-profile CefRequestContext manager and immediately
+  // wire the initial profile's context into the TabManager so all tabs
+  // opened at startup use the correct disk-backed webview storage.
+  profile_ctx_manager_ = std::make_unique<ProfileContextManager>(app_data_dir);
+  {
+    const std::string init_pid = [this]() -> std::string {
+      if (auto* sp = shell_model_.space_manager_.ActiveSpace())
+        return sp->profile_id.empty() ? DEFAULT_PROFILE_ID : sp->profile_id;
+      return DEFAULT_PROFILE_ID;
+    }();
+    shell_model_.tabs_->SetRequestContext(
+        profile_ctx_manager_->GetContextForProfile(init_pid));
+  }
+
   // Start the bridge on a background thread to avoid blocking the UI.
+  // Set the profile context for the initial active space before starting.
+  {
+    const std::string init_profile_id = [this]() -> std::string {
+      if (auto* sp = shell_model_.space_manager_.ActiveSpace())
+        return sp->profile_id.empty() ? DEFAULT_PROFILE_ID : sp->profile_id;
+      return DEFAULT_PROFILE_ID;
+    }();
+    const std::string init_memory_id = [this,
+                                        &init_profile_id]() -> std::string {
+      const auto maybe = shell_model_.space_manager_.profile_store().Get(
+          init_profile_id.empty() ? DEFAULT_PROFILE_ID : init_profile_id);
+      if (maybe && !maybe->memory_id.empty())
+        return maybe->memory_id;
+      return init_profile_id.empty() ? DEFAULT_PROFILE_ID : init_profile_id;
+    }();
+    const std::filesystem::path init_workspace_root =
+        [this]() -> std::filesystem::path {
+      if (auto* sp = shell_model_.space_manager_.ActiveSpace())
+        return sp->workspace_root;
+      return {};
+    }();
+    runtime_bridge_->SetProfileContext(init_profile_id, init_memory_id,
+                                       init_workspace_root);
+  }
   std::thread([this, app_data_dir]() {
     if (runtime_bridge_->Start({}, app_data_dir)) {
       runtime_proxy_->Attach(runtime_bridge_.get());
@@ -786,6 +846,8 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
 
 void MainWindow::BuildOverlaySlots() {
   // Slot 0: content BrowserView (lower z-order).
+  // The overlay uses the global context (nullptr) — its URL navigations are
+  // transient and do not need profile-scoped cookie persistence.
   CefBrowserSettings bs;
   bs.background_color = shell_model_.current_chrome_.bg_float != 0
                             ? shell_model_.current_chrome_.bg_float
@@ -1034,36 +1096,36 @@ void MainWindow::RefreshTitleBarDragRegion() {
 
 namespace {
 
+// PushToViewExecute — called only via CefPostTask, never inline.
+// Precondition: running on TID_UI.
+static void PushToViewExecute(CefRefPtr<CefBrowserView> view,
+                              const std::string& event_name,
+                              const std::string& json_payload) {
+  CEF_REQUIRE_UI_THREAD();
+  if (!view)
+    return;
+  auto browser = view->GetBrowser();
+  if (!browser || !browser->HasDocument())
+    return;
+  auto frame = browser->GetMainFrame();
+  if (!frame || !frame->IsValid())
+    return;
+  const std::string js = "window.cronymax?.browser?.onDispatch?.('" +
+                         event_name + "'," + json_payload + ");";
+  frame->ExecuteJavaScript(js, CefString(), 0);
+}
+
+// PushToView — always defers ExecuteJavaScript to a fresh event-loop
+// iteration via CefPostTask, even when already on TID_UI.  This prevents
+// re-entrant ExecuteJavaScript calls from within CEF browser query handlers
+// (same-browser re-entrancy crashes CEF internally).
 void PushToView(CefRefPtr<CefBrowserView> view,
                 const std::string& event_name,
                 const std::string& json_payload) {
   if (!view)
     return;
-  if (!CefCurrentlyOn(TID_UI)) {
-    CefPostTask(TID_UI,
-                base::BindOnce(&PushToView, view, event_name, json_payload));
-    return;
-  }
-  auto browser = view->GetBrowser();
-  if (!browser) {
-    fprintf(stderr, "[PushToView] ev=%s GetBrowser()=NULL\n",
-            event_name.c_str());
-    fflush(stderr);
-    return;
-  }
-  auto frame = browser->GetMainFrame();
-  if (!frame) {
-    fprintf(stderr, "[PushToView] ev=%s GetMainFrame()=NULL\n",
-            event_name.c_str());
-    fflush(stderr);
-    return;
-  }
-  const std::string js = "window.cronymax?.browser?.onDispatch?.(" +
-                         ("'" + event_name + "'") + "," + json_payload + ");";
-  fprintf(stderr, "[PushToView] ev=%s bid=%d ExecuteJavaScript\n",
-          event_name.c_str(), browser->GetIdentifier());
-  fflush(stderr);
-  frame->ExecuteJavaScript(js, frame->GetURL(), 0);
+  CefPostTask(TID_UI, base::BindOnce(&PushToViewExecute, view, event_name,
+                                     json_payload));
 }
 
 }  // namespace
