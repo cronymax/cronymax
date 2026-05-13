@@ -166,7 +166,7 @@ impl ChatStore {
             Err(_) => return Vec::new(),
         };
         let reader = io::BufReader::new(file);
-        let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+        let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
         let n = lines.len();
         let mut turns = Vec::with_capacity(n);
         for (i, line) in lines.iter().enumerate() {

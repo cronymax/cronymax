@@ -5,4 +5,5 @@ platforms = ["osx-arm64", "osx-64", "linux-64", "win-64"]
 
 [dependencies]
 cmake = ">=3.21"
+clang = ">=20.0,<21"
 clang-tools = ">=20.0,<21"
