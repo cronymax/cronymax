@@ -9,11 +9,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { Streamdown } from "streamdown";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { browser } from "@/shells/bridge";
 import { agentRegistry, agentRun, b64ToUtf8, terminal as rt_terminal } from "@/shells/runtime";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
+import { ContentStreamView } from "./ContentStreamView";
 import { PromptPopover } from "./PromptPopover";
 import {
   type Attachment,
@@ -32,7 +32,6 @@ import {
   type Thread,
   useStore,
 } from "./store";
-import { ThinkingBlock } from "./ThinkingBlock";
 import { TraceViewer } from "./TraceViewer";
 import { useSelectionTooltip } from "./useSelectionTooltip";
 
@@ -253,38 +252,23 @@ function ConversationBlockView({
         </div>
       )}
 
-      {/* Trace */}
-      <TraceViewer entries={block.traceEntries} startExpanded={isStreaming} />
-
-      {/* Thinking block — show animated dots while running (before content arrives),
-           then collapsible summary once sealed. Hidden only after completion
-           when no thinking content was produced. */}
-      {(block.thinkingText || block.thinkingSealed || block.status === "running") && (
-        <ThinkingBlock
-          thinkingText={block.thinkingText}
-          sealed={block.thinkingSealed}
-          elapsedMs={block.thinkingElapsedMs}
-        />
-      )}
-
-      {/* Assistant response */}
-      {(block.assistantContent || block.status === "running") && (
+      {/* Content stream — renders text, tool cards, and thinking in order */}
+      {(block.contentStream.length > 0 || block.status === "running") && (
         <div className="px-1">
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cronymax-caption">
             {block.agentName || "Assistant"}
           </div>
-          <div className="text-sm text-cronymax-title">
-            <Streamdown animated isAnimating={isStreaming}>
-              {block.assistantContent}
-            </Streamdown>
-          </div>
+          <ContentStreamView segments={block.contentStream} isStreaming={isStreaming} />
         </div>
       )}
 
       {/* Status error */}
-      {block.status === "fail" && !block.assistantContent && (
+      {block.status === "fail" && block.contentStream.length === 0 && (
         <div className="text-xs italic text-red-400">(run failed)</div>
       )}
+
+      {/* Trace — shown below the content stream (position unchanged) */}
+      <TraceViewer entries={block.traceEntries} startExpanded={isStreaming} />
 
       {/* Comment annotations */}
       {pinnedComments.map((c) => (
@@ -1046,6 +1030,7 @@ export function App() {
         id: blockId,
         userContent: displayText ?? rawText,
         attachments: state.attachments.slice(),
+        contentStream: [],
         assistantContent: "",
         agentName: speaker || undefined,
         traceEntries: [],
@@ -1063,7 +1048,7 @@ export function App() {
       dispatch({ type: "clearAttachments" });
       dispatch({ type: "clearPinnedComments" });
 
-      let assistantText = "";
+      let hasContent = false;
       let thinkingStartedAt: number | null = null;
       let thinkingSealed = false;
       // Dedup key = "<subscription_id>:<sequence>" so that concurrent
@@ -1104,45 +1089,45 @@ export function App() {
                 thinkingStartedAt = Date.now();
               }
               dispatch({
-                type: "appendThinkingDelta",
+                type: "appendThinkingSegment",
                 id: blockId,
                 delta,
-                now: thinkingStartedAt,
               });
             }
           } else if (kind === "token") {
-            // First text token seals the thinking block if thinking is in progress.
+            // First text token seals the thinking segment if thinking is in progress.
             if (thinkingStartedAt !== null && !thinkingSealed) {
               thinkingSealed = true;
               const elapsedMs = Date.now() - thinkingStartedAt;
-              dispatch({ type: "sealThinkingBlock", id: blockId, elapsedMs });
+              dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
             }
             const content = (pl.delta ?? pl.content) as string | undefined;
             if (content) {
-              assistantText += content;
+              hasContent = true;
               dispatch({
-                type: "setAssistantContent",
+                type: "appendContentText",
                 id: blockId,
-                content: assistantText,
+                delta: content,
               });
             }
           } else if (kind === "run_status") {
             const status = pl.status as string | undefined;
             if (status === "succeeded" || status === "failed" || status === "cancelled") {
               dispatch({ type: "clearAwaitingApproval" });
-              // Seal any pending thinking block before finalizing.
+              // Seal any pending thinking segment before finalizing.
               if (thinkingStartedAt !== null && !thinkingSealed) {
                 thinkingSealed = true;
                 const elapsedMs = Date.now() - thinkingStartedAt;
-                dispatch({ type: "sealThinkingBlock", id: blockId, elapsedMs });
+                dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
               }
-              if (!assistantText) {
-                assistantText = status === "succeeded" ? "(completed)" : "(no output)";
+              if (!hasContent) {
+                const fallback = status === "succeeded" ? "(completed)" : "(no output)";
                 dispatch({
-                  type: "setAssistantContent",
+                  type: "appendContentText",
                   id: blockId,
-                  content: assistantText,
+                  delta: fallback,
                 });
+                hasContent = true;
               }
               dispatch({
                 type: "finalizeBlock",
@@ -1225,6 +1210,15 @@ export function App() {
                 },
               });
             } else if (traceKind === "assistant_turn") {
+              // Extract optional usage and duration emitted by agent-run-middleware
+              const usageRaw = trace.usage as Record<string, number> | undefined;
+              const usage = usageRaw
+                ? {
+                    inputTokens: (usageRaw.input_tokens as number) ?? 0,
+                    outputTokens: (usageRaw.output_tokens as number) ?? 0,
+                  }
+                : undefined;
+              const turnDurationMs = trace.duration_ms as number | undefined;
               dispatch({
                 type: "appendTraceEntry",
                 id: blockId,
@@ -1235,33 +1229,59 @@ export function App() {
                   text: (trace.text as string | undefined) ?? "",
                   finishReason: (trace.finish_reason as string | undefined) ?? "",
                   ts: Date.now(),
+                  ...(usage ? { usage } : {}),
+                  ...(turnDurationMs != null ? { durationMs: turnDurationMs } : {}),
                 },
               });
             } else if (traceKind === "tool_start") {
+              const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+              const tool = (trace.tool as string | undefined) ?? "";
+              const args = trace.arguments ?? trace.args ?? {};
               dispatch({
                 type: "appendTraceEntry",
                 id: blockId,
                 entry: {
                   kind: "tool_start",
-                  toolCallId: (trace.tool_call_id as string | undefined) ?? "",
-                  tool: (trace.tool as string | undefined) ?? "",
-                  // Rust emits "arguments" (not "args")
-                  args: trace.arguments ?? trace.args ?? {},
+                  toolCallId,
+                  tool,
+                  args,
                   ts: Date.now(),
                 },
               });
+              // Also add a running tool_call segment to the content stream
+              dispatch({
+                type: "appendToolCallSegment",
+                id: blockId,
+                toolCallId,
+                tool,
+                args,
+              });
             } else if (traceKind === "tool_done") {
+              const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+              const tool = (trace.tool as string | undefined) ?? "";
+              const result = trace.result ?? {};
+              const isError = (trace.is_error as boolean | undefined) ?? false;
+              const durationMs = trace.duration_ms as number | undefined;
               dispatch({
                 type: "appendTraceEntry",
                 id: blockId,
                 entry: {
                   kind: "tool_done",
-                  toolCallId: (trace.tool_call_id as string | undefined) ?? "",
-                  tool: (trace.tool as string | undefined) ?? "",
-                  result: trace.result ?? {},
+                  toolCallId,
+                  tool,
+                  result,
                   terminal: (trace.terminal as boolean | undefined) ?? false,
                   ts: Date.now(),
                 },
+              });
+              // Update the tool_call segment in the content stream
+              dispatch({
+                type: "updateToolCallSegment",
+                id: blockId,
+                toolCallId,
+                status: isError ? "error" : "done",
+                result,
+                ...(durationMs != null ? { durationMs } : {}),
               });
             } else if (traceKind === "review_resolved") {
               const resolvedId = (trace.review_id as string | undefined) ?? "";

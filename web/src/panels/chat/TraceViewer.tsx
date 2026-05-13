@@ -102,6 +102,23 @@ function totalDuration(entries: TraceEntry[]): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function totalUsageSummary(entries: TraceEntry[]): { inputTokens: number; outputTokens: number } | null {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const e of entries) {
+    if (e.kind === "assistant_turn" && e.usage) {
+      inputTokens += e.usage.inputTokens;
+      outputTokens += e.usage.outputTokens;
+    }
+  }
+  return inputTokens > 0 || outputTokens > 0 ? { inputTokens, outputTokens } : null;
+}
+
+function fmtTokenCount(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
 function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
   const [open, setOpen] = useState(false);
   const indented = isChildEntry(entry);
@@ -165,6 +182,9 @@ export function TraceViewer({ entries, startExpanded }: Props) {
 
   const base = entries[0]!.ts;
   const dur = totalDuration(entries);
+  const usage = totalUsageSummary(entries);
+  const inputTokens = usage?.inputTokens ?? 0;
+  const outputTokens = usage?.outputTokens ?? 0;
 
   return (
     <div className="rounded border border-cronymax-border bg-cronymax-float text-xs">
@@ -179,6 +199,9 @@ export function TraceViewer({ entries, startExpanded }: Props) {
         <span className="text-[10px] text-cronymax-caption opacity-60">
           {entries.length} {entries.length === 1 ? "entry" : "entries"}
           {dur ? ` · ${dur}` : ""}
+          {usage
+            ? ` · ${fmtTokenCount(inputTokens + outputTokens)} tok (↑${fmtTokenCount(inputTokens)} ↓${fmtTokenCount(outputTokens)})`
+            : ""}
         </span>
       </button>
 
