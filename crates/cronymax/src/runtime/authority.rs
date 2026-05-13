@@ -129,15 +129,30 @@ pub struct RuntimeAuthority {
 
 impl RuntimeAuthority {
     /// Build a fresh authority and rehydrate state from `persistence`.
-    /// Existing paused or awaiting-review runs come back exactly as
-    /// they were on the previous shutdown (task 4.4).
+    /// Runs that were `Running` or `Pending` at the time of the previous
+    /// shutdown are transitioned to `Paused` — their agent-loop tasks
+    /// are gone and they would otherwise be stuck indefinitely.
+    /// Paused and `AwaitingReview` runs come back as-is.
     pub fn rehydrate(persistence: Arc<dyn Persistence>) -> Result<Self, AuthorityError> {
-        let snapshot = persistence.load()?;
+        let mut snapshot = persistence.load()?;
+        let now = now_ms();
+        let mut abandoned = 0usize;
+        for run in snapshot.runs.values_mut() {
+            if matches!(run.status, RunStatus::Running | RunStatus::Pending) {
+                run.status = RunStatus::Paused;
+                run.updated_at_ms = now;
+                abandoned += 1;
+            }
+        }
+        if abandoned > 0 {
+            persistence.save(&snapshot)?;
+        }
         info!(
             spaces = snapshot.spaces.len(),
             agents = snapshot.agents.len(),
             runs = snapshot.runs.len(),
             reviews = snapshot.reviews.len(),
+            abandoned,
             "runtime authority rehydrated from persistence"
         );
         Ok(Self {
@@ -1029,6 +1044,45 @@ mod tests {
         let snap = auth2.snapshot();
         assert!(snap.spaces.contains_key(&space_id));
         assert_eq!(snap.runs[&run].status, RunStatus::Paused);
+    }
+
+    #[tokio::test]
+    async fn rehydrate_pauses_running_and_pending_runs() {
+        // First boot: create two runs — one left Running, one left Pending.
+        let store = Arc::new(InMemoryPersistence::default());
+        let auth = RuntimeAuthority::rehydrate(store.clone()).unwrap();
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
+        let space_id = space.id;
+        auth.upsert_space(space).unwrap();
+        // Pending run (never marked running)
+        let pending_run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
+        // Running run
+        let running_run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
+        auth.mark_run_running(running_run).unwrap();
+        drop(auth);
+
+        // Second boot: both should be Paused, not stuck in Running/Pending.
+        let auth2 = RuntimeAuthority::rehydrate(store).unwrap();
+        let snap = auth2.snapshot();
+        assert_eq!(
+            snap.runs[&pending_run].status,
+            RunStatus::Paused,
+            "Pending run must become Paused on rehydrate"
+        );
+        assert_eq!(
+            snap.runs[&running_run].status,
+            RunStatus::Paused,
+            "Running run must become Paused on rehydrate"
+        );
     }
 
     #[tokio::test]

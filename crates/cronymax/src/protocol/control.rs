@@ -150,11 +150,23 @@ pub enum ControlRequest {
         name: String,
     },
 
-    /// Write (create or overwrite) an agent YAML file. `yaml` is the raw YAML text.
+    /// Write (create or overwrite) an agent YAML file from structured fields.
+    /// The Rust runtime serialises the fields into the canonical YAML format.
     AgentRegistrySave {
         workspace_root: String,
         name: String,
-        yaml: String,
+        /// `"worker"` | `"reviewer"`. Defaults to `"worker"` if absent.
+        #[serde(default)]
+        agent_kind: String,
+        #[serde(default)]
+        llm: String,
+        #[serde(default)]
+        system_prompt: String,
+        #[serde(default)]
+        memory_namespace: String,
+        /// Comma-separated tool names. Empty string means no tools.
+        #[serde(default)]
+        tools_csv: String,
     },
 
     /// Delete an agent file.

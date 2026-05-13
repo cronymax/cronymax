@@ -5,7 +5,6 @@ import {
   type KeyboardEvent,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -813,10 +812,23 @@ export function App() {
   });
 
   // ── auto scroll ──────────────────────────────────────────────────────
-  useLayoutEffect(() => {
-    const el = timelineRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [state.blocks]);
+  // Use useEffect (async, after paint) instead of useLayoutEffect so we never
+  // force a synchronous layout read (el.scrollHeight) while Blink is still in
+  // its layout phase — that triggers the DisplayLock DCHECK crash with large
+  // histories.  Also only scroll when the user is already near the bottom so
+  // we don't hijack the scroll position when reviewing older messages.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const el = timelineRef.current;
+      if (!el) return;
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // Treat within 120 px of the bottom (or actively streaming) as "at bottom".
+      if (distanceFromBottom <= 120 || state.running) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [state.blocks, state.running]);
 
   // ── input mode detection + prefix auto-strip ─────────────────────────
   const onInputChange = useCallback(
@@ -1054,7 +1066,10 @@ export function App() {
       let assistantText = "";
       let thinkingStartedAt: number | null = null;
       let thinkingSealed = false;
-      const seenSeqs = new Set<number>();
+      // Dedup key = "<subscription_id>:<sequence>" so that concurrent
+      // conversations whose Rust subscriptions independently start at seq=0
+      // never cross-contaminate each other's dedup sets.
+      const seenSeqs = new Set<string>();
       let runId = "";
 
       // Track pending review info from awaiting_review status so we can
@@ -1067,15 +1082,19 @@ export function App() {
 
         if (ev.tag === "event") {
           const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
-          const seq = inner.sequence as number | undefined;
-          if (typeof seq === "number") {
-            if (seenSeqs.has(seq)) return;
-            seenSeqs.add(seq);
-          }
           const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
           const pRunId =
             (pl.run_id as string | undefined) ?? ((inner as Record<string, unknown>).run_id as string | undefined);
+          // Filter by run_id BEFORE deduplicating so that a different run's
+          // seq=0 does not consume our seq=0 from the dedup set.
           if (pRunId && runId && pRunId !== runId) return;
+          const subId = (ev.subscription as string | undefined) ?? "";
+          const seq = inner.sequence as number | undefined;
+          if (typeof seq === "number") {
+            const dedupKey = `${subId}:${seq}`;
+            if (seenSeqs.has(dedupKey)) return;
+            seenSeqs.add(dedupKey);
+          }
           const kind = pl.kind as string | undefined;
 
           if (kind === "thinking_token") {

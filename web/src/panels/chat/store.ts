@@ -300,18 +300,39 @@ const initial: State = {
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
-    case "loadChat":
+    case "loadChat": {
+      // Any block persisted with status:"running" belongs to a session that
+      // was interrupted (runtime restart / renderer crash). Finalize them now
+      // so the UI never shows a block stuck in "Thinking" forever.
+      const sanitizedBlocks = action.blocks.map((b) => {
+        if (b.kind === "conversation" && b.status === "running") {
+          return {
+            ...b,
+            status: "fail" as const,
+            assistantContent: b.assistantContent || "(session was interrupted — runtime restarted)",
+          };
+        }
+        if (b.kind === "shell" && b.status === "running") {
+          return { ...b, status: "fail" as const, endedAt: Date.now() };
+        }
+        return b;
+      });
       return {
         ...state,
         activeChatId: action.id,
         chatName: action.name,
-        blocks: action.blocks,
+        blocks: sanitizedBlocks,
+        // Reset in-flight run state — any previous run is gone after reload.
+        running: false,
+        runningBlockId: null,
+        awaitingApproval: null,
         terminalTid: action.terminalTid,
         model: action.model || state.model,
         agentId: action.agentId ?? state.agentId,
         migrationNotice: action.migrationNotice ?? null,
         activeView: { kind: "main" },
       };
+    }
 
     case "createBlock":
       return { ...state, blocks: [...state.blocks, action.block] };

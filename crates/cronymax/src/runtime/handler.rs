@@ -1729,7 +1729,11 @@ impl Handler for RuntimeHandler {
             ControlRequest::AgentRegistrySave {
                 workspace_root,
                 name,
-                yaml,
+                agent_kind,
+                llm,
+                system_prompt,
+                memory_namespace,
+                tools_csv,
             } => {
                 // Guard: the Crony builtin prompt is sealed.
                 if name.eq_ignore_ascii_case(crate::crony::CronyBuiltin::ID) {
@@ -1740,6 +1744,38 @@ impl Handler for RuntimeHandler {
                         },
                     };
                 }
+
+                // Build canonical YAML from the structured fields.
+                let effective_kind = if agent_kind == "reviewer" {
+                    "reviewer"
+                } else {
+                    "worker"
+                };
+                let tools: Vec<&str> = tools_csv
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let tools_yaml = if tools.is_empty() {
+                    "[]".to_string()
+                } else {
+                    let items = tools
+                        .iter()
+                        .map(|t| format!("  - {t}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    format!("\n{items}")
+                };
+                let effective_mem = if memory_namespace.is_empty() {
+                    name.clone()
+                } else {
+                    memory_namespace.clone()
+                };
+                let yaml = format!(
+                    "name: {name}\nkind: {effective_kind}\nllm: {llm}\nsystem_prompt: |\n  {sp}\nmemory_namespace: {effective_mem}\ntools:{tools_yaml}\n",
+                    sp = system_prompt.replace('\n', "\n  "),
+                );
+
                 use crate::workspace::{AgentRegistry, Workspace};
                 let layout = Workspace::new(&workspace_root);
                 let mut reg = AgentRegistry::new(layout.agents_dir());
