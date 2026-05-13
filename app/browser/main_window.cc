@@ -813,6 +813,9 @@ void MainWindow::BuildOverlaySlots() {
   };
   phost.refresh_drag_region = [this]() { RefreshTitleBarDragRegion(); };
   phost.close_notify = nullptr;
+  phost.get_sidebar_width = [this]() -> int {
+    return sidebar_visible_ ? 240 : 0;
+  };
   popover_ = std::make_unique<Popover>(
       /*theme_ctx=*/this, content_bv, content_oc, chrome_panel, chrome_oc,
       main_window_, std::move(phost));
@@ -963,11 +966,17 @@ void MainWindow::ToggleSidebar() {
   // Force a layout pass so the content area expands/contracts immediately.
   if (body_panel_)
     body_panel_->Layout();
+  // Re-layout the popover scrim to match the new content frame origin.
+  if (popover_ && popover_->IsOpen())
+    popover_->LayoutPopover();
 #if defined(__APPLE__)
-  // Re-raise the drag overlay; layout may have repositioned views.
+  // Re-raise the drag overlay and re-punch card corners; layout may have
+  // repositioned the content card so old punch views are in the wrong place.
   CefPostTask(TID_UI, base::BindOnce(
                           [](CefRefPtr<MainWindow> self) {
                             self->RefreshTitleBarDragRegion();
+                            if (self->content_view_)
+                              self->content_view_->RefreshCornerMasks();
                           },
                           CefRefPtr<MainWindow>(this)));
 #endif

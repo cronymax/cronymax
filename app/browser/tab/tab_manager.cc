@@ -228,13 +228,13 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
       if (!client_handler_)
         return nullptr;
       const std::string url = resolve_url("https://www.google.com");
-      return std::make_unique<WebTabBehavior>(client_handler_, url, theme_ctx_);
+      return std::make_unique<WebTabBehavior>(client_handler_, theme_ctx_, url);
     }
     case TabKind::kTerminal:
       if (!client_handler_)
         return nullptr;
       return std::make_unique<SimpleTabBehavior>(
-          client_handler_, kind, std::string("\xEE\x9C\x80"),
+          client_handler_, theme_ctx_, kind, std::string("\xEE\x9C\x80"),
           params.display_name.empty() ? std::string("Terminal")
                                       : params.display_name,
           resolve_url("about:blank"));
@@ -242,7 +242,7 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
       if (!client_handler_)
         return nullptr;
       return std::make_unique<SimpleTabBehavior>(
-          client_handler_, kind, std::string("\xF0\x9F\x92\xAC"),
+          client_handler_, theme_ctx_, kind, std::string("\xF0\x9F\x92\xAC"),
           params.display_name.empty() ? std::string("Chat")
                                       : params.display_name,
           resolve_url("about:blank"));
@@ -250,14 +250,14 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
       if (!client_handler_)
         return nullptr;
       return std::make_unique<SimpleTabBehavior>(
-          client_handler_, kind, std::string("\xE2\x9A\x99"), "Flows",
-          resolve_url("about:blank"));
+          client_handler_, theme_ctx_, kind, std::string("\xE2\x9A\x99"),
+          "Flows", resolve_url("about:blank"));
     case TabKind::kSettings:
       if (!client_handler_)
         return nullptr;
       return std::make_unique<SimpleTabBehavior>(
-          client_handler_, kind, std::string("\xE2\x9A\x99"), "Settings",
-          resolve_url("about:blank"));
+          client_handler_, theme_ctx_, kind, std::string("\xE2\x9A\x99"),
+          "Settings", resolve_url("about:blank"));
   }
   return nullptr;
 }

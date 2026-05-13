@@ -75,6 +75,11 @@ class ContentView : public ThemeAwareView,
                               CefRefPtr<CefWindow> win,
                               cef_color_t bg_body);
 
+  // Re-apply corner masks for the current active tab (e.g. after the sidebar
+  // is shown/hidden and the card position changes).  Posts a deferred TID_UI
+  // task so CEF has finished re-laying out before the punch views are placed.
+  void RefreshCornerMasks();
+
   CefRefPtr<CefPanel> content_panel() const { return content_panel_; }
 
   // Make both OnViewObserved overloads visible (ThemeAwareView +

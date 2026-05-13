@@ -138,6 +138,14 @@ void ContentView::RoundCornersFor(CefRefPtr<CefBrowserView> bv,
           bv, win, bg_body));
 }
 
+void ContentView::RefreshCornerMasks() {
+  auto [tab_id, card, bv] = host_.active_tab();
+  (void)tab_id;
+  (void)card;
+  if (bv)
+    RoundCornersFor(bv, main_win_, bg_body_);
+}
+
 void ContentView::OnViewObserved(const ActiveTabChanged& /*e*/) {
   ShowActiveCard();
 }

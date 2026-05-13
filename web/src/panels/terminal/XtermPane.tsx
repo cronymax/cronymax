@@ -35,7 +35,7 @@ export function XtermPane({ tid, onCwdChange }: Props) {
       fontFamily: "Menlo, Monaco, 'Courier New', monospace",
       fontSize: 12,
       theme: {
-        background: "#111317",
+        background: "#292929",
         foreground: "#e8edf2",
         cursor: "#e8edf2",
         selectionBackground: "#264f78",

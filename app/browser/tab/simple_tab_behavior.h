@@ -13,6 +13,7 @@
 
 #include <string>
 
+#include "browser/models/view_observer.h"
 #include "browser/tab/tab.h"
 #include "browser/tab/tab_behavior.h"
 #include "include/views/cef_browser_view.h"
@@ -26,6 +27,7 @@ class TabToolbar;
 class SimpleTabBehavior : public TabBehavior {
  public:
   SimpleTabBehavior(ClientHandler* client_handler,
+                    ThemeContext* theme_ctx,
                     TabKind kind,
                     std::string icon,
                     std::string display_name,
@@ -38,6 +40,7 @@ class SimpleTabBehavior : public TabBehavior {
   void BuildToolbar(TabToolbar* toolbar, TabContext* context) override;
   CefRefPtr<CefView> BuildContent(TabContext* context) override;
   void ApplyToolbarState(const ToolbarState& state) override;
+  void ApplyTheme(const ThemeChrome& chrome) override;
   int BrowserId() const override;
 
   CefRefPtr<CefBrowserView> browser_view() const { return browser_view_; }
@@ -45,6 +48,7 @@ class SimpleTabBehavior : public TabBehavior {
 
  private:
   ClientHandler* client_handler_;
+  ThemeContext* theme_ctx_;
   TabKind kind_;
   std::string icon_;
   std::string display_name_;

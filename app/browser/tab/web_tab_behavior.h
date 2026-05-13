@@ -33,8 +33,8 @@ class TabToolbar;
 class WebTabBehavior : public TabBehavior {
  public:
   WebTabBehavior(ClientHandler* client_handler,
-                 std::string initial_url,
-                 ThemeContext* theme_ctx);
+                 ThemeContext* theme_ctx,
+                 std::string initial_url);
   ~WebTabBehavior() override;
 
   TabKind Kind() const override { return TabKind::kWeb; }
@@ -75,8 +75,8 @@ class WebTabBehavior : public TabBehavior {
   void RegisterBrowserListener();
 
   TabContext* context_ = nullptr;
-  ThemeContext* theme_ctx_ = nullptr;
   ClientHandler* client_handler_;
+  ThemeContext* theme_ctx_ = nullptr;
   std::string initial_url_;
   std::string current_url_;
   std::string current_title_;

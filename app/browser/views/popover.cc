@@ -184,11 +184,13 @@ void Popover::LayoutPopover() {
 #if defined(__APPLE__)
   if (!is_compact_) {
     const CefRect bounds = main_win_->GetBounds();
-    const int content_w = std::max(320, bounds.width - kSidebarW);
+    const int sidebar_w =
+        host_.get_sidebar_width ? host_.get_sidebar_width() : kSidebarW;
+    const int content_w = std::max(320, bounds.width - sidebar_w);
     const int content_h = std::max(360, bounds.height - kTitleBarH);
     constexpr int kCardVInset = 24;
     constexpr int kCardHInset = 8;
-    const int card_x = kSidebarW + kCardHInset;
+    const int card_x = sidebar_w + kCardHInset;
     const int card_y = kTitleBarH + kCardVInset;
     const int card_w = content_w - kCardHInset * 2;
     const int card_h = content_h - kCardVInset * 2;
@@ -222,9 +224,11 @@ CefRect Popover::ComputePopoverRect() const {
   if (!main_win_)
     return CefRect();
   const CefRect bounds = main_win_->GetBounds();
-  const int content_x = kSidebarW;
+  const int sidebar_w =
+      host_.get_sidebar_width ? host_.get_sidebar_width() : kSidebarW;
+  const int content_x = sidebar_w;
   const int content_y = kTitleBarH;
-  const int content_w = std::max(320, bounds.width - kSidebarW);
+  const int content_w = std::max(320, bounds.width - sidebar_w);
   const int content_h = std::max(360, bounds.height - kTitleBarH);
   int x, y, w, h;
   if (is_compact_) {

@@ -39,10 +39,10 @@ constexpr int kVkEscape = 0x1B;
 }  // namespace
 
 WebTabBehavior::WebTabBehavior(ClientHandler* client_handler,
-                               std::string initial_url,
-                               ThemeContext* theme_ctx)
-    : theme_ctx_(theme_ctx),
-      client_handler_(client_handler),
+                               ThemeContext* theme_ctx,
+                               std::string initial_url)
+    : client_handler_(client_handler),
+      theme_ctx_(theme_ctx),
       initial_url_(std::move(initial_url)),
       current_url_(initial_url_),
       weak_factory_(this) {}
