@@ -125,6 +125,10 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
         }
     };
 
+    // Tag the run with the originating flow_run_id so the Activity panel
+    // can group agent runs under their parent flow run.
+    ctx.authority.set_run_flow_id(run_id, ctx.flow_run_id.clone());
+
     tokio::spawn(async move {
         // ── Load agent definition ─────────────────────────────────────────
         let agent_def = agent_loader::load_agent(&ctx.workspace_root, &agent_id).await;
@@ -1219,7 +1223,305 @@ impl Handler for RuntimeHandler {
 
             ControlRequest::CancelRun { run_id } => self.run_op(&run_id, |a, id| a.cancel_run(id)),
             ControlRequest::PauseRun { run_id } => self.run_op(&run_id, |a, id| a.pause_run(id)),
-            ControlRequest::ResumeRun { run_id } => self.run_op(&run_id, |a, id| a.resume_run(id)),
+            ControlRequest::ResumeRun { run_id } => {
+                // ── Parse and validate ────────────────────────────────────
+                let id = match parse_run(&run_id) {
+                    Ok(r) => r,
+                    Err(resp) => return resp,
+                };
+
+                // Fetch the persisted Run so we can reconstruct the context.
+                let run = {
+                    let snap = self.authority.snapshot();
+                    match snap.runs.get(&id).cloned() {
+                        Some(r) => r,
+                        None => {
+                            return ControlResponse::Err {
+                                error: ControlError::UnknownRun {
+                                    run_id: run_id.clone(),
+                                },
+                            }
+                        }
+                    }
+                };
+
+                // Only resume Paused or AwaitingReview runs.
+                use crate::runtime::state::RunStatus;
+                match &run.status {
+                    RunStatus::Paused | RunStatus::AwaitingReview => {}
+                    _ => return ControlResponse::Ack, // already running or terminal
+                }
+
+                // ── Reconstruct startup context from the persisted spec ───
+                let spec = &run.spec;
+                let llm_obj = spec.get("llm");
+                let base_url = llm_obj
+                    .and_then(|l| l.get("base_url"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("https://api.openai.com/v1")
+                    .to_string();
+                let api_key = llm_obj
+                    .and_then(|l| l.get("api_key"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let model = llm_obj
+                    .and_then(|l| l.get("model"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("gpt-4o-mini")
+                    .to_string();
+                let provider_kind = llm_obj
+                    .and_then(|l| l.get("provider_kind"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("openai_compat")
+                    .to_string();
+                let user_input = spec
+                    .get("task")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let workspace_root: PathBuf = spec
+                    .get("workspace_root")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(PathBuf::from)
+                    .or_else(|| self.workspace_roots.first().cloned())
+                    .unwrap_or_else(std::env::temp_dir);
+
+                let maybe_session_id = run.session_id.clone();
+
+                // ── Load prior conversation thread ────────────────────────
+                // The ChatStore holds the authoritative conversation history
+                // for the session; fall back to the in-memory snapshot thread
+                // when no ChatStore is configured.
+                let prior_thread = if let Some(ref sid) = maybe_session_id {
+                    if let Some(ref cache_dir) = self.workspace_cache_dir {
+                        let store = crate::runtime::chat_store::ChatStore::new(cache_dir);
+                        store.load_history(sid)
+                    } else {
+                        self.authority.session_thread(sid).unwrap_or_default()
+                    }
+                } else {
+                    Vec::new()
+                };
+
+                // ── Transition the run back to Running ───────────────────
+                if let Err(e) = self.authority.mark_run_running(id) {
+                    return ControlResponse::Err {
+                        error: authority_err_to_control(e, None, Some(&run_id)),
+                    };
+                }
+                info!(%id, "resume_run: run marked running, spawning agent loop");
+
+                // ── Re-attach fan-out subscription ────────────────────────
+                let sub_outcome = self.authority.subscribe(format!("run:{id}"));
+                let sub_id = sub_outcome.id;
+                let mut receiver = sub_outcome.receiver;
+                if let Some(sink) = self.sink.lock().clone() {
+                    let task = tokio::spawn(async move {
+                        while let Some(event) = receiver.recv().await {
+                            if sink
+                                .send(RuntimeToClient::Event {
+                                    subscription: sub_id,
+                                    event,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+                    self.fanout.lock().insert(sub_id, task);
+                }
+
+                // ── Build capability dispatcher ───────────────────────────
+                let mut cap_builder = HostCapabilityDispatcher::builder();
+                cap_builder.register_shell(Arc::new(LocalShell::new(&workspace_root)), false);
+                cap_builder.register_filesystem(
+                    Arc::new(LocalFilesystem),
+                    WorkspaceScope::new(&workspace_root),
+                );
+                cap_builder.register_notify(Arc::new(NullNotify));
+                cap_builder.register_search(workspace_root.clone());
+                cap_builder.register_git(workspace_root.clone());
+
+                let resolved_agent_id = run
+                    .agent_id
+                    .as_ref()
+                    .map(|a| a.to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| crate::crony::CronyBuiltin::ID.to_owned());
+                let workspace_root_clone = workspace_root.clone();
+                let chat_agent_def = agent_loader::load_agent_with_builtin(
+                    &workspace_root_clone,
+                    &resolved_agent_id,
+                )
+                .await;
+                if !chat_agent_def.tools.is_empty() {
+                    cap_builder.set_allowed_tools(chat_agent_def.tools.clone());
+                }
+                let tools = Arc::new(cap_builder.build());
+
+                // ── Build effective system prompt ─────────────────────────
+                let base_system_prompt = spec
+                    .get("system_prompt")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        if chat_agent_def.system_prompt.is_empty() {
+                            None
+                        } else {
+                            Some(chat_agent_def.system_prompt.clone())
+                        }
+                    });
+                let effective_system_prompt = if chat_agent_def.inject_workspace {
+                    let defs = tools.definitions();
+                    let mut tool_names_sorted: Vec<&str> =
+                        defs.iter().map(|d| d.name.as_str()).collect();
+                    tool_names_sorted.sort_unstable();
+                    let block = build_workspace_injection_block(&workspace_root, &tool_names_sorted);
+                    Some(format!("{}{block}", base_system_prompt.unwrap_or_default()))
+                } else {
+                    base_system_prompt
+                };
+
+                // ── Spawn the agent loop task ─────────────────────────────
+                let authority = self.authority.clone();
+                let memory_manager = self.memory_manager.clone();
+                let workspace_cache_dir_clone = self.workspace_cache_dir.clone();
+                let is_copilot = provider_kind == "github_copilot";
+                let is_anthropic = provider_kind == "anthropic";
+
+                tokio::spawn(async move {
+                    let (effective_api_key, copilot_mode) = if is_copilot {
+                        match api_key.as_deref() {
+                            Some(github_token) if !github_token.is_empty() => {
+                                let http = reqwest::Client::builder()
+                                    .timeout(std::time::Duration::from_secs(30))
+                                    .build()
+                                    .unwrap_or_default();
+                                match copilot_auth::exchange_for_copilot_token(&http, github_token)
+                                    .await
+                                {
+                                    Ok(ct) => (Some(ct.token), true),
+                                    Err(_) => (api_key, true),
+                                }
+                            }
+                            _ => (api_key, true),
+                        }
+                    } else {
+                        (api_key, false)
+                    };
+
+                    let thinking_config = if is_anthropic {
+                        let caps = CapabilityResolver::resolve(
+                            &model,
+                            &base_url,
+                            effective_api_key.as_deref(),
+                        )
+                        .await;
+                        caps.thinking_config()
+                    } else {
+                        None
+                    };
+
+                    info!(%id, llm_base_url = %base_url, %model, "resume_run: react_loop starting");
+                    let llm: Arc<dyn crate::llm::LlmProvider> = if is_anthropic {
+                        let cfg = AnthropicConfig {
+                            base_url: base_url.clone(),
+                            api_key: effective_api_key,
+                            default_model: model.clone(),
+                            ..Default::default()
+                        };
+                        match AnthropicProvider::new(cfg) {
+                            Ok(p) => Arc::new(p),
+                            Err(e) => {
+                                let _ = authority.fail_run(id, e.to_string());
+                                return;
+                            }
+                        }
+                    } else {
+                        let llm_cfg = OpenAiConfig {
+                            base_url: base_url.clone(),
+                            api_key: effective_api_key,
+                            default_model: model.clone(),
+                            copilot_mode,
+                            ..Default::default()
+                        };
+                        match OpenAiProvider::new(llm_cfg) {
+                            Ok(p) => Arc::new(p),
+                            Err(e) => {
+                                let _ = authority.fail_run(id, e.to_string());
+                                return;
+                            }
+                        }
+                    };
+
+                    // Compact the thread if it is approaching context limits.
+                    let effective_thread = if !prior_thread.is_empty() {
+                        let result = maybe_compact(
+                            prior_thread,
+                            llm.clone(),
+                            &model,
+                            DEFAULT_THRESHOLD_PCT,
+                            DEFAULT_RECENCY_TURNS,
+                        )
+                        .await;
+                        if result.compacted {
+                            if let Some(ref sid) = maybe_session_id {
+                                let _ = authority.flush_thread(sid, result.thread.clone());
+                            }
+                        }
+                        result.thread
+                    } else {
+                        prior_thread
+                    };
+
+                    let cfg = LoopConfig {
+                        model,
+                        system_prompt: effective_system_prompt,
+                        user_input,
+                        max_turns: 99999,
+                        temperature: None,
+                        llm,
+                        tools,
+                        thinking: thinking_config,
+                        initial_thread: if effective_thread.is_empty() {
+                            None
+                        } else {
+                            Some(effective_thread)
+                        },
+                        session_id: maybe_session_id.clone(),
+                        reflection: None,
+                        write_namespace: None,
+                        memory_manager: memory_manager.clone(),
+                        middleware: build_middleware_chain(authority.clone()),
+                    };
+
+                    let result = ReactLoop::new(authority.clone(), id, cfg).run().await;
+                    info!(%id, ok = result.is_ok(), "resume_run: react_loop finished");
+
+                    if let (Some(ref sid), Some(ref cache_dir)) =
+                        (&maybe_session_id, &workspace_cache_dir_clone)
+                    {
+                        if let Some(thread) = authority.session_thread(sid) {
+                            if !thread.is_empty() {
+                                let store =
+                                    crate::runtime::chat_store::ChatStore::new(cache_dir);
+                                let _ = store.append_turns(sid, &thread);
+                            }
+                        }
+                    }
+                });
+
+                ControlResponse::RunStarted {
+                    run_id: run_id.clone(),
+                    subscription: sub_id,
+                }
+            }
             ControlRequest::SwapMemory {
                 session_id,
                 target,
@@ -2268,6 +2570,22 @@ impl Handler for RuntimeHandler {
                     payload: serde_json::json!({ "mentions": mentions, "unknown": unknown }),
                 }
             }
+
+            ControlRequest::GetSpaceSnapshot { space_id } => {
+                let (runs, reviews) = self.authority.get_space_snapshot(&space_id);
+                let runs_json: Vec<serde_json::Value> = runs
+                    .into_iter()
+                    .map(|r| serde_json::to_value(r).unwrap_or(serde_json::Value::Null))
+                    .collect();
+                let reviews_json: Vec<serde_json::Value> = reviews
+                    .into_iter()
+                    .map(|rv| serde_json::to_value(rv).unwrap_or(serde_json::Value::Null))
+                    .collect();
+                ControlResponse::SpaceSnapshot {
+                    runs: runs_json,
+                    pending_reviews: reviews_json,
+                }
+            }
         }
     }
 
@@ -2528,6 +2846,55 @@ mod tests {
         }
         async fn on_disconnected(&self) {
             self.0.on_disconnected().await
+        }
+    }
+
+    // ── Activity panel ─────────────────────────────────────────────────
+
+    /// 10.4 – `GetSpaceSnapshot` dispatch returns `SpaceSnapshot` with only
+    /// the runs and reviews belonging to the requested space.
+    #[tokio::test]
+    async fn get_space_snapshot_dispatch() {
+        let auth = RuntimeAuthority::in_memory();
+        let space = Space {
+            id: SpaceId::new(),
+            name: "test".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
+        let space_id = space.id;
+        auth.upsert_space(space).unwrap();
+
+        // Start a run in the space.
+        let run_id = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
+
+        let handler = RuntimeHandler::new(auth.clone(), vec![]);
+        let cid = CorrelationId::new();
+        let resp = handler
+            .handle_control(
+                cid,
+                ControlRequest::GetSpaceSnapshot {
+                    space_id: space_id.to_string(),
+                },
+            )
+            .await;
+
+        match resp {
+            ControlResponse::SpaceSnapshot {
+                runs,
+                pending_reviews,
+            } => {
+                assert_eq!(runs.len(), 1);
+                let id_in_json = runs[0]
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                assert_eq!(id_in_json, run_id.to_string());
+                assert_eq!(pending_reviews.len(), 0);
+            }
+            other => panic!("expected SpaceSnapshot, got {other:?}"),
         }
     }
 }

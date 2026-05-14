@@ -262,6 +262,12 @@ pub struct Run {
     /// created before session management was introduced.
     #[serde(default)]
     pub session_id: Option<SessionId>,
+    /// Flow run this agent run belongs to. `None` for runs that were not
+    /// spawned from a flow node. Populated by `spawn_agent_loop` when a
+    /// `FlowRunContext` is present. Used by the Activity panel for tree
+    /// grouping.
+    #[serde(default)]
+    pub flow_run_id: Option<String>,
     pub status: RunStatus,
     /// The original `start_run` payload — preserved verbatim so a
     /// rehydrated runtime can reconstruct the run's initial intent.
@@ -400,4 +406,44 @@ pub fn migrate_snapshot(mut snap: Snapshot) -> Result<Snapshot, SnapshotMigratio
 pub enum SnapshotMigrationError {
     #[error("on-disk snapshot is schema v{on_disk}, but this binary only understands up to v{understood}")]
     FromFuture { on_disk: u32, understood: u32 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_run(id: RunId, space_id: SpaceId, flow_run_id: Option<String>) -> Run {
+        Run {
+            id,
+            space_id,
+            agent_id: None,
+            session_id: None,
+            flow_run_id,
+            status: RunStatus::Pending,
+            spec: serde_json::Value::Null,
+            history: vec![],
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        }
+    }
+
+    /// 10.3a – `flow_run_id` survives a JSON round-trip.
+    #[test]
+    fn run_flow_run_id_roundtrip() {
+        let run = minimal_run(RunId::new(), SpaceId::new(), Some("fr-1".to_string()));
+        let json = serde_json::to_string(&run).unwrap();
+        let decoded: Run = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.flow_run_id, Some("fr-1".to_string()));
+    }
+
+    /// 10.3b – legacy JSON without `flow_run_id` deserialises with `None`
+    /// (the `#[serde(default)]` attribute must cover this).
+    #[test]
+    fn run_flow_run_id_absent_defaults_to_none() {
+        let run = minimal_run(RunId::new(), SpaceId::new(), Some("fr-1".to_string()));
+        let mut value: serde_json::Value = serde_json::to_value(&run).unwrap();
+        value.as_object_mut().unwrap().remove("flow_run_id");
+        let decoded: Run = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.flow_run_id, None, "missing field must default to None");
+    }
 }

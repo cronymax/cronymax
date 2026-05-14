@@ -30,6 +30,11 @@ use super::{
     control::{ControlError, ControlRequest, ControlResponse},
 };
 
+/// How often the dispatch loop sends a keepalive [`RuntimeToClient::Ping`]
+/// to the host. Must be well below the transport's idle timeout so the
+/// runtime does not terminate during long-running agent tasks.
+const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// A handle the dispatch loop hands to handlers so they can push
 /// runtime → client messages (events, capability calls, control replies)
 /// without owning the underlying transport. Backed by an unbounded
@@ -201,6 +206,17 @@ where
             .await;
             return Err(DispatchError::HandshakeRequired("CapabilityReply"));
         }
+        ClientToRuntime::Pong => {
+            let _ = send_now(
+                &mut transport,
+                RuntimeToClient::Goodbye {
+                    reason: GoodbyeReason::HandshakeRequired,
+                    message: "Hello required before Pong".into(),
+                },
+            )
+            .await;
+            return Err(DispatchError::HandshakeRequired("Pong"));
+        }
     }
 
     handler.on_connected(sink.clone()).await;
@@ -208,6 +224,16 @@ where
     // 2. Main loop. We multiplex transport.recv() with outbound sends
     // from the response sink so background fan-out tasks can push
     // events without contending with the reader half.
+    //
+    // A keepalive interval sends a Ping to the host every KEEPALIVE_INTERVAL
+    // seconds.  The host must reply with a Pong, which resets the transport's
+    // idle-timeout clock.  This prevents the runtime from treating a long
+    // agent task (no inbound host messages) as a dead connection.
+    let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Consume the first immediate tick so we don't ping right after handshake.
+    keepalive.tick().await;
+
     let result = loop {
         tokio::select! {
             // Drain outbound first so subscribers don't starve when
@@ -254,6 +280,12 @@ where
                         debug!(%id, "capability reply");
                         handler.handle_capability_reply(id, response).await;
                     }
+                    Ok(ClientToRuntime::Pong) => {
+                        // Keepalive reply — host is alive. Reset the interval
+                        // so the next Ping goes out after a full period.
+                        debug!("keepalive: Pong received from host");
+                        keepalive.reset();
+                    }
                     Err(TransportError::Closed) => {
                         info!("transport closed by peer");
                         break Ok(());
@@ -262,6 +294,14 @@ where
                         warn!(error = %e, "transport error; closing");
                         break Err(DispatchError::Transport(e));
                     }
+                }
+            }
+
+            _ = keepalive.tick() => {
+                debug!("keepalive: sending Ping to host");
+                if let Err(e) = sink.send(RuntimeToClient::Ping).await {
+                    warn!(error = %e, "keepalive ping failed; closing");
+                    break Err(DispatchError::Transport(e));
                 }
             }
         }

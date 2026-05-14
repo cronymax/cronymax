@@ -253,6 +253,10 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   bool HandleReview(std::string_view channel,
                     std::string_view payload,
                     CefRefPtr<Callback> callback);
+  // activity.snapshot.
+  bool HandleActivitySnapshot(std::string_view channel,
+                              std::string_view payload,
+                              CefRefPtr<Callback> callback);
   // events.list / events.subscribe / events.append (+ legacy event.subscribe).
   bool HandleEvents(CefRefPtr<CefBrowser> browser,
                     std::string_view channel,

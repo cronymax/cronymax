@@ -148,6 +148,7 @@ mod tests {
             space_id,
             agent_id: None,
             session_id: None,
+            flow_run_id: None,
             status: RunStatus::Paused,
             spec: serde_json::json!({"input": "hello"}),
             history: vec![],

@@ -205,6 +205,8 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
     layout->SetFlexForView(btn, 0);
     *slot = btn;
   };
+  add_popover_btn(&btn_activities_, IconId::kActivities, "Activities",
+                  "Open Activities", "panels/activity/index.html");
   add_popover_btn(&btn_flows_, IconId::kFlows, "Flows", "Open Flows",
                   "panels/flows/index.html");
   add_popover_btn(&btn_settings_, IconId::kSettings, "Settings",
@@ -260,6 +262,7 @@ void TitleBarView::RefreshDragRegion() {
   add(btn_web_);
   add(btn_term_);
   add(btn_chat_);
+  add(btn_activities_);
   add(btn_flows_);
   add(btn_settings_);
   InstallTitleBarDragOverlay(main_win_->GetWindowHandle(), bar_in_window,
@@ -286,11 +289,12 @@ void TitleBarView::ApplyTheme(const ThemeChrome& chrome) {
   const bool title_dark = ((chrome.text_title >> 8) & 0xFF) > 0x80;
   constexpr IconId kIcons[] = {IconId::kSidebarToggle, IconId::kTabWeb,
                                IconId::kTabTerminal,   IconId::kTabChat,
-                               IconId::kFlows,         IconId::kSettings};
-  CefRefPtr<CefLabelButton>* kBtns[] = {&btn_sidebar_toggle_, &btn_web_,
-                                        &btn_term_,           &btn_chat_,
-                                        &btn_flows_,          &btn_settings_};
-  for (int i = 0; i < 6; ++i) {
+                               IconId::kFlows,         IconId::kActivities,
+                               IconId::kSettings};
+  CefRefPtr<CefLabelButton>* kBtns[] = {
+      &btn_sidebar_toggle_, &btn_web_,        &btn_term_,    &btn_chat_,
+      &btn_flows_,          &btn_activities_, &btn_settings_};
+  for (int i = 0; i < 7; ++i) {
     auto* b = kBtns[i]->get();
     if (!b)
       continue;

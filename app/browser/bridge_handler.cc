@@ -227,6 +227,9 @@ bool BridgeHandler::OnQuery(CefRefPtr<CefBrowser> browser,
   if (channel.rfind("review.", 0) == 0)
     return HandleReview(channel, payload, callback);
 
+  if (channel == "activity.snapshot")
+    return HandleActivitySnapshot(channel, payload, callback);
+
   // agent-event-bus: typed event store, inbox, and notification prefs.
   if (channel.rfind("events.", 0) == 0)
     return HandleEvents(browser, channel, payload, callback);
@@ -2080,6 +2083,40 @@ bool BridgeHandler::HandleReview(std::string_view channel,
   }
 
   callback->Failure(404, "unknown review channel");
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// HandleActivitySnapshot: activity.snapshot
+//
+// Requests the full (runs + pending_reviews) snapshot for the active space
+// from the runtime via ControlRequest::GetSpaceSnapshot.  Used by the
+// Activity panel on mount to hydrate its initial state.
+// ---------------------------------------------------------------------------
+
+bool BridgeHandler::HandleActivitySnapshot(std::string_view /*channel*/,
+                                           std::string_view /*payload*/,
+                                           CefRefPtr<Callback> callback) {
+  auto* sp = space_manager_->ActiveSpace();
+  if (!sp) {
+    callback->Failure(503, "no active space");
+    return true;
+  }
+  if (!runtime_proxy_) {
+    callback->Failure(503, "runtime not connected");
+    return true;
+  }
+
+  nlohmann::json req = {{"kind", "get_space_snapshot"}, {"space_id", sp->id}};
+  runtime_proxy_->SendControl(std::move(req), [callback](nlohmann::json resp,
+                                                         bool is_error) {
+    if (is_error) {
+      callback->Failure(500, resp.value("error", nlohmann::json{})
+                                 .value("message", "get_space_snapshot failed"));
+      return;
+    }
+    callback->Success(resp.dump());
+  });
   return true;
 }
 

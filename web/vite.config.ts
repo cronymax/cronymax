@@ -39,6 +39,7 @@ const panelEntries = {
   terminal: resolve(panelsDir, "terminal/index.html"),
   flows: resolve(panelsDir, "flows/index.html"),
   settings: resolve(panelsDir, "settings/index.html"),
+  activity: resolve(panelsDir, "activity/index.html"),
 };
 
 export default defineConfig({

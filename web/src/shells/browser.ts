@@ -536,6 +536,15 @@ export const Channels = {
     res: z.object({ missing: z.array(z.string()) }),
   }),
 
+  // ── Activity panel ──────────────────────────────────────────────────────
+  "activity.snapshot": chan({
+    req: z.object({}).optional(),
+    res: z.object({
+      runs: z.array(z.record(z.unknown())),
+      pending_reviews: z.array(z.record(z.unknown())),
+    }),
+  }),
+
   // ── flow read — handled via direct runtime IPC (flow.list(), flow.load()) ─
 } as const;
 
