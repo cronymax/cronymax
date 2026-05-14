@@ -64,6 +64,15 @@ impl MockScript {
         });
         self
     }
+
+    /// Enqueue a `Usage` event. Useful for testing token accumulation.
+    pub fn usage(mut self, input_tokens: u64, output_tokens: u64) -> Self {
+        self.steps.push(LlmEvent::Usage {
+            input_tokens,
+            output_tokens,
+        });
+        self
+    }
 }
 
 /// Pop-a-script-per-call provider. Cheap to clone (`Arc`-internal).

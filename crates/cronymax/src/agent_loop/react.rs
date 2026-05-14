@@ -14,6 +14,7 @@ use crate::llm::{
 };
 use crate::protocol::events::RuntimeEventPayload;
 use crate::runtime::authority::{AuthorityError, ReviewResolution, RuntimeAuthority};
+use crate::runtime::middleware::{MiddlewareChain, TokenUsage, ToolGate, TurnContext};
 use crate::runtime::state::{PermissionState, RunId, RunStatus, SessionId};
 
 use super::tools::{ToolDispatcher, ToolOutcome};
@@ -103,6 +104,9 @@ pub struct LoopConfig {
     /// Memory manager shared with the runtime. `None` disables persistence-
     /// backed memory operations (write, search, summary).
     pub memory_manager: Option<Arc<crate::memory::MemoryManager>>,
+    /// Middleware chain executed at each loop lifecycle point. Defaults to
+    /// an empty (no-op) chain when not configured.
+    pub middleware: Arc<MiddlewareChain>,
 }
 
 impl std::fmt::Debug for LoopConfig {
@@ -130,6 +134,7 @@ impl std::fmt::Debug for LoopConfig {
                 &self.write_namespace.as_ref().map(|n| n.0.as_str()),
             )
             .field("has_memory_manager", &self.memory_manager.is_some())
+            .field("middleware_count", &self.middleware.0.len())
             .finish()
     }
 }
@@ -247,7 +252,19 @@ impl ReactLoop {
             self.turn += 1;
             let turn_id = self.turn;
 
-            // ── Reflection trigger (task 6.3) ─────────────────────────────
+            // Construct TurnContext for this turn.
+            // TokenAccumulatorMiddleware will fill in total_usage during before_llm_call.
+            let mut ctx = TurnContext {
+                run_id: self.run_id,
+                turn: turn_id,
+                model: self.config.model.clone(),
+                total_usage: TokenUsage::default(),
+            };
+
+            // Call before_llm_call first so total_usage is set correctly.
+            self.config.middleware.before_llm_call(&mut ctx).await;
+
+            // ── Reflection trigger ────────────────────────────────────────
             if let Some(ref rcfg) = self.config.reflection.clone() {
                 if rcfg.enabled {
                     let should_reflect = match &rcfg.trigger {
@@ -265,7 +282,13 @@ impl ReactLoop {
                         }
                     };
                     if should_reflect {
-                        self.run_reflection_pass(rcfg).await;
+                        self.config.middleware.before_reflection(&ctx).await;
+                        if let Some(refl_text) = self.run_reflection_pass(rcfg).await {
+                            self.config
+                                .middleware
+                                .after_reflection(&ctx, &refl_text)
+                                .await;
+                        }
                     }
                 }
             }
@@ -287,6 +310,7 @@ impl ReactLoop {
             let mut thinking_buf = String::new(); // accumulated thinking; NOT added to history
             let mut calls: BTreeMap<usize, AccumCall> = BTreeMap::new();
             let mut finish: Option<FinishReason> = None;
+            let mut turn_usage = TokenUsage::default();
 
             while let Some(event) = stream.next().await {
                 match event {
@@ -329,6 +353,15 @@ impl ReactLoop {
                             entry.arguments.push_str(&chunk);
                         }
                     }
+                    LlmEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                    } => {
+                        turn_usage += TokenUsage {
+                            input_tokens,
+                            output_tokens,
+                        };
+                    }
                     LlmEvent::Done { finish_reason } => {
                         finish = Some(finish_reason);
                         break;
@@ -366,22 +399,11 @@ impl ReactLoop {
                     name: None,
                 });
             }
-            // Surface a structured trace entry for replay/UI.
-            self.authority.emit_for_run(
-                self.run_id,
-                RuntimeEventPayload::Trace {
-                    run_id: self.run_id.to_string(),
-                    trace: serde_json::json!({
-                        "kind": "assistant_turn",
-                        "turn": turn_id,
-                        "text": text,
-                        "tool_calls": tool_calls.iter().map(|c| serde_json::json!({
-                            "id": c.id, "name": c.name, "arguments": c.arguments,
-                        })).collect::<Vec<_>>(),
-                        "finish_reason": finish,
-                    }),
-                },
-            );
+            // Notify middleware (TraceEmitterMiddleware emits the assistant_turn trace).
+            self.config
+                .middleware
+                .after_llm_call(&ctx, &text, &finish, &turn_usage)
+                .await;
 
             match finish {
                 FinishReason::Stop | FinishReason::Length | FinishReason::Other(_) => {
@@ -398,7 +420,7 @@ impl ReactLoop {
                     }
                     let mut terminal_seen = false;
                     for call in &tool_calls {
-                        match self.run_one_tool(call).await? {
+                        match self.run_one_tool(call, &ctx).await? {
                             ToolStepResult::Continue => {}
                             ToolStepResult::Terminal => {
                                 terminal_seen = true;
@@ -418,20 +440,31 @@ impl ReactLoop {
         Err(LoopError::MaxTurnsExceeded(self.config.max_turns))
     }
 
-    async fn run_one_tool(&mut self, call: &ToolCall) -> Result<ToolStepResult, LoopError> {
-        // Surface the tool start as a trace event for the UI.
-        self.authority.emit_for_run(
-            self.run_id,
-            RuntimeEventPayload::Trace {
-                run_id: self.run_id.to_string(),
-                trace: serde_json::json!({
-                    "kind": "tool_start",
-                    "tool": call.name,
-                    "tool_call_id": call.id,
-                    "arguments": call.arguments,
-                }),
-            },
-        );
+    async fn run_one_tool(
+        &mut self,
+        call: &ToolCall,
+        ctx: &TurnContext,
+    ) -> Result<ToolStepResult, LoopError> {
+        // Gate: middleware can block tool dispatch (e.g. rate limiting, cost cap).
+        // TraceEmitterMiddleware also emits `tool_start` in before_tool_call.
+        match self.config.middleware.before_tool_call(ctx, call).await {
+            ToolGate::Allow => {}
+            ToolGate::Block(reason) => {
+                let block_result = serde_json::json!({"error": reason.clone()});
+                let serialized = serde_json::to_string(&block_result)
+                    .unwrap_or_else(|_| format!("{{\"error\":\"{reason}\"}}"));
+                self.history.push(ChatMessage::tool_result(
+                    call.id.clone(),
+                    call.name.clone(),
+                    serialized,
+                ));
+                self.config
+                    .middleware
+                    .after_tool_call(ctx, call, &ToolOutcome::Error(reason))
+                    .await;
+                return Ok(ToolStepResult::Continue);
+            }
+        }
 
         let mut outcome = self.config.tools.dispatch(call).await;
 
@@ -474,6 +507,12 @@ impl ReactLoop {
             }
         }
 
+        // Notify middleware before consuming the outcome (TraceEmitterMiddleware emits `tool_done`).
+        self.config
+            .middleware
+            .after_tool_call(ctx, call, &outcome)
+            .await;
+
         let (result_value, terminal) = match outcome {
             ToolOutcome::Output(v) => {
                 self.consecutive_failures = 0;
@@ -505,19 +544,6 @@ impl ReactLoop {
             call.name.clone(),
             serialized,
         ));
-        self.authority.emit_for_run(
-            self.run_id,
-            RuntimeEventPayload::Trace {
-                run_id: self.run_id.to_string(),
-                trace: serde_json::json!({
-                    "kind": "tool_done",
-                    "tool": call.name,
-                    "tool_call_id": call.id,
-                    "result": result_value,
-                    "terminal": terminal,
-                }),
-            },
-        );
         if terminal {
             Ok(ToolStepResult::Terminal)
         } else {
@@ -527,10 +553,12 @@ impl ReactLoop {
 
     /// Fire a reflection pass: call the LLM with the reflection prompt plus a
     /// truncated recent history, append the result as a `[REFLECTION]` system
-    /// message, and optionally persist it to the write namespace (task 6.4).
+    /// message, and optionally persist it to the write namespace.
     ///
+    /// Returns the reflection text so the caller can invoke middleware hooks.
+    /// Returns `None` on failure or if the LLM produced no output.
     /// This is best-effort: failures are logged but do not abort the loop.
-    async fn run_reflection_pass(&mut self, cfg: &ReflectionConfig) {
+    async fn run_reflection_pass(&mut self, cfg: &ReflectionConfig) -> Option<String> {
         // Build the reflection prompt from the template or default.
         let template = cfg
             .prompt_template
@@ -560,7 +588,7 @@ impl ReactLoop {
                         LlmEvent::Done { .. } => break,
                         LlmEvent::Error { message } => {
                             warn!(run = %self.run_id, error = %message, "reflection_pass: llm error");
-                            return;
+                            return None;
                         }
                         _ => {}
                     }
@@ -569,12 +597,12 @@ impl ReactLoop {
             }
             Err(e) => {
                 warn!(run = %self.run_id, error = %e, "reflection_pass: stream failed");
-                return;
+                return None;
             }
         };
 
         if text.is_empty() {
-            return;
+            return None;
         }
 
         let sentinel = format!("[REFLECTION] {text}");
@@ -583,20 +611,7 @@ impl ReactLoop {
         // Append as a system message so the LLM sees it as context, not output.
         self.history.push(ChatMessage::system(sentinel.clone()));
 
-        // Emit a trace event so the UI can show the reflection.
-        self.authority.emit_for_run(
-            self.run_id,
-            RuntimeEventPayload::Trace {
-                run_id: self.run_id.to_string(),
-                trace: serde_json::json!({
-                    "kind": "reflection",
-                    "turn": self.turn,
-                    "text": text,
-                }),
-            },
-        );
-
-        // Persist to write namespace if configured (task 6.4).
+        // Persist to write namespace if configured.
         if let (Some(ns), Some(mgr)) = (&self.config.write_namespace, &self.config.memory_manager) {
             let key = format!("reflect/turn_{}", self.turn);
             let _ = mgr.write(&ns.0, key, sentinel).await;
@@ -604,6 +619,8 @@ impl ReactLoop {
 
         // Reset consecutive failure counter after reflection.
         self.consecutive_failures = 0;
+
+        Some(text)
     }
 }
 
@@ -646,6 +663,7 @@ mod tests {
     use crate::agent_loop::tools::{ToolDispatcher, ToolOutcome};
     use crate::llm::{FinishReason, MockLlmProvider, MockScript, ToolCall, ToolDef};
     use crate::protocol::events::RuntimeEventPayload;
+    use crate::runtime::middleware::MiddlewareChain;
     use crate::runtime::state::{PermissionState, ReviewId, Space, SpaceId};
     use crate::runtime::SubscribeOutcome;
 
@@ -682,6 +700,7 @@ mod tests {
             reflection: None,
             write_namespace: None,
             memory_manager: None,
+            middleware: Arc::new(MiddlewareChain::empty()),
         }
     }
 
@@ -976,5 +995,148 @@ mod tests {
             .expect("expected tool result message in second turn");
         let content = tool_msg.content.as_deref().unwrap_or("");
         assert!(content.contains("permission denied"), "content: {content}");
+    }
+
+    // ── 10.5: ReactLoop with mock LLM that emits Usage ────────────────────────
+
+    /// A recording middleware that captures the `TokenUsage` passed to `after_llm_call`.
+    struct UsageCapture {
+        last_usage: parking_lot::Mutex<Option<crate::runtime::middleware::TokenUsage>>,
+    }
+
+    impl UsageCapture {
+        fn new() -> Self {
+            Self {
+                last_usage: parking_lot::Mutex::new(None),
+            }
+        }
+        fn last(&self) -> Option<crate::runtime::middleware::TokenUsage> {
+            *self.last_usage.lock()
+        }
+    }
+
+    #[async_trait]
+    impl crate::runtime::middleware::RunMiddleware for UsageCapture {
+        async fn after_llm_call(
+            &self,
+            _ctx: &crate::runtime::middleware::TurnContext,
+            _text: &str,
+            _finish: &FinishReason,
+            usage: &crate::runtime::middleware::TokenUsage,
+        ) {
+            *self.last_usage.lock() = Some(*usage);
+        }
+    }
+
+    #[tokio::test]
+    async fn after_llm_call_receives_token_usage_from_mock_provider() {
+        use crate::runtime::middleware::{MiddlewareChain, TokenUsage};
+        let (auth, sid) = make_authority();
+        let llm = Arc::new(MockLlmProvider::new());
+        llm.push(
+            MockScript::new()
+                .usage(10, 5) // emit Usage before Done
+                .delta("Hello!")
+                .done(FinishReason::Stop),
+        );
+        let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
+        let capture = Arc::new(UsageCapture::new());
+        let mut cfg = make_config(llm.clone(), Arc::new(EchoDispatcher));
+        cfg.middleware = Arc::new(MiddlewareChain(vec![capture.clone()]));
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
+
+        let usage = capture
+            .last()
+            .expect("after_llm_call should have been called");
+        assert_eq!(
+            usage,
+            TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5
+            },
+            "middleware should receive the usage emitted by mock"
+        );
+    }
+
+    // ── 10.6: ToolGate::Block records error without dispatching tool ──────────
+
+    /// A dispatcher that panics if dispatched — used to assert that a blocked
+    /// tool is never actually dispatched.
+    #[derive(Debug)]
+    struct PanicDispatcher;
+
+    #[async_trait]
+    impl ToolDispatcher for PanicDispatcher {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![ToolDef {
+                name: "forbidden".into(),
+                description: "should never run".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            }]
+        }
+        async fn dispatch(&self, _call: &ToolCall) -> ToolOutcome {
+            panic!("PanicDispatcher::dispatch called — tool should have been blocked");
+        }
+    }
+
+    /// A middleware that blocks a specific tool by name.
+    struct BlockToolMiddleware(String);
+
+    #[async_trait]
+    impl crate::runtime::middleware::RunMiddleware for BlockToolMiddleware {
+        async fn before_tool_call(
+            &self,
+            _ctx: &crate::runtime::middleware::TurnContext,
+            call: &ToolCall,
+        ) -> crate::runtime::middleware::ToolGate {
+            if call.name == self.0 {
+                crate::runtime::middleware::ToolGate::Block("tool is forbidden".into())
+            } else {
+                crate::runtime::middleware::ToolGate::Allow
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn blocked_tool_records_error_without_dispatching() {
+        use crate::runtime::middleware::MiddlewareChain;
+        let (auth, sid) = make_authority();
+        let llm = Arc::new(MockLlmProvider::new());
+        // Turn 1: call the forbidden tool
+        llm.push(
+            MockScript::new()
+                .tool_call(0, "call-blocked", "forbidden", r#"{}"#)
+                .done(FinishReason::ToolCalls),
+        );
+        // Turn 2: stop after seeing the (error) tool result
+        llm.push(MockScript::new().delta("Noted.").done(FinishReason::Stop));
+
+        let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
+        let blocker = Arc::new(BlockToolMiddleware("forbidden".into()));
+        let mut cfg = make_config(llm.clone(), Arc::new(PanicDispatcher));
+        cfg.middleware = Arc::new(MiddlewareChain(vec![blocker]));
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
+
+        assert!(auth.run_status(run_id).unwrap().is_terminal());
+        // Two turns: first calls the tool (blocked), second sees the error result and stops.
+        assert_eq!(llm.requests().len(), 2);
+        // The second request must contain a tool-result message with error content.
+        let reqs = llm.requests();
+        let tool_msg = reqs[1]
+            .messages
+            .iter()
+            .find(|m| m.tool_call_id.is_some())
+            .expect("expected tool result message in second turn");
+        let content = tool_msg.content.as_deref().unwrap_or("");
+        assert!(
+            content.contains("tool is forbidden"),
+            "tool result should contain block reason, got: {content}"
+        );
     }
 }

@@ -44,6 +44,10 @@ use crate::protocol::capabilities::CapabilityResponse;
 use crate::protocol::control::{ControlError, ControlRequest, ControlResponse, ReviewDecision};
 use crate::protocol::dispatch::{Handler, ResponseSink};
 use crate::protocol::envelope::{CorrelationId, RuntimeToClient, SubscriptionId};
+use crate::runtime::middleware::{
+    LlmDurationStore, MiddlewareChain, TimingMiddleware, TokenAccumulatorMiddleware,
+    ToolDurationStore, TraceEmitterMiddleware,
+};
 use crate::sandbox::broker::PermissionBroker;
 use crate::sandbox::fs_gate::PolicyFilesystem;
 use crate::sandbox::policy::SandboxPolicy;
@@ -305,6 +309,7 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
             reflection: None,
             write_namespace: None,
             memory_manager: None,
+            middleware: build_middleware_chain(authority.clone()),
         };
         let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
         info!(agent_id, %run_id, ok = result.is_ok(), "spawn_agent_loop: agent loop finished");
@@ -347,6 +352,31 @@ pub struct RuntimeHandler {
     /// Standalone memory manager. Present after `MemoryManager::new()` is
     /// called during runtime initialisation (task 3.8).
     memory_manager: Option<Arc<crate::memory::MemoryManager>>,
+}
+
+/// Construct the default middleware chain for a `ReactLoop`.
+///
+/// Order: `[TimingMiddleware, TokenAccumulatorMiddleware, TraceEmitterMiddleware]`
+///
+/// `TimingMiddleware` runs first to record start times; `TokenAccumulatorMiddleware`
+/// second to update `TurnContext.total_usage`; `TraceEmitterMiddleware` last
+/// so it can read both timing data and updated usage.
+fn build_middleware_chain(authority: RuntimeAuthority) -> Arc<MiddlewareChain> {
+    let llm_durations: LlmDurationStore =
+        Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+    let tool_durations: ToolDurationStore =
+        Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+    let timing = Arc::new(TimingMiddleware::new(
+        llm_durations.clone(),
+        tool_durations.clone(),
+    ));
+    let token_accum = Arc::new(TokenAccumulatorMiddleware::new());
+    let trace = Arc::new(TraceEmitterMiddleware::new(
+        Arc::new(authority),
+        llm_durations,
+        tool_durations,
+    ));
+    Arc::new(MiddlewareChain(vec![timing, token_accum, trace]))
 }
 
 impl RuntimeHandler {
@@ -1154,6 +1184,7 @@ impl Handler for RuntimeHandler {
                                         )
                                     }),
                                 memory_manager: memory_manager.clone(),
+                                middleware: build_middleware_chain(authority.clone()),
                             };
                             let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
                             info!(%run_id, ok = result.is_ok(), "react_loop: finished");

@@ -34,6 +34,14 @@ pub enum LlmEvent {
         name: Option<String>,
         arguments_chunk: Option<String>,
     },
+    /// Token usage for the current turn. Emitted by providers that
+    /// surface usage in the stream (Anthropic via `message_start` +
+    /// `message_delta`; OpenAI via final chunk `usage` field). Multiple
+    /// `Usage` events may arrive per stream; the agent loop accumulates them.
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
     /// Turn completed. `Stop` and `Length` mean the loop is done;
     /// `ToolCalls` means the loop should now dispatch the accumulated
     /// tool calls and continue.

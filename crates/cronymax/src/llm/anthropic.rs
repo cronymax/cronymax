@@ -478,7 +478,31 @@ fn process_sse_event(
             block_kinds.remove(&index);
         }
 
+        "message_start" => {
+            // Extract input token usage from the message_start event.
+            if let Some(n) = v
+                .pointer("/message/usage/input_tokens")
+                .and_then(|v| v.as_u64())
+            {
+                if n > 0 {
+                    let _ = tx.send(LlmEvent::Usage {
+                        input_tokens: n,
+                        output_tokens: 0,
+                    });
+                }
+            }
+        }
+
         "message_delta" => {
+            // Extract output token usage from the delta event.
+            if let Some(n) = v.pointer("/usage/output_tokens").and_then(|v| v.as_u64()) {
+                if n > 0 {
+                    let _ = tx.send(LlmEvent::Usage {
+                        input_tokens: 0,
+                        output_tokens: n,
+                    });
+                }
+            }
             let stop_reason = v
                 .pointer("/delta/stop_reason")
                 .and_then(|s| s.as_str())
@@ -675,6 +699,69 @@ mod tests {
         assert!(
             events.is_empty(),
             "expected no events for redacted_thinking"
+        );
+    }
+
+    // ── 10.3: LlmEvent::Usage emitted from Anthropic SSE ─────────────────────
+
+    #[test]
+    fn usage_events_emitted_from_message_start_and_message_delta() {
+        let events = collect_events(&[
+            (
+                "message_start",
+                r#"{"type":"message_start","message":{"usage":{"input_tokens":42,"output_tokens":0}}}"#,
+            ),
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#,
+            ),
+            (
+                "message_delta",
+                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#,
+            ),
+        ]);
+
+        // Find Usage events.
+        let usage_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, LlmEvent::Usage { .. }))
+            .collect();
+
+        assert_eq!(
+            usage_events.len(),
+            2,
+            "expected 2 Usage events, got {:?}",
+            usage_events
+        );
+
+        // First Usage: input_tokens=42, output_tokens=0 (from message_start).
+        assert!(
+            matches!(
+                usage_events[0],
+                LlmEvent::Usage {
+                    input_tokens: 42,
+                    output_tokens: 0
+                }
+            ),
+            "first Usage should be input_tokens=42, got {:?}",
+            usage_events[0]
+        );
+
+        // Second Usage: input_tokens=0, output_tokens=7 (from message_delta).
+        assert!(
+            matches!(
+                usage_events[1],
+                LlmEvent::Usage {
+                    input_tokens: 0,
+                    output_tokens: 7
+                }
+            ),
+            "second Usage should be output_tokens=7, got {:?}",
+            usage_events[1]
         );
     }
 }
