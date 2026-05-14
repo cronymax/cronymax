@@ -293,6 +293,20 @@ pub enum ControlRequest {
     GetSpaceSnapshot {
         space_id: String,
     },
+
+    // ── Session introspection ─────────────────────────────────────────────
+    /// List all chat sessions in the workspace, sorted by `updated_at_ms`
+    /// descending. Returns `{sessions:[SessionMeta]}`.
+    SessionList {
+        workspace_root: String,
+    },
+
+    /// Return the LLM message thread and metadata for a single session.
+    /// Returns `{messages, compacted, turn_count}`.
+    SessionThreadInspect {
+        workspace_root: String,
+        session_id: String,
+    },
 }
 
 /// Reply to a [`ControlRequest`].

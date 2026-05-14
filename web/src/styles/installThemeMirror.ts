@@ -28,7 +28,7 @@ export function installThemeMirror(): void {
   installed = true;
 
   browser
-    .send("theme.get")
+    .send("browser.theme.get")
     .then((res) => applyAttribute(res.mode, res.resolved))
     .catch(() => {
       // No-op: keep CSS defaults if the host is unavailable (storybook).

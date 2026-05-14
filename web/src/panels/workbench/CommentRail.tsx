@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 
 import { parseBlockComments } from "./blockIds";
 import type { WorkbenchParams } from "./url";
@@ -47,10 +47,6 @@ interface DocReviewState {
   comments: DocCommentDto[];
 }
 
-interface ReviewsListResponse {
-  docs: Record<string, DocReviewState>;
-}
-
 // ── component ────────────────────────────────────────────────────────────
 
 interface RailProps {
@@ -78,10 +74,10 @@ export function CommentRail({ params, currentMarkdown, onJumpToBlock }: RailProp
   const refresh = useCallback(async () => {
     if (!params.runId) return;
     try {
-      const res = (await browser.send("review.list", {
+      const res = await shells.review.list({
         flow: params.flow,
         run_id: params.runId,
-      })) as ReviewsListResponse;
+      });
       setDocState(res.docs[params.doc] ?? null);
       setError(null);
     } catch (err) {
@@ -226,7 +222,7 @@ function CommentCard(props: { comment: DocCommentDto; params: WorkbenchParams; o
     setBusy("accept");
     setError(null);
     try {
-      const res = (await browser.send("document.suggestion.apply", {
+      const res = (await shells.document.suggestion.apply({
         flow: params.flow,
         run_id: params.runId,
         name: params.doc,
@@ -252,7 +248,7 @@ function CommentCard(props: { comment: DocCommentDto; params: WorkbenchParams; o
       // Append a follow-up comment of body "(suggestion dismissed)" and
       // mark this comment resolved at the current revision (matching
       // the spec for Task 7.3).
-      await browser.send("review.comment", {
+      await shells.review.comment({
         flow: params.flow,
         run_id: params.runId,
         name: params.doc,
@@ -331,7 +327,7 @@ function ComposerModal(props: {
     setPosting(true);
     setError(null);
     try {
-      await browser.send("review.comment", {
+      await shells.review.comment({
         flow: params.flow,
         run_id: params.runId,
         name: params.doc,

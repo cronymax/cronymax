@@ -30,6 +30,20 @@ import {
 type AnyEventHandler = (payload: unknown) => void;
 const subscribers = new Map<string, Set<AnyEventHandler>>();
 
+// ---------------------------------------------------------------------------
+// Navigates the nested Channels tree by a dot-path to find the leaf ChannelDef.
+// biome-ignore lint/suspicious/noExplicitAny: dynamic traversal of nested Channels tree
+function lookupChannel(path: string): { req: z.ZodTypeAny; res: z.ZodTypeAny } | undefined {
+  let node: any = Channels;
+  for (const part of path.split(".")) {
+    if (typeof node !== "object" || node === null || !(part in node)) return undefined;
+    node = node[part] as unknown;
+  }
+  return typeof node === "object" && node !== null && "req" in node && "res" in node
+    ? (node as { req: z.ZodTypeAny; res: z.ZodTypeAny })
+    : undefined;
+}
+
 function dispatch(event: string, rawPayload: unknown) {
   const handlers = subscribers.get(event);
   // eslint-disable-next-line no-console
@@ -64,7 +78,7 @@ function dispatch(event: string, rawPayload: unknown) {
 }
 
 function send<C extends ChannelName>(channel: C, payload?: RequestOf<C>): Promise<ResponseOf<C>> {
-  const def = Channels[channel];
+  const def = lookupChannel(channel);
   if (!def) {
     return Promise.reject(new Error(`unknown channel: ${String(channel)}`));
   }
@@ -76,13 +90,28 @@ function send<C extends ChannelName>(channel: C, payload?: RequestOf<C>): Promis
     );
   }
 
-  // C++ legacy expects {channel, payload} as an outer JSON envelope, where
-  // payload itself is JSON-stringified. Match the existing wire format.
-  const wirePayload = reqResult.data === undefined ? "" : JSON.stringify(reqResult.data);
-  const request = JSON.stringify({ channel, payload: wirePayload });
+  // ── Fast path: binary msgpack via jsbSend ────────────────────────────────
+  const jsbSend = window.cronymax?.browser?.send;
+  if (typeof jsbSend === "function") {
+    return jsbSend(channel, reqResult.data ?? null).then((result) => {
+      const resResult = def.res.safeParse(result);
+      if (!resResult.success) {
+        // eslint-disable-next-line no-console
+        console.error(`[bridge] response for "${String(channel)}" failed validation`, resResult.error.issues, result);
+        return result as ResponseOf<C>;
+      }
+      return resResult.data as ResponseOf<C>;
+    });
+  }
+
+  // ── Fallback: cefQuery (JSON string transport) ───────────────────────────
+  // Envelope: { channel, payload? } where payload is the raw parsed data (not
+  // re-stringified). C++ SplitEnvelope accepts either a string or an inline
+  // object for the payload field. Omit the key entirely when data is undefined.
+  const request = JSON.stringify(reqResult.data !== undefined ? { channel, payload: reqResult.data } : { channel });
 
   return new Promise((resolve, reject) => {
-    const query = window.cronymax?.browser?.query;
+    const query = window.cefQuery;
     if (typeof query !== "function") {
       reject(new Error("cronymax.browser.query not available (running outside CEF?)"));
       return;
@@ -138,7 +167,6 @@ window.cronymax = {
   ...window.cronymax,
   browser: {
     ...window.cronymax?.browser,
-    ...browser,
     // C++ (bridge_handler.cc, main_window.cc) calls this to deliver events.
     onDispatch: (event: string, payload: unknown) => {
       dispatch(event, payload);
@@ -146,10 +174,107 @@ window.cronymax = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// window.cronymax.shells — nested path-accumulating proxy for all channels.
+// Usage (browser channel): shells.browser.shell.popover_close()
+// Usage (runtime channel): shells.runtime.terminal.resize({ terminal_id, cols, rows })
+// ---------------------------------------------------------------------------
+
+/**
+ * A ShellNode is both callable (it invokes the channel at the accumulated
+ * path) and traversable (property access appends another segment to the path).
+ *
+ * The index signature uses `any` (not `ShellNode`) so that TypeScript's
+ * `noUncheckedIndexedAccess` rule doesn't add `| undefined` at every property
+ * access in call sites — `any | undefined` collapses to `any`.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: index signature uses `any` so noUncheckedIndexedAccess does not add `| undefined` at call sites
+export type ShellNode = ((payload?: unknown) => Promise<unknown>) & { readonly [K: string]: any };
+
+/**
+ * Derive a callable tree type from the nested Channels structure.
+ * Leaf ChannelDef nodes become typed callable functions; intermediate nodes
+ * become plain objects with typed children.
+ */
+type CallableTree<T> = T extends { req: infer Req; res: infer Res }
+  ? Req extends z.ZodTypeAny
+    ? Res extends z.ZodTypeAny
+      ? (payload?: z.input<Req>) => Promise<z.infer<Res>>
+      : never
+    : never
+  : { readonly [K in keyof T]: CallableTree<T[K]> };
+
+/**
+ * Fully-typed surface for `shells`. Browser channels (from `Channels`) get
+ * concrete argument and return types; the runtime sub-tree is left as `any`
+ * because runtime IPC paths are not in the Channels registry.
+ */
+export type Shells = CallableTree<typeof Channels> & {
+  // biome-ignore lint/suspicious/noExplicitAny: runtime channels go to Rust IPC, not the typed Channels registry
+  runtime: any;
+};
+
+export function makeShellsProxy(): ShellNode {
+  function makeNode(path: string): ShellNode {
+    const invoke = (payload?: unknown): Promise<unknown> => {
+      // Browser channel: path is a known Channels key.
+      if (lookupChannel(path) !== undefined) {
+        return send(path as ChannelName, payload as never);
+      }
+      // Runtime channel: path starts with "runtime."; derive kind by
+      // replacing "." separators with "_".
+      if (path.startsWith("runtime.")) {
+        const kind = path.slice("runtime.".length).replace(/\./g, "_");
+        const req: Record<string, unknown> = {
+          kind,
+          ...(typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {}),
+        };
+        return window.cronymax?.runtime?.send?.(req) ?? Promise.reject(new Error("cronymax.runtime not available"));
+      }
+      return Promise.reject(new Error(`[shells] unknown path: ${path}`));
+    };
+    return new Proxy(invoke as ShellNode, {
+      get(_target, prop: string | symbol) {
+        if (typeof prop !== "string") return undefined;
+        return makeNode(`${path}.${prop}`);
+      },
+    });
+  }
+
+  // Root proxy: first property access starts path accumulation.
+  return new Proxy(Function.prototype as unknown as ShellNode, {
+    get(_target, prop: string | symbol) {
+      if (typeof prop !== "string") return undefined;
+      return makeNode(prop);
+    },
+  });
+}
+
+export const shells: Shells = makeShellsProxy() as unknown as Shells;
+
+// ---------------------------------------------------------------------------
+// runtimeSend — typed helper for Rust-runtime IPC via the shells path scheme.
+//
+// Equivalent to shells.runtime.<path>(payload) but avoids TypeScript index-
+// signature nullability issues from noUncheckedIndexedAccess.
+//
+// `path` is the dot-separated sub-path after "runtime."; the proxy derives
+// the Rust `kind` by replacing all "." with "_" (e.g. "terminal.resize"
+// → kind "terminal_resize").
+// ---------------------------------------------------------------------------
+export function runtimeSend(path: string, payload?: Record<string, unknown>): Promise<unknown> {
+  const kind = path.replace(/\./g, "_");
+  const req: Record<string, unknown> = { kind, ...payload };
+  return (
+    window.cronymax?.runtime?.send?.(req) ??
+    Promise.reject(new Error(`cronymax.runtime not available (runtime.${path})`))
+  );
+}
+
 export type RuntimeControlRequest = Record<string, unknown>;
 export const runtime = {
-  /** Send a one-shot control request; resolves with the raw JSON reply string. */
-  send(req: RuntimeControlRequest): Promise<string> {
+  /** Send a one-shot control request; resolves with the decoded response object. */
+  send(req: RuntimeControlRequest): Promise<unknown> {
     return window.cronymax?.runtime?.send?.(req) ?? Promise.reject(new Error("cronymax.runtime not available"));
   },
 

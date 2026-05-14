@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 import { terminal as rt_terminal } from "@/shells/runtime";
 import { useStore } from "./store";
 import { XtermPane } from "./XtermPane";
@@ -42,8 +42,8 @@ export function App() {
   // ── initial load ─────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    browser
-      .send("terminal.list")
+    shells.browser.terminal
+      .list()
       .then(async (res) => {
         if (cancelled) return;
         const items = res?.items ?? [];
@@ -55,7 +55,7 @@ export function App() {
         } else {
           // No terminals exist yet — create one for this panel.
           try {
-            const newTid = await browser.send("terminal.new");
+            const newTid = await shells.browser.terminal.new();
             const tid = typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
             dispatch({ type: "ensurePane", tid });
             dispatch({ type: "setActive", tid });

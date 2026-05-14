@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { type LlmProvider, ModelSelect } from "../../components/ModelSelect";
 import { WysiwygMarkdown } from "../../components/WysiwygMarkdown";
-import { browser } from "../../shells/bridge";
+import { shells } from "../../shells/bridge";
 import { agentRegistry } from "../../shells/runtime";
 import { Field, inputCls } from "./App";
 
@@ -158,7 +158,7 @@ export function AgentsTab() {
   const [activeProvider, setActiveProvider] = useState<LlmProvider | null>(null);
 
   useEffect(() => {
-    browser.send("llm.providers.get").then((res) => {
+    shells.browser.llm.providers.get().then((res) => {
       try {
         const list = JSON.parse(res.raw || "[]") as LlmProvider[];
         const p = list.find((x) => x.id === res.active_id) ?? list[0] ?? null;

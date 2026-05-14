@@ -1,7 +1,7 @@
 import { type KeyboardEvent, useCallback, useEffect, useRef } from "react";
 import { Icon } from "../../components/Icon";
 import { useBridgeEvent } from "../../hooks/useBridgeEvent";
-import { browser } from "../../shells/bridge";
+import { browser, shells } from "../../shells/bridge";
 import { agentRun } from "../../shells/runtime";
 import { useStore } from "./store";
 
@@ -50,7 +50,7 @@ export function RunnerTab() {
 
   const loadSpaces = useCallback(async () => {
     try {
-      const spaces = await browser.send("space.list");
+      const spaces = await shells.browser.space.list();
       dispatch({ type: "setSpaces", spaces });
     } catch (e) {
       console.warn("space.list failed", e);
@@ -66,7 +66,7 @@ export function RunnerTab() {
   const switchSpace = useCallback(
     async (id: string) => {
       try {
-        await browser.send("space.switch", { space_id: id });
+        await shells.browser.space.switch({ space_id: id });
         dispatch({ type: "setActiveSpace", id });
       } catch (e) {
         console.warn("space.switch failed", e);
@@ -80,7 +80,7 @@ export function RunnerTab() {
       // eslint-disable-next-line no-alert
       if (!confirm(`Delete space "${name}"?`)) return;
       try {
-        await browser.send("space.delete", { space_id: id });
+        await shells.browser.space.delete({ space_id: id });
         await loadSpaces();
       } catch (e) {
         console.warn("space.delete failed", e);
@@ -94,7 +94,7 @@ export function RunnerTab() {
     const root = prompt("Root path:", "/");
     if (!root) return;
     try {
-      await browser.send("space.create", {
+      await shells.browser.space.create({
         root_path: root,
         profile_id: "default",
       });
@@ -117,7 +117,7 @@ export function RunnerTab() {
     try {
       runId = await agentRun(text);
       if (!runId) throw new Error("runtime did not return run_id");
-      await browser.send("events.subscribe", { run_id: runId }).catch(() => {
+      await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
         /* ignore */
       });
     } catch (err) {

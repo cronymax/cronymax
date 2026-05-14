@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { browser } from "../../shells/bridge";
+import { shells } from "../../shells/bridge";
 import { Field, inputCls } from "./App";
 
 // ── Profiles tab ─────────────────────────────────────────────────────────
@@ -49,8 +49,8 @@ function ProfileForm({
       setMissingPaths([]);
       return;
     }
-    void browser
-      .send("profiles.check_paths", { paths: allPaths })
+    void shells.browser.profiles
+      .check_paths({ paths: allPaths })
       .then(({ missing }) => setMissingPaths(missing))
       .catch(() => setMissingPaths([]));
   }, [reads, writes, denies]);
@@ -234,7 +234,7 @@ function NewProfileForm({ onCreated }: { onCreated: () => void }) {
       initial={blank}
       isDefault={false}
       onSave={async (r) => {
-        await browser.send("profiles.create", {
+        await shells.browser.profiles.create({
           name: r.name,
           memory_id: r.memory_id,
           allow_network: r.allow_network,
@@ -258,7 +258,7 @@ export function ProfilesTab() {
   const reload = useCallback(async () => {
     setMsg(null);
     try {
-      const res = await browser.send("profiles.list");
+      const res = (await shells.browser.profiles.list()) as ProfileRecord[];
       setProfiles(res);
     } catch (e) {
       setMsg(`load failed: ${(e as Error).message}`);
@@ -272,7 +272,7 @@ export function ProfilesTab() {
   const handleSave = async (r: ProfileRecord) => {
     setBusy(true);
     try {
-      await browser.send("profiles.update", {
+      await shells.browser.profiles.update({
         id: r.id,
         name: r.name,
         memory_id: r.memory_id,
@@ -291,7 +291,7 @@ export function ProfilesTab() {
   const handleDelete = async (id: string) => {
     setBusy(true);
     try {
-      await browser.send("profiles.delete", { id });
+      await shells.browser.profiles.delete({ id });
       setExpandedId(null);
       await reload();
     } finally {

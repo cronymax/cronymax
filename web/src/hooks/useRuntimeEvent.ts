@@ -22,9 +22,18 @@ export function useRuntimeEvent(topic: string, handler: (eventJson: string) => v
   const [epoch, setEpoch] = useState(0);
 
   useEffect(() => {
-    return browser.on("space.switch_loading", ({ loading }) => {
+    const unsubSwitch = browser.on("space.switch_loading", ({ loading }) => {
       if (!loading) setEpoch((n) => n + 1);
     });
+    // Also bump epoch on crony restart so in-flight subscriptions are
+    // re-established after the supervisor brings the new process up.
+    const unsubRestart = browser.on("runtime.restarting", () => {
+      setEpoch((n) => n + 1);
+    });
+    return () => {
+      unsubSwitch();
+      unsubRestart();
+    };
   }, []);
 
   useEffect(() => {

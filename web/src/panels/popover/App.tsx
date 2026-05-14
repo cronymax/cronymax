@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
-import { browser } from "@/shells/bridge";
+import { browser, shells } from "@/shells/bridge";
 
 export function App() {
   const [url, setUrl] = useState("");
@@ -19,7 +19,7 @@ export function App() {
     if (!/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//.test(target)) {
       target = `https://${target}`;
     }
-    browser.send("shell.popover_navigate", { url: target });
+    shells.browser.shell.popover_navigate({ url: target });
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -51,13 +51,13 @@ export function App() {
       {/* Action buttons — 32×32 hit area, rounded hover highlight */}
       {(
         [
-          { icon: "refresh", event: "shell.popover_refresh", title: "Reload" },
+          { icon: "refresh", event: "browser.shell.popover_refresh", title: "Reload" },
           {
             icon: "link-external",
-            event: "shell.popover_open_as_tab",
+            event: "browser.shell.popover_open_as_tab",
             title: "Open as tab",
           },
-          { icon: "close", event: "shell.popover_close", title: "Close" },
+          { icon: "close", event: "browser.shell.popover_close", title: "Close" },
         ] as const
       ).map(({ icon, event, title }) => (
         <button

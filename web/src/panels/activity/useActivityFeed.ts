@@ -1,5 +1,5 @@
 import { useEffect, useReducer } from "react";
-import { browser, runtime } from "@/shells/bridge";
+import { runtime, shells } from "@/shells/bridge";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -214,8 +214,8 @@ export function useActivityFeed(filter: "all" | "live" | "needs_review") {
 
   // Resolve active space on mount.
   useEffect(() => {
-    browser
-      .send("space.list")
+    shells.browser.space
+      .list()
       .then((spaces: Array<{ id: string; active?: boolean }>) => {
         const active = spaces.find((s) => s.active);
         if (active) dispatch({ type: "SET_SPACE", spaceId: active.id });
@@ -226,8 +226,8 @@ export function useActivityFeed(filter: "all" | "live" | "needs_review") {
   // Hydrate from snapshot once we have the space ID.
   useEffect(() => {
     if (!state.activeSpaceId) return;
-    browser
-      .send("activity.snapshot")
+    shells.browser.activity
+      .snapshot()
       .then((resp: { runs?: unknown[]; pending_reviews?: unknown[] }) => {
         const runs = (resp.runs ?? []).map((r) => parseRunFromSnapshot(r as Record<string, unknown>));
         const reviews = (resp.pending_reviews ?? []).map((r) => parseReviewFromSnapshot(r as Record<string, unknown>));

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -14,7 +15,33 @@
 #include "runtime/crony_proxy.h"
 #include "runtime/space_manager.h"
 
+#include "browser/bridge_registry.h"
+
 namespace cronymax {
+
+// CEF process-message names used on the renderer↔runtime channel.
+// Renderer sends control requests; runtime replies and pushes events.
+static constexpr char kMsgRuntimeCtrl[] = "cronymax.runtime.ctrl";
+static constexpr char kMsgRuntimeCtrlReply[] = "cronymax.runtime.ctrl.reply";
+static constexpr char kMsgRuntimeEvent[] = "cronymax.runtime.event";
+// CEF process-message names used on the renderer↔browser channel.
+static constexpr char kMsgBrowserCtrl[] = "cronymax.browser.ctrl";
+static constexpr char kMsgBrowserCtrlReply[] = "cronymax.browser.ctrl.reply";
+
+// Forward declaration; defined in bridge_handler.cc.
+class ControlEnricher;
+
+// Forward declarations for per-module self-registration functions.
+// Each is defined in the corresponding shells/*.cc file and called from
+// the BridgeHandler constructor.
+class BridgeHandler;
+void RegisterShellHandlers(BridgeRegistry& r, BridgeHandler* h);
+void RegisterTerminalHandlers(BridgeRegistry& r, BridgeHandler* h);
+void RegisterSpaceHandlers(BridgeRegistry& r, BridgeHandler* h);
+void RegisterContentHandlers(BridgeRegistry& r, BridgeHandler* h);
+void RegisterEventsHandlers(BridgeRegistry& r, BridgeHandler* h);
+void RegisterPermissionHandlers(BridgeRegistry& r, BridgeHandler* h);
+void RegisterWorkspaceHandlers(BridgeRegistry& r, BridgeHandler* h);
 
 // Callbacks for shell.* bridge channels — set by MainWindow.
 struct ShellCallbacks {
@@ -133,6 +160,16 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   explicit BridgeHandler(SpaceManager* space_manager);
   ~BridgeHandler() override;
 
+  // Per-module registration functions are friends so they can access private
+  // Handle* methods and members when building registry lambdas.
+  friend void RegisterShellHandlers(BridgeRegistry&, BridgeHandler*);
+  friend void RegisterTerminalHandlers(BridgeRegistry&, BridgeHandler*);
+  friend void RegisterSpaceHandlers(BridgeRegistry&, BridgeHandler*);
+  friend void RegisterContentHandlers(BridgeRegistry&, BridgeHandler*);
+  friend void RegisterEventsHandlers(BridgeRegistry&, BridgeHandler*);
+  friend void RegisterPermissionHandlers(BridgeRegistry&, BridgeHandler*);
+  friend void RegisterWorkspaceHandlers(BridgeRegistry&, BridgeHandler*);
+
   bool OnQuery(CefRefPtr<CefBrowser> browser,
                CefRefPtr<CefFrame> frame,
                int64_t query_id,
@@ -159,25 +196,57 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   // Once set, orchestration channels forward through the proxy instead of
   // the legacy in-process runtime.
   void SetRuntimeProxy(RuntimeProxy* proxy) {
+    // Bump generation to abort any in-flight restart re-subscription tasks.
+    ++restart_generation_;
     runtime_proxy_ = proxy;
     if (proxy) {
       SetupCapabilityHandler();
-      // When the supervisor restarts crony, clear stale renderer subscriptions
-      // so their event tokens don't accumulate and never fire again.
+      // When the supervisor restarts crony:
+      //  1. Broadcast runtime.restarting so panels can show a reconnecting UI.
+      //  2. Clear stale renderer subscriptions (zombie renderer_subs_).
+      //  3. Snapshot + clear space_runtime_subs_ and cancel their ev_tokens.
+      //  4. Async re-subscribe each space with exponential backoff.
+      //  5. Broadcast runtime.reconnected when all spaces are back.
       proxy->SetRestartCallback([this]() {
-        std::unordered_map<std::string, RendererSub> dead_subs;
+        // 1. Notify all chrome panels immediately.
+        if (shell_cbs_.broadcast_event)
+          shell_cbs_.broadcast_event("runtime.restarting", "{}");
+
+        // 2. Clear stale renderer subscriptions.
+        std::unordered_map<std::string, RendererSub> dead_renderer_subs;
         {
           std::lock_guard lock(renderer_subs_mu_);
-          dead_subs = std::move(renderer_subs_);
+          dead_renderer_subs = std::move(renderer_subs_);
           renderer_subs_.clear();
         }
-        // Unsubscribe event tokens from the proxy outside the lock to avoid
-        // lock-ordering issues.
-        for (auto& [sub_id, sub] : dead_subs) {
-          if (runtime_proxy_ && sub.ev_token >= 0) {
+        for (auto& [sub_id, sub] : dead_renderer_subs) {
+          if (runtime_proxy_ && sub.ev_token >= 0)
             runtime_proxy_->UnsubscribeEvents(sub.ev_token);
-          }
         }
+
+        // 3. Bump generation and snapshot+clear space subscriptions.
+        uint64_t gen = ++restart_generation_;
+        std::unordered_map<std::string, SpaceRuntimeSub> dead_space_subs;
+        {
+          std::lock_guard<std::mutex> g(space_subs_mu_);
+          dead_space_subs = std::move(space_runtime_subs_);
+          space_runtime_subs_.clear();
+        }
+        for (auto& [sid, sub] : dead_space_subs) {
+          if (sub.ev_token >= 0)
+            runtime_proxy_->UnsubscribeEvents(sub.ev_token);
+        }
+
+        // 4. Re-subscribe each space with backoff.
+        if (dead_space_subs.empty()) {
+          if (shell_cbs_.broadcast_event)
+            shell_cbs_.broadcast_event("runtime.reconnected", "{}");
+          return;
+        }
+        auto pending = std::make_shared<std::atomic<int>>(
+            static_cast<int>(dead_space_subs.size()));
+        for (auto& [space_id, sub] : dead_space_subs)
+          ResubscribeSpace(space_id, gen, 0, pending);
       });
     }
   }
@@ -205,85 +274,55 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
                                    CefRefPtr<CefFrame> frame,
                                    CefRefPtr<CefProcessMessage> message);
 
- private:
-  bool HandleTerminal(CefRefPtr<CefBrowser> browser,
-                      std::string_view channel,
-                      std::string_view payload,
-                      CefRefPtr<Callback> callback);
-  bool HandleAgent(CefRefPtr<CefBrowser> browser,
-                   std::string_view channel,
-                   std::string_view payload,
-                   CefRefPtr<Callback> callback);
-  bool HandleSpace(CefRefPtr<CefBrowser> browser,
-                   std::string_view channel,
-                   std::string_view payload,
-                   CefRefPtr<Callback> callback);
-  bool HandlePermission(std::string_view channel,
-                        std::string_view payload,
-                        CefRefPtr<Callback> callback);
-  bool HandleLlmConfig(std::string_view channel,
-                       std::string_view payload,
-                       CefRefPtr<Callback> callback);
-  bool HandleBrowser(CefRefPtr<CefBrowser> browser,
-                     std::string_view channel,
-                     std::string_view payload,
-                     CefRefPtr<Callback> callback);
-  bool HandleShell(CefRefPtr<CefBrowser> browser,
-                   std::string_view channel,
-                   std::string_view payload,
-                   CefRefPtr<Callback> callback);
-  bool HandleTheme(std::string_view channel,
-                   std::string_view payload,
-                   CefRefPtr<Callback> callback);
-  bool HandleTab(std::string_view channel,
-                 std::string_view payload,
-                 CefRefPtr<Callback> callback);
-  bool HandleWorkspace(std::string_view channel,
-                       std::string_view payload,
-                       CefRefPtr<Callback> callback);
-  // agent.registry.*, flow.*, doc_type.* — read-only Phase A registries.
-  bool HandleRegistry(std::string_view channel,
-                      std::string_view payload,
-                      CefRefPtr<Callback> callback);
-  // document.read / document.list / document.subscribe.
-  bool HandleDocument(std::string_view channel,
-                      std::string_view payload,
-                      CefRefPtr<Callback> callback);
-  // review.list / review.comment / review.approve / review.request_changes.
-  bool HandleReview(std::string_view channel,
-                    std::string_view payload,
-                    CefRefPtr<Callback> callback);
-  // activity.snapshot.
-  bool HandleActivitySnapshot(std::string_view channel,
-                              std::string_view payload,
-                              CefRefPtr<Callback> callback);
-  // events.list / events.subscribe / events.append (+ legacy event.subscribe).
-  bool HandleEvents(CefRefPtr<CefBrowser> browser,
-                    std::string_view channel,
-                    std::string_view payload,
-                    CefRefPtr<Callback> callback);
-  // inbox.list / inbox.read / inbox.unread / inbox.snooze.
-  bool HandleInbox(std::string_view channel,
-                   std::string_view payload,
-                   CefRefPtr<Callback> callback);
-  // notifications.get_prefs / notifications.set_kind_pref.
-  bool HandleNotifications(std::string_view channel,
-                           std::string_view payload,
-                           CefRefPtr<Callback> callback);
-  // profiles.list / profiles.create / profiles.update / profiles.delete.
-  bool HandleProfiles(CefRefPtr<CefBrowser> browser,
-                      std::string_view channel,
-                      std::string_view payload,
-                      CefRefPtr<Callback> callback);
+  // Route a cronymax.browser.ctrl process message (binary msgpack path).
+  // Called on the browser UI thread from
+  // ClientHandler::OnProcessMessageReceived. Returns true if handled.
+  bool HandleBrowserCtrlMessage(CefRefPtr<CefBrowser> browser,
+                                CefRefPtr<CefFrame> frame,
+                                CefRefPtr<CefProcessMessage> message);
 
+  // Send a cronymax.browser.ctrl.reply process message back to the renderer.
+  void SendBrowserCtrlReply(CefRefPtr<CefBrowser> browser,
+                            const std::string& corr_id,
+                            const nlohmann::json& response,
+                            bool is_error);
+
+ private:
   // Install the user_approval capability handler on the RuntimeProxy.
   // Called automatically from SetRuntimeProxy.
   void SetupCapabilityHandler();
 
+  // Wire up the RuntimeProxy event subscription for a space and return the
+  // ev_token. Extracted from OnSpaceSwitch so restart recovery can reuse it.
+  // Must be called with runtime_proxy_ valid.
+  int64_t WireSpaceEventCallback(const std::string& space_id);
+
+  // Async re-subscribe a space after restart. Retries with exponential backoff
+  // (100ms → 200ms → 400ms … capped at 30s). Aborts if restart_generation_
+  // no longer equals gen.
+  void ResubscribeSpace(const std::string& space_id,
+                        uint64_t gen,
+                        int64_t delay_ms,
+                        std::shared_ptr<std::atomic<int>> pending);
+
   SpaceManager* space_manager_;            // Owned by MainWindow.
   RuntimeProxy* runtime_proxy_ = nullptr;  // Set by MainWindow after startup.
+
+  // Exact-channel dispatch table. Populated in the constructor via
+  // RegisterXxxHandlers() calls defined in each shells/*.cc file.
+  BridgeRegistry registry_;
+
+  // Incremented on every restart and on SetRuntimeProxy(nullptr).
+  // In-flight ResubscribeSpace tasks abort when their captured generation
+  // no longer matches the current value.
+  std::atomic<uint64_t> restart_generation_{0};
   ShellCallbacks shell_cbs_;
   ThemeCallbacks theme_cbs_;
+
+  // Control-request enricher pipeline. Each enricher injects fields
+  // (if absent) into the JSON request before it is forwarded to the runtime.
+  // Populated in the BridgeHandler constructor. See bridge_handler.cc.
+  std::vector<std::unique_ptr<ControlEnricher>> enrichers_;
 
   // Pending permission requests: request_id → callback.
   std::mutex perm_mutex_;
@@ -291,7 +330,7 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
 
   // Pending runtime capability replies: capability correlation_id → reply fn.
   // Populated by SetupCapabilityHandler when the runtime sends a
-  // user_approval capability call; consumed by HandlePermission.
+  // user_approval capability call; consumed by RegisterPermissionHandlers.
   std::mutex cap_reply_mu_;
   std::unordered_map<std::string, RuntimeProxy::CapabilityReplyFn>
       pending_cap_replies_;
@@ -321,6 +360,16 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   };
   std::mutex renderer_subs_mu_;
   std::unordered_map<std::string, RendererSub> renderer_subs_;
+
+  // Accessors used by RegisterXxxHandlers free functions.
+  SpaceManager* space_manager() const { return space_manager_; }
+  RuntimeProxy* runtime_proxy() const { return runtime_proxy_; }
+  ShellCallbacks& shell_cbs() { return shell_cbs_; }
+  ThemeCallbacks& theme_cbs() { return theme_cbs_; }
+
+  // Applies all registered enrichers to an outgoing runtime control request.
+  // Called from bridge_runtime.cc which cannot see the ControlEnricher type.
+  void EnrichRequest(const std::string& kind, nlohmann::json& req);
 
   // Helpers called on the UI thread to send replies / events back to the
   // renderer.

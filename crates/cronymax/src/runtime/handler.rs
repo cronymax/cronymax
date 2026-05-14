@@ -127,7 +127,8 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
 
     // Tag the run with the originating flow_run_id so the Activity panel
     // can group agent runs under their parent flow run.
-    ctx.authority.set_run_flow_id(run_id, ctx.flow_run_id.clone());
+    ctx.authority
+        .set_run_flow_id(run_id, ctx.flow_run_id.clone());
 
     tokio::spawn(async move {
         // ── Load agent definition ─────────────────────────────────────────
@@ -1382,7 +1383,8 @@ impl Handler for RuntimeHandler {
                     let mut tool_names_sorted: Vec<&str> =
                         defs.iter().map(|d| d.name.as_str()).collect();
                     tool_names_sorted.sort_unstable();
-                    let block = build_workspace_injection_block(&workspace_root, &tool_names_sorted);
+                    let block =
+                        build_workspace_injection_block(&workspace_root, &tool_names_sorted);
                     Some(format!("{}{block}", base_system_prompt.unwrap_or_default()))
                 } else {
                     base_system_prompt
@@ -1509,8 +1511,7 @@ impl Handler for RuntimeHandler {
                     {
                         if let Some(thread) = authority.session_thread(sid) {
                             if !thread.is_empty() {
-                                let store =
-                                    crate::runtime::chat_store::ChatStore::new(cache_dir);
+                                let store = crate::runtime::chat_store::ChatStore::new(cache_dir);
                                 let _ = store.append_turns(sid, &thread);
                             }
                         }
@@ -2584,6 +2585,49 @@ impl Handler for RuntimeHandler {
                 ControlResponse::SpaceSnapshot {
                     runs: runs_json,
                     pending_reviews: reviews_json,
+                }
+            }
+
+            ControlRequest::SessionList { workspace_root } => {
+                // Derive the workspace_cache_dir from workspace_root using the
+                // same convention as StoragePaths: <workspace_root>/.cronymax/
+                let cache_dir = std::path::PathBuf::from(&workspace_root).join(".cronymax");
+                let store = crate::runtime::chat_store::ChatStore::new(&cache_dir);
+                let sessions = store.list_sessions();
+                let sessions_json: Vec<serde_json::Value> = sessions
+                    .into_iter()
+                    .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                    .collect();
+                ControlResponse::Data {
+                    payload: serde_json::json!({ "sessions": sessions_json }),
+                }
+            }
+
+            ControlRequest::SessionThreadInspect {
+                workspace_root,
+                session_id,
+            } => {
+                let cache_dir = std::path::PathBuf::from(&workspace_root).join(".cronymax");
+                let store = crate::runtime::chat_store::ChatStore::new(&cache_dir);
+                let sid = SessionId::from(session_id.as_str());
+
+                // Try live authority first (session may be in memory), then
+                // fall back to disk via ChatStore.
+                let messages = self
+                    .authority
+                    .session_thread(&sid)
+                    .unwrap_or_else(|| store.load_history(&sid));
+
+                let turn_count = messages.len();
+                let messages_json: Vec<serde_json::Value> = messages
+                    .into_iter()
+                    .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                    .collect();
+                ControlResponse::Data {
+                    payload: serde_json::json!({
+                        "messages": messages_json,
+                        "turn_count": turn_count,
+                    }),
                 }
             }
         }

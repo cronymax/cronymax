@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
-import { browser } from "@/shells/bridge";
+import { browser, shells } from "@/shells/bridge";
 import { agentRegistry, agentRun, b64ToUtf8, terminal as rt_terminal } from "@/shells/runtime";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
 import { ContentStreamView } from "./ContentStreamView";
@@ -493,8 +493,8 @@ export function App() {
 
   // Load workspace prompts + root + provider models on mount.
   useEffect(() => {
-    browser
-      .send("workspace.prompts.list")
+    shells.browser.workspace.prompts
+      .list()
       .then((res) => {
         setWorkspacePrompts(
           res.prompts.map((p) => {
@@ -509,16 +509,16 @@ export function App() {
         );
       })
       .catch(() => undefined);
-    browser
-      .send("space.list")
+    shells.browser.space
+      .list()
       .then((spaces) => {
         const active = spaces.find((s) => s.active);
         if (active) setWorkspaceRoot(active.root_path);
       })
       .catch(() => undefined);
     // Load model list from configured providers
-    browser
-      .send("llm.providers.get")
+    shells.browser.llm.providers
+      .get()
       .then(async ({ raw }) => {
         if (!raw) return;
         interface StoredProvider {
@@ -626,14 +626,14 @@ export function App() {
       // so check whether it's still present in the C++ process before reusing.
       if (currentTid) {
         try {
-          const { items } = await browser.send("terminal.list");
+          const { items } = await shells.browser.terminal.list();
           if (items.some((t) => t.id === currentTid)) return currentTid;
         } catch {
           // Fall through to create a new terminal.
         }
       }
       try {
-        const newTid = await browser.send("terminal.new");
+        const newTid = await shells.browser.terminal.new();
         const tid = typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
         await rt_terminal.start(tid);
         dispatch({ type: "setTerminalTid", tid });
@@ -654,7 +654,7 @@ export function App() {
       // Ask the native shell which tab we are, so we can restore the same
       // chatId that was bound to this tab in a previous session.
       try {
-        const tabInfo = await browser.send("shell.this_tab_id");
+        const tabInfo = await shells.browser.shell.this_tab_id();
         if (tabInfo?.meta?.chat_id) {
           // Seed sessionStorage so ensureChat() picks up the persisted chatId.
           sessionStorage.setItem("cronymax_chat_tab_id", tabInfo.meta.chat_id);
@@ -667,7 +667,7 @@ export function App() {
 
       // Register this tab's chatId with the native shell so it survives
       // the next app restart (no-op if already registered with same value).
-      void browser.send("shell.tab_set_meta", { key: "chat_id", value: id }).catch(() => {
+      void shells.browser.shell.tab_set_meta({ key: "chat_id", value: id }).catch(() => {
         /* ignore */
       });
 
@@ -1379,7 +1379,7 @@ export function App() {
           model_override: state.model || undefined,
         });
         if (!runId) throw new Error("runtime did not return run_id");
-        await browser.send("events.subscribe", { run_id: runId }).catch(() => {
+        await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
           /* ignore */
         });
       } catch (err) {
@@ -1462,6 +1462,31 @@ export function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.running]);
+
+  // ── runtime restart recovery ─────────────────────────────────────────
+  // When crony restarts: mark the in-flight block as failed, clear terminal
+  // session (it will be re-created on demand), and show a reconnecting banner.
+  // When all subscriptions are restored, dismiss the banner.
+  useEffect(() => {
+    const offRestarting = browser.on("runtime.restarting", () => {
+      // Fail any in-progress agent block.
+      if (state.runningBlockId) {
+        dispatch({ type: "finalizeBlock", id: state.runningBlockId, status: "fail" });
+        dispatch({ type: "setRunningBlockId", id: null });
+      }
+      dispatch({ type: "setRunning", running: false });
+      dispatch({ type: "clearAwaitingApproval" });
+      dispatch({ type: "setReconnecting", reconnecting: true });
+    });
+    const offReconnected = browser.on("runtime.reconnected", () => {
+      dispatch({ type: "setReconnecting", reconnecting: false });
+    });
+    return () => {
+      offRestarting();
+      offReconnected();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatch, state.runningBlockId]);
 
   const onShellAction = useCallback(
     (action: string, block: ShellBlock) => {
@@ -1695,6 +1720,14 @@ export function App() {
         </div>
       )}
 
+      {/* Runtime reconnecting banner */}
+      {state.isReconnecting && (
+        <div className="flex items-center gap-2 border-b border-blue-500/40 bg-blue-500/10 px-3 py-1 text-[11px] text-blue-300">
+          <span className="animate-pulse">⟳</span>
+          <span>Reconnecting to runtime…</span>
+        </div>
+      )}
+
       {/* Agent load error */}
       {agentLoadError && (
         <div className="border-b border-red-500/40 bg-red-500/10 px-3 py-1 text-[11px] text-red-300">
@@ -1886,7 +1919,7 @@ export function App() {
                         prompt={activePill}
                         onClose={() => setActivePillId(null)}
                         onSave={async (label, content) => {
-                          const res = await browser.send("workspace.prompt.save", { name: label, content });
+                          const res = await shells.browser.workspace.prompt.save({ name: label, content });
                           if (!res.ok) throw new Error(res.error ?? "Save failed");
                           setAttachedPrompts((prev) =>
                             prev.map((p) => (p.id === activePillId ? { ...p, content } : p)),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { z } from "zod";
-import { browser } from "@/shells/bridge";
+import { browser, shells } from "@/shells/bridge";
 import type { AppEvent, InboxRowSchema } from "@/types/events";
 
 type InboxRow = z.infer<typeof InboxRowSchema>;
@@ -29,7 +29,7 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await browser.send("inbox.list", {
+      const res = await shells.browser.inbox.list({
         state: stateRef.current,
         limit: 200,
       });
@@ -48,7 +48,7 @@ export function App() {
 
   // Refresh when relevant new events arrive.
   useEffect(() => {
-    void browser.send("events.subscribe", {}).catch(() => {
+    void shells.browser.events.subscribe({}).catch(() => {
       /* ignore */
     });
     const off = browser.on("event", (payload) => {
@@ -62,7 +62,7 @@ export function App() {
 
   async function markRead(id: string) {
     try {
-      await browser.send("inbox.read", { event_id: id });
+      await shells.browser.inbox.read({ event_id: id });
       void refresh();
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -72,7 +72,7 @@ export function App() {
 
   async function snooze(id: string, ms: number) {
     try {
-      await browser.send("inbox.snooze", {
+      await shells.browser.inbox.snooze({
         event_id: id,
         snooze_until: Date.now() + ms,
       });

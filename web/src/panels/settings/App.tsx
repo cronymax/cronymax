@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 import { AppearanceTab } from "./AppearanceTab";
 import { ProfilesTab } from "./ProfilesTab";
 import { ProvidersTab } from "./ProvidersTab";
@@ -109,7 +109,7 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const provRes = await browser.send("llm.providers.get");
+        const provRes = await shells.browser.llm.providers.get();
         const providers = JSON.parse(provRes.raw || "[]") as Array<{
           id: string;
           base_url?: string;
@@ -142,8 +142,8 @@ export function App() {
       const perm = state.permission;
       if (!perm) return;
       if (perm.requestId) {
-        browser
-          .send("permission.respond", {
+        shells.browser.permission
+          .respond({
             request_id: perm.requestId,
             decision: allow ? "allow" : "deny",
           })
@@ -156,7 +156,7 @@ export function App() {
   );
 
   const onClose = useCallback(() => {
-    browser.send("shell.popover_close").catch(() => {
+    shells.browser.shell.popover_close().catch(() => {
       /* ignore */
     });
   }, []);

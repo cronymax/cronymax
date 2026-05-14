@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type LlmProvider, ModelSelect } from "../../components/ModelSelect";
-import { browser } from "../../shells/bridge";
+import { shells } from "../../shells/bridge";
 import { Field, inputCls } from "./App";
 import { useStore } from "./store";
 
@@ -213,7 +213,7 @@ export function ProvidersTab() {
   const load = useCallback(async () => {
     setMsg(null);
     try {
-      const res = await browser.send("llm.providers.get");
+      const res = await shells.browser.llm.providers.get();
       const list = parseProviders(res.raw);
       setProviders(list);
       setActiveId(res.active_id);
@@ -238,7 +238,7 @@ export function ProvidersTab() {
   );
 
   const persist = useCallback(async (next: LlmProvider[], nextActive: string) => {
-    await browser.send("llm.providers.set", {
+    await shells.browser.llm.providers.set({
       raw: JSON.stringify(next),
       active_id: nextActive,
     });
@@ -305,7 +305,7 @@ export function ProvidersTab() {
       try {
         await persist(providers, p.id);
         setActiveId(p.id);
-        await browser.send("llm.config.set", {
+        await shells.browser.llm.config.set({
           base_url: p.base_url,
           api_key: p.api_key,
         });
@@ -365,7 +365,7 @@ export function ProvidersTab() {
       /* ok */
     }
     try {
-      await browser.send("shell.open_external", { url: dc.verification_uri });
+      await shells.browser.shell.open_external({ url: dc.verification_uri });
     } catch {
       try {
         window.open(dc.verification_uri, "_blank", "noopener,noreferrer");

@@ -1,7 +1,7 @@
 import { DiffEditor } from "@monaco-editor/react";
 import { useEffect, useState } from "react";
 
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 
 import { stripBlockComments } from "./blockIds";
 import type { WorkbenchParams } from "./url";
@@ -15,15 +15,6 @@ import type { WorkbenchParams } from "./url";
 //
 // Block-marker comments are stripped from both sides before rendering
 // so the diff focuses on visible content rather than marker churn.
-
-interface DocumentReadResponse {
-  revision: number;
-  content: string;
-}
-
-interface DocumentListResponse {
-  docs: Array<{ name: string; latest_revision: number }>;
-}
 
 export function DiffView({ params }: { params: WorkbenchParams }) {
   const [original, setOriginal] = useState<string | null>(null);
@@ -46,9 +37,9 @@ export function DiffView({ params }: { params: WorkbenchParams }) {
         let from = params.from ?? 0;
         let to = params.to ?? 0;
         if (!from || !to) {
-          const listed = (await browser.send("document.list", {
+          const listed = await shells.document.list({
             flow: params.flow,
-          })) as DocumentListResponse;
+          });
           const entry = listed.docs.find((d) => d.name === params.doc);
           const latest = entry?.latest_revision ?? 0;
           if (latest < 2) {
@@ -60,16 +51,16 @@ export function DiffView({ params }: { params: WorkbenchParams }) {
           to = to || latest;
         }
         const [a, b] = await Promise.all([
-          browser.send("document.read", {
+          shells.document.read({
             flow: params.flow,
             name: params.doc,
             revision: from,
-          }) as Promise<DocumentReadResponse>,
-          browser.send("document.read", {
+          }),
+          shells.document.read({
             flow: params.flow,
             name: params.doc,
             revision: to,
-          }) as Promise<DocumentReadResponse>,
+          }),
         ]);
         if (cancelled) return;
         setOriginal(stripBlockComments(a.content));

@@ -206,6 +206,30 @@ impl ChatStore {
     pub fn root(&self) -> &Path {
         &self.root
     }
+
+    /// List all sessions in the store, sorted by `updated_at_ms` descending.
+    ///
+    /// Iterates over subdirectories of `root()`, reads each `meta.json`,
+    /// and skips entries that are missing or malformed.
+    pub fn list_sessions(&self) -> Vec<SessionMeta> {
+        let read_dir = match fs::read_dir(&self.root) {
+            Ok(rd) => rd,
+            Err(_) => return Vec::new(),
+        };
+        let mut sessions: Vec<SessionMeta> = read_dir
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                if !entry.file_type().ok()?.is_dir() {
+                    return None;
+                }
+                let meta_path = entry.path().join("meta.json");
+                let bytes = fs::read(&meta_path).ok()?;
+                serde_json::from_slice::<SessionMeta>(&bytes).ok()
+            })
+            .collect();
+        sessions.sort_by_key(|b| std::cmp::Reverse(b.updated_at_ms));
+        sessions
+    }
 }
 
 // ---------------------------------------------------------------------------

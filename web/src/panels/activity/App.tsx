@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 import { ActivityTree } from "./ActivityTree";
 import { useActivityFeed } from "./useActivityFeed";
 
@@ -31,7 +31,7 @@ export function App() {
         <button
           type="button"
           className="text-cronymax-caption hover:text-cronymax-title text-xs px-2 py-1 rounded hover:bg-cronymax-hover"
-          onClick={() => browser.send("shell.popover_close", {}).catch(() => undefined)}
+          onClick={() => shells.browser.shell.popover_close({}).catch(() => undefined)}
         >
           ×
         </button>

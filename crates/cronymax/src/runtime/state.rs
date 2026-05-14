@@ -444,6 +444,9 @@ mod tests {
         let mut value: serde_json::Value = serde_json::to_value(&run).unwrap();
         value.as_object_mut().unwrap().remove("flow_run_id");
         let decoded: Run = serde_json::from_value(value).unwrap();
-        assert_eq!(decoded.flow_run_id, None, "missing field must default to None");
+        assert_eq!(
+            decoded.flow_run_id, None,
+            "missing field must default to None"
+        );
     }
 }

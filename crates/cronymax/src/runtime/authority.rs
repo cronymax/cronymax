@@ -186,10 +186,7 @@ impl RuntimeAuthority {
     /// Used by the `GetSpaceSnapshot` control request so the Activity
     /// panel can hydrate its initial state in one round-trip.
     /// Returns `(runs, pending_reviews)`.
-    pub fn get_space_snapshot(
-        &self,
-        space_id: &str,
-    ) -> (Vec<Run>, Vec<PendingReview>) {
+    pub fn get_space_snapshot(&self, space_id: &str) -> (Vec<Run>, Vec<PendingReview>) {
         let inner = self.inner.lock();
         let runs: Vec<Run> = inner
             .snapshot
@@ -198,8 +195,7 @@ impl RuntimeAuthority {
             .filter(|r| r.space_id.to_string() == space_id)
             .cloned()
             .collect();
-        let run_ids: std::collections::HashSet<RunId> =
-            runs.iter().map(|r| r.id).collect();
+        let run_ids: std::collections::HashSet<RunId> = runs.iter().map(|r| r.id).collect();
         let reviews: Vec<PendingReview> = inner
             .snapshot
             .reviews
@@ -1196,10 +1192,18 @@ mod tests {
 
         // space_a snapshot should contain the review.
         let (_, reviews_a) = auth.get_space_snapshot(&space_a.to_string());
-        assert_eq!(reviews_a.len(), 1, "space_a snapshot must include the review");
+        assert_eq!(
+            reviews_a.len(),
+            1,
+            "space_a snapshot must include the review"
+        );
 
         // space_b snapshot must NOT contain the review.
         let (_, reviews_b) = auth.get_space_snapshot(&space_b_id.to_string());
-        assert_eq!(reviews_b.len(), 0, "space_b snapshot must not include space_a's review");
+        assert_eq!(
+            reviews_b.len(),
+            0,
+            "space_b snapshot must not include space_a's review"
+        );
     }
 }

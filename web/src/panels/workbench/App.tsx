@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 import { CommentRail } from "./CommentRail";
 import { readParams, setMode, type WorkbenchMode, type WorkbenchParams } from "./url";
 
@@ -61,10 +61,10 @@ function RailHost({ params }: { params: WorkbenchParams }) {
   const refresh = useCallback(async () => {
     if (!params.flow || !params.doc) return;
     try {
-      const res = (await browser.send("document.read", {
+      const res = await shells.document.read({
         flow: params.flow,
         name: params.doc,
-      })) as { content: string };
+      });
       setContent(res.content ?? "");
     } catch {
       // Best-effort: leave content empty so all comments appear orphaned.

@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { browser } from "@/shells/bridge";
+import { browser, shells } from "@/shells/bridge";
 import type { AppEvent } from "@/types/events";
 
 export type StatusDot = "off" | "activity" | "attention" | "error";
@@ -35,7 +35,7 @@ export function useStatusDotState(): StatusDot {
     let cancelled = false;
     async function refresh() {
       try {
-        const res = await browser.send("inbox.list", {
+        const res = await shells.browser.inbox.list({
           state: "unread",
           limit: 1,
         });
@@ -56,7 +56,7 @@ export function useStatusDotState(): StatusDot {
 
   // Subscribe to event broadcasts.
   useEffect(() => {
-    void browser.send("events.subscribe", {}).catch(() => {
+    void shells.browser.events.subscribe({}).catch(() => {
       /* ignore */
     });
     const off = browser.on("event", (payload) => {

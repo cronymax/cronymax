@@ -228,6 +228,8 @@ export interface State {
     toolName: string;
     args: unknown;
   } | null;
+  /** True while crony is restarting and space subscriptions are being restored. */
+  isReconnecting: boolean;
 }
 
 export type Action =
@@ -296,6 +298,7 @@ export type Action =
   | { type: "clearHistory" }
   | { type: "appendThinkingDelta"; id: string; delta: string; now: number }
   | { type: "sealThinkingBlock"; id: string; elapsedMs: number }
+  | { type: "setReconnecting"; reconnecting: boolean }
   | { type: "_unused"; _placeholder?: never };
 
 // ── Shell output processor ────────────────────────────────────────────
@@ -328,6 +331,7 @@ const initial: State = {
   selectedFlow: "",
   migrationNotice: null,
   awaitingApproval: null,
+  isReconnecting: false,
 };
 
 // ── Reducer ────────────────────────────────────────────────────────────
@@ -637,6 +641,9 @@ function reducer(state: State, action: Action): State {
 
     case "clearAwaitingApproval":
       return { ...state, awaitingApproval: null };
+
+    case "setReconnecting":
+      return { ...state, isReconnecting: action.reconnecting };
 
     case "appendThinkingDelta": {
       const idx = state.blocks.findIndex((b) => b.id === action.id);

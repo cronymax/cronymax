@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 
 /** Trust level for a tool category. */
 type TrustLevel = "ask" | "autopilot" | "bypass";
@@ -60,12 +60,12 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
   }, [reviewId, category]);
 
   const handleAllow = () => {
-    browser.send("review.approve", { review_id: reviewId }).catch(() => undefined);
+    shells.review.approve({ review_id: reviewId }).catch(() => undefined);
     onAllow();
   };
 
   const handleDeny = () => {
-    browser.send("review.request_changes", { review_id: reviewId }).catch(() => undefined);
+    shells.review.request_changes({ review_id: reviewId }).catch(() => undefined);
     onDeny();
   };
 
@@ -76,7 +76,7 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
       map[category] = "autopilot";
       saveTrustMap(map);
       setTrust("autopilot");
-      await browser.send("review.approve", { review_id: reviewId });
+      await shells.review.approve({ review_id: reviewId });
     } catch {
       /* ignore */
     } finally {

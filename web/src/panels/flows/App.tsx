@@ -12,7 +12,7 @@
 import { useCallback, useState } from "react";
 import { Flows } from "@/components/FlowEditor";
 import { Icon } from "@/components/Icon";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 import { AgentsTab } from "./AgentsTab";
 import { DocTypesTab } from "./DocTypesTab";
 
@@ -74,7 +74,7 @@ export function App() {
   const [tab, setTab] = useState<FlowsTab>("flows");
 
   const onClose = useCallback(() => {
-    browser.send("shell.popover_close").catch(() => {
+    shells.browser.shell.popover_close().catch(() => {
       /* ignore */
     });
   }, []);

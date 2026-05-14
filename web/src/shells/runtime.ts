@@ -6,7 +6,7 @@
  * This module provides typed helpers so callers never touch the raw API.
  */
 
-import { runtime } from "./bridge";
+import { runtime, runtimeSend } from "./bridge";
 
 /** Decode a base64-encoded PTY chunk to a proper UTF-8 string. */
 export function b64ToUtf8(b64: string): string {
@@ -40,20 +40,16 @@ export interface AgentDetail extends AgentEntry {
 
 export const agentRegistry = {
   async list(): Promise<{ agents: AgentEntry[] }> {
-    const raw = await runtime.send({ kind: "agent_registry_list" });
-    return JSON.parse(raw) as { agents: AgentEntry[] };
+    return (await runtimeSend("agent.registry.list")) as { agents: AgentEntry[] };
   },
   async load(name: string): Promise<AgentDetail> {
-    const raw = await runtime.send({ kind: "agent_registry_load", name });
-    return JSON.parse(raw) as AgentDetail;
+    return (await runtimeSend("agent.registry.load", { name })) as AgentDetail;
   },
   async save(fields: Record<string, unknown>): Promise<{ ok: boolean }> {
-    const raw = await runtime.send({ kind: "agent_registry_save", ...fields });
-    return JSON.parse(raw) as { ok: boolean };
+    return (await runtimeSend("agent.registry.save", fields)) as { ok: boolean };
   },
   async delete(name: string): Promise<{ ok: boolean }> {
-    const raw = await runtime.send({ kind: "agent_registry_delete", name });
-    return JSON.parse(raw) as { ok: boolean };
+    return (await runtimeSend("agent.registry.delete", { name })) as { ok: boolean };
   },
 };
 
@@ -63,17 +59,14 @@ export const agentRegistry = {
 
 export const flow = {
   async list(): Promise<{ flows: unknown[] }> {
-    const raw = await runtime.send({ kind: "flow_list" });
-    return JSON.parse(raw) as { flows: unknown[] };
+    return (await runtimeSend("flow.list")) as { flows: unknown[] };
   },
   /** id is the bridge-layer "id" field; mapped to runtime "flow_id". */
   async load(id: string): Promise<unknown> {
-    const raw = await runtime.send({ kind: "flow_load", flow_id: id });
-    return JSON.parse(raw);
+    return await runtimeSend("flow.load", { flow_id: id });
   },
   async save(flow_id: string, graph: unknown): Promise<{ ok: boolean }> {
-    const raw = await runtime.send({ kind: "flow_save", flow_id, graph });
-    return JSON.parse(raw) as { ok: boolean };
+    return (await runtimeSend("flow.save", { flow_id, graph })) as { ok: boolean };
   },
 };
 
@@ -83,25 +76,16 @@ export const flow = {
 
 export const docType = {
   async list(): Promise<{ doc_types: unknown[] }> {
-    const raw = await runtime.send({ kind: "doc_type_list" });
-    return JSON.parse(raw) as { doc_types: unknown[] };
+    return (await runtimeSend("doc.type.list")) as { doc_types: unknown[] };
   },
   async load(name: string): Promise<unknown> {
-    const raw = await runtime.send({ kind: "doc_type_load", name });
-    return JSON.parse(raw);
+    return await runtimeSend("doc.type.load", { name });
   },
   async save(name: string, display_name: string, description: string): Promise<{ ok: boolean }> {
-    const raw = await runtime.send({
-      kind: "doc_type_save",
-      name,
-      display_name,
-      description,
-    });
-    return JSON.parse(raw) as { ok: boolean };
+    return (await runtimeSend("doc.type.save", { name, display_name, description })) as { ok: boolean };
   },
   async delete(name: string): Promise<{ ok: boolean }> {
-    const raw = await runtime.send({ kind: "doc_type_delete", name });
-    return JSON.parse(raw) as { ok: boolean };
+    return (await runtimeSend("doc.type.delete", { name })) as { ok: boolean };
   },
 };
 
@@ -113,28 +97,19 @@ export const flowRun = {
   async start(flow_id: string, initial_input?: string): Promise<{ run_id: string; subscription?: string }> {
     const pl: Record<string, unknown> = { flow_id };
     if (initial_input !== undefined) pl.initial_input = initial_input;
-    const raw = await runtime.send({ kind: "start_run", payload: pl });
-    return JSON.parse(raw) as { run_id: string; subscription?: string };
+    return (await runtimeSend("start.run", { payload: pl })) as { run_id: string; subscription?: string };
   },
   async cancel(run_id: string): Promise<{ ok: boolean }> {
-    const raw = await runtime.send({ kind: "cancel_run", run_id });
-    return JSON.parse(raw) as { ok: boolean };
+    return (await runtimeSend("cancel.run", { run_id })) as { ok: boolean };
   },
   async pause(run_id: string): Promise<{ ok: boolean }> {
-    const raw = await runtime.send({ kind: "pause_run", run_id });
-    return JSON.parse(raw) as { ok: boolean };
+    return (await runtimeSend("pause.run", { run_id })) as { ok: boolean };
   },
   async resume(run_id: string): Promise<{ ok: boolean }> {
-    const raw = await runtime.send({ kind: "resume_run", run_id });
-    return JSON.parse(raw) as { ok: boolean };
+    return (await runtimeSend("resume.run", { run_id })) as { ok: boolean };
   },
   async postInput(run_id: string, input: unknown): Promise<{ ok: boolean }> {
-    const raw = await runtime.send({
-      kind: "post_input",
-      run_id,
-      payload: input,
-    });
-    return JSON.parse(raw) as { ok: boolean };
+    return (await runtimeSend("post.input", { run_id, payload: input })) as { ok: boolean };
   },
 };
 
@@ -161,12 +136,11 @@ export async function agentRun(
 ): Promise<string> {
   const payload: Record<string, unknown> = { task };
   if (opts?.model_override) payload.model_override = opts.model_override;
-  const req: Record<string, unknown> = { kind: "start_run", payload };
+  const req: Record<string, unknown> = { payload };
   if (opts?.session_id) req.session_id = opts.session_id;
   if (opts?.session_name) req.session_name = opts.session_name;
   if (opts?.agent_id) req.agent_id = opts.agent_id;
-  const raw = await runtime.send(req);
-  const res = JSON.parse(raw) as { run_id?: string };
+  const res = (await runtimeSend("start.run", req)) as { run_id?: string };
   if (!res.run_id) throw new Error("runtime did not return run_id");
   return res.run_id;
 }
@@ -177,48 +151,32 @@ export async function agentRun(
 
 export const terminal = {
   /** Start the PTY for the given terminal id (cols/rows default to 100x30). */
-  start(tid: string, cols = 100, rows = 30): Promise<string> {
-    return runtime.send({
-      kind: "terminal_start",
-      terminal_id: tid,
-      cols,
-      rows,
-    });
+  async start(tid: string, cols = 100, rows = 30): Promise<unknown> {
+    return runtimeSend("terminal.start", { terminal_id: tid, cols, rows });
   },
 
   /** Write raw bytes to the PTY. Fire-and-forget; errors are swallowed. */
   input(tid: string, data: string): void {
-    runtime.send({ kind: "terminal_input", terminal_id: tid, data }).catch(() => {
+    runtimeSend("terminal.input", { terminal_id: tid, data }).catch(() => {
       /* ignore */
     });
   },
 
   /** Write a command line (appends newline). Fire-and-forget. */
-  run(tid: string, command: string): Promise<string> {
-    return runtime.send({
-      kind: "terminal_input",
-      terminal_id: tid,
-      data: `${command}\n`,
-    });
+  async run(tid: string, command: string): Promise<unknown> {
+    return runtimeSend("terminal.input", { terminal_id: tid, data: `${command}\n` });
   },
 
   /** Notify the PTY of a new terminal size. Fire-and-forget. */
   resize(tid: string, cols: number, rows: number): void {
-    runtime
-      .send({
-        kind: "terminal_resize",
-        terminal_id: tid,
-        cols,
-        rows,
-      })
-      .catch(() => {
-        /* ignore */
-      });
+    runtimeSend("terminal.resize", { terminal_id: tid, cols, rows }).catch(() => {
+      /* ignore */
+    });
   },
 
   /** Kill the running process in the PTY. */
-  stop(tid: string): Promise<string> {
-    return runtime.send({ kind: "terminal_stop", terminal_id: tid });
+  async stop(tid: string): Promise<unknown> {
+    return runtimeSend("terminal.stop", { terminal_id: tid });
   },
 
   /**

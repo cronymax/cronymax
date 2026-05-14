@@ -1,5 +1,5 @@
 import { type FormEvent, type KeyboardEvent, useState } from "react";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 
 interface Props {
   flowId: string;
@@ -36,7 +36,7 @@ export function Composer({ flowId, runId, knownAgents = [] }: Props) {
     setSending(true);
     setError(null);
     try {
-      await browser.send("events.append", {
+      await shells.browser.events.append({
         kind: "text",
         flow_id: flowId,
         run_id: runId,

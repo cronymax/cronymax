@@ -5,7 +5,7 @@ import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
 import { nord } from "@milkdown/theme-nord";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 
 import { assignMissingBlockIds, formatBlockMarker, parseBlockComments, withBlockIds } from "./blockIds";
 import type { WorkbenchParams } from "./url";
@@ -41,17 +41,6 @@ import type { WorkbenchParams } from "./url";
 interface SaveStatus {
   state: "idle" | "saving" | "saved" | "error";
   message: string;
-}
-
-interface DocumentReadResponse {
-  revision: number;
-  content: string;
-}
-
-interface DocumentSubmitResponse {
-  ok: true;
-  revision: number;
-  sha: string;
 }
 
 function MilkdownInner(props: { initialMarkdown: string; onReady: (getMd: () => string) => void }) {
@@ -101,11 +90,10 @@ export function Editor({ params }: { params: WorkbenchParams }) {
     let cancelled = false;
     setInitial(null);
     setError(null);
-    void browser
-      .send("document.read", { flow: params.flow, name: params.doc })
-      .then((res) => {
+    void shells.document
+      .read({ flow: params.flow, name: params.doc })
+      .then((r) => {
         if (cancelled) return;
-        const r = res as DocumentReadResponse;
         setInitial(r.content);
         setRevision(r.revision);
       })
@@ -126,11 +114,11 @@ export function Editor({ params }: { params: WorkbenchParams }) {
       // Mint markers for any blocks the user added that don't have one.
       // Idempotent on existing markers — see web/test/blockids.test.ts.
       const content = assignMissingBlockIds(raw);
-      const res = (await browser.send("document.submit", {
+      const res = await shells.document.submit({
         flow: params.flow,
         name: params.doc,
         content,
-      })) as DocumentSubmitResponse;
+      });
       setRevision(res.revision);
       setStatus({ state: "saved", message: `Saved · rev ${res.revision}` });
       window.setTimeout(() => {

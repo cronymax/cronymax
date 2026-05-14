@@ -1,7 +1,7 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 
 import { BLOCK_MARKER_REGEX } from "./blockIds";
 import type { WorkbenchParams } from "./url";
@@ -16,17 +16,6 @@ import type { WorkbenchParams } from "./url";
 //
 // Deep-link: `#block-<uuid>` scrolls Monaco to the line carrying the
 // matching marker comment.
-
-interface DocumentReadResponse {
-  revision: number;
-  content: string;
-}
-
-interface DocumentSubmitResponse {
-  ok: true;
-  revision: number;
-  sha: string;
-}
 
 interface SaveStatus {
   state: "idle" | "saving" | "saved" | "error";
@@ -50,11 +39,10 @@ export function SourceEditor({ params }: { params: WorkbenchParams }) {
     let cancelled = false;
     setContent(null);
     setError(null);
-    void browser
-      .send("document.read", { flow: params.flow, name: params.doc })
-      .then((res) => {
+    void shells.document
+      .read({ flow: params.flow, name: params.doc })
+      .then((r) => {
         if (cancelled) return;
-        const r = res as DocumentReadResponse;
         setContent(r.content);
         setRevision(r.revision);
       })
@@ -74,11 +62,11 @@ export function SourceEditor({ params }: { params: WorkbenchParams }) {
     const text = ed.getValue();
     setStatus({ state: "saving", message: "Saving…" });
     try {
-      const res = (await browser.send("document.submit", {
+      const res = await shells.document.submit({
         flow: params.flow,
         name: params.doc,
         content: text,
-      })) as DocumentSubmitResponse;
+      });
       setRevision(res.revision);
       setStatus({ state: "saved", message: `Saved · rev ${res.revision}` });
       window.setTimeout(() => {
