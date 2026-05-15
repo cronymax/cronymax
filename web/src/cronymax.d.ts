@@ -17,14 +17,15 @@ declare global {
     cronymax?: {
       /** Renderer ↔ browser-process IPC (cefQuery + dispatch). */
       browser?: {
-        /** Set by bridge.ts; called by C++ (bridge_handler.cc / main_window.cc). */
-        onDispatch?: (event: string, payload: unknown) => void;
         /**
          * Binary msgpack fast path injected by App::OnContextCreated (C++).
          * Sends a binary-framed request to the browser process and returns a
          * Promise resolving with the decoded response object.
          */
         send?: (channel: string, payload: unknown) => Promise<unknown>;
+
+        /** Set by bridge.ts; called by C++ (bridge_handler.cc / main_window.cc). */
+        on?: (event: string, payload: unknown) => void;
       };
       /** Renderer ↔ Rust runtime IPC via CEF process messages (injected by App::OnContextCreated). */
       runtime?: {
@@ -34,12 +35,13 @@ declare global {
          * Returns a Promise resolving with the decoded ControlResponse object.
          */
         send(request: Record<string, unknown>): Promise<unknown>;
+
         /**
-         * Subscribe to a runtime topic via CEF process message.
-         * The callback receives the inner event object JSON string.
-         * Returns an unsubscribe function.
+         * Called by C++ (renderer app.cc) when a kMsgRuntimeEvent arrives.
+         * bridge.ts assigns this to route events to JS subscribers.
+         * Args: (subId: subscription UUID, event: decoded inner event object).
          */
-        subscribe(topic: string, callback: (event: string) => void): () => void;
+        on?: (subId: string, event: unknown) => void;
       };
     };
   }

@@ -189,11 +189,6 @@ class FnTextfieldDelegate : public CefTextfieldDelegate {
   DISALLOW_COPY_AND_ASSIGN(FnTextfieldDelegate);
 };
 
-// Forward declaration — defined later in this TU inside the helpers section.
-void PushToView(CefRefPtr<CefBrowserView> view,
-                const std::string& event_name,
-                const std::string& json_payload);
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -1094,45 +1089,12 @@ void MainWindow::RefreshTitleBarDragRegion() {
 // Sidebar push helper
 // ---------------------------------------------------------------------------
 
-namespace {
-
-// PushToViewExecute — called only via CefPostTask, never inline.
-// Precondition: running on TID_UI.
-static void PushToViewExecute(CefRefPtr<CefBrowserView> view,
-                              const std::string& event_name,
-                              const std::string& json_payload) {
-  CEF_REQUIRE_UI_THREAD();
-  if (!view)
-    return;
-  auto browser = view->GetBrowser();
-  if (!browser || !browser->HasDocument())
-    return;
-  auto frame = browser->GetMainFrame();
-  if (!frame || !frame->IsValid())
-    return;
-  const std::string js = "window.cronymax?.browser?.onDispatch?.('" +
-                         event_name + "'," + json_payload + ");";
-  frame->ExecuteJavaScript(js, CefString(), 0);
-}
-
-// PushToView — always defers ExecuteJavaScript to a fresh event-loop
-// iteration via CefPostTask, even when already on TID_UI.  This prevents
-// re-entrant ExecuteJavaScript calls from within CEF browser query handlers
-// (same-browser re-entrancy crashes CEF internally).
-void PushToView(CefRefPtr<CefBrowserView> view,
-                const std::string& event_name,
-                const std::string& json_payload) {
-  if (!view)
-    return;
-  CefPostTask(TID_UI, base::BindOnce(&PushToViewExecute, view, event_name,
-                                     json_payload));
-}
-
-}  // namespace
-
 void MainWindow::PushToSidebar(const std::string& event_name,
                                const std::string& json_payload) {
-  PushToView(sidebar_view(), event_name, json_payload);
+  if (auto bv = sidebar_view()) {
+    if (auto browser = bv->GetBrowser())
+      client_handler_->SendBrowserEvent(browser, event_name, json_payload);
+  }
 }
 
 void MainWindow::BroadcastToAllPanels(const std::string& event_name,
@@ -1151,10 +1113,17 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
     return;
   }
 
-  PushToView(sidebar_view(), event_name, json_payload);
+  if (auto bv = sidebar_view()) {
+    if (auto browser = bv->GetBrowser())
+      client_handler_->SendBrowserEvent(browser, event_name, json_payload);
+  }
   // Also push to the popover content view if one is open (e.g. Settings).
-  if (popover_ && popover_->IsOpen())
-    PushToView(popover_->content_view(), event_name, json_payload);
+  if (popover_ && popover_->IsOpen()) {
+    if (auto bv = popover_->content_view()) {
+      if (auto browser = bv->GetBrowser())
+        client_handler_->SendBrowserEvent(browser, event_name, json_payload);
+    }
+  }
   // Phase 9: per-kind *_view_ singletons are gone. Broadcast to every
   // tab's content browser via the TabManager.
   if (!shell_model_.tabs_)
@@ -1173,8 +1142,7 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
     }
     // Find the corresponding CefBrowserView through whichever behavior
     // exposes one. Both WebTabBehavior and SimpleTabBehavior expose
-    // browser_view(). We are on TID_UI here so GetBrowser() is safe;
-    // PushToView handles a null bv gracefully.
+    // browser_view(). We are on TID_UI here so GetBrowser() is safe.
     CefRefPtr<CefBrowserView> bv;
     if (t->kind() == TabKind::kWeb) {
       if (auto* wb = static_cast<WebTabBehavior*>(t->behavior())) {
@@ -1188,27 +1156,11 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
     fprintf(stderr, "[BroadcastToAllPanels] tab=%s kind=%s bv=%s\n",
             s.id.c_str(), TabKindToString(s.kind), bv ? "ok" : "NULL");
     fflush(stderr);
-    PushToView(bv, event_name, json_payload);
+    if (bv) {
+      if (auto browser = bv->GetBrowser())
+        client_handler_->SendBrowserEvent(browser, event_name, json_payload);
+    }
   }
-}
-
-/*static*/ std::string MainWindow::JsEsc(const std::string& s) {
-  std::string out;
-  for (char c : s) {
-    if (c == '\\')
-      out += "\\\\";
-    else if (c == '"')
-      out += "\\\"";
-    else if (c == '\'')
-      out += "\\'";
-    else if (c == '\n')
-      out += "\\n";
-    else if (c == '\r')
-      out += "\\r";
-    else
-      out += c;
-  }
-  return out;
 }
 
 // ---------------------------------------------------------------------------

@@ -185,9 +185,9 @@ export const terminal = {
    * Returns an unsubscribe function, or null if the runtime is unavailable.
    */
   subscribeOutput(tid: string, onData: (data: string) => void): (() => void) | null {
-    return runtime.subscribe(`terminal:${tid}`, (eventJson: string) => {
+    return runtime.on(`terminal:${tid}`, (event: unknown) => {
       try {
-        const ev = JSON.parse(eventJson) as Record<string, unknown>;
+        const ev = event as Record<string, unknown>;
         const pl = ev?.payload as Record<string, unknown> | undefined;
         if (pl?.kind !== "raw") return;
         const dataObj = pl?.data as Record<string, unknown> | undefined;

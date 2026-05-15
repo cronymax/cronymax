@@ -39,8 +39,8 @@ void RegisterTerminalHandlers(BridgeRegistry& r, BridgeHandler* h) {
       h->shell_cbs_.broadcast_event("terminal.created", item.dump());
       h->shell_cbs_.broadcast_event("terminal.switched", switched.dump());
     } else {
-      h->SendEvent(ctx.browser, "terminal.created", item.dump());
-      h->SendEvent(ctx.browser, "terminal.switched", switched.dump());
+      h->SendBrowserEvent(ctx.browser, "terminal.created", item.dump());
+      h->SendBrowserEvent(ctx.browser, "terminal.switched", switched.dump());
     }
     ctx.callback->Success(item);
   });
@@ -63,7 +63,7 @@ void RegisterTerminalHandlers(BridgeRegistry& r, BridgeHandler* h) {
     if (h->shell_cbs_.broadcast_event)
       h->shell_cbs_.broadcast_event("terminal.switched", body);
     else
-      h->SendEvent(ctx.browser, "terminal.switched", body);
+      h->SendBrowserEvent(ctx.browser, "terminal.switched", body);
     ctx.callback->Success(nlohmann::json{{"ok", true}});
   });
 
@@ -84,14 +84,14 @@ void RegisterTerminalHandlers(BridgeRegistry& r, BridgeHandler* h) {
     if (h->shell_cbs_.broadcast_event)
       h->shell_cbs_.broadcast_event("terminal.removed", removed);
     else
-      h->SendEvent(ctx.browser, "terminal.removed", removed);
+      h->SendBrowserEvent(ctx.browser, "terminal.removed", removed);
     if (!sp->active_terminal_id.empty()) {
       const std::string sw =
           nlohmann::json{{"id", sp->active_terminal_id}}.dump();
       if (h->shell_cbs_.broadcast_event)
         h->shell_cbs_.broadcast_event("terminal.switched", sw);
       else
-        h->SendEvent(ctx.browser, "terminal.switched", sw);
+        h->SendBrowserEvent(ctx.browser, "terminal.switched", sw);
     }
     ctx.callback->Success(nlohmann::json{{"ok", true}});
   });

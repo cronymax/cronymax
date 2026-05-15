@@ -292,45 +292,35 @@ void BridgeHandler::OnQueryCanceled(CefRefPtr<CefBrowser> browser,
 }
 
 // ---------------------------------------------------------------------------
-// SendEvent — dispatch a browser-side event to a renderer frame
+// SendBrowserEvent — dispatch a browser-side event to a renderer frame.
+// Uses a typed CefProcessMessage (kMsgBrowserEvent) instead of JS injection
+// so the renderer can decode the payload into a V8 object directly.
+//   args[0]: event name  (string)
+//   args[1]: payload     (JSON string)
 // ---------------------------------------------------------------------------
 
-void BridgeHandler::SendEvent(CefRefPtr<CefBrowser> browser,
-                              std::string_view event,
-                              std::string_view payload) {
+void BridgeHandler::SendBrowserEvent(CefRefPtr<CefBrowser> browser,
+                                     std::string_view event,
+                                     std::string_view payload) {
   const std::string ev(event);
   const std::string pl(payload);
 
-  auto dispatch = [ev, pl](CefRefPtr<CefBrowser> target) {
-    if (!target)
-      return;
-    const auto frame = target->GetMainFrame();
+  auto send = [browser, ev, pl]() {
+    const auto frame = browser->GetMainFrame();
     if (!frame)
       return;
-    const std::string js = "window.cronymax?.browser?.onDispatch?.(" +
-                           ("\"" + ev + "\"") + "," +
-                           nlohmann::json(pl).dump() + ");";
-    frame->ExecuteJavaScript(js, frame->GetURL(), 0);
+    auto msg = CefProcessMessage::Create(kMsgBrowserEvent);
+    auto args = msg->GetArgumentList();
+    args->SetString(0, ev);
+    args->SetString(1, pl);
+    frame->SendProcessMessage(PID_RENDERER, msg);
   };
 
-  if (!CefCurrentlyOn(TID_UI)) {
-    CefPostTask(TID_UI,
-                base::BindOnce(
-                    [](CefRefPtr<CefBrowser> b, std::string e, std::string p) {
-                      if (!b)
-                        return;
-                      const auto frame = b->GetMainFrame();
-                      if (!frame)
-                        return;
-                      const std::string js =
-                          "window.cronymax?.browser?.onDispatch?.(\"" + e +
-                          "\"," + nlohmann::json(p).dump() + ");";
-                      frame->ExecuteJavaScript(js, frame->GetURL(), 0);
-                    },
-                    browser, ev, pl));
-    return;
-  }
-  dispatch(browser);
+  if (CefCurrentlyOn(TID_UI))
+    send();
+  else
+    CefPostTask(TID_UI, base::BindOnce([](decltype(send) fn) { fn(); },
+                                       std::move(send)));
 }
 
 // ---------------------------------------------------------------------------

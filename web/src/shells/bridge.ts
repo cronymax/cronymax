@@ -28,7 +28,7 @@ import {
 } from "./browser";
 
 type AnyEventHandler = (payload: unknown) => void;
-const subscribers = new Map<string, Set<AnyEventHandler>>();
+const browserSubscriptions = new Map<string, Set<AnyEventHandler>>();
 
 // ---------------------------------------------------------------------------
 // Navigates the nested Channels tree by a dot-path to find the leaf ChannelDef.
@@ -45,7 +45,7 @@ function lookupChannel(path: string): { req: z.ZodTypeAny; res: z.ZodTypeAny } |
 }
 
 function dispatch(event: string, rawPayload: unknown) {
-  const handlers = subscribers.get(event);
+  const handlers = browserSubscriptions.get(event);
   // eslint-disable-next-line no-console
   if (event === "event") console.log("[bridge] dispatch 'event'", handlers?.size ?? 0, "handlers", rawPayload);
   if (!handlers) return;
@@ -144,10 +144,10 @@ function send<C extends ChannelName>(channel: C, payload?: RequestOf<C>): Promis
 }
 
 function on<E extends EventName>(event: E, handler: (payload: EventPayloadOf<E>) => void): () => void {
-  let set = subscribers.get(event);
+  let set = browserSubscriptions.get(event);
   if (!set) {
     set = new Set();
-    subscribers.set(event, set);
+    browserSubscriptions.set(event, set);
   }
   const wrapped = handler as AnyEventHandler;
   set.add(wrapped);
@@ -159,6 +159,40 @@ function on<E extends EventName>(event: E, handler: (payload: EventPayloadOf<E>)
 // ---------------------------------------------------------------------------
 export const browser = { send, on };
 
+// ---------------------------------------------------------------------------
+// Runtime event routing
+//
+// `runtime.on("*", cb)` — wildcard: routed via broadcast_event("event", ...)
+//   which already broadcasts ALL runtime events from WireSpaceEventCallback.
+//   The full envelope is parsed and the inner event object is delivered to cb.
+//
+// `runtime.on("topic", cb)` — topic-specific: sends a subscribe ctrl request
+//   to get a subscription UUID, then routes kMsgRuntimeEvent arrivals via
+//   window.cronymax.runtime.on (called by C++ renderer app.cc).
+// ---------------------------------------------------------------------------
+
+/** UUID → callback for topic-specific runtime subscriptions. */
+const runtimeSubscriptions = new Map<string, (event: unknown) => void>();
+/** Wildcard handlers registered via runtime.on("*", cb). */
+const runtimeWildcard = new Set<(event: unknown) => void>();
+
+// Route "event" broadcasts (from WireSpaceEventCallback) to wildcard handlers.
+// rawPayload is already a parsed object from the dispatch() fast-path; extract
+// the inner event object and forward it directly — no JSON round-trip needed.
+on("event", (rawPayload: unknown) => {
+  if (runtimeWildcard.size === 0) return;
+  const envelope = rawPayload as Record<string, unknown>;
+  const innerEvent = envelope.event !== undefined ? envelope.event : envelope;
+  for (const cb of runtimeWildcard) {
+    try {
+      cb(innerEvent);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[bridge] runtime wildcard handler threw", err);
+    }
+  }
+});
+
 // Expose window.cronymax.browser so any built-in page can reach the
 // browser-process IPC without importing this module.
 // C++ (App::OnContextCreated) creates window.cronymax and pre-populates
@@ -168,11 +202,21 @@ window.cronymax = {
   browser: {
     ...window.cronymax?.browser,
     // C++ (bridge_handler.cc, main_window.cc) calls this to deliver events.
-    onDispatch: (event: string, payload: unknown) => {
+    on: (event: string, payload: unknown) => {
       dispatch(event, payload);
     },
   },
 };
+// Set runtime.on separately to avoid TypeScript issues from spreading
+// a potentially-undefined optional object (which would make `send` optional).
+// C++ (OnContextCreated) already populated window.cronymax.runtime.send; we
+// only add on so JS can receive kMsgRuntimeEvent forwards.
+if (window.cronymax?.runtime) {
+  window.cronymax.runtime.on = (subId: string, event: unknown) => {
+    const cb = runtimeSubscriptions.get(subId);
+    if (cb) cb(event);
+  };
+}
 
 // ---------------------------------------------------------------------------
 // window.cronymax.shells — nested path-accumulating proxy for all channels.
@@ -280,11 +324,52 @@ export const runtime = {
 
   /**
    * Subscribe to a runtime topic.
+   *
+   * - `"*"` — wildcard, receives all runtime events via the existing
+   *   broadcast_event("event", ...) path. No runtime subscription needed.
+   * - Any other topic — sends a subscribe ctrl request to the runtime and
+   *   routes kMsgRuntimeEvent arrivals via window.cronymax.runtime.on.
+   *
+   * The callback receives the inner event object as a plain JS object
+   * ({sequence, emitted_at_ms, payload:{...}}).
    * Returns an unsubscribe function, or null if the runtime is unavailable.
-   * The callback receives the inner event object JSON string
-   * (i.e. {sequence, emitted_at_ms, payload:{...}}).
    */
-  subscribe(topic: string, cb: (eventJson: string) => void): (() => void) | null {
-    return window.cronymax?.runtime?.subscribe?.(topic, cb) ?? null;
+  on(topic: string, cb: (event: unknown) => void): (() => void) | null {
+    if (topic === "*") {
+      runtimeWildcard.add(cb);
+      return () => {
+        runtimeWildcard.delete(cb);
+      };
+    }
+
+    if (!window.cronymax?.runtime?.send) return null;
+
+    let subId: string | null = null;
+    let unsubscribed = false;
+
+    (window.cronymax.runtime.send({ kind: "subscribe", topic }) as Promise<unknown>)
+      .then((resp) => {
+        const uuid = (resp as Record<string, unknown>).subscription as string | undefined;
+        if (!uuid) return;
+        if (unsubscribed) {
+          // Caller already unsubscribed before confirm arrived — clean up.
+          window.cronymax?.runtime?.send?.({ kind: "unsubscribe", subscription: uuid });
+          return;
+        }
+        subId = uuid;
+        runtimeSubscriptions.set(uuid, cb);
+      })
+      .catch(() => {
+        // Subscription failed; nothing to clean up.
+      });
+
+    return () => {
+      unsubscribed = true;
+      if (subId) {
+        runtimeSubscriptions.delete(subId);
+        window.cronymax?.runtime?.send?.({ kind: "unsubscribe", subscription: subId });
+        subId = null;
+      }
+    };
   },
 };

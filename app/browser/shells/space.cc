@@ -65,7 +65,7 @@ void RegisterSpaceHandlers(BridgeRegistry& r, BridgeHandler* h) {
       if (s->id == id) {
         const auto sj = SpaceToJson(*s);
         ctx.callback->Success(sj);
-        h->SendEvent(ctx.browser, "space.created", sj.dump());
+        h->SendBrowserEvent(ctx.browser, "space.created", sj.dump());
         return;
       }
     }
@@ -92,8 +92,8 @@ void RegisterSpaceHandlers(BridgeRegistry& r, BridgeHandler* h) {
       return;
     }
     ctx.callback->Success(nlohmann::json{{"ok", true}});
-    h->SendEvent(ctx.browser, "space.deleted",
-                 nlohmann::json{{"space_id", id}}.dump());
+    h->SendBrowserEvent(ctx.browser, "space.deleted",
+                        nlohmann::json{{"space_id", id}}.dump());
   });
 }
 

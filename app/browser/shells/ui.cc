@@ -21,7 +21,8 @@ static inline nlohmann::json ParseShellCbResult(const std::string& s) {
 void RegisterShellHandlers(BridgeRegistry& r, BridgeHandler* h) {
   // ── agent.task_from_command ───────────────────────────────────────────────
   r.add("browser.agent.task_from_command", [h](BridgeCtx ctx) {
-    h->SendEvent(ctx.browser, "agent.task_from_command", ctx.payload.dump());
+    h->SendBrowserEvent(ctx.browser, "agent.task_from_command",
+                        ctx.payload.dump());
     ctx.callback->Success(nlohmann::json{{"ok", true}});
   });
 

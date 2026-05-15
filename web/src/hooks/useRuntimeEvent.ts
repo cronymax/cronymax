@@ -2,17 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { browser, runtime } from "@/shells/bridge";
 
 /**
- * Subscribe to a runtime topic via `window.cronymax.runtime.subscribe`.
+ * Subscribe to a runtime topic via `runtime.on`.
  * Auto-unsubscribes on unmount. The handler is stable-referenced so closure
  * changes never force a resubscription.
  *
  * Automatically resubscribes after a space switch (runtime restart) by
  * watching the `space.switch_loading` bridge event.
  *
- * The callback receives the inner event object JSON string:
+ * The callback receives the inner event as a plain JS object:
  *   `{ sequence, emitted_at_ms, payload: { ... } }`
  */
-export function useRuntimeEvent(topic: string, handler: (eventJson: string) => void): void {
+export function useRuntimeEvent(topic: string, handler: (event: unknown) => void): void {
   const handlerRef = useRef(handler);
   handlerRef.current = handler;
 
@@ -37,7 +37,7 @@ export function useRuntimeEvent(topic: string, handler: (eventJson: string) => v
   }, []);
 
   useEffect(() => {
-    const unsub = runtime.subscribe(topic, (ev) => handlerRef.current(ev));
+    const unsub = runtime.on(topic, (ev) => handlerRef.current(ev));
     return () => unsub?.();
   }, [topic, epoch]);
 }

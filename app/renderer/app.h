@@ -31,8 +31,6 @@ class App : public CefApp, public CefRenderProcessHandler {
  private:
   // V8 handler classes access private bridge state.
   friend class RuntimeCtrlHandler;
-  friend class RuntimeSubscribeHandler;
-  friend class RuntimeUnsubscribeHandler;
   friend class BrowserCtrlHandler;
 
   CefRefPtr<CefMessageRouterRendererSide> render_message_router_;
@@ -41,15 +39,6 @@ class App : public CefApp, public CefRenderProcessHandler {
   // Populated by RuntimeCtrlHandler, resolved/rejected in
   // OnProcessMessageReceived.
   std::map<std::string, CefRefPtr<CefV8Value>> pending_runtime_ctrl_callbacks_;
-
-  // Subscribe requests awaiting confirmation: corr_id → JS event callback.
-  std::map<std::string, CefRefPtr<CefV8Value>> pending_runtime_sub_callbacks_;
-
-  // Active event subscriptions: runtime subscription UUID → JS callback.
-  std::map<std::string, CefRefPtr<CefV8Value>> runtime_subscribers_;
-
-  // Subscribe corr_id → confirmed subscription UUID (used by UnsubHandler).
-  std::map<std::string, std::string> corr_to_runtime_sub_id_;
 
   // Pending browser JSB Promises: corr_id → Promise object.
   std::map<std::string, CefRefPtr<CefV8Value>> pending_browser_ctrl_callbacks_;

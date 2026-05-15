@@ -238,15 +238,11 @@ export function useActivityFeed(filter: "all" | "live" | "needs_review") {
 
   // Subscribe to all runtime events for live updates.
   useEffect(() => {
-    const unsub = runtime.subscribe("*", (eventJson: string) => {
-      let event: Record<string, unknown>;
-      try {
-        event = JSON.parse(eventJson) as Record<string, unknown>;
-      } catch {
-        return;
-      }
+    const unsub = runtime.on("*", (event: unknown) => {
+      const ev = event as Record<string, unknown>;
+      if (!ev) return;
 
-      const payload = event.payload as Record<string, unknown> | undefined;
+      const payload = ev.payload as Record<string, unknown> | undefined;
       if (!payload) return;
       const kind = payload.kind as string | undefined;
       const runId = payload.run_id as string | undefined;

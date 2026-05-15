@@ -727,7 +727,7 @@ export function App() {
 
   // ── terminal output → ShellBlock accumulation ──────────────────────────
   // Topic-scoped to the active terminal; auto-resubscribes on space switch.
-  useRuntimeEvent(state.terminalTid ? `terminal:${state.terminalTid}` : "", (eventJson: string) => {
+  useRuntimeEvent(state.terminalTid ? `terminal:${state.terminalTid}` : "", (event: unknown) => {
     const blockId = runningBlockIdRef.current;
     if (!blockId) return;
 
@@ -736,7 +736,7 @@ export function App() {
 
     let data: string;
     try {
-      const ev = JSON.parse(eventJson) as Record<string, unknown>;
+      const ev = event as Record<string, unknown>;
       const pl = ev?.payload as Record<string, unknown> | undefined;
       if (pl?.kind !== "raw") return;
       const dataObj = pl?.data as Record<string, unknown> | undefined;

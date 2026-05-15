@@ -2,13 +2,9 @@
 // Renderer↔browser runtime IPC: HandleRuntimeProcessMessage, SendRuntimeReply,
 // SendRuntimeEvent.
 //
-// JSON optimization (perf):
-//   SendRuntimeReply adds args[3]=kind_hint and args[4]=sub_id_hint so the
-//   renderer can route "subscribed" replies without parsing the JSON body.
-//
-//   SendRuntimeEvent sends only the inner event object
-//   (event_envelope["event"]) as args[1] so the renderer can pass it to JS
-//   callbacks without parse+dump.
+// Note: subscribe/unsubscribe are handled as ordinary control requests here;
+// JS manages subscription UUIDs and routes kMsgRuntimeEvent via
+// window.cronymax.runtime.on (set by bridge.ts).
 
 #include "browser/bridge_handler.h"
 
@@ -145,34 +141,19 @@ bool BridgeHandler::HandleRuntimeProcessMessage(
   return true;
 }
 
-// JSON optimization: add args[3]=kind_hint and args[4]=sub_id_hint so the
-// renderer can avoid parsing the JSON body for the "subscribed" fast path.
+// SendRuntimeReply — sends a msgpack-encoded reply to the renderer.
 void BridgeHandler::SendRuntimeReply(CefRefPtr<CefBrowser> browser,
                                      const std::string& corr_id,
                                      const nlohmann::json& response,
                                      bool is_error) {
-  // Extract routing hints before serializing — O(1) map lookup.
-  std::string kind_hint;
-  std::string sub_id_hint;
-  if (!is_error) {
-    kind_hint = response.value("kind", "");
-    if (kind_hint == "subscribed")
-      sub_id_hint = response.value("subscription", "");
-  }
-
   auto send = [browser, corr_id,
-               resp_bytes = nlohmann::json::to_msgpack(response), is_error,
-               kind_hint = std::move(kind_hint),
-               sub_id_hint = std::move(sub_id_hint)]() {
+               resp_bytes = nlohmann::json::to_msgpack(response), is_error]() {
     auto msg = CefProcessMessage::Create(kMsgRuntimeCtrlReply);
     auto args = msg->GetArgumentList();
     args->SetString(0, corr_id);
     args->SetBinary(
         1, CefBinaryValue::Create(resp_bytes.data(), resp_bytes.size()));
     args->SetBool(2, is_error);
-    args->SetString(3, kind_hint);  // perf hint: "subscribed" or ""
-    args->SetString(4,
-                    sub_id_hint);  // perf hint: subscription id when subscribed
     auto frame = browser->GetMainFrame();
     if (frame)
       frame->SendProcessMessage(PID_RENDERER, msg);

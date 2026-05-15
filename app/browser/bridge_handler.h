@@ -27,6 +27,7 @@ static constexpr char kMsgRuntimeEvent[] = "cronymax.runtime.event";
 // CEF process-message names used on the renderer↔browser channel.
 static constexpr char kMsgBrowserCtrl[] = "cronymax.browser.ctrl";
 static constexpr char kMsgBrowserCtrlReply[] = "cronymax.browser.ctrl.reply";
+static constexpr char kMsgBrowserEvent[] = "cronymax.browser.event";
 
 // Forward declaration; defined in bridge_handler.cc.
 class ControlEnricher;
@@ -185,9 +186,9 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   void DeliverPermissionResponse(const std::string& request_id, bool allow);
 
   // Broadcast an event to all open browser frames.
-  void SendEvent(CefRefPtr<CefBrowser> browser,
-                 std::string_view event,
-                 std::string_view payload);
+  void SendBrowserEvent(CefRefPtr<CefBrowser> browser,
+                        std::string_view event,
+                        std::string_view payload);
 
   // Register shell callbacks (called by MainWindow after BuildChrome).
   void SetShellCallbacks(ShellCallbacks cbs) { shell_cbs_ = std::move(cbs); }
