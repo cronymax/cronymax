@@ -44,6 +44,7 @@ constexpr std::array<IconSpec, static_cast<size_t>(IconId::kCount)> kSpecs = {{
     {IconId::kCopy, "copy.svg"},
     {IconId::kOpenInProduct, "open-in-product.svg"},
     {IconId::kOpenInWindow, "open-in-window.svg"},
+    {IconId::kOpenExternal, "link-external.svg"},
     {IconId::kActivities, "pulse.svg"},
 }};
 

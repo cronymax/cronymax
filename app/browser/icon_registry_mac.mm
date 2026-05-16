@@ -43,12 +43,16 @@ CefRefPtr<CefImage> RasterizeIconSvg(std::string_view svg_data,
     const size_t row_bytes = pix_w * 4;
     const size_t data_size = row_bytes * pix_h;
 
-    // RGBA premultiplied, big-endian byte order so memory layout is R,G,B,A.
+    // Use native macOS format: ARGB with host byte order.
+    // On little-endian (all modern Macs) this stores bytes as [B,G,R,A]
+    // in memory, which matches CEF_COLOR_TYPE_BGRA_8888.
+    // Using the native format ensures CoreGraphics renders the NSImage
+    // correctly (non-native byte orders may silently fail to paint).
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGContextRef ctx = CGBitmapContextCreate(
         nullptr, pix_w, pix_h, 8, row_bytes, cs,
-        static_cast<uint32_t>(kCGImageAlphaPremultipliedLast) |
-            static_cast<uint32_t>(kCGBitmapByteOrder32Big));
+        static_cast<uint32_t>(kCGImageAlphaPremultipliedFirst) |
+            static_cast<uint32_t>(kCGBitmapByteOrder32Host));
     CGColorSpaceRelease(cs);
     if (!ctx) {
       LOG(ERROR) << "IconRegistry: failed to create CGBitmapContext";
@@ -84,7 +88,7 @@ CefRefPtr<CefImage> RasterizeIconSvg(std::string_view svg_data,
     CefRefPtr<CefImage> cef_image = CefImage::CreateImage();
     bool ok =
         cef_image->AddBitmap(scale_factor, static_cast<int>(pix_w),
-                             static_cast<int>(pix_h), CEF_COLOR_TYPE_RGBA_8888,
+                             static_cast<int>(pix_h), CEF_COLOR_TYPE_BGRA_8888,
                              CEF_ALPHA_TYPE_PREMULTIPLIED, pixels, data_size);
     CGContextRelease(ctx);
     if (!ok) {

@@ -8,6 +8,7 @@
 #include "browser/client_handler.h"
 #include "browser/icon_registry.h"
 #include "browser/models/view_observer.h"
+#include "browser/platform/open_url_mac.h"
 #include "browser/toolbar/tab_toolbar.h"
 #include "include/base/cef_callback.h"
 #include "include/cef_browser.h"
@@ -80,11 +81,12 @@ void WebTabBehavior::BuildToolbar(TabToolbar* toolbar,
       br->Reload();
   });
 
-  // Trailing: new-tab placeholder.
-  h_new_tab_ = toolbar->AddTrailingAction(IconId::kNewTab, "New Tab", [this]() {
-    if (browser_view_ && browser_view_->GetBrowser())
-      browser_view_->GetBrowser()->GetMainFrame()->LoadURL("about:blank");
-  });
+  // Trailing: open current page in the system default browser.
+  h_open_external_ = toolbar->AddTrailingAction(
+      IconId::kOpenExternal, "Open in Browser", [this]() {
+        if (!current_url_.empty())
+          OpenUrlExternal(current_url_);
+      });
 
   // Textfield event callbacks wired after Build (which created url_field_).
   toolbar->SetKeyCallback([this](int vk) -> bool {
@@ -269,7 +271,7 @@ void WebTabBehavior::OnLoadEnd(const std::string& url) {
   }
   if(c&&c.charCodeAt(0)===35&&window.cefQuery){
     window.cefQuery({
-      request:'tab.set_chrome_theme\n{"tabId":"__TAB_ID__","color":"'+c+'"}',
+      request:'browser.tab.set_chrome_theme\n{"tabId":"__TAB_ID__","color":"'+c+'"}',
       onSuccess:function(){},
       onFailure:function(){}
     });
@@ -295,11 +297,10 @@ void WebTabBehavior::OnUrlFieldKeyEvent(int windows_key_code) {
 }
 
 void WebTabBehavior::OnUrlFieldFocused() {
-  // Best-effort: select-all on focus. OnAfterUserAction fires on every key
-  // press too, so guard so we don't re-select while typing.
-  if (toolbar_ && toolbar_->GetUrl() == current_url_) {
-    toolbar_->FocusUrlField();
-  }
+  // Intentionally empty.  SelectAll is only triggered via the external
+  // FocusUrlField() path (Cmd-L shortcut).  Firing it here (on every
+  // OnAfterUserAction) would reset the cursor position whenever the user
+  // edits the URL and then reverts to the original string.
 }
 
 void WebTabBehavior::NavigateToCurrentField() {

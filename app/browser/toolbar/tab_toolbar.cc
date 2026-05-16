@@ -168,8 +168,7 @@ void TabToolbar::SetChromeColor(const std::string& css_or_empty) {
     trailing()->SetBackgroundColor(bg);
 
   // Keep action button/wrapper backgrounds and icon tints in sync with the
-  // new panel color. dark_mode is re-derived from the computed fg color using
-  // the same green-channel heuristic as ToolbarBase::ApplyTheme.
+  // new panel color.  dark_mode is derived from the fg luminance.
   const bool new_dark_mode = ((fg >> 8) & 0xFF) > 0x80;
   UpdateActionBackgrounds(bg, new_dark_mode);
 
@@ -177,6 +176,18 @@ void TabToolbar::SetChromeColor(const std::string& css_or_empty) {
     url_field_->SetBackgroundColor(bg);
     url_field_->SetTextColor(fg);
   }
+}
+
+// ---------------------------------------------------------------------------
+// OnAfterApplyTheme
+// ---------------------------------------------------------------------------
+
+void TabToolbar::OnAfterApplyTheme(const ThemeChrome& /*chrome*/) {
+  // Re-apply the page-color override if one is active.  ApplyTheme resets
+  // all backgrounds to the app-level chrome; this call restores the
+  // page-specific tint so the toolbar keeps matching the loaded web page.
+  if (!chrome_override_.empty())
+    SetChromeColor(chrome_override_);
 }
 
 }  // namespace cronymax

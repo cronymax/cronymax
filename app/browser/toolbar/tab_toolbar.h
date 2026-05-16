@@ -45,6 +45,9 @@ class TabToolbar : public ToolbarBase {
  protected:
   CefRefPtr<CefView> CreateMiddleWidget(const ThemeChrome& chrome) override;
   void ApplyMiddleTheme(const ThemeChrome& chrome) override;
+  // Re-applies the page-color chrome override if one is active, so it
+  // survives app-level ApplyTheme calls.
+  void OnAfterApplyTheme(const ThemeChrome& chrome) override;
 
  private:
   friend class UrlFieldDelegate;

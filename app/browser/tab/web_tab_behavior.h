@@ -110,7 +110,7 @@ class WebTabBehavior : public TabBehavior {
   ToolbarBase::ActionHandle h_back_ = ToolbarBase::kInvalidHandle;
   ToolbarBase::ActionHandle h_fwd_ = ToolbarBase::kInvalidHandle;
   ToolbarBase::ActionHandle h_refresh_ = ToolbarBase::kInvalidHandle;
-  ToolbarBase::ActionHandle h_new_tab_ = ToolbarBase::kInvalidHandle;
+  ToolbarBase::ActionHandle h_open_external_ = ToolbarBase::kInvalidHandle;
 
   base::WeakPtrFactory<WebTabBehavior> weak_factory_;
 };

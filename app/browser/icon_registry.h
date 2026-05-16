@@ -40,8 +40,9 @@ enum class IconId {
   kCopy,           // copy — clipboard copy action
   kOpenInProduct,
   kOpenInWindow,
-  kActivities,  // pulse — Activity panel
-  kCount,       // sentinel
+  kOpenExternal,  // link-external — open current page in system browser
+  kActivities,    // pulse — Activity panel
+  kCount,         // sentinel
 };
 
 class IconRegistry {

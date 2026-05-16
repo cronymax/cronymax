@@ -83,6 +83,10 @@ class ToolbarBase : public ThemeAwareView {
   virtual CefRefPtr<CefView> CreateMiddleWidget(const ThemeChrome& chrome) = 0;
   // Subclass re-colors the middle widget on theme change.
   virtual void ApplyMiddleTheme(const ThemeChrome& chrome) = 0;
+  // Called at the end of ApplyTheme(), after all base re-theming is done.
+  // Subclasses that maintain a page-color chrome override should re-apply it
+  // here so the override survives app-level theme changes.
+  virtual void OnAfterApplyTheme(const ThemeChrome& chrome) {}
 
   bool dark_mode() const { return dark_mode_; }
 

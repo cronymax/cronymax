@@ -138,8 +138,13 @@ ToolbarBase::ActionHandle ToolbarBase::AddLeadingAction(
 
   auto btn =
       MakeIconButton(new FnButtonDelegate(std::move(callback)), icon, tooltip);
-  if (current_bg_)
-    btn->SetBackgroundColor(current_bg_);
+  {
+    const cef_color_t fg = dark_mode_ ? 0xFFE8F2F0u : 0xFF13201Eu;
+    btn->SetTextColor(CEF_BUTTON_STATE_NORMAL, fg);
+    btn->SetTextColor(CEF_BUTTON_STATE_HOVERED, fg);
+    if (current_bg_)
+      btn->SetBackgroundColor(current_bg_);
+  }
   IconRegistry::ApplyToButton(btn, icon, dark_mode_);
 
   auto wrapper =
@@ -170,8 +175,13 @@ ToolbarBase::ActionHandle ToolbarBase::AddTrailingAction(
 
   auto btn =
       MakeIconButton(new FnButtonDelegate(std::move(callback)), icon, tooltip);
-  if (current_bg_)
-    btn->SetBackgroundColor(current_bg_);
+  {
+    const cef_color_t fg = dark_mode_ ? 0xFFE8F2F0u : 0xFF13201Eu;
+    btn->SetTextColor(CEF_BUTTON_STATE_NORMAL, fg);
+    btn->SetTextColor(CEF_BUTTON_STATE_HOVERED, fg);
+    if (current_bg_)
+      btn->SetBackgroundColor(current_bg_);
+  }
   IconRegistry::ApplyToButton(btn, icon, dark_mode_);
 
   auto wrapper =
@@ -230,8 +240,11 @@ void ToolbarBase::UpdateActionIcon(ActionHandle handle, IconId new_icon) {
 void ToolbarBase::UpdateActionBackgrounds(cef_color_t bg, bool dark_mode) {
   current_bg_ = bg;
   dark_mode_ = dark_mode;
+  const cef_color_t fg = dark_mode ? 0xFFE8F2F0u : 0xFF13201Eu;
   for (auto& e : leading_actions_) {
     if (e.btn) {
+      e.btn->SetTextColor(CEF_BUTTON_STATE_NORMAL, fg);
+      e.btn->SetTextColor(CEF_BUTTON_STATE_HOVERED, fg);
       e.btn->SetBackgroundColor(bg);
       IconRegistry::ApplyToButton(e.btn, e.icon, dark_mode_);
     }
@@ -240,6 +253,8 @@ void ToolbarBase::UpdateActionBackgrounds(cef_color_t bg, bool dark_mode) {
   }
   for (auto& e : trailing_actions_) {
     if (e.btn) {
+      e.btn->SetTextColor(CEF_BUTTON_STATE_NORMAL, fg);
+      e.btn->SetTextColor(CEF_BUTTON_STATE_HOVERED, fg);
       e.btn->SetBackgroundColor(bg);
       IconRegistry::ApplyToButton(e.btn, e.icon, dark_mode_);
     }
@@ -255,7 +270,16 @@ void ToolbarBase::UpdateActionBackgrounds(cef_color_t bg, bool dark_mode) {
 void ToolbarBase::ApplyTheme(const ThemeChrome& chrome) {
   const cef_color_t bg = chrome.bg_float;
   current_bg_ = bg;
-  dark_mode_ = ((chrome.text_title >> 8) & 0xFF) > 0x80;
+  // Derive dark_mode from the actual toolbar background luminance, consistent
+  // with TextColorForBg in tab_toolbar.cc.  Using text_title's green channel
+  // was unreliable when text_title had mid-range values.
+  {
+    const float r = ((bg >> 16) & 0xFF) / 255.0f;
+    const float g = ((bg >> 8) & 0xFF) / 255.0f;
+    const float b = ((bg >> 0) & 0xFF) / 255.0f;
+    const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    dark_mode_ = (lum < 0.45f);
+  }
 
   if (root_)
     root_->SetBackgroundColor(bg);
@@ -269,6 +293,7 @@ void ToolbarBase::ApplyTheme(const ThemeChrome& chrome) {
   UpdateActionBackgrounds(bg, dark_mode_);
 
   ApplyMiddleTheme(chrome);
+  OnAfterApplyTheme(chrome);
 }
 
 }  // namespace cronymax
