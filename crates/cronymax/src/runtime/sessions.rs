@@ -303,6 +303,7 @@ impl SessionManager {
             ],
             tools: Vec::new(),
             temperature: None,
+            reasoning_effort: None,
             thinking: None,
         };
 

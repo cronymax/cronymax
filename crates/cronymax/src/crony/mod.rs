@@ -56,6 +56,7 @@ impl CronyBuiltin {
             prompt_source: PromptSource::Builtin,
             memory_namespace: String::new(),
             tools: Vec::new(),
+            reasoning_effort: String::new(),
             inject_workspace: true,
             vars: std::collections::HashMap::new(),
             reflection: Some(ReflectionConfig {

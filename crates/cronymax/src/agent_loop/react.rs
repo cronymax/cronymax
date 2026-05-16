@@ -636,6 +636,7 @@ impl ReactLoop {
             messages: reflect_history,
             tools: vec![], // No tools during reflection.
             temperature: Some(0.3),
+            reasoning_effort: None,
             thinking: None,
         };
 
