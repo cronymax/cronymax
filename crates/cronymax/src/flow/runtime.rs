@@ -159,8 +159,6 @@ pub struct InvocationContext {
     pub available_docs: Vec<AvailableDoc>,
     /// Next pending ports for the node, in YAML declaration order.
     pub pending_ports: Vec<String>,
-    /// Pre-rendered system message to prepend to the agent's initial history.
-    pub system_message: String,
     /// Reviewer feedback to inject on `rejected_requeue`. `None` for all other
     /// trigger kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,119 +184,12 @@ impl InvocationContext {
         pending_ports: Vec<String>,
         review_comments: Option<Vec<ReviewComment>>,
     ) -> Self {
-        let next_task = pending_ports.first().map(|p| p.as_str()).unwrap_or("none");
-
-        let available_summary = if available_docs.is_empty() {
-            "No documents have been approved yet in this run.".to_owned()
-        } else {
-            available_docs
-                .iter()
-                .map(|d| format!("  - {} ({}, rev {})", d.path, d.doc_type, d.revision))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        let pending_summary = if pending_ports.is_empty() {
-            "All your ports are complete.".to_owned()
-        } else {
-            pending_ports
-                .iter()
-                .enumerate()
-                .map(|(i, p)| format!("  {}. {}", i + 1, p))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        let trigger_context = match (trigger.kind.as_str(), trigger.approved_port.as_deref()) {
-            ("and_join", Some(port)) => format!(
-                "All required inputs for node `{node_id}` have been approved. \
-                 Last approval: `{port}` from node `{}`.",
-                trigger.from_node.as_deref().unwrap_or("?")
-            ),
-            ("cycle_retrigger", Some(port)) => format!(
-                "Node `{node_id}` has been re-triggered by the cycle input `{port}` \
-                 from node `{}`.",
-                trigger.from_node.as_deref().unwrap_or("?")
-            ),
-            ("implicit_reinvoke", Some(port)) => format!(
-                "Your output `{port}` was approved. You still have pending ports — \
-                 please continue with the next task."
-            ),
-            ("rejected_requeue", Some(port)) => format!(
-                "Your submission for port `{port}` was rejected with change requests. \
-                 Please address the reviewer feedback below and resubmit."
-            ),
-            ("reviewer_invocation", Some(port)) => {
-                let doc_path = trigger
-                    .reviewer_doc_path
-                    .as_deref()
-                    .unwrap_or("<unknown path>");
-                let producer = trigger.from_node.as_deref().unwrap_or("?");
-                format!(
-                    "You have been assigned to review the document submitted by node `{producer}` \
-                     at port `{port}`.\n\
-                     Document path: `{doc_path}`\n\n\
-                     Use the `read_file` tool to load the document, then call \
-                     `flow_submit_review` with your verdict (`approve` or `reject`) \
-                     and optional structured comments."
-                )
-            }
-            _ => format!("Node `{node_id}` ({owner}) is being invoked."),
-        };
-
-        // Reviewer invocations use a different system message structure.
-        if trigger.kind == "reviewer_invocation" {
-            return InvocationContext {
-                node_id: node_id.to_owned(),
-                owner: owner.to_owned(),
-                trigger,
-                available_docs,
-                pending_ports,
-                system_message: format!("## FlowRuntime: Review Assignment\n\n{trigger_context}"),
-                review_comments: None,
-            };
-        }
-
-        let feedback_section = match &review_comments {
-            Some(comments) if !comments.is_empty() => {
-                let items = comments
-                    .iter()
-                    .map(|c| {
-                        let sev = c.severity.to_uppercase();
-                        match &c.suggestion {
-                            Some(s) => format!("  - [{sev}] {} → {s}", c.message),
-                            None => format!("  - [{sev}] {}", c.message),
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!("\n\n### Reviewer Feedback (address before resubmitting)\n{items}")
-            }
-            Some(_) => {
-                "\n\n### Reviewer Feedback\nNo specific comments provided. Review the document and improve quality.".to_owned()
-            }
-            None => String::new(),
-        };
-
-        let system_message = format!(
-            "## FlowRuntime: Invocation Context\n\n\
-             {trigger_context}\n\n\
-             ### Your Next Task\n\
-             Submit a document of type: **{next_task}**\n\n\
-             ### Your Pending Ports (in order)\n\
-             {pending_summary}\n\n\
-             ### Available Approved Documents\n\
-             {available_summary}{feedback_section}\n\n\
-             Proceed with your next task. Use the `submit_document` tool when ready."
-        );
-
         InvocationContext {
             node_id: node_id.to_owned(),
             owner: owner.to_owned(),
             trigger,
             available_docs,
             pending_ports,
-            system_message,
             review_comments,
         }
     }
@@ -685,7 +576,6 @@ impl FlowRuntime {
                 },
                 available_docs: vec![],
                 pending_ports: vec![],
-                system_message: String::new(),
                 review_comments: None,
             });
         }
@@ -957,7 +847,6 @@ impl FlowRuntime {
                 },
                 available_docs: vec![],
                 pending_ports: vec![],
-                system_message: String::new(),
                 review_comments: None,
             }]));
         }

@@ -31,12 +31,10 @@ use crate::agent_loop::{
 use crate::capability::agent_loader;
 use crate::capability::dispatcher::HostCapabilityDispatcher;
 use crate::capability::filesystem::{LocalFilesystem, WorkspaceScope};
-use crate::capability::flow_tools::{register_flow_tools, register_submit_review, SpawnAgentFn};
+use crate::capability::flow_tools::{register_flow_tools, SpawnAgentFn};
 use crate::capability::notify::NullNotify;
 use crate::capability::shell::LocalShell;
 use crate::capability::submit_document::DocumentSubmitted;
-use crate::flow::definition::FlowDefinition;
-use crate::flow::runtime::{FlowRuntime, InvocationContext};
 use crate::llm::{
     copilot_auth, AnthropicConfig, AnthropicProvider, CapabilityResolver, OpenAiConfig,
     OpenAiProvider, ThinkingConfig,
@@ -49,14 +47,34 @@ use crate::runtime::middleware::{
     LlmDurationStore, MiddlewareChain, TimingMiddleware, TokenAccumulatorMiddleware,
     ToolDurationStore, TraceEmitterMiddleware,
 };
-use crate::sandbox::broker::PermissionBroker;
-use crate::sandbox::fs_gate::PolicyFilesystem;
 use crate::sandbox::policy::SandboxPolicy;
-use crate::sandbox::shell_gate::PolicyShell;
 use uuid::Uuid;
 
 use super::authority::{AuthorityError, RuntimeAuthority, SubscribeOutcome};
 use super::state::{PermissionState, ReviewId, RunId, SessionId, Space, SpaceId};
+use crate::capability::SandboxTier;
+use crate::llm::LlmConfig;
+use crate::runtime::agent_runner::AgentRunner;
+use crate::runtime::run_context::RunContext;
+use crate::runtime::services::RuntimeServices;
+
+/// Build the workspace context block appended to an agent's system prompt
+/// when `inject_workspace = true`. Minimal: just workspace path + tool names.
+fn build_workspace_injection_block(
+    workspace_path: &std::path::Path,
+    tool_names: &[&str],
+) -> String {
+    let tools_line = if tool_names.is_empty() {
+        "(none)".to_owned()
+    } else {
+        tool_names.join(", ")
+    };
+    format!(
+        "\n---\nWorkspace: `{}`\nTools available: {}\nUse these tools to verify facts about the codebase. Never guess at structure.",
+        workspace_path.display(),
+        tools_line,
+    )
+}
 
 /// Apply a per-run Anthropic effort override onto a model-derived
 /// `ThinkingConfig`. Only the `Adaptive` variant carries an effort field;
@@ -79,496 +97,14 @@ fn apply_anthropic_effort_override(
     }
 }
 
-// ── Shared context for one flow run ──────────────────────────────────────────
-
-/// Context cloned into the supervision task and agent-spawn helper so
-/// all downstream agent invocations share the same LLM and workspace config.
-#[derive(Clone)]
-struct FlowRunContext {
-    authority: RuntimeAuthority,
-    space_id: SpaceId,
-    workspace_root: PathBuf,
-    flow_id: String,
-    flow_run_id: String,
-    flow_runtime: Arc<FlowRuntime>,
-    doc_tx: tokio::sync::mpsc::Sender<DocumentSubmitted>,
-    base_url: String,
-    api_key: Option<String>,
-    model: String,
-    provider_kind: String,
-    /// OpenAI reasoning_effort hint inherited from the start_run payload
-    /// (`payload.llm.reasoning_effort`). Per-agent YAML can override this.
-    reasoning_effort: Option<String>,
-    /// Anthropic adaptive thinking effort inherited from the start_run
-    /// payload (`payload.llm.anthropic_effort`). One of
-    /// `low` | `medium` | `high` | `max`. Only applied when the underlying
-    /// provider is native Anthropic.
-    anthropic_effort: Option<String>,
-    /// Sandbox policy for capability gates. `None` = permissive (no checks).
-    sandbox_policy: Option<Arc<SandboxPolicy>>,
-    /// Workspace-scoped cache directory used for ChatStore persistence.
-    /// Present when the runtime was initialised with a `workspace_cache_dir`.
-    workspace_cache_dir: Option<PathBuf>,
-}
-
-impl std::fmt::Debug for FlowRunContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FlowRunContext")
-            .field("flow_id", &self.flow_id)
-            .field("flow_run_id", &self.flow_run_id)
-            .finish()
-    }
-}
-
-/// Build the workspace context block appended to an agent's system prompt
-/// when `inject_workspace = true`. Minimal: just workspace path + tool names.
-fn build_workspace_injection_block(
-    workspace_path: &std::path::Path,
-    tool_names: &[&str],
-) -> String {
-    let tools_line = if tool_names.is_empty() {
-        "(none)".to_owned()
-    } else {
-        tool_names.join(", ")
-    };
-    format!(
-        "\n---\nWorkspace: `{}`\nTools available: {}\nUse these tools to verify facts about the codebase. Never guess at structure.",
-        workspace_path.display(),
-        tools_line,
-    )
-}
-
-/// Spawn a `ReactLoop` for one agent invocation within a flow run.
-/// Creates its own `authority_run_id` so the authority's lifecycle
-/// tracking does not interfere with the parent flow run.
-///
-/// The agent definition is loaded from
-/// `<workspace>/.cronymax/agents/<agent_id>.agent.yaml` (if present) so
-/// the LLM receives the agent's authored `system_prompt`, the appropriate
-/// model override, and a correctly-scoped tool allow-list.
-fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationContext) {
-    let run_id = match ctx
-        .authority
-        .start_run(ctx.space_id, None, serde_json::json!({}))
-    {
-        Ok(id) => id,
-        Err(e) => {
-            warn!(agent_id, error = %e, "spawn_agent_loop: authority.start_run failed");
-            return;
-        }
-    };
-
-    // Tag the run with the originating flow_run_id so the Activity panel
-    // can group agent runs under their parent flow run.
-    ctx.authority
-        .set_run_flow_id(run_id, ctx.flow_run_id.clone());
-
-    tokio::spawn(async move {
-        // ── Load agent definition ─────────────────────────────────────────
-        let agent_def = agent_loader::load_agent(&ctx.workspace_root, &agent_id).await;
-
-        // Build the effective system prompt: agent's persona first, then the
-        // flow-context message (task info, port state, etc.).
-        let agent_system_prompt_raw = if agent_def.system_prompt.is_empty() {
-            inv_ctx.system_message.clone()
-        } else {
-            format!(
-                "{}\n\n---\n\n{}",
-                agent_def.system_prompt, inv_ctx.system_message
-            )
-        };
-        // Render prompt variables (task 5.6).
-        let prompt_ctx = super::prompt::VarContext::builder()
-            .workspace_root(ctx.workspace_root.clone())
-            .agent_name(agent_id.clone())
-            .user_vars(agent_def.vars.clone())
-            .build();
-        let system_message = super::prompt::render(&agent_system_prompt_raw, &prompt_ctx);
-
-        // Use agent's declared model when available, falling back to the
-        // flow-run default model.
-        let model = if agent_def.llm_model.is_empty() {
-            ctx.model.clone()
-        } else {
-            agent_def.llm_model.clone()
-        };
-
-        // Determine runner kind from agent's `kind` field.
-        let runner_role = agent_def.kind.as_str();
-
-        // ── Build capability dispatcher ───────────────────────────────────
-        let broker = PermissionBroker::new();
-        let mut cap_builder = HostCapabilityDispatcher::builder();
-
-        // Shell capability — check SandboxPolicy before execution.
-        if let Some(policy) = &ctx.sandbox_policy {
-            let shell_cap = PolicyShell::new(
-                LocalShell::new(&ctx.workspace_root),
-                broker.clone(),
-                Arc::clone(policy),
-            );
-            cap_builder.register_shell(Arc::new(shell_cap), false);
-        } else {
-            cap_builder.register_shell(Arc::new(LocalShell::new(&ctx.workspace_root)), false);
-        }
-
-        // Filesystem capability — enforce WorkspaceScope + optional SandboxPolicy.
-        let scope = WorkspaceScope::new(&ctx.workspace_root);
-        if let Some(policy) = &ctx.sandbox_policy {
-            let fs_cap = PolicyFilesystem::new(LocalFilesystem, broker, Arc::clone(policy));
-            cap_builder.register_filesystem(Arc::new(fs_cap), scope);
-        } else {
-            cap_builder.register_filesystem(Arc::new(LocalFilesystem), scope);
-        }
-        cap_builder.register_notify(Arc::new(NullNotify));
-        let store = crate::capability::test_runner::LastReportStore::new();
-        cap_builder.register_test_runner(
-            ctx.workspace_root.clone(),
-            store,
-            ctx.flow_run_id.clone(),
-            runner_role,
-        );
-        cap_builder.register_submit_document(
-            ctx.workspace_root.clone(),
-            ctx.flow_id.clone(),
-            ctx.flow_run_id.clone(),
-            agent_id.clone(),
-            ctx.doc_tx.clone(),
-        );
-        cap_builder.register_search(ctx.workspace_root.clone());
-        cap_builder.register_git(ctx.workspace_root.clone());
-
-        // For reviewer agents, wire flow.submit_review so they can return verdicts.
-        if inv_ctx.trigger.kind == "reviewer_invocation" {
-            if let (Some(producer_node), Some(port)) = (
-                inv_ctx.trigger.from_node.clone(),
-                inv_ctx.trigger.approved_port.clone(),
-            ) {
-                let fctx_spawn = ctx.clone();
-                let spawn_fn: SpawnAgentFn = Arc::new(move |_flow_run_id, agent_id, inv_ctx| {
-                    spawn_agent_loop(fctx_spawn.clone(), agent_id, inv_ctx);
-                });
-                register_submit_review(
-                    &mut cap_builder,
-                    ctx.flow_runtime.clone(),
-                    ctx.workspace_root.clone(),
-                    agent_id.clone(),
-                    producer_node,
-                    port,
-                    ctx.flow_run_id.clone(),
-                    spawn_fn,
-                );
-            }
-        }
-
-        // Apply tool allow-list from agent YAML (empty = all tools).
-        if !agent_def.tools.is_empty() {
-            cap_builder.set_allowed_tools(agent_def.tools.clone());
-        }
-
-        let tools = Arc::new(cap_builder.build());
-
-        // Append workspace injection block if the agent opts in.
-        let system_message = if agent_def.inject_workspace {
-            let defs = tools.definitions();
-            let mut tool_names_sorted: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-            tool_names_sorted.sort_unstable();
-            let block = build_workspace_injection_block(&ctx.workspace_root, &tool_names_sorted);
-            format!("{system_message}{block}")
-        } else {
-            system_message
-        };
-
-        let authority = ctx.authority.clone();
-        let base_url = ctx.base_url.clone();
-        let raw_api_key = ctx.api_key.clone();
-        let is_copilot = ctx.provider_kind == "github_copilot";
-        let is_anthropic = ctx.provider_kind == "anthropic";
-
-        // For GitHub Copilot, exchange the stored GitHub OAuth token for the
-        // short-lived Copilot API token required by api.githubcopilot.com.
-        let (api_key, copilot_mode) = if is_copilot {
-            match raw_api_key.as_deref() {
-                Some(github_token) if !github_token.is_empty() => {
-                    let http = reqwest::Client::builder()
-                        .timeout(std::time::Duration::from_secs(30))
-                        .build()
-                        .unwrap_or_default();
-                    match copilot_auth::exchange_for_copilot_token(&http, github_token).await {
-                        Ok(ct) => {
-                            info!(
-                                agent_id,
-                                "spawn_agent_loop: copilot token exchanged successfully"
-                            );
-                            (Some(ct.token), true)
-                        }
-                        Err(e) => {
-                            warn!(agent_id, error = %e, "spawn_agent_loop: copilot token exchange failed, attempting with raw token");
-                            (raw_api_key, true)
-                        }
-                    }
-                }
-                _ => (raw_api_key, true),
-            }
-        } else {
-            (raw_api_key, false)
-        };
-
-        // Probe model capabilities for thinking support.
-        // Only probe when using the native Anthropic provider — other providers
-        // don't accept the Anthropic-style `thinking` field.
-        let thinking_config = if is_anthropic {
-            let caps = CapabilityResolver::resolve(&model, &base_url, api_key.as_deref()).await;
-            apply_anthropic_effort_override(caps.thinking_config(), ctx.anthropic_effort.as_deref())
-        } else {
-            None
-        };
-
-        let llm: Arc<dyn crate::llm::LlmProvider> = if is_anthropic {
-            let cfg = AnthropicConfig {
-                base_url: base_url.clone(),
-                api_key,
-                default_model: model.clone(),
-                ..Default::default()
-            };
-            match AnthropicProvider::new(cfg) {
-                Ok(p) => Arc::new(p),
-                Err(e) => {
-                    warn!(agent_id, error = %e, "spawn_agent_loop: AnthropicProvider::new failed");
-                    let _ = authority.fail_run(run_id, e.to_string());
-                    return;
-                }
-            }
-        } else {
-            let llm_cfg = OpenAiConfig {
-                base_url: base_url.clone(),
-                api_key,
-                default_model: model.clone(),
-                copilot_mode,
-                ..Default::default()
-            };
-            match OpenAiProvider::new(llm_cfg) {
-                Ok(p) => Arc::new(p),
-                Err(e) => {
-                    warn!(agent_id, error = %e, "spawn_agent_loop: OpenAiProvider::new failed");
-                    let _ = authority.fail_run(run_id, e.to_string());
-                    return;
-                }
-            }
-        };
-        // Per-agent yaml takes precedence over the flow-run default
-        // (which itself came from payload.llm.reasoning_effort).
-        let effective_effort = if !agent_def.reasoning_effort.is_empty() {
-            Some(agent_def.reasoning_effort.clone())
-        } else {
-            ctx.reasoning_effort.clone()
-        };
-        let cfg = LoopConfig {
-            model: model.clone(),
-            system_prompt: Some(system_message.clone()),
-            user_input: "Continue with your assigned task as described above.".to_owned(),
-            max_turns: 99999,
-            temperature: None,
-            reasoning_effort: effective_effort,
-            llm,
-            tools,
-            thinking: thinking_config,
-            initial_thread: None,
-            session_id: None,
-            reflection: None,
-            write_namespace: None,
-            memory_manager: None,
-            middleware: build_middleware_chain(authority.clone()),
-        };
-        let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
-        info!(agent_id, %run_id, ok = result.is_ok(), "spawn_agent_loop: agent loop finished");
-        if let Err(e) = result {
-            info!(agent_id, %run_id, error = %e, "spawn_agent_loop: agent loop failed");
-        }
-    });
-}
-
-/// Deliver a notification message to the `__chat__` session for a flow run.
-///
-/// Loads the session thread, prepends the notification as a user message,
-/// and runs one ReactLoop turn so the chat LLM can respond. The updated
-/// thread is flushed back for the next turn.
-fn spawn_chat_turn(ctx: FlowRunContext, session_id: String, message: String) {
-    let sid = SessionId(session_id);
-    let run_id = match ctx.authority.start_run_with_session(
-        ctx.space_id,
-        None,
-        serde_json::json!({}),
-        Some(sid.clone()),
-    ) {
-        Ok(id) => id,
-        Err(e) => {
-            warn!(error = %e, "spawn_chat_turn: authority.start_run failed");
-            return;
-        }
-    };
-
-    // Tag the run with the originating flow_run_id so the FlowInstancesBar
-    // can group it with the other runs in this flow.
-    if !ctx.flow_run_id.is_empty() {
-        ctx.authority
-            .set_run_flow_id(run_id, ctx.flow_run_id.clone());
-    }
-
-    tokio::spawn(async move {
-        // Load the chat session's prior thread from the ChatStore (JSONL)
-        // when available. This avoids using the authority snapshot which
-        // may contain stale/corrupted messages from earlier failed runs.
-        // Falls back to the authority snapshot if no ChatStore is configured.
-        let thread = if let Some(ref cache_dir) = ctx.workspace_cache_dir {
-            crate::runtime::chat_store::ChatStore::new(cache_dir).load_history(&sid)
-        } else {
-            ctx.authority.session_thread(&sid).unwrap_or_default()
-        };
-        // Capture the length before thread is moved into LoopConfig so
-        // the post-run flush can compute the delta to append.
-        let prior_thread_len = thread.len();
-
-        let chat_agent_def = agent_loader::load_agent(&ctx.workspace_root, "__chat__").await;
-
-        let system_prompt = if chat_agent_def.system_prompt.is_empty() {
-            None
-        } else {
-            Some(chat_agent_def.system_prompt.clone())
-        };
-
-        // Build a minimal capability dispatcher for the notification turn.
-        let mut cap_builder = HostCapabilityDispatcher::builder();
-        cap_builder.register_shell(Arc::new(LocalShell::new(&ctx.workspace_root)), false);
-        cap_builder.register_filesystem(
-            Arc::new(LocalFilesystem),
-            WorkspaceScope::new(&ctx.workspace_root),
-        );
-        cap_builder.register_notify(Arc::new(NullNotify));
-        cap_builder.register_search(ctx.workspace_root.clone());
-        cap_builder.register_git(ctx.workspace_root.clone());
-
-        // Wire flow.* tools so the chat LLM can approve/reject during this turn.
-        let fctx_spawn = ctx.clone();
-        let spawn_fn: SpawnAgentFn = Arc::new(move |_flow_run_id, agent_id, inv_ctx| {
-            spawn_agent_loop(fctx_spawn.clone(), agent_id, inv_ctx);
-        });
-        register_flow_tools(
-            &mut cap_builder,
-            ctx.flow_runtime.clone(),
-            ctx.workspace_root.clone(),
-            sid.0.clone(),
-            spawn_fn,
-        );
-
-        if !chat_agent_def.tools.is_empty() {
-            cap_builder.set_allowed_tools(chat_agent_def.tools.clone());
-        }
-
-        let tools = Arc::new(cap_builder.build());
-
-        let model = if chat_agent_def.llm_model.is_empty() {
-            ctx.model.clone()
-        } else {
-            chat_agent_def.llm_model.clone()
-        };
-
-        let authority = ctx.authority.clone();
-        let is_anthropic = ctx.provider_kind == "anthropic";
-        let is_copilot = ctx.provider_kind == "github_copilot";
-
-        let (api_key, copilot_mode) = if is_copilot {
-            match ctx.api_key.as_deref() {
-                Some(github_token) if !github_token.is_empty() => {
-                    let http = reqwest::Client::builder()
-                        .timeout(std::time::Duration::from_secs(30))
-                        .build()
-                        .unwrap_or_default();
-                    match copilot_auth::exchange_for_copilot_token(&http, github_token).await {
-                        Ok(ct) => (Some(ct.token), true),
-                        Err(_) => (ctx.api_key.clone(), true),
-                    }
-                }
-                _ => (ctx.api_key.clone(), true),
-            }
-        } else {
-            (ctx.api_key.clone(), false)
-        };
-
-        let llm: Arc<dyn crate::llm::LlmProvider> = if is_anthropic {
-            let cfg = AnthropicConfig {
-                base_url: ctx.base_url.clone(),
-                api_key,
-                default_model: model.clone(),
-                ..Default::default()
-            };
-            match AnthropicProvider::new(cfg) {
-                Ok(p) => Arc::new(p),
-                Err(e) => {
-                    warn!(error = %e, "spawn_chat_turn: AnthropicProvider::new failed");
-                    let _ = authority.fail_run(run_id, e.to_string());
-                    return;
-                }
-            }
-        } else {
-            let llm_cfg = OpenAiConfig {
-                base_url: ctx.base_url.clone(),
-                api_key,
-                default_model: model.clone(),
-                copilot_mode,
-                ..Default::default()
-            };
-            match OpenAiProvider::new(llm_cfg) {
-                Ok(p) => Arc::new(p),
-                Err(e) => {
-                    warn!(error = %e, "spawn_chat_turn: OpenAiProvider::new failed");
-                    let _ = authority.fail_run(run_id, e.to_string());
-                    return;
-                }
-            }
-        };
-
-        let cfg = LoopConfig {
-            model: model.clone(),
-            system_prompt,
-            user_input: message,
-            max_turns: 99999,
-            temperature: None,
-            reasoning_effort: None,
-            llm,
-            tools,
-            thinking: None,
-            initial_thread: Some(thread),
-            session_id: Some(sid.clone()),
-            reflection: None,
-            write_namespace: None,
-            memory_manager: None,
-            middleware: build_middleware_chain(authority.clone()),
-        };
-        let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
-        if let Err(e) = result {
-            warn!(error = %e, "spawn_chat_turn: chat loop failed");
-        }
-
-        // Flush the updated thread back to the authority snapshot and
-        // persist the new turns to the ChatStore (JSONL) if configured.
-        if let Some(updated_thread) = authority.session_thread(&sid) {
-            let _ = authority.flush_thread(&sid, updated_thread.clone());
-            if let Some(ref cache_dir) = ctx.workspace_cache_dir {
-                if updated_thread.len() > prior_thread_len {
-                    let store = crate::runtime::chat_store::ChatStore::new(cache_dir);
-                    let _ = store.append_turns(&sid, &updated_thread[prior_thread_len..]);
-                }
-            }
-        }
-    });
-}
-
 /// Adapter that turns a [`RuntimeAuthority`] into a dispatch
 /// [`Handler`].
-#[derive(Debug)]
 pub struct RuntimeHandler {
     authority: RuntimeAuthority,
+    /// Composition root — factories, flow registry, memory manager.
+    services: Arc<RuntimeServices>,
+    /// Agent runner that replaces `spawn_agent_loop` / `spawn_chat_turn`.
+    agent_runner: AgentRunner,
     /// Workspace roots passed at construction time (from `StoragePaths`).
     workspace_roots: Vec<PathBuf>,
     /// Profile+workspace-scoped cache dir (`workspace_cache_dir` from `StoragePaths`).
@@ -584,23 +120,17 @@ pub struct RuntimeHandler {
     fanout: Mutex<HashMap<SubscriptionId, JoinHandle<()>>>,
     /// Per-flow-run contexts keyed by `flow_run_id` so `ResolveReview`
     /// can look up the `FlowRuntime` for a given flow run.
-    flow_contexts: Mutex<HashMap<String /* flow_run_id */, FlowRunContext>>,
-    /// Shared `FlowRuntime` instances keyed by workspace root (as a String).
-    /// Created lazily on first flow operation for a workspace and rehydrated
-    /// from disk so state persists across app restarts.
-    flow_runtimes: Mutex<HashMap<String, Arc<FlowRuntime>>>,
+    flow_contexts: Mutex<HashMap<String /* flow_run_id */, RunContext>>,
     /// One-shot senders awaiting a `CapabilityReply` from the C++ host.
     /// Keyed by the `CorrelationId` that was sent with the `CapabilityCall`.
     pending_capabilities:
         Mutex<HashMap<CorrelationId, tokio::sync::oneshot::Sender<CapabilityResponse>>>,
-    /// Per-workspace PTY session managers (Phase 4).
-    /// Keyed by workspace_root string so each workspace gets its own manager.
-    /// Wrapped in Arc so the map can be shared across multiple RuntimeHandler
-    /// instances that serve different transports (browser vs renderer).
-    terminal_managers: Arc<Mutex<HashMap<String, crate::terminal::SharedPtySessionManager>>>,
-    /// Standalone memory manager. Present after `MemoryManager::new()` is
-    /// called during runtime initialisation (task 3.8).
-    memory_manager: Option<Arc<crate::memory::MemoryManager>>,
+}
+
+impl std::fmt::Debug for RuntimeHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeHandler").finish_non_exhaustive()
+    }
 }
 
 /// Construct the default middleware chain for a `ReactLoop`.
@@ -629,11 +159,41 @@ fn build_middleware_chain(authority: RuntimeAuthority) -> Arc<MiddlewareChain> {
 }
 
 impl RuntimeHandler {
+    /// Primary constructor — wires up the handler from the composition root.
+    /// Called by `lifecycle::Runtime::connect()`.
+    pub fn from_services(
+        services: Arc<RuntimeServices>,
+        workspace_roots: Vec<PathBuf>,
+        workspace_cache_dir: PathBuf,
+        sandbox_policy: Option<SandboxPolicy>,
+    ) -> Self {
+        let authority = services.authority.clone();
+        let agent_runner = AgentRunner::new(Arc::clone(&services));
+        Self {
+            authority,
+            services,
+            agent_runner,
+            workspace_roots,
+            workspace_cache_dir: Some(workspace_cache_dir),
+            sandbox_policy: sandbox_policy.map(Arc::new),
+            sink: Mutex::new(None),
+            fanout: Mutex::new(HashMap::new()),
+            flow_contexts: Mutex::new(HashMap::new()),
+            pending_capabilities: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Legacy constructor — kept for call sites that don't yet have
+    /// `RuntimeServices`. Builds minimal services internally.
+    #[deprecated(note = "use RuntimeHandler::from_services")]
+    #[allow(deprecated)]
     pub fn new(authority: RuntimeAuthority, workspace_roots: Vec<PathBuf>) -> Self {
         Self::with_policy(authority, workspace_roots, None)
     }
 
     /// Construct with an explicit sandbox policy (built from `RuntimeConfig.sandbox`).
+    #[deprecated(note = "use RuntimeHandler::from_services")]
+    #[allow(deprecated)]
     pub fn with_policy(
         authority: RuntimeAuthority,
         workspace_roots: Vec<PathBuf>,
@@ -643,8 +203,8 @@ impl RuntimeHandler {
     }
 
     /// Construct with an explicit sandbox policy and an optional shared terminal
-    /// managers map. Pass the same `Arc` to multiple handlers to let them all
-    /// access the same PTY sessions regardless of which transport created them.
+    /// managers map.
+    #[deprecated(note = "use RuntimeHandler::from_services")]
     pub fn with_policy_and_managers(
         authority: RuntimeAuthority,
         workspace_roots: Vec<PathBuf>,
@@ -653,38 +213,22 @@ impl RuntimeHandler {
             Arc<Mutex<HashMap<String, crate::terminal::SharedPtySessionManager>>>,
         >,
     ) -> Self {
-        Self::with_all(
-            authority,
-            workspace_roots,
-            sandbox_policy,
-            terminal_managers,
-            None,
-        )
-    }
-
-    /// Full constructor — includes an optional `MemoryManager` (task 3.8).
-    pub fn with_all(
-        authority: RuntimeAuthority,
-        workspace_roots: Vec<PathBuf>,
-        sandbox_policy: Option<SandboxPolicy>,
-        terminal_managers: Option<
-            Arc<Mutex<HashMap<String, crate::terminal::SharedPtySessionManager>>>,
-        >,
-        memory_manager: Option<Arc<crate::memory::MemoryManager>>,
-    ) -> Self {
+        let services = RuntimeServices::new_minimal(
+            authority.clone(),
+            terminal_managers.unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new()))),
+        );
+        let agent_runner = AgentRunner::new(Arc::clone(&services));
         Self {
             authority,
+            services,
+            agent_runner,
             workspace_roots,
             workspace_cache_dir: None,
             sandbox_policy: sandbox_policy.map(Arc::new),
             sink: Mutex::new(None),
             fanout: Mutex::new(HashMap::new()),
             flow_contexts: Mutex::new(HashMap::new()),
-            flow_runtimes: Mutex::new(HashMap::new()),
             pending_capabilities: Mutex::new(HashMap::new()),
-            terminal_managers: terminal_managers
-                .unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new()))),
-            memory_manager,
         }
     }
 
@@ -692,35 +236,6 @@ impl RuntimeHandler {
     /// Call this before the handler is used for `start_run`.
     pub fn set_workspace_cache_dir(&mut self, dir: PathBuf) {
         self.workspace_cache_dir = Some(dir);
-    }
-
-    /// Return the shared [`FlowRuntime`] for `workspace_root`, creating and
-    /// rehydrating it from disk on first access.
-    ///
-    /// Returns `(runtime, is_new)` — `is_new` is `true` the first time this
-    /// workspace is accessed so the caller can fire startup notifications.
-    async fn get_or_init_flow_runtime(
-        &self,
-        workspace_root: &std::path::Path,
-    ) -> (Arc<FlowRuntime>, bool) {
-        let key = workspace_root.to_string_lossy().into_owned();
-        // Fast path — already created.
-        if let Some(rt) = self.flow_runtimes.lock().get(&key).cloned() {
-            return (rt, false);
-        }
-        // Slow path — create, rehydrate, insert.
-        let rt = Arc::new(FlowRuntime::new(workspace_root));
-        let count = rt.rehydrate_from_disk().await;
-        if count > 0 {
-            info!(%count, workspace = %key, "flow_runtime: rehydrated runs from disk");
-        }
-        let mut map = self.flow_runtimes.lock();
-        // Double-check: another task may have inserted while we were rehydrating.
-        if let Some(existing) = map.get(&key).cloned() {
-            return (existing, false);
-        }
-        map.insert(key, rt.clone());
-        (rt, true)
     }
 
     pub fn authority(&self) -> &RuntimeAuthority {
@@ -1017,36 +532,32 @@ impl Handler for RuntimeHandler {
                         let (doc_tx, mut doc_rx) =
                             tokio::sync::mpsc::channel::<DocumentSubmitted>(64);
 
+                        let ar = self.agent_runner.clone();
+
                         // Optionally create a FlowRuntime + initial context
                         // when the request carries a `flow_id`.
                         let (entry_system_prompt, maybe_flow_ctx) = if let Some(ref fid) =
                             flow_id_opt
                         {
-                            // Load the flow definition first (required by start_run).
-                            let flow_def_path = workspace_root
-                                .join(".cronymax")
-                                .join("flows")
-                                .join(fid)
-                                .join("flow.yaml");
-
-                            let flow_def_opt = match tokio::fs::read_to_string(&flow_def_path).await
+                            // Load the flow definition via the registry (task 9.1).
+                            let flow_def_opt = match self
+                                .services
+                                .flow_registry
+                                .load_flow_def(fid, &workspace_root)
+                                .await
                             {
-                                Ok(yaml) => {
-                                    match FlowDefinition::load_from_str(&yaml, &flow_def_path) {
-                                        Ok(d) => Some(d),
-                                        Err(e) => {
-                                            warn!(flow_id = %fid, error = %e, "start_run: failed to parse flow.yaml");
-                                            None
-                                        }
-                                    }
-                                }
+                                Ok(d) => Some(d),
                                 Err(e) => {
-                                    warn!(flow_id = %fid, error = %e, "start_run: failed to read flow.yaml");
+                                    warn!(flow_id = %fid, error = %e, "start_run: failed to load flow definition");
                                     None
                                 }
                             };
 
-                            let flow_rt = self.get_or_init_flow_runtime(&workspace_root).await.0;
+                            let (flow_rt, _is_new) = self
+                                .services
+                                .flow_registry
+                                .get_or_create(&workspace_root)
+                                .await;
 
                             let (flow_run_id, entry_contexts) = match flow_def_opt {
                                 Some(ref flow_def) => {
@@ -1079,24 +590,27 @@ impl Handler for RuntimeHandler {
                             };
 
                             // The first entry context becomes the entry agent's system prompt.
-                            let entry_sys =
-                                entry_contexts.first().map(|c| c.system_message.clone());
+                            let entry_sys = entry_contexts
+                                .first()
+                                .map(super::agent_runner::render_system_message);
 
-                            let flow_ctx = FlowRunContext {
-                                authority: self.authority.clone(),
+                            let flow_ctx = RunContext {
                                 space_id: space,
                                 workspace_root: workspace_root.clone(),
-                                flow_id: fid.clone(),
-                                flow_run_id: flow_run_id.clone(),
-                                flow_runtime: flow_rt.clone(),
+                                flow_id: Some(fid.clone()),
+                                flow_run_id: Some(flow_run_id.clone()),
+                                flow_runtime: Some(flow_rt.clone()),
                                 doc_tx: doc_tx.clone(),
-                                base_url: base_url.clone(),
-                                api_key: api_key.clone(),
-                                model: model.clone(),
-                                provider_kind: provider_kind.clone(),
-                                reasoning_effort: reasoning_effort.clone(),
-                                anthropic_effort: anthropic_effort.clone(),
-                                sandbox_policy: self.sandbox_policy.clone(),
+                                llm_config: LlmConfig::from_payload_fields(
+                                    &provider_kind,
+                                    base_url.clone(),
+                                    api_key.clone(),
+                                    model.clone(),
+                                ),
+                                sandbox_tier: match &self.sandbox_policy {
+                                    Some(p) => SandboxTier::Sandboxed(p.clone()),
+                                    None => SandboxTier::Trusted,
+                                },
                                 workspace_cache_dir: self.workspace_cache_dir.clone(),
                             };
                             self.flow_contexts
@@ -1106,7 +620,7 @@ impl Handler for RuntimeHandler {
                             // Spawn ReactLoops for additional entry nodes (if any).
                             for ctx in entry_contexts.into_iter().skip(1) {
                                 let agent_id = ctx.owner.clone();
-                                spawn_agent_loop(flow_ctx.clone(), agent_id, ctx);
+                                ar.spawn_agent(flow_ctx.clone(), agent_id, ctx);
                             }
 
                             (entry_sys, Some(flow_ctx))
@@ -1124,6 +638,8 @@ impl Handler for RuntimeHandler {
                         // it spawns new ReactLoops for them.
                         if let Some(ref flow_ctx) = maybe_flow_ctx {
                             let fctx = flow_ctx.clone();
+                            let sup_services = Arc::clone(&self.services);
+                            let sup_ar = ar.clone();
                             tokio::spawn(async move {
                                 while let Some(evt) = doc_rx.recv().await {
                                     info!(
@@ -1134,29 +650,18 @@ impl Handler for RuntimeHandler {
                                         "supervision: document submitted"
                                     );
 
-                                    // Load flow definition fresh for routing.
-                                    let flow_def_path = fctx
-                                        .workspace_root
-                                        .join(".cronymax")
-                                        .join("flows")
-                                        .join(&fctx.flow_id)
-                                        .join("flow.yaml");
-
-                                    let yaml = match tokio::fs::read_to_string(&flow_def_path).await
+                                    // Load flow definition via registry (task 9.1).
+                                    let flow_def = match sup_services
+                                        .flow_registry
+                                        .load_flow_def(
+                                            fctx.flow_id.as_deref().unwrap_or(""),
+                                            &fctx.workspace_root,
+                                        )
+                                        .await
                                     {
-                                        Ok(y) => y,
-                                        Err(e) => {
-                                            warn!(error = %e, "supervision: failed to read flow.yaml");
-                                            continue;
-                                        }
-                                    };
-                                    let flow_def = match FlowDefinition::load_from_str(
-                                        &yaml,
-                                        &flow_def_path,
-                                    ) {
                                         Ok(d) => d,
                                         Err(e) => {
-                                            warn!(error = %e, "supervision: failed to parse flow.yaml");
+                                            warn!(error = %e, "supervision: failed to load flow definition");
                                             continue;
                                         }
                                     };
@@ -1164,6 +669,8 @@ impl Handler for RuntimeHandler {
                                     // Process the document submission.
                                     match fctx
                                         .flow_runtime
+                                        .as_ref()
+                                        .unwrap()
                                         .on_document_submitted(
                                             &evt.run_id,
                                             &evt.agent_id,
@@ -1182,7 +689,13 @@ impl Handler for RuntimeHandler {
                                                     // Human review pending — notify the chat session.
                                                     if let Some(session_id) = fctx
                                                         .flow_runtime
-                                                        .lookup_chat_session(&fctx.flow_run_id)
+                                                        .as_ref()
+                                                        .unwrap()
+                                                        .lookup_chat_session(
+                                                            fctx.flow_run_id
+                                                                .as_deref()
+                                                                .unwrap_or(""),
+                                                        )
                                                     {
                                                         let port = inv_ctx
                                                             .trigger
@@ -1198,7 +711,7 @@ impl Handler for RuntimeHandler {
                                                             "📋 **Review requested**: Node `{producer}` has submitted the document at port `{port}` for your review.\n\
                                                              Use `flow_get_pending_reviews` to list pending documents and `flow_approve` or `flow_request_changes` to respond."
                                                         );
-                                                        spawn_chat_turn(
+                                                        sup_ar.spawn_chat(
                                                             fctx.clone(),
                                                             session_id,
                                                             msg,
@@ -1210,7 +723,7 @@ impl Handler for RuntimeHandler {
                                                         node_id = %inv_ctx.node_id,
                                                         "supervision: spawning downstream agent"
                                                     );
-                                                    spawn_agent_loop(
+                                                    sup_ar.spawn_agent(
                                                         fctx.clone(),
                                                         agent_id,
                                                         inv_ctx,
@@ -1222,7 +735,7 @@ impl Handler for RuntimeHandler {
                                             warn!(error = %e, run_id = %evt.run_id, "supervision: on_document_submitted failed");
                                             // Cycle limit exceeded or other terminal error — fail the run.
                                             if e.to_string().contains("cycle limit exceeded") {
-                                                let _ = fctx.authority.fail_run(
+                                                let _ = sup_services.authority.fail_run(
                                                     RunId(
                                                         Uuid::parse_str(&evt.run_id)
                                                             .unwrap_or_default(),
@@ -1273,7 +786,9 @@ impl Handler for RuntimeHandler {
                             );
                             let flow_run_id_for_tool = maybe_flow_ctx
                                 .as_ref()
-                                .map(|c| c.flow_run_id.clone())
+                                .map(|c| {
+                                    c.flow_run_id.clone().unwrap_or_else(|| run_id.to_string())
+                                })
                                 .unwrap_or_else(|| run_id.to_string());
                             cap_builder.register_submit_document(
                                 workspace_root.clone(),
@@ -1291,13 +806,14 @@ impl Handler for RuntimeHandler {
                         // notifications can route back to this session.
                         if let Some(ref flow_ctx) = maybe_flow_ctx {
                             let fctx_spawn = flow_ctx.clone();
+                            let ar_spawn = ar.clone();
                             let spawn_fn: SpawnAgentFn =
                                 Arc::new(move |_flow_run_id, agent_id, inv_ctx| {
-                                    spawn_agent_loop(fctx_spawn.clone(), agent_id, inv_ctx);
+                                    ar_spawn.spawn_agent(fctx_spawn.clone(), agent_id, inv_ctx);
                                 });
                             register_flow_tools(
                                 &mut cap_builder,
-                                flow_ctx.flow_runtime.clone(),
+                                flow_ctx.flow_runtime.as_ref().unwrap().clone(),
                                 workspace_root.clone(),
                                 maybe_session_id
                                     .as_ref()
@@ -1308,8 +824,11 @@ impl Handler for RuntimeHandler {
                         } else {
                             // Non-flow chat turn: register flow tools with the shared
                             // FlowRuntime so the user can list/start/approve flows.
-                            let (shared_rt, is_new) =
-                                self.get_or_init_flow_runtime(&workspace_root).await;
+                            let (shared_rt, is_new) = self
+                                .services
+                                .flow_registry
+                                .get_or_create(&workspace_root)
+                                .await;
                             let flow_rt_for_spawn = shared_rt.clone();
                             let flow_rt_for_tools = shared_rt.clone();
                             let authority_for_spawn = self.authority.clone();
@@ -1321,6 +840,8 @@ impl Handler for RuntimeHandler {
                             let provider_kind_for_spawn = provider_kind.clone();
                             let sandbox_for_spawn = self.sandbox_policy.clone();
                             let wcd_for_spawn = self.workspace_cache_dir.clone();
+                            let services_for_spawn = Arc::clone(&self.services);
+                            let ar_for_spawn = ar.clone();
                             // Per-run doc_tx map: lazily create supervision task on first
                             // spawn for each flow_run_id.
                             let run_doc_txs: Arc<
@@ -1351,6 +872,8 @@ impl Handler for RuntimeHandler {
                                             let sup_provider_kind = provider_kind_for_spawn.clone();
                                             let sup_sandbox = sandbox_for_spawn.clone();
                                             let sup_wcd = wcd_for_spawn.clone();
+                                            let sup_services = services_for_spawn.clone();
+                                            let sup_ar = ar_for_spawn.clone();
                                             let tx_clone = tx.clone();
                                             tokio::spawn(async move {
                                                 while let Some(evt) = rx.recv().await {
@@ -1369,48 +892,39 @@ impl Handler for RuntimeHandler {
                                                             continue;
                                                         }
                                                     };
-                                                    let flow_def_path = sup_workspace_root
-                                                        .join(".cronymax")
-                                                        .join("flows")
-                                                        .join(&flow_id)
-                                                        .join("flow.yaml");
-                                                    let yaml = match tokio::fs::read_to_string(
-                                                        &flow_def_path,
-                                                    )
-                                                    .await
+                                                    let flow_def = match sup_services
+                                                        .flow_registry
+                                                        .load_flow_def(
+                                                            &flow_id,
+                                                            &sup_workspace_root,
+                                                        )
+                                                        .await
                                                     {
-                                                        Ok(y) => y,
+                                                        Ok(d) => d,
                                                         Err(e) => {
-                                                            warn!(error = %e, "supervision(chat): failed to read flow.yaml");
+                                                            warn!(error = %e, "supervision(chat): failed to load flow definition");
                                                             continue;
                                                         }
                                                     };
-                                                    let flow_def =
-                                                        match FlowDefinition::load_from_str(
-                                                            &yaml,
-                                                            &flow_def_path,
-                                                        ) {
-                                                            Ok(d) => d,
-                                                            Err(e) => {
-                                                                warn!(error = %e, "supervision(chat): failed to parse flow.yaml");
-                                                                continue;
-                                                            }
-                                                        };
-                                                    let fctx = FlowRunContext {
-                                                        authority: sup_authority.clone(),
+                                                    let fctx = RunContext {
                                                         space_id: sup_space,
                                                         workspace_root: sup_workspace_root.clone(),
-                                                        flow_id,
-                                                        flow_run_id: sup_flow_run_id.clone(),
-                                                        flow_runtime: sup_flow_rt.clone(),
+                                                        flow_id: Some(flow_id),
+                                                        flow_run_id: Some(sup_flow_run_id.clone()),
+                                                        flow_runtime: Some(sup_flow_rt.clone()),
                                                         doc_tx: tx_clone.clone(),
-                                                        base_url: sup_base_url.clone(),
-                                                        api_key: sup_api_key.clone(),
-                                                        model: sup_model.clone(),
-                                                        provider_kind: sup_provider_kind.clone(),
-                                                        reasoning_effort: None,
-                                                        anthropic_effort: None,
-                                                        sandbox_policy: sup_sandbox.clone(),
+                                                        llm_config: LlmConfig::from_payload_fields(
+                                                            &sup_provider_kind,
+                                                            sup_base_url.clone(),
+                                                            sup_api_key.clone(),
+                                                            sup_model.clone(),
+                                                        ),
+                                                        sandbox_tier: match &sup_sandbox {
+                                                            Some(p) => {
+                                                                SandboxTier::Sandboxed(p.clone())
+                                                            }
+                                                            None => SandboxTier::Trusted,
+                                                        },
                                                         workspace_cache_dir: sup_wcd.clone(),
                                                     };
                                                     match sup_flow_rt
@@ -1449,14 +963,14 @@ impl Handler for RuntimeHandler {
                                                                         "📋 **Review requested**: Node `{producer}` has submitted the document at port `{port}` for your review.\n\
                                                                          Use `flow_get_pending_reviews` to list pending documents and `flow_approve` or `flow_request_changes` to respond."
                                                                     );
-                                                                        spawn_chat_turn(
+                                                                        sup_ar.spawn_chat(
                                                                             fctx.clone(),
                                                                             sid,
                                                                             msg,
                                                                         );
                                                                     }
                                                                 } else {
-                                                                    spawn_agent_loop(
+                                                                    sup_ar.spawn_agent(
                                                                         fctx.clone(),
                                                                         next_agent,
                                                                         inv_ctx,
@@ -1494,24 +1008,26 @@ impl Handler for RuntimeHandler {
                                             return;
                                         }
                                     };
-                                    let fctx = FlowRunContext {
-                                        authority: authority_for_spawn.clone(),
+                                    let fctx = RunContext {
                                         space_id: space_for_spawn,
                                         workspace_root: workspace_root_for_spawn.clone(),
-                                        flow_id,
-                                        flow_run_id: flow_run_id.clone(),
-                                        flow_runtime: flow_rt_for_spawn.clone(),
+                                        flow_id: Some(flow_id),
+                                        flow_run_id: Some(flow_run_id.clone()),
+                                        flow_runtime: Some(flow_rt_for_spawn.clone()),
                                         doc_tx,
-                                        base_url: base_url_for_spawn.clone(),
-                                        api_key: api_key_for_spawn.clone(),
-                                        model: model_for_spawn.clone(),
-                                        provider_kind: provider_kind_for_spawn.clone(),
-                                        reasoning_effort: None,
-                                        anthropic_effort: None,
-                                        sandbox_policy: sandbox_for_spawn.clone(),
+                                        llm_config: LlmConfig::from_payload_fields(
+                                            &provider_kind_for_spawn,
+                                            base_url_for_spawn.clone(),
+                                            api_key_for_spawn.clone(),
+                                            model_for_spawn.clone(),
+                                        ),
+                                        sandbox_tier: match &sandbox_for_spawn {
+                                            Some(p) => SandboxTier::Sandboxed(p.clone()),
+                                            None => SandboxTier::Trusted,
+                                        },
                                         workspace_cache_dir: wcd_for_spawn.clone(),
                                     };
-                                    spawn_agent_loop(fctx, agent_id, inv_ctx);
+                                    ar_for_spawn.spawn_agent(fctx.clone(), agent_id, inv_ctx);
                                 },
                             );
                             register_flow_tools(
@@ -1548,21 +1064,23 @@ impl Handler for RuntimeHandler {
                                     for run_state in paused_runs {
                                         let (ntx, _) =
                                             tokio::sync::mpsc::channel::<DocumentSubmitted>(1);
-                                        let notify_fctx = FlowRunContext {
-                                            authority: self.authority.clone(),
+                                        let notify_fctx = RunContext {
                                             space_id: space,
                                             workspace_root: workspace_root.clone(),
-                                            flow_id: run_state.flow_id.clone(),
-                                            flow_run_id: run_state.run_id.clone(),
-                                            flow_runtime: shared_rt.clone(),
+                                            flow_id: Some(run_state.flow_id.clone()),
+                                            flow_run_id: Some(run_state.run_id.clone()),
+                                            flow_runtime: Some(shared_rt.clone()),
                                             doc_tx: ntx,
-                                            base_url: base_url.clone(),
-                                            api_key: api_key.clone(),
-                                            model: model.clone(),
-                                            provider_kind: provider_kind.clone(),
-                                            reasoning_effort: None,
-                                            anthropic_effort: None,
-                                            sandbox_policy: self.sandbox_policy.clone(),
+                                            llm_config: LlmConfig::from_payload_fields(
+                                                &provider_kind,
+                                                base_url.clone(),
+                                                api_key.clone(),
+                                                model.clone(),
+                                            ),
+                                            sandbox_tier: match &self.sandbox_policy {
+                                                Some(p) => SandboxTier::Sandboxed(p.clone()),
+                                                None => SandboxTier::Trusted,
+                                            },
                                             workspace_cache_dir: self.workspace_cache_dir.clone(),
                                         };
                                         let msg = format!(
@@ -1570,7 +1088,11 @@ impl Handler for RuntimeHandler {
                                              Use `flow_get_pending_reviews` to list them and `flow_approve` or `flow_request_changes` to respond.",
                                             run_state.run_id, run_state.flow_id
                                         );
-                                        spawn_chat_turn(notify_fctx, sid.0.clone(), msg);
+                                        self.agent_runner.spawn_chat(
+                                            notify_fctx,
+                                            sid.0.clone(),
+                                            msg,
+                                        );
                                     }
                                 }
                             }
@@ -1652,7 +1174,7 @@ impl Handler for RuntimeHandler {
                         });
 
                         let authority = self.authority.clone();
-                        let memory_manager = self.memory_manager.clone();
+                        let memory_manager = self.services.memory_manager.clone();
                         let workspace_cache_dir_clone = self.workspace_cache_dir.clone();
                         let is_copilot = provider_kind == "github_copilot";
                         let is_anthropic = provider_kind == "anthropic";
@@ -2046,7 +1568,7 @@ impl Handler for RuntimeHandler {
 
                 // ── Spawn the agent loop task ─────────────────────────────
                 let authority = self.authority.clone();
-                let memory_manager = self.memory_manager.clone();
+                let memory_manager = self.services.memory_manager.clone();
                 let workspace_cache_dir_clone = self.workspace_cache_dir.clone();
                 let is_copilot = provider_kind == "github_copilot";
                 let is_anthropic = provider_kind == "anthropic";
@@ -2248,39 +1770,36 @@ impl Handler for RuntimeHandler {
                 // `flow_run_id` from FlowRuntime (returned in RunStarted).
                 // We look up by flow_run_id and, if found, dispatch to the
                 // appropriate FlowRuntime method.
-                let flow_ctx_opt: Option<FlowRunContext> = {
+                let flow_ctx_opt: Option<RunContext> = {
                     let map = self.flow_contexts.lock();
                     // Try a direct lookup by run_id string.
                     map.values()
-                        .find(|c| c.flow_run_id == run_id || c.flow_run_id == run.to_string())
+                        .find(|c| {
+                            c.flow_run_id.as_deref() == Some(run_id.as_str())
+                                || c.flow_run_id.as_deref() == Some(run.to_string().as_str())
+                        })
                         .cloned()
                 };
 
                 if let Some(fctx) = flow_ctx_opt {
-                    // Load flow definition for routing decisions.
-                    let flow_def_path = fctx
-                        .workspace_root
-                        .join(".cronymax")
-                        .join("flows")
-                        .join(&fctx.flow_id)
-                        .join("flow.yaml");
-
                     // Spawn async work for the FlowRuntime call since
                     // handle_control is async but we don't want to block.
-                    let flow_run_id = fctx.flow_run_id.clone();
+                    let flow_run_id = fctx.flow_run_id.clone().unwrap_or_default();
                     let is_approve = perm_decision == PermissionState::Approved;
+                    let rr_services = Arc::clone(&self.services);
+                    let rr_ar = self.agent_runner.clone();
                     tokio::spawn(async move {
-                        let yaml = match tokio::fs::read_to_string(&flow_def_path).await {
-                            Ok(y) => y,
-                            Err(e) => {
-                                warn!(error = %e, "resolve_review: failed to read flow.yaml");
-                                return;
-                            }
-                        };
-                        let flow_def = match FlowDefinition::load_from_str(&yaml, &flow_def_path) {
+                        let flow_def = match rr_services
+                            .flow_registry
+                            .load_flow_def(
+                                fctx.flow_id.as_deref().unwrap_or(""),
+                                &fctx.workspace_root,
+                            )
+                            .await
+                        {
                             Ok(d) => d,
                             Err(e) => {
-                                warn!(error = %e, "resolve_review: failed to parse flow.yaml");
+                                warn!(error = %e, "resolve_review: failed to load flow definition");
                                 return;
                             }
                         };
@@ -2300,6 +1819,8 @@ impl Handler for RuntimeHandler {
                         if is_approve {
                             match fctx
                                 .flow_runtime
+                                .as_ref()
+                                .unwrap()
                                 .on_document_approved(
                                     &flow_run_id,
                                     producing_agent,
@@ -2312,7 +1833,7 @@ impl Handler for RuntimeHandler {
                                     for inv_ctx in contexts {
                                         let agent_id = inv_ctx.owner.clone();
                                         info!(agent_id, node_id = %inv_ctx.node_id, "resolve_review: scheduling after approval");
-                                        spawn_agent_loop(fctx.clone(), agent_id, inv_ctx);
+                                        rr_ar.spawn_agent(fctx.clone(), agent_id, inv_ctx);
                                     }
                                 }
                                 Err(e) => {
@@ -2322,13 +1843,15 @@ impl Handler for RuntimeHandler {
                         } else {
                             match fctx
                                 .flow_runtime
+                                .as_ref()
+                                .unwrap()
                                 .on_rejected_requeue(&flow_run_id, producing_agent, port, &flow_def)
                                 .await
                             {
                                 Ok(Some(inv_ctx)) => {
                                     let agent_id = inv_ctx.owner.clone();
                                     info!(agent_id, node_id = %inv_ctx.node_id, "resolve_review: requeueing after rejection");
-                                    spawn_agent_loop(fctx.clone(), agent_id, inv_ctx);
+                                    rr_ar.spawn_agent(fctx.clone(), agent_id, inv_ctx);
                                 }
                                 Ok(None) => {
                                     info!(
@@ -2963,7 +2486,7 @@ impl Handler for RuntimeHandler {
 
                 // Get (or create) the shared session manager for this workspace.
                 let mgr = {
-                    let mut map = self.terminal_managers.lock();
+                    let mut map = self.services.terminal_managers.lock();
                     map.entry(workspace_root.clone())
                         .or_insert_with(crate::terminal::PtySessionManager::new_shared)
                         .clone()
@@ -3014,7 +2537,7 @@ impl Handler for RuntimeHandler {
 
             ControlRequest::TerminalInput { terminal_id, data } => {
                 let mgr = {
-                    let map = self.terminal_managers.lock();
+                    let map = self.services.terminal_managers.lock();
                     // Find any manager that has this terminal_id (we stored by workspace_root,
                     // so iterate). In practice each terminal_id is globally unique.
                     map.values().next().cloned()
@@ -3032,7 +2555,7 @@ impl Handler for RuntimeHandler {
                 rows,
             } => {
                 let mgr = {
-                    let map = self.terminal_managers.lock();
+                    let map = self.services.terminal_managers.lock();
                     map.values().next().cloned()
                 };
                 if let Some(mgr) = mgr {
@@ -3044,7 +2567,7 @@ impl Handler for RuntimeHandler {
 
             ControlRequest::TerminalStop { terminal_id } => {
                 let mgr = {
-                    let map = self.terminal_managers.lock();
+                    let map = self.services.terminal_managers.lock();
                     map.values().next().cloned()
                 };
                 if let Some(mgr) = mgr {
@@ -3477,7 +3000,15 @@ mod tests {
         let space_id = space.id;
         auth.upsert_space(space).unwrap();
 
-        let handler = Arc::new(RuntimeHandler::new(auth.clone(), vec![]));
+        let handler = Arc::new(RuntimeHandler::from_services(
+            Arc::new(RuntimeServices::new_minimal(
+                auth.clone(),
+                Arc::new(Mutex::new(HashMap::new())),
+            )),
+            vec![],
+            std::env::temp_dir(),
+            None,
+        ));
         let (server, client) = memory::pair();
         let task = tokio::spawn({
             let handler = handler.clone();
@@ -3588,7 +3119,15 @@ mod tests {
             .start_run(space_id, None, serde_json::json!({}))
             .unwrap();
 
-        let handler = RuntimeHandler::new(auth.clone(), vec![]);
+        let handler = RuntimeHandler::from_services(
+            Arc::new(RuntimeServices::new_minimal(
+                auth.clone(),
+                Arc::new(Mutex::new(HashMap::new())),
+            )),
+            vec![],
+            std::env::temp_dir(),
+            None,
+        );
         let cid = CorrelationId::new();
         let resp = handler
             .handle_control(

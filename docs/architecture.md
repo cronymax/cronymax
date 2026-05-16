@@ -14,6 +14,16 @@
 > `openspec/changes/rust-runtime-migration/` for the migration plan and
 > per-task tracking.
 >
+> **runtime-layered-di (complete).** `crates/cronymax` now uses a
+> four-layer DI architecture: `RuntimeHandler` (protocol adapter) →
+> `AgentRunner` (execution) → `RuntimeServices` (service container) →
+> infrastructure (concrete impls). `FlowRunContext` is removed;
+> `LlmProviderFactory`, `CapabilityFactory`, `SandboxTier`,
+> `CopilotTokenCache`, and `FlowRuntimeRegistry` are the new building
+> blocks. See [`docs/runtime-layered-di.md`](runtime-layered-di.md)
+> for the full design with component graphs, sequence diagrams, and
+> file map.
+>
 > **agent-activity-panel.** A persistent titlebar popover (same mechanism as Flows/Settings) that provides a cross-session live view of all agent runs in the active space. The panel is opened via the `btn_activity_` (`pulse.svg` icon) button in `TitleBarView`. Data is hydrated on open via a new `activity.snapshot` bridge channel (maps to `ControlRequest::GetSpaceSnapshot` in Rust) and kept live by a `runtime.subscribe("*")` subscription. Runs are grouped under two top-level headings — **Chat** (keyed by `session_id`) and **Flows** (keyed by `flow_run_id`) — and display status badges, turn counts, token usage, and elapsed time. When a run is `awaiting_review`, an inline `ApprovalCard` renders directly in the run row for one-click approve/deny. The `flow_run_id` field added to `Run` in the Rust runtime is populated by `spawn_agent_loop` via `set_run_flow_id`. See `docs/activity-panel.md` for the full data-flow reference.
 >
 > **refine-ui-theme-layout.** Chrome paints a single shared `window_bg` colour across `titlebar_panel_` + `body_panel_` (sidebar inherits it via `bg-cronymax`). The active tab's content card is wrapped in a `content_frame_` `CefPanel` inset 8 px on every side; per-tab `BrowserView` clipping (corner radius 12 px + 1 px border, see `mac_view_style::StyleContentBrowserView`) gives the floating-card silhouette. Theme is read from `space.kv["ui.theme"]` (`system|light|dark`); `system` resolves via `[NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:]` and refreshes when macOS posts `AppleInterfaceThemeChangedNotification`. The title-bar gear button now opens a dedicated `panels/settings` popover (LLM provider + theme picker) instead of activating the agent tab; the legacy `SettingsOverlay` slice on the agent reducer was removed.

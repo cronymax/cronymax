@@ -37,5 +37,9 @@ globset = { workspace = true }
 ignore = { workspace = true }
 git2 = { workspace = true }
 
+[features]
+testing = []
+
 [dev-dependencies]
 tempfile = "3"
+cronymax = { path = ".", features = ["testing"] }

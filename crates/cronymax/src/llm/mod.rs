@@ -21,13 +21,19 @@
 
 pub mod anthropic;
 pub mod capabilities;
+pub mod config;
 pub mod copilot_auth;
+pub mod copilot_cache;
+pub mod factory;
 pub mod messages;
 pub mod migration;
 pub mod mock;
 pub mod openai;
 pub mod provider;
 pub mod registry;
+
+pub use config::LlmConfig;
+pub use factory::{DefaultLlmProviderFactory, LlmProviderFactory};
 mod stream;
 
 pub use anthropic::{AnthropicConfig, AnthropicProvider, ANTHROPIC_API_VERSION};
@@ -35,7 +41,7 @@ pub use capabilities::{CapabilityResolver, ModelCapabilities, ThinkingSupport};
 pub use messages::{
     ChatMessage, ChatRole, FinishReason, LlmRequest, ThinkingConfig, ToolCall, ToolDef,
 };
-pub use mock::{MockLlmProvider, MockScript, ScriptStep};
+pub use mock::{MockLlmFactory, MockLlmProvider, MockScript, ScriptStep};
 pub use openai::{OpenAiConfig, OpenAiProvider};
 pub use provider::{LlmEvent, LlmProvider, LlmStream};
 pub use registry::{LlmProviderEntry, LlmProviderKind, LlmProviderRegistry};

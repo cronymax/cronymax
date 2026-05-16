@@ -171,6 +171,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cronygraph",
+ "cronymax",
  "futures-util",
  "git2",
  "globset",

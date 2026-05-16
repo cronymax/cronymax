@@ -123,3 +123,34 @@ impl LlmProvider for MockLlmProvider {
         Ok(Box::pin(UnboundedReceiverStream::new(rx)))
     }
 }
+
+// ── MockLlmFactory ────────────────────────────────────────────────────────────
+
+/// A [`super::factory::LlmProviderFactory`] that always returns a
+/// [`MockLlmProvider`] — no network calls, used in integration tests.
+#[derive(Clone, Default, Debug)]
+pub struct MockLlmFactory {
+    provider: MockLlmProvider,
+}
+
+impl MockLlmFactory {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Access the underlying [`MockLlmProvider`] to queue scripts or
+    /// inspect seen requests.
+    pub fn provider(&self) -> &MockLlmProvider {
+        &self.provider
+    }
+}
+
+#[async_trait]
+impl super::factory::LlmProviderFactory for MockLlmFactory {
+    async fn build(
+        &self,
+        _config: &super::config::LlmConfig,
+    ) -> anyhow::Result<Arc<dyn LlmProvider>> {
+        Ok(Arc::new(self.provider.clone()))
+    }
+}

@@ -20,7 +20,7 @@ use crate::protocol::dispatch::DispatchError;
 use crate::protocol::session;
 use crate::protocol::transport::Transport;
 use crate::protocol::{ProtocolVersion, PROTOCOL_VERSION};
-use crate::runtime::{JsonFilePersistence, RuntimeAuthority, RuntimeHandler};
+use crate::runtime::{JsonFilePersistence, RuntimeAuthority, RuntimeHandler, RuntimeServices};
 use crate::sandbox::policy::SandboxPolicy;
 
 /// Errors surfaced from runtime lifecycle operations.
@@ -48,19 +48,21 @@ struct RuntimeState {
 }
 
 /// Owned runtime instance. Constructed by `crony` once per process.
-#[derive(Debug)]
 pub struct Runtime {
     config: RuntimeConfig,
     state: Arc<Mutex<RuntimeState>>,
     authority: RuntimeAuthority,
-    /// Shared PTY session managers, passed to every RuntimeHandler so that
-    /// sessions created via the browser transport are visible to the renderer
-    /// transport (and vice-versa).
-    terminal_managers: Arc<
-        parking_lot::Mutex<
-            std::collections::HashMap<String, crate::terminal::SharedPtySessionManager>,
-        >,
-    >,
+    /// Composition root: shared services (LLM/capability factories, flow registry, …).
+    services: Arc<RuntimeServices>,
+}
+
+impl std::fmt::Debug for Runtime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Runtime")
+            .field("config", &self.config)
+            .field("authority", &self.authority)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Handle returned from `Runtime::start`. Today it carries no resources
@@ -88,11 +90,25 @@ impl Runtime {
         );
         let authority = RuntimeAuthority::rehydrate(persistence)
             .map_err(|e| RuntimeError::Init(e.to_string()))?;
+
+        let terminal_managers: Arc<
+            parking_lot::Mutex<
+                std::collections::HashMap<String, crate::terminal::SharedPtySessionManager>,
+            >,
+        > = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+        let services = RuntimeServices::new(
+            &config,
+            authority.clone(),
+            Arc::clone(&terminal_managers),
+            None,
+        );
+
         Ok(Self {
             config,
             state: Arc::new(Mutex::new(RuntimeState::default())),
             authority,
-            terminal_managers: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+            services,
         })
     }
 
@@ -162,14 +178,12 @@ impl Runtime {
             policy
         });
 
-        let mut handler = RuntimeHandler::with_policy_and_managers(
-            self.authority.clone(),
+        let handler = RuntimeHandler::from_services(
+            Arc::clone(&self.services),
             self.config.storage.workspace_roots.clone(),
+            self.config.storage.workspace_cache_dir.clone(),
             sandbox_policy,
-            Some(Arc::clone(&self.terminal_managers)),
         );
-        // Wire in workspace_cache_dir so ChatStore is used for session history.
-        handler.set_workspace_cache_dir(self.config.storage.workspace_cache_dir.clone());
         let handler = Arc::new(handler);
         session::spawn_session(transport, handler)
     }
@@ -178,6 +192,12 @@ impl Runtime {
     /// Spaces / Agents from host configuration before connecting.
     pub fn authority(&self) -> &RuntimeAuthority {
         &self.authority
+    }
+
+    /// Borrow the composition root services. Useful for wiring additional
+    /// event emitters or attaching optional managers before `start()`.
+    pub fn services(&self) -> &Arc<RuntimeServices> {
+        &self.services
     }
 }
 

@@ -34,20 +34,26 @@
 //! constructs a `RuntimeAuthority` and hands it to the dispatch loop;
 //! the rest of the runtime is pure Rust.
 
+pub mod agent_runner;
 pub mod authority;
 pub mod chat_store;
 pub mod handler;
 pub mod middleware;
 pub mod persistence;
 pub mod prompt;
+pub mod run_context;
+pub mod services;
 pub mod sessions;
 pub mod state;
 
+pub use agent_runner::AgentRunner;
 pub use authority::{
     AuthorityError, ReviewHandle, ReviewResolution, RuntimeAuthority, SubscribeOutcome,
 };
 pub use handler::RuntimeHandler;
 pub use persistence::{InMemoryPersistence, JsonFilePersistence, Persistence, PersistenceError};
+pub use run_context::RunContext;
+pub use services::RuntimeServices;
 pub use state::{
     Agent, AgentId, HistoryEntry, MemoryEntry, MemoryNamespace, MemoryNamespaceId, PendingReview,
     PermissionState, ReviewId, Run, RunId, RunStatus, Session, SessionId, Snapshot, Space, SpaceId,

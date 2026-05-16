@@ -27,7 +27,7 @@ pub use definition::{FlowDefinition, FlowGraph, FlowLoadError, FlowNode, FlowNod
 pub use document::{DocInfo, DocumentStore, WriteResult};
 pub use gitignore::GitignoreHelper;
 pub use mention_parser::{parse_mentions, ParsedMention};
-pub use registry::FlowRegistry;
+pub use registry::{FlowRegistry, FlowRuntimeOnCreate, FlowRuntimeRegistry};
 pub use runtime::{
     AvailableDoc, EventEmitter, FlowRunDocumentEntry, FlowRunState, FlowRunStatus, FlowRuntime,
     InvocationContext, InvocationTrigger, NodeRunState, PortStatus,

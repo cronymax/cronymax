@@ -9,11 +9,15 @@
 //! still load).
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use parking_lot::Mutex as PLMutex;
 use parking_lot::RwLock;
 
 use super::definition::{FlowDefinition, FlowLoadError};
+use super::runtime::FlowRuntime;
 
 /// In-memory registry of [`FlowDefinition`]s for a Space.
 #[derive(Debug)]
@@ -126,12 +130,9 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let flow_dir = dir.path().join("flows/my-flow");
         tokio::fs::create_dir_all(&flow_dir).await.unwrap();
-        tokio::fs::write(
-            flow_dir.join("flow.yaml"),
-            b"name: \"My Flow\"\nagents: [a, b]\n",
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(flow_dir.join("flow.yaml"), b"name: \"My Flow\"\n")
+            .await
+            .unwrap();
 
         let reg = FlowRegistry::new(dir.path().join("flows"));
         assert!(reg.refresh().await);
@@ -153,5 +154,101 @@ mod tests {
         let reg = FlowRegistry::new(dir.path().join("flows"));
         reg.refresh().await;
         assert!(!reg.last_errors().is_empty());
+    }
+}
+
+// ── FlowRuntimeRegistry ───────────────────────────────────────────────────────
+
+/// Callback invoked each time a new [`FlowRuntime`] is created.
+///
+/// Used by `RuntimeServices` to wire the event emitter at composition root.
+pub type FlowRuntimeOnCreate = Arc<dyn Fn(&Arc<FlowRuntime>) + Send + Sync>;
+
+/// Registry of live [`FlowRuntime`] instances keyed by workspace root.
+///
+/// Replaces the `flow_runtimes: Mutex<HashMap<…>>` field and the
+/// `get_or_init_flow_runtime` helper previously private to `RuntimeHandler`.
+/// Callers hold an `Arc<FlowRuntimeRegistry>` and call
+/// [`get_or_create`](FlowRuntimeRegistry::get_or_create) to obtain a shared
+/// `Arc<FlowRuntime>` for a workspace.
+#[derive(Default)]
+pub struct FlowRuntimeRegistry {
+    inner: PLMutex<HashMap<String, Arc<FlowRuntime>>>,
+    /// Called once for each newly created [`FlowRuntime`] before it is stored.
+    /// Used to wire event emitters at the composition root.
+    on_create: Option<FlowRuntimeOnCreate>,
+}
+
+impl FlowRuntimeRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a registry that calls `on_create` for every newly created
+    /// [`FlowRuntime`] (before it is inserted). Use this from
+    /// `RuntimeServices::new` to wire the authority event emitter.
+    pub fn with_on_create(on_create: FlowRuntimeOnCreate) -> Self {
+        Self {
+            inner: PLMutex::new(HashMap::new()),
+            on_create: Some(on_create),
+        }
+    }
+
+    /// Return the [`FlowRuntime`] for `workspace_root`, creating and rehydrating
+    /// it on the first call for that workspace.
+    ///
+    /// Returns `(runtime, is_new)` — `is_new` is `true` the first time a given
+    /// workspace is accessed so callers can fire startup notifications.
+    pub async fn get_or_create(&self, workspace_root: &Path) -> (Arc<FlowRuntime>, bool) {
+        let key = workspace_root.to_string_lossy().into_owned();
+
+        // Fast path — already created.
+        if let Some(rt) = self.inner.lock().get(&key).cloned() {
+            return (rt, false);
+        }
+
+        // Slow path — create, rehydrate, insert.
+        let rt = Arc::new(FlowRuntime::new(workspace_root));
+        let count = rt.rehydrate_from_disk().await;
+        if count > 0 {
+            tracing::info!(%count, workspace = %key, "flow_runtime_registry: rehydrated runs from disk");
+        }
+
+        // Wire event emitter if configured.
+        if let Some(on_create) = &self.on_create {
+            on_create(&rt);
+        }
+
+        let mut map = self.inner.lock();
+        // Double-check: another task may have inserted while we were rehydrating.
+        if let Some(existing) = map.get(&key).cloned() {
+            return (existing, false);
+        }
+        map.insert(key, rt.clone());
+        (rt, true)
+    }
+
+    /// Load the [`FlowDefinition`] for `flow_id` from
+    /// `<workspace_root>/.cronymax/flows/<flow_id>/flow.yaml`.
+    ///
+    /// Returns `Err` if the file cannot be read or parsed.
+    pub async fn load_flow_def(
+        &self,
+        flow_id: &str,
+        workspace_root: &Path,
+    ) -> anyhow::Result<FlowDefinition> {
+        let path = workspace_root
+            .join(".cronymax")
+            .join("flows")
+            .join(flow_id)
+            .join("flow.yaml");
+
+        let yaml = tokio::fs::read_to_string(&path).await.map_err(|e| {
+            anyhow::anyhow!("failed to read flow definition for '{}': {}", flow_id, e)
+        })?;
+
+        FlowDefinition::load_from_str(&yaml, &path).map_err(|e| {
+            anyhow::anyhow!("failed to parse flow definition for '{}': {}", flow_id, e)
+        })
     }
 }

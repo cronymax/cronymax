@@ -118,6 +118,12 @@ struct AuthorityInner {
     /// Populated by [`open_review_with_completion`]; absent for the
     /// legacy `open_review` path.
     pending_resolutions: HashMap<ReviewId, oneshot::Sender<ReviewResolution>>,
+    /// In-memory mapping from `flow_run_id` → `session_id`.
+    ///
+    /// Replaces the `chat_sessions` field on [`crate::flow::runtime::FlowRuntime`].
+    /// Not persisted; re-populated from `FlowRunState.originating_session_id`
+    /// during rehydration (see `FlowRuntimeRegistry::get_or_create`).
+    flow_sessions: HashMap<String, String>,
 }
 
 /// The runtime authority. Cheap to clone — wraps an `Arc`.
@@ -160,6 +166,7 @@ impl RuntimeAuthority {
                 snapshot,
                 subscriptions: HashMap::new(),
                 pending_resolutions: HashMap::new(),
+                flow_sessions: HashMap::new(),
             })),
             persistence,
         })
@@ -704,6 +711,30 @@ impl RuntimeAuthority {
     pub fn emit(&self, topic: impl Into<String>, payload: RuntimeEventPayload) {
         let mut inner = self.inner.lock();
         Self::emit_locked(&mut inner, topic.into(), payload);
+    }
+
+    // ── Session routing ───────────────────────────────────────────────────
+
+    /// Record that `session_id` is the originating chat session for
+    /// `flow_run_id`. Used to route human-review notifications back to the
+    /// correct session.
+    ///
+    /// Replaces `FlowRuntime::register_chat_session`.
+    pub fn bind_session(&self, flow_run_id: &str, session_id: &str) {
+        self.inner
+            .lock()
+            .flow_sessions
+            .insert(flow_run_id.to_owned(), session_id.to_owned());
+    }
+
+    /// Look up the originating session for `flow_run_id`.
+    ///
+    /// Returns `None` if no session has been bound (e.g. after an app restart
+    /// before rehydration, or for non-chat-initiated runs).
+    ///
+    /// Replaces `FlowRuntime::lookup_chat_session`.
+    pub fn resolve_session(&self, flow_run_id: &str) -> Option<String> {
+        self.inner.lock().flow_sessions.get(flow_run_id).cloned()
     }
 
     /// Append a payload to a run's persistent history (task 7.3). The
