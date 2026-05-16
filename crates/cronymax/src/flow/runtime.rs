@@ -90,7 +90,7 @@ pub enum PortStatus {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InvocationTrigger {
     /// `"initial"` | `"and_join"` | `"cycle_retrigger"` | `"implicit_reinvoke"` |
-    /// `"rejected_requeue"` | `"human_submit"`
+    /// `"rejected_requeue"` | `"human_submit"` | `"reviewer_invocation"`
     pub kind: String,
     /// Port that was approved, triggering this invocation (absent for initial).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,6 +98,10 @@ pub struct InvocationTrigger {
     /// Producing node whose approval fired this trigger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_node: Option<String>,
+    /// Workspace-relative path to the document being reviewed.
+    /// Set only for `reviewer_invocation` triggers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer_doc_path: Option<String>,
 }
 
 /// Record of one invocation of a node within a run.
@@ -124,6 +128,16 @@ pub struct NodeRunState {
 
 // ── InvocationContext ─────────────────────────────────────────────────────────
 
+/// A structured comment left by a reviewer agent.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReviewComment {
+    /// One of `"error"`, `"warn"`, or `"info"`.
+    pub severity: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+}
+
 /// A brief reference to an approved document available in the current run.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AvailableDoc {
@@ -147,6 +161,10 @@ pub struct InvocationContext {
     pub pending_ports: Vec<String>,
     /// Pre-rendered system message to prepend to the agent's initial history.
     pub system_message: String,
+    /// Reviewer feedback to inject on `rejected_requeue`. `None` for all other
+    /// trigger kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_comments: Option<Vec<ReviewComment>>,
 }
 
 impl InvocationContext {
@@ -156,6 +174,17 @@ impl InvocationContext {
         trigger: InvocationTrigger,
         available_docs: Vec<AvailableDoc>,
         pending_ports: Vec<String>,
+    ) -> Self {
+        Self::build_with_feedback(node_id, owner, trigger, available_docs, pending_ports, None)
+    }
+
+    pub fn build_with_feedback(
+        node_id: &str,
+        owner: &str,
+        trigger: InvocationTrigger,
+        available_docs: Vec<AvailableDoc>,
+        pending_ports: Vec<String>,
+        review_comments: Option<Vec<ReviewComment>>,
     ) -> Self {
         let next_task = pending_ports.first().map(|p| p.as_str()).unwrap_or("none");
 
@@ -197,9 +226,58 @@ impl InvocationContext {
             ),
             ("rejected_requeue", Some(port)) => format!(
                 "Your submission for port `{port}` was rejected with change requests. \
-                 Please revise and resubmit."
+                 Please address the reviewer feedback below and resubmit."
             ),
+            ("reviewer_invocation", Some(port)) => {
+                let doc_path = trigger
+                    .reviewer_doc_path
+                    .as_deref()
+                    .unwrap_or("<unknown path>");
+                let producer = trigger.from_node.as_deref().unwrap_or("?");
+                format!(
+                    "You have been assigned to review the document submitted by node `{producer}` \
+                     at port `{port}`.\n\
+                     Document path: `{doc_path}`\n\n\
+                     Use the `read_file` tool to load the document, then call \
+                     `flow_submit_review` with your verdict (`approve` or `reject`) \
+                     and optional structured comments."
+                )
+            }
             _ => format!("Node `{node_id}` ({owner}) is being invoked."),
+        };
+
+        // Reviewer invocations use a different system message structure.
+        if trigger.kind == "reviewer_invocation" {
+            return InvocationContext {
+                node_id: node_id.to_owned(),
+                owner: owner.to_owned(),
+                trigger,
+                available_docs,
+                pending_ports,
+                system_message: format!("## FlowRuntime: Review Assignment\n\n{trigger_context}"),
+                review_comments: None,
+            };
+        }
+
+        let feedback_section = match &review_comments {
+            Some(comments) if !comments.is_empty() => {
+                let items = comments
+                    .iter()
+                    .map(|c| {
+                        let sev = c.severity.to_uppercase();
+                        match &c.suggestion {
+                            Some(s) => format!("  - [{sev}] {} → {s}", c.message),
+                            None => format!("  - [{sev}] {}", c.message),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("\n\n### Reviewer Feedback (address before resubmitting)\n{items}")
+            }
+            Some(_) => {
+                "\n\n### Reviewer Feedback\nNo specific comments provided. Review the document and improve quality.".to_owned()
+            }
+            None => String::new(),
         };
 
         let system_message = format!(
@@ -210,7 +288,7 @@ impl InvocationContext {
              ### Your Pending Ports (in order)\n\
              {pending_summary}\n\n\
              ### Available Approved Documents\n\
-             {available_summary}\n\n\
+             {available_summary}{feedback_section}\n\n\
              Proceed with your next task. Use the `submit_document` tool when ready."
         );
 
@@ -221,8 +299,17 @@ impl InvocationContext {
             available_docs,
             pending_ports,
             system_message,
+            review_comments,
         }
     }
+}
+
+/// Verdict produced by a reviewer agent via the `flow.submit_review` tool.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewVerdict {
+    Approve,
+    Reject,
 }
 
 // ── FlowRunState ──────────────────────────────────────────────────────────────
@@ -244,6 +331,15 @@ pub struct FlowRunState {
     /// state.json files.
     #[serde(default, alias = "agents")]
     pub node_states: HashMap<String, NodeRunState>,
+    /// Pending reviewer verdict tallies: key = "node_id/port",
+    /// value = list of (reviewer_agent, verdict) pairs received so far.
+    #[serde(default)]
+    pub reviewer_verdicts: HashMap<String, Vec<(String, ReviewVerdict)>>,
+    /// Session ID of the `__chat__` session that initiated this run.
+    /// Persisted so human-review notifications can be re-routed after an
+    /// app restart (i.e. when the in-memory `chat_sessions` map is empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub originating_session_id: Option<String>,
 }
 
 impl FlowRunState {
@@ -259,6 +355,8 @@ impl FlowRunState {
             failure_reason: None,
             initial_input,
             node_states: HashMap::new(),
+            reviewer_verdicts: HashMap::new(),
+            originating_session_id: None,
         }
     }
 }
@@ -275,6 +373,11 @@ pub struct FlowRuntime {
     runs: RwLock<HashMap<String, Arc<RwLock<FlowRunState>>>>,
     event_emitter: RwLock<Option<EventEmitter>>,
     trace_writers: RwLock<HashMap<String, Arc<TraceWriter>>>,
+    /// Maps `flow_run_id` → `session_id` (plain String) for the `__chat__`
+    /// session that initiated each flow run via `flow.start`.
+    /// Used to route `human_input_required` events back to the originating
+    /// chat session.
+    chat_sessions: RwLock<HashMap<String, String>>,
 }
 
 impl std::fmt::Debug for FlowRuntime {
@@ -293,11 +396,31 @@ impl FlowRuntime {
             runs: RwLock::new(HashMap::new()),
             event_emitter: RwLock::new(None),
             trace_writers: RwLock::new(HashMap::new()),
+            chat_sessions: RwLock::new(HashMap::new()),
         }
     }
 
     pub fn set_event_emitter(&self, cb: EventEmitter) {
         *self.event_emitter.write() = Some(cb);
+    }
+
+    /// Record that `session_id` is the `__chat__` session that owns `flow_run_id`.
+    /// Also stores `session_id` in the in-memory `FlowRunState` so the next
+    /// `persist_run` call will write it to `state.json` for cross-restart recovery.
+    pub fn register_chat_session(&self, flow_run_id: &str, session_id: String) {
+        self.chat_sessions
+            .write()
+            .insert(flow_run_id.to_owned(), session_id.clone());
+        // Persist the session_id in the run state so it survives app restarts.
+        let runs = self.runs.read();
+        if let Some(run_arc) = runs.get(flow_run_id) {
+            run_arc.write().originating_session_id = Some(session_id);
+        }
+    }
+
+    /// Retrieve the `__chat__` session id associated with a flow run.
+    pub fn lookup_chat_session(&self, flow_run_id: &str) -> Option<String> {
+        self.chat_sessions.read().get(flow_run_id).cloned()
     }
 
     // ── Run lifecycle ─────────────────────────────────────────────────────
@@ -414,6 +537,7 @@ impl FlowRuntime {
                 kind: "and_join".into(),
                 approved_port: Some(port.to_owned()),
                 from_node: Some(producing_node.to_owned()),
+                reviewer_doc_path: None,
             };
             if node.owner == "human" {
                 // Human-owner node: set all output ports to AwaitingOwner.
@@ -509,11 +633,65 @@ impl FlowRuntime {
             return Ok(contexts);
         }
 
-        // Mark InReview and wait for reviewer to call on_document_approved.
+        // Mark InReview and spawn reviewer agent loops.
         self.mark_port_status(run_id, node_id, port, PortStatus::InReview)
             .await?;
+
+        // Build InvocationContexts for each reviewer.
+        // - Non-human reviewers: `reviewer_invocation` trigger → handler spawns an agent loop.
+        // - Human reviewer (if present): `human_review_pending` sentinel → handler calls
+        //   `spawn_chat_turn` to notify the originating chat session.
+        let reviewers = flow
+            .output(node_id, port)
+            .map(|o| o.reviewers.clone())
+            .unwrap_or_default();
+
+        let doc_path = self
+            .get_run(run_id)
+            .map(|s| format!(".cronymax/flows/{}/docs/{}.md", s.flow_id, port))
+            .unwrap_or_default();
+
+        let mut reviewer_contexts: Vec<InvocationContext> = reviewers
+            .iter()
+            .filter(|r| r.as_str() != "human")
+            .map(|reviewer| {
+                let trigger = InvocationTrigger {
+                    kind: "reviewer_invocation".into(),
+                    approved_port: Some(port.to_owned()),
+                    from_node: Some(node_id.to_owned()),
+                    reviewer_doc_path: Some(doc_path.clone()),
+                };
+                InvocationContext::build_with_feedback(
+                    reviewer,
+                    reviewer,
+                    trigger,
+                    vec![],
+                    vec![],
+                    None,
+                )
+            })
+            .collect();
+
+        // Add a human-review-pending sentinel if any human reviewer is listed.
+        if reviewers.iter().any(|r| r == "human") {
+            reviewer_contexts.push(InvocationContext {
+                node_id: node_id.to_owned(),
+                owner: "human".to_owned(),
+                trigger: InvocationTrigger {
+                    kind: "human_review_pending".into(),
+                    approved_port: Some(port.to_owned()),
+                    from_node: Some(node_id.to_owned()),
+                    reviewer_doc_path: Some(doc_path),
+                },
+                available_docs: vec![],
+                pending_ports: vec![],
+                system_message: String::new(),
+                review_comments: None,
+            });
+        }
+
         self.emit("flow.run.changed", run_id);
-        Ok(vec![])
+        Ok(reviewer_contexts)
     }
 
     // ── Document approval ─────────────────────────────────────────────────
@@ -590,6 +768,7 @@ impl FlowRuntime {
                     kind: "cycle_retrigger".into(),
                     approved_port: Some(port.to_owned()),
                     from_node: Some(node_id.to_owned()),
+                    reviewer_doc_path: None,
                 };
                 if let Some(ctx) = self
                     .schedule_node_with_context(run_id, &retrigger_id, trigger, flow)
@@ -633,6 +812,7 @@ impl FlowRuntime {
                     kind: "implicit_reinvoke".into(),
                     approved_port: Some(port.to_owned()),
                     from_node: None,
+                    reviewer_doc_path: None,
                 };
                 if let Some(ctx) = self
                     .schedule_node_with_context(run_id, node_id, trigger, flow)
@@ -671,6 +851,7 @@ impl FlowRuntime {
             kind: "rejected_requeue".into(),
             approved_port: Some(port.to_owned()),
             from_node: None,
+            reviewer_doc_path: None,
         };
         let ctx = self
             .schedule_node_with_context(run_id, node_id, trigger, flow)
@@ -678,6 +859,110 @@ impl FlowRuntime {
 
         self.emit("flow.run.changed", run_id);
         Ok(ctx)
+    }
+
+    // ── Reviewer verdict aggregation ──────────────────────────────────────
+
+    /// Called by the `flow.submit_review` tool (via `HostCapabilityDispatcher`)
+    /// when a reviewer agent completes its review.
+    ///
+    /// Atomically records the verdict. Returns:
+    /// - `Ok(None)` — still waiting for other reviewers.
+    /// - `Ok(Some(contexts))` — all verdicts are in; either approval cascades
+    ///   or rejection requeue context is returned.
+    pub async fn on_reviewer_verdict(
+        &self,
+        run_id: &str,
+        producer_node_id: &str,
+        port: &str,
+        reviewer_agent: &str,
+        verdict: ReviewVerdict,
+        comments: Vec<ReviewComment>,
+        flow: &FlowDefinition,
+    ) -> anyhow::Result<Option<Vec<InvocationContext>>> {
+        let flow_id = match self.get_run(run_id).map(|s| s.flow_id.clone()) {
+            Some(id) => id,
+            None => anyhow::bail!("run {run_id} not found"),
+        };
+
+        // Persist comments before tallying.
+        if !comments.is_empty() {
+            self.write_review_comments(&flow_id, run_id, port, reviewer_agent, comments)
+                .await?;
+        }
+
+        let verdict_key = format!("{run_id}/{producer_node_id}/{port}");
+        let expected_count = flow
+            .output(producer_node_id, port)
+            .map(|o| o.reviewers.iter().filter(|r| r.as_str() != "human").count())
+            .unwrap_or(0);
+        let has_human_reviewer = flow
+            .output(producer_node_id, port)
+            .map(|o| o.reviewers.iter().any(|r| r == "human"))
+            .unwrap_or(false);
+
+        // Record verdict in FlowRunState.
+        let (all_approved, any_rejected) = {
+            let state_arc = match self.runs.read().get(run_id).cloned() {
+                Some(a) => a,
+                None => anyhow::bail!("run {run_id} not found in map"),
+            };
+            let mut state = state_arc.write();
+            let verdicts = state.reviewer_verdicts.entry(verdict_key).or_default();
+            // Idempotency: ignore duplicate verdicts from same reviewer.
+            if !verdicts.iter().any(|(r, _)| r == reviewer_agent) {
+                verdicts.push((reviewer_agent.to_owned(), verdict));
+            }
+            let total = verdicts.len();
+            let rejected = verdicts.iter().any(|(_, v)| *v == ReviewVerdict::Reject);
+            let approved = !rejected && total >= expected_count;
+            (approved, rejected)
+        };
+
+        // Persist updated state.
+        if let Some(state) = self.get_run(run_id) {
+            if let Err(e) = self.persist_run(&state).await {
+                tracing::warn!(run_id, error = %e, "failed to persist run state after verdict");
+            }
+        }
+
+        if any_rejected {
+            let ctxs = self
+                .on_rejected_requeue(run_id, producer_node_id, port, flow)
+                .await?;
+            return Ok(Some(ctxs.into_iter().collect()));
+        }
+
+        if all_approved && !has_human_reviewer {
+            // All agent reviewers approved and no human in the list — approve immediately.
+            let ctxs = self
+                .on_document_approved(run_id, producer_node_id, port, flow)
+                .await?;
+            return Ok(Some(ctxs));
+        }
+
+        if all_approved && has_human_reviewer {
+            // Agent reviewers done; waiting for human. The caller (handler.rs) will
+            // use `lookup_chat_session` to spawn a chat turn notifying the human.
+            self.emit("flow.run.changed", run_id);
+            return Ok(Some(vec![InvocationContext {
+                node_id: producer_node_id.to_owned(),
+                owner: "human".to_owned(),
+                trigger: InvocationTrigger {
+                    kind: "human_review_pending".into(),
+                    approved_port: Some(port.to_owned()),
+                    from_node: Some(producer_node_id.to_owned()),
+                    reviewer_doc_path: None,
+                },
+                available_docs: vec![],
+                pending_ports: vec![],
+                system_message: String::new(),
+                review_comments: None,
+            }]));
+        }
+
+        // Still waiting for more reviewer verdicts.
+        Ok(None)
     }
 
     // ── Cycle-limit enforcement ───────────────────────────────────────────
@@ -722,7 +1007,7 @@ impl FlowRuntime {
 
     // ── InvocationContext builder ─────────────────────────────────────────
 
-    pub fn build_invocation_context(
+    pub async fn build_invocation_context(
         &self,
         run_id: &str,
         node_id: &str,
@@ -759,12 +1044,28 @@ impl FlowRuntime {
             .map(|s| s.to_owned())
             .collect();
 
-        Some(InvocationContext::build(
+        // For rejected_requeue, inject prior reviewer comments so the agent
+        // can address them in the revised submission.
+        let review_comments = if trigger.kind == "rejected_requeue" {
+            if let Some(port) = &trigger.approved_port {
+                Some(
+                    self.read_review_comments(&state.flow_id, run_id, port)
+                        .await,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Some(InvocationContext::build_with_feedback(
             node_id,
             &node.owner,
             trigger,
             available_docs,
             pending_ports,
+            review_comments,
         ))
     }
 
@@ -775,7 +1076,9 @@ impl FlowRuntime {
         trigger: InvocationTrigger,
         flow: &FlowDefinition,
     ) -> anyhow::Result<Option<InvocationContext>> {
-        let ctx = self.build_invocation_context(run_id, node_id, trigger.clone(), flow);
+        let ctx = self
+            .build_invocation_context(run_id, node_id, trigger.clone(), flow)
+            .await;
         let inv_id = self.record_invocation(run_id, node_id, trigger).await?;
 
         if let Some(tw) = self.trace_writers.read().get(run_id) {
@@ -974,6 +1277,14 @@ impl FlowRuntime {
                             let _ = self.persist_run(&state).await;
                             count += 1;
                         }
+                        // Restore the chat_sessions mapping so human-review
+                        // notifications can be re-routed to the originating session
+                        // after an app restart.
+                        if let Some(ref sid) = state.originating_session_id.clone() {
+                            self.chat_sessions
+                                .write()
+                                .insert(state.run_id.clone(), sid.clone());
+                        }
                         self.runs
                             .write()
                             .insert(state.run_id.clone(), Arc::new(RwLock::new(state)));
@@ -1040,8 +1351,95 @@ impl FlowRuntime {
         Ok(())
     }
 
-    /// Write or update `reviews.json` for a run document.
-    #[allow(clippy::too_many_arguments)]
+    // ── Review comment helpers ────────────────────────────────────────────
+
+    /// Read reviewer comments for a specific port from `reviews.json`.
+    /// Returns an empty vec if no comments exist or the file is absent.
+    pub async fn read_review_comments(
+        &self,
+        flow_id: &str,
+        run_id: &str,
+        port: &str,
+    ) -> Vec<ReviewComment> {
+        let reviews_path = self.layout.run_reviews_file(flow_id, run_id);
+        let raw = match tokio::fs::read_to_string(&reviews_path).await {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+        let reviews: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({"docs": {}}));
+        let comments = reviews
+            .pointer(&format!("/docs/{port}/comments"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        comments
+            .iter()
+            .filter_map(|c| serde_json::from_value::<ReviewComment>(c.clone()).ok())
+            .collect()
+    }
+
+    /// Append reviewer `comments` to the `reviews.json` entry for `port`.
+    /// Creates the file if absent. Used by `flow.request_changes` and
+    /// `flow.submit_review`.
+    pub async fn write_review_comments(
+        &self,
+        flow_id: &str,
+        run_id: &str,
+        port: &str,
+        reviewer: &str,
+        comments: Vec<ReviewComment>,
+    ) -> anyhow::Result<()> {
+        let reviews_path = self.layout.run_reviews_file(flow_id, run_id);
+        if let Some(parent) = reviews_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        let mut reviews: serde_json::Value = if reviews_path.exists() {
+            let raw = tokio::fs::read_to_string(&reviews_path)
+                .await
+                .unwrap_or_default();
+            serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({"docs": {}}))
+        } else {
+            serde_json::json!({"docs": {}})
+        };
+
+        if !reviews.get("docs").map(|v| v.is_object()).unwrap_or(false) {
+            reviews["docs"] = serde_json::json!({});
+        }
+
+        let docs = reviews["docs"]
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("reviews.json: docs is not an object"))?;
+
+        let entry = docs.entry(port).or_insert_with(|| {
+            serde_json::json!({
+                "current_revision": 0,
+                "status": "DRAFT",
+                "round_count": 0,
+                "revisions": [],
+                "comments": []
+            })
+        });
+
+        let existing = entry["comments"]
+            .as_array_mut()
+            .ok_or_else(|| anyhow::anyhow!("reviews.json: comments is not an array"))?;
+        let ts = utc_now_iso();
+        for c in &comments {
+            let mut obj = serde_json::to_value(c)?;
+            obj["reviewer"] = serde_json::json!(reviewer);
+            obj["timestamp"] = serde_json::json!(ts);
+            existing.push(obj);
+        }
+
+        let json = serde_json::to_string_pretty(&reviews)?;
+        let tmp_path = reviews_path.with_extension("tmp");
+        tokio::fs::write(&tmp_path, json).await?;
+        tokio::fs::rename(&tmp_path, &reviews_path).await?;
+        Ok(())
+    }
+
     async fn upsert_review_state(
         &self,
         flow_id: &str,
@@ -1387,6 +1785,7 @@ nodes:
             kind: "initial".into(),
             approved_port: None,
             from_node: None,
+            reviewer_doc_path: None,
         };
         let inv_id = rt
             .record_invocation(&run_id, "pm-design", trigger)
@@ -1565,5 +1964,146 @@ nodes:
             .await
             .unwrap();
         assert_eq!(action.as_deref(), Some("escalate_to_human"));
+    }
+
+    // ── Section 9 integration tests ───────────────────────────────────────
+
+    /// Build a minimal flow with one agent and a critic reviewer.
+    fn make_critic_review_flow() -> FlowDefinition {
+        let yaml = r#"
+name: critic-review-flow
+agents:
+  writer: agents/writer.agent.yaml
+  critic: agents/critic.agent.yaml
+
+nodes:
+  - id: writer-draft
+    owner: writer
+    outputs:
+      - port: draft
+        reviewers: [critic]
+        routes_to: writer-draft
+"#;
+        FlowDefinition::load_from_str(yaml, Path::new("t.yaml")).unwrap()
+    }
+
+    /// 9.2 — `request_changes_injects_feedback_on_reinvoke`
+    ///
+    /// Simulates: after a human calls `flow.request_changes` (which calls
+    /// `write_review_comments` + `on_rejected_requeue`), the re-invocation
+    /// context contains the comment in `review_comments`.
+    #[tokio::test]
+    async fn request_changes_injects_feedback_on_reinvoke() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rt = FlowRuntime::new(dir.path());
+        let flow = make_simple_flow();
+        let (run_id, _) = rt.start_run(&flow, "hello").await.unwrap();
+
+        // Mark port as InReview (simulates pm-design submitting its doc).
+        rt.mark_port_status(&run_id, "pm-design", "prd", PortStatus::InReview)
+            .await
+            .unwrap();
+
+        // Write human review comments (simulates flow.request_changes tool).
+        let comment = ReviewComment {
+            severity: "error".into(),
+            message: "Missing acceptance criteria".into(),
+            suggestion: Some("Add AC section".into()),
+        };
+        let flow_id = "test-flow";
+        rt.write_review_comments(flow_id, &run_id, "prd", "human", vec![comment.clone()])
+            .await
+            .unwrap();
+
+        // Trigger requeue — simulates on_rejected_requeue path.
+        let ctx_opt = rt
+            .on_rejected_requeue(&run_id, "pm-design", "prd", &flow)
+            .await
+            .unwrap();
+        let ctx = ctx_opt.expect("on_rejected_requeue should return a context");
+        assert_eq!(ctx.trigger.kind, "rejected_requeue");
+
+        // The re-invocation context must carry the review comments.
+        let comments = ctx.review_comments.expect("review_comments should be Some");
+        assert!(!comments.is_empty(), "review_comments should not be empty");
+        assert_eq!(comments[0].message, "Missing acceptance criteria");
+        assert_eq!(comments[0].severity, "error");
+    }
+
+    /// 9.3 — `critic_reviewer_rejects_triggers_requeue`
+    ///
+    /// Simulates: critic agent calls `flow.submit_review({verdict: "reject",
+    /// comments: [...]})`. Port should transition to `Pending` (CHANGES_REQUESTED)
+    /// and the producing agent should be re-invoked with reviewer feedback.
+    #[tokio::test]
+    async fn critic_reviewer_rejects_triggers_requeue() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rt = FlowRuntime::new(dir.path());
+        let flow = make_critic_review_flow();
+        let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
+
+        // Simulate writer submitting the `draft` port for review.
+        rt.mark_port_status(&run_id, "writer-draft", "draft", PortStatus::InReview)
+            .await
+            .unwrap();
+
+        let comment = ReviewComment {
+            severity: "error".into(),
+            message: "Draft is too vague".into(),
+            suggestion: Some("Add more detail".into()),
+        };
+
+        // Critic calls flow.submit_review with reject verdict.
+        let result = rt
+            .on_reviewer_verdict(
+                &run_id,
+                "writer-draft",
+                "draft",
+                "critic",
+                ReviewVerdict::Reject,
+                vec![comment],
+                &flow,
+            )
+            .await
+            .unwrap();
+
+        let contexts = result.expect("on_reviewer_verdict should return Some contexts on reject");
+        assert!(
+            !contexts.is_empty(),
+            "should have at least one context on reject"
+        );
+
+        // Port should be reset to Pending (requeue).
+        let port_status = rt.port_status(&run_id, "writer-draft", "draft");
+        assert_eq!(
+            port_status,
+            PortStatus::Pending,
+            "port should be reset to Pending after reject"
+        );
+
+        // The returned context should be a rejected_requeue for the writer.
+        let requeue_ctx = &contexts[0];
+        assert_eq!(requeue_ctx.trigger.kind, "rejected_requeue");
+        assert_eq!(requeue_ctx.node_id, "writer-draft");
+
+        // Re-invocation context must carry the reviewer's comments.
+        let comments = requeue_ctx
+            .review_comments
+            .as_ref()
+            .expect("review_comments should be Some on requeue");
+        assert!(!comments.is_empty(), "review_comments should not be empty");
+        assert_eq!(comments[0].message, "Draft is too vague");
+    }
+
+    /// Verifies `register_chat_session` / `lookup_chat_session` round-trip.
+    #[tokio::test]
+    async fn chat_session_registration_roundtrip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let rt = FlowRuntime::new(dir.path());
+        rt.register_chat_session("run-abc", "session-xyz".to_owned());
+        let sid = rt.lookup_chat_session("run-abc");
+        assert_eq!(sid.as_deref(), Some("session-xyz"));
+        // Unknown run → None.
+        assert!(rt.lookup_chat_session("run-unknown").is_none());
     }
 }

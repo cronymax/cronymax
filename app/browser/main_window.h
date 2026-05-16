@@ -92,7 +92,6 @@ class MainWindow : public CefWindowDelegate,
   // browser (so tab renderers can react to lifecycle events).
   void BroadcastToAllPanels(const std::string& event_name,
                             const std::string& json_payload);
-  static std::string JsEsc(const std::string& s);
 
   // native-views-mvc Phase 4: shared state (TabManager, SpaceManager, theme,
   // observer lists) lives in ShellModel. Declared before client_handler_ so

@@ -88,7 +88,8 @@ pub enum Channel {
 /// `tag` discriminates the surface; payload is one of:
 ///   * a `Hello` handshake (mandatory first message),
 ///   * a control request,
-///   * a capability response (host fulfilling a runtime-initiated call).
+///   * a capability response (host fulfilling a runtime-initiated call),
+///   * a `Pong` reply to a runtime-initiated keepalive [`RuntimeToClient::Ping`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "tag", rename_all = "snake_case")]
 pub enum ClientToRuntime {
@@ -109,6 +110,10 @@ pub enum ClientToRuntime {
         id: CorrelationId,
         response: CapabilityResponse,
     },
+    /// Keepalive reply from host in response to [`RuntimeToClient::Ping`].
+    /// Resets the transport idle timer, preventing spurious disconnects
+    /// during long-running agent tasks.
+    Pong,
 }
 
 /// All messages the runtime can send to the host.
@@ -117,7 +122,8 @@ pub enum ClientToRuntime {
 ///   * a `Welcome` handshake reply,
 ///   * a control response,
 ///   * a streamed runtime event,
-///   * a capability invocation request.
+///   * a capability invocation request,
+///   * a `Ping` keepalive probe expecting a [`ClientToRuntime::Pong`] reply.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "tag", rename_all = "snake_case")]
 pub enum RuntimeToClient {
@@ -149,6 +155,10 @@ pub enum RuntimeToClient {
         id: CorrelationId,
         request: CapabilityRequest,
     },
+    /// Keepalive probe. Sent periodically by the dispatch loop to prevent
+    /// the transport idle timer from firing during long agent runs.
+    /// The host MUST reply with [`ClientToRuntime::Pong`].
+    Ping,
 }
 
 /// Why a connection is being closed by the runtime.

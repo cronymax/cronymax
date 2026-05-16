@@ -181,6 +181,31 @@ impl RuntimeAuthority {
         self.inner.lock().snapshot.clone()
     }
 
+    /// Return all runs and pending reviews belonging to `space_id`.
+    ///
+    /// Used by the `GetSpaceSnapshot` control request so the Activity
+    /// panel can hydrate its initial state in one round-trip.
+    /// Returns `(runs, pending_reviews)`.
+    pub fn get_space_snapshot(&self, space_id: &str) -> (Vec<Run>, Vec<PendingReview>) {
+        let inner = self.inner.lock();
+        let runs: Vec<Run> = inner
+            .snapshot
+            .runs
+            .values()
+            .filter(|r| r.space_id.to_string() == space_id)
+            .cloned()
+            .collect();
+        let run_ids: std::collections::HashSet<RunId> = runs.iter().map(|r| r.id).collect();
+        let reviews: Vec<PendingReview> = inner
+            .snapshot
+            .reviews
+            .values()
+            .filter(|rv| run_ids.contains(&rv.run_id))
+            .cloned()
+            .collect();
+        (runs, reviews)
+    }
+
     // -- Space / Agent CRUD -------------------------------------------------
 
     pub fn upsert_space(&self, space: Space) -> Result<(), AuthorityError> {
@@ -364,6 +389,7 @@ impl RuntimeAuthority {
             space_id,
             agent_id,
             session_id: session_id.clone(),
+            flow_run_id: None,
             status: RunStatus::Pending,
             spec,
             history: Vec::new(),
@@ -393,6 +419,18 @@ impl RuntimeAuthority {
             },
         );
         Ok(id)
+    }
+
+    /// Attach a `flow_run_id` to an existing run.  Called by `spawn_agent_loop`
+    /// immediately after `start_run` when the run belongs to a flow.
+    pub fn set_run_flow_id(&self, run_id: RunId, flow_run_id: String) {
+        let mut inner = self.inner.lock();
+        if let Some(run) = inner.snapshot.runs.get_mut(&run_id) {
+            run.flow_run_id = Some(flow_run_id);
+            run.updated_at_ms = now_ms();
+            // Best-effort persist; failure is non-fatal (field is display-only).
+            let _ = self.persistence.save(&inner.snapshot);
+        }
     }
 
     pub fn cancel_run(&self, run_id: RunId) -> Result<(), AuthorityError> {
@@ -1104,5 +1142,76 @@ mod tests {
             .unwrap();
         // Subscription should now be gone.
         assert!(!auth.unsubscribe(id), "expected subscription to be reaped");
+    }
+
+    // ── Activity panel tests ───────────────────────────────────────────
+
+    /// 10.1 – `get_space_snapshot` only returns runs belonging to the
+    /// requested space, even when another space has runs.
+    #[test]
+    fn get_space_snapshot_filters_by_space() {
+        let (auth, space_a) = auth();
+
+        // Create a second space.
+        let space_b_id = SpaceId::new();
+        auth.upsert_space(Space {
+            id: space_b_id,
+            name: "space_b".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        })
+        .unwrap();
+
+        let run_a = auth
+            .start_run(space_a, None, serde_json::json!({}))
+            .unwrap();
+        let _run_b = auth
+            .start_run(space_b_id, None, serde_json::json!({}))
+            .unwrap();
+
+        let (runs, _reviews) = auth.get_space_snapshot(&space_a.to_string());
+        assert_eq!(runs.len(), 1, "only space_a's run should be returned");
+        assert_eq!(runs[0].id, run_a);
+        assert_eq!(runs[0].space_id, space_a);
+    }
+
+    /// 10.2 – A pending review created for a run in `space_a` must NOT
+    /// appear when querying `space_b`'s snapshot.
+    #[test]
+    fn get_space_snapshot_reviews_scoped_to_space() {
+        let (auth, space_a) = auth();
+
+        let space_b_id = SpaceId::new();
+        auth.upsert_space(Space {
+            id: space_b_id,
+            name: "space_b".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        })
+        .unwrap();
+
+        let run_a = auth
+            .start_run(space_a, None, serde_json::json!({}))
+            .unwrap();
+
+        // Open a review on space_a's run.
+        auth.open_review(run_a, serde_json::json!({"tool": "bash"}))
+            .unwrap();
+
+        // space_a snapshot should contain the review.
+        let (_, reviews_a) = auth.get_space_snapshot(&space_a.to_string());
+        assert_eq!(
+            reviews_a.len(),
+            1,
+            "space_a snapshot must include the review"
+        );
+
+        // space_b snapshot must NOT contain the review.
+        let (_, reviews_b) = auth.get_space_snapshot(&space_b_id.to_string());
+        assert_eq!(
+            reviews_b.len(),
+            0,
+            "space_b snapshot must not include space_a's review"
+        );
     }
 }

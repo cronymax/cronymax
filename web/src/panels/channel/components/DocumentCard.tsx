@@ -15,12 +15,12 @@ export function DocumentCard({ thread, flowId, runId }: Props) {
       ? "bg-green-700/40 text-green-200"
       : verdict === "request_changes"
         ? "bg-amber-700/40 text-amber-200"
-        : "bg-cronymax-float text-cronymax-title/70";
+        : "bg-card text-foreground/70";
 
   const canReview = !!flowId && !!runId;
 
   return (
-    <div className="self-start w-full max-w-[640px] rounded-lg border border-cronymax-border bg-cronymax-base p-3 text-sm">
+    <div className="self-start w-full max-w-[640px] rounded-lg border border-border bg-background p-3 text-sm">
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
           <div className="font-mono text-xs opacity-70 truncate">{thread.doc_path ?? thread.doc_id}</div>
@@ -28,7 +28,7 @@ export function DocumentCard({ thread, flowId, runId }: Props) {
             {thread.doc_type ?? "document"} · rev {thread.revision} · {thread.producer ?? "unknown"}
           </div>
         </div>
-        {verdict && <span className={`rounded px-2 py-0.5 text-[10px] ${verdictBadge}`}>{verdict}</span>}
+        {verdict && <span className={`rounded px-2 py-0.5 text-xs ${verdictBadge}`}>{verdict}</span>}
       </div>
       <div className="mt-2 flex gap-2">
         <button

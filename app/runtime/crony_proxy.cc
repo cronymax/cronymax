@@ -252,6 +252,12 @@ void RuntimeProxy::OnPayload(const std::string& json_payload) {
     HandleCapabilityCall(msg);
   } else if (tag == "bridge_restarting") {
     HandleBridgeRestarting();
+  } else if (tag == "ping") {
+    // Keepalive probe from the runtime.  Reply with Pong so the transport's
+    // idle timer is reset and the runtime does not terminate during long
+    // agent tasks that produce no inbound control messages.
+    if (bridge_)
+      bridge_->Invoke(R"({"tag":"pong"})");
   }
   // "welcome" / "goodbye" / others: no action needed here; RuntimeBridge
   // has already handled the handshake.

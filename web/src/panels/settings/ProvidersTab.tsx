@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { type LlmProvider, ModelSelect } from "../../components/ModelSelect";
-import { browser } from "../../shells/bridge";
-import { Field, inputCls } from "./App";
+import { shells } from "../../shells/bridge";
+import { Field } from "./App";
 import { useStore } from "./store";
 
 // ── Providers tab ─────────────────────────────────────────────────────────
@@ -112,58 +115,52 @@ function CopilotOauthBlock({
 }) {
   const isActive = oauth.phase === "starting" || oauth.phase === "awaiting_user" || oauth.phase === "polling";
   return (
-    <div className="mt-2 rounded border border-cronymax-border bg-cronymax-float p-2 text-xs">
+    <div className="mt-2 rounded border border-border bg-card p-2 text-xs">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-cronymax-caption">
+        <span className="text-muted-foreground">
           {hasKey
             ? "Token present. Sign in again to refresh it."
             : "Sign in with your GitHub account to fetch a Copilot token."}
         </span>
         {!isActive ? (
-          <button
-            type="button"
-            onClick={onSignIn}
-            className="rounded bg-cronymax-primary px-2 py-0.5 text-[11px] text-white hover:opacity-90"
-          >
+          <Button type="button" size="sm" className="text-xs" onClick={onSignIn}>
             Sign in with GitHub
-          </button>
+          </Button>
         ) : (
-          <button
-            type="button"
-            onClick={onCancel}
-            className="rounded border border-cronymax-border px-2 py-0.5 text-[11px] text-cronymax-title hover:bg-cronymax-base"
-          >
+          <Button type="button" size="sm" variant="outline" className="text-xs" onClick={onCancel}>
             Cancel
-          </button>
+          </Button>
         )}
       </div>
-      {oauth.phase === "starting" && <p className="mt-1 text-cronymax-caption">Requesting device code…</p>}
+      {oauth.phase === "starting" && <p className="mt-1 text-muted-foreground">Requesting device code…</p>}
       {(oauth.phase === "awaiting_user" || oauth.phase === "polling") && oauth.user_code && (
         <div className="mt-2 space-y-1">
-          <p className="text-cronymax-caption">
+          <p className="text-muted-foreground">
             Enter this code on{" "}
             <a
               href={oauth.verification_uri}
               target="_blank"
               rel="noopener noreferrer"
-              className="underline hover:text-cronymax-primary"
+              className="underline hover:text-primary"
             >
               {oauth.verification_uri}
             </a>
             :
           </p>
           <div className="flex items-center gap-2">
-            <code className="select-all rounded bg-cronymax-base px-2 py-1 font-mono text-sm tracking-widest">
+            <code className="select-all rounded bg-background px-2 py-1 font-mono text-sm tracking-widest">
               {oauth.user_code}
             </code>
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
+              className="text-xs px-2 h-7"
               onClick={() => void navigator.clipboard.writeText(oauth.user_code ?? "").catch(() => undefined)}
-              className="rounded border border-cronymax-border px-2 py-0.5 text-[11px] hover:bg-cronymax-base"
             >
               Copy
-            </button>
-            <span className="text-[11px] text-cronymax-caption">
+            </Button>
+            <span className="text-xs text-muted-foreground">
               {oauth.phase === "polling" ? "Waiting for authorization…" : ""}
             </span>
           </div>
@@ -215,7 +212,7 @@ export function ProvidersTab() {
   const load = useCallback(async () => {
     setMsg(null);
     try {
-      const res = await browser.send("llm.providers.get");
+      const res = await shells.browser.llm.providers.get();
       const list = parseProviders(res.raw);
       setProviders(list);
       setActiveId(res.active_id);
@@ -240,7 +237,7 @@ export function ProvidersTab() {
   );
 
   const persist = useCallback(async (next: LlmProvider[], nextActive: string) => {
-    await browser.send("llm.providers.set", {
+    await shells.browser.llm.providers.set({
       raw: JSON.stringify(next),
       active_id: nextActive,
     });
@@ -307,7 +304,7 @@ export function ProvidersTab() {
       try {
         await persist(providers, p.id);
         setActiveId(p.id);
-        await browser.send("llm.config.set", {
+        await shells.browser.llm.config.set({
           base_url: p.base_url,
           api_key: p.api_key,
         });
@@ -367,7 +364,7 @@ export function ProvidersTab() {
       /* ok */
     }
     try {
-      await browser.send("shell.open_external", { url: dc.verification_uri });
+      await shells.browser.shell.open_external({ url: dc.verification_uri });
     } catch {
       try {
         window.open(dc.verification_uri, "_blank", "noopener,noreferrer");
@@ -414,57 +411,59 @@ export function ProvidersTab() {
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-[220px] flex-col border-r border-cronymax-border bg-cronymax-float">
-        <div className="flex items-center justify-between border-b border-cronymax-border px-2 py-1.5">
+      <aside className="flex w-[220px] flex-col border-r border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-2 py-1.5">
           <span className="text-xs font-semibold">Providers</span>
           <div className="flex items-center gap-1">
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 px-1.5 text-xs"
               onClick={() => onAdd("github_copilot")}
-              className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-[11px] text-cronymax-title hover:bg-cronymax-float"
               title="Quick-add GitHub Copilot"
             >
               + Copilot
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              size="sm"
+              className="h-6 px-1.5 text-xs"
               onClick={() => onAdd("openai")}
-              className="rounded bg-cronymax-primary px-1.5 py-0.5 text-xs text-white hover:opacity-90"
               title="New provider"
             >
               +
-            </button>
+            </Button>
           </div>
         </div>
         <ul className="flex-1 overflow-auto py-1">
           {providers.length === 0 && (
-            <li className="px-2 py-1 text-[11px] text-cronymax-caption">No providers configured.</li>
+            <li className="px-2 py-1 text-xs text-muted-foreground">No providers configured.</li>
           )}
           {providers.map((p) => {
             const isActive = p.id === activeId;
             const isSelected = p.id === selectedId;
             return (
               <li key={p.id}>
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
                   onClick={() => onSelect(p.id)}
                   className={
-                    "flex w-full flex-col items-start gap-0 px-2 py-1 text-left text-xs " +
+                    "flex h-auto w-full flex-col items-start gap-0 px-2 py-1 text-left text-xs font-normal " +
                     (isSelected
-                      ? "bg-cronymax-primary/15 text-cronymax-title"
-                      : "text-cronymax-caption hover:bg-cronymax-base hover:text-cronymax-title")
+                      ? "bg-primary/15 text-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
                   }
                 >
                   <span className="flex w-full items-center gap-1 font-medium">
                     <span className="flex-1 truncate">{p.name}</span>
-                    {isActive && (
-                      <span className="rounded bg-green-500/20 px-1 text-[10px] text-green-300">active</span>
-                    )}
+                    {isActive && <span className="rounded bg-green-500/20 px-1 text-xs text-green-300">active</span>}
                   </span>
-                  <span className="text-[10px] opacity-70">
+                  <span className="text-xs opacity-70">
                     {p.kind} · {p.default_model || "—"}
                   </span>
-                </button>
+                </Button>
               </li>
             );
           })}
@@ -473,7 +472,7 @@ export function ProvidersTab() {
 
       <section className="flex-1 overflow-auto p-3">
         {!draft && (
-          <p className="text-xs text-cronymax-caption">
+          <p className="text-xs text-muted-foreground">
             Select a provider to edit or activate it. Click <b>+</b> to add a new one. Credentials are stored in the
             workspace SQLite kv store.
           </p>
@@ -485,49 +484,61 @@ export function ProvidersTab() {
                 {providers.some((p) => p.id === draft.id) ? `Edit: ${draft.name || draft.id}` : "New provider"}
               </h2>
               {providers.some((p) => p.id === draft.id) && (
-                <button
+                <Button
                   type="button"
+                  size="sm"
+                  className="bg-green-600 hover:bg-green-500 text-white text-xs"
                   onClick={() => void onActivate(draft)}
                   disabled={busy || draft.id === activeId}
-                  className="rounded bg-green-500/80 px-3 py-1 text-xs font-medium text-white hover:bg-green-500 disabled:opacity-50"
                 >
                   {draft.id === activeId ? "Active" : "Activate"}
-                </button>
+                </Button>
               )}
             </div>
 
             <Field label="Display name">
-              <input
-                className={inputCls}
+              <Input
+                className="h-7 text-xs"
                 value={draft.name}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 placeholder="My OpenAI"
               />
             </Field>
             <Field label="Kind">
-              <select
-                className={inputCls}
-                value={draft.kind}
-                onChange={(e) => onKindChange(e.target.value as ProviderKind)}
-              >
-                <option value="openai">OpenAI-compatible</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="ollama">Ollama (local)</option>
-                <option value="github_copilot">GitHub Copilot</option>
-                <option value="custom">Custom</option>
-              </select>
+              <Select value={draft.kind} onValueChange={(v) => onKindChange(v as ProviderKind)}>
+                <SelectTrigger className="h-7 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="openai" className="text-xs">
+                    OpenAI-compatible
+                  </SelectItem>
+                  <SelectItem value="anthropic" className="text-xs">
+                    Anthropic
+                  </SelectItem>
+                  <SelectItem value="ollama" className="text-xs">
+                    Ollama (local)
+                  </SelectItem>
+                  <SelectItem value="github_copilot" className="text-xs">
+                    GitHub Copilot
+                  </SelectItem>
+                  <SelectItem value="custom" className="text-xs">
+                    Custom
+                  </SelectItem>
+                </SelectContent>
+              </Select>
             </Field>
             <Field label="Base URL">
-              <input
-                className={inputCls}
+              <Input
+                className="h-7 text-xs"
                 value={draft.base_url}
                 onChange={(e) => setDraft({ ...draft, base_url: e.target.value })}
                 placeholder="https://api.openai.com/v1"
               />
             </Field>
             <Field label="API key">
-              <input
-                className={inputCls}
+              <Input
+                className="h-7 text-xs"
                 type="password"
                 value={draft.api_key}
                 onChange={(e) => setDraft({ ...draft, api_key: e.target.value })}
@@ -566,37 +577,28 @@ export function ProvidersTab() {
               </select>
             </Field>
 
-            {msg && <p className="mb-3 text-xs text-cronymax-caption">{msg}</p>}
+            {msg && <p className="mb-3 text-xs text-muted-foreground">{msg}</p>}
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void onSave()}
-                disabled={busy}
-                className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-              >
+              <Button type="button" size="sm" onClick={() => void onSave()} disabled={busy}>
                 Save
-              </button>
+              </Button>
               {providers.some((p) => p.id === draft.id) && (
-                <button
-                  type="button"
-                  onClick={() => void onDelete()}
-                  disabled={busy}
-                  className="rounded border border-red-500/50 bg-red-500/10 px-3 py-1 text-xs text-red-300 hover:bg-red-500/20 disabled:opacity-50"
-                >
+                <Button type="button" size="sm" variant="destructive" onClick={() => void onDelete()} disabled={busy}>
                   Delete
-                </button>
+                </Button>
               )}
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="sm"
                 onClick={() => {
                   setSelectedId(null);
                   setDraft(null);
                   setMsg(null);
                 }}
-                className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs hover:bg-cronymax-float"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           </div>
         )}

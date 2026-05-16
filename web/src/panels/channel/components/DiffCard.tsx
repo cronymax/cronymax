@@ -16,16 +16,14 @@ export function DiffCard({ event }: Props) {
   const hasDiff = diff.trim().length > 0;
 
   return (
-    <div className="self-start w-full max-w-3xl rounded-lg border border-cronymax-border bg-cronymax-base overflow-hidden text-sm">
-      <div className="flex items-center gap-2 border-b border-cronymax-border bg-cronymax-float px-3 py-1.5">
+    <div className="self-start w-full max-w-3xl rounded-lg border border-border bg-background overflow-hidden text-sm">
+      <div className="flex items-center gap-2 border-b border-border bg-card px-3 py-1.5">
         <span className="font-mono text-xs truncate opacity-80">{path}</span>
-        <span className="ml-auto shrink-0 rounded bg-cronymax-border px-1.5 py-0.5 text-[10px] font-medium opacity-70">
-          edited
-        </span>
+        <span className="ml-auto shrink-0 rounded bg-border px-1.5 py-0.5 text-xs font-medium opacity-70">edited</span>
       </div>
 
       {hasDiff ? (
-        <pre className="overflow-x-auto px-3 py-2 text-[11px] leading-5 font-mono">
+        <pre className="overflow-x-auto px-3 py-2 text-xs leading-5 font-mono">
           {parseDiff(diff).map((line, i) => (
             <div
               key={i}

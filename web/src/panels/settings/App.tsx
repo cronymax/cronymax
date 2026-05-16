@@ -11,7 +11,17 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
-import { browser } from "@/shells/bridge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { shells } from "@/shells/bridge";
 import { AppearanceTab } from "./AppearanceTab";
 import { ProfilesTab } from "./ProfilesTab";
 import { ProvidersTab } from "./ProvidersTab";
@@ -25,16 +35,18 @@ type SettingsTab = "appearance" | "providers" | "agents" | "doc-types" | "profil
 // ── ReAct graph builder ───────────────────────────────────────────────────
 
 // ── shared input styles ───────────────────────────────────────────────────
-
+// Kept for legacy references; new code should import Input from @/components/ui/input.
 export const inputCls =
-  "w-full rounded border border-cronymax-border bg-cronymax-base px-2 py-1 text-xs text-cronymax-title outline-none focus:border-cronymax-primary";
+  "w-full rounded border border-border bg-background px-2 py-1 text-xs text-foreground outline-none focus:border-primary";
 
 // ── shared Field ──────────────────────────────────────────────────────────
 
-export function Field({ label, children }: { label: string; children: React.ReactNode }) {
+export function Field({ label, children, htmlFor }: { label: string; children: React.ReactNode; htmlFor?: string }) {
   return (
     <div className="mb-3">
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-cronymax-caption">{label}</div>
+      <label htmlFor={htmlFor} className="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">
+        {label}
+      </label>
       {children}
     </div>
   );
@@ -44,31 +56,31 @@ export function Field({ label, children }: { label: string; children: React.Reac
 
 function PermissionOverlay({ perm, onResolve }: { perm: PermissionRequest; onResolve: (allow: boolean) => void }) {
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-[340px] rounded-md border border-cronymax-border bg-cronymax-float p-4 text-sm text-cronymax-title shadow-lg">
-        <p className="mb-3 whitespace-pre-wrap">{perm.prompt}</p>
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => onResolve(true)}
-            className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90"
-          >
-            Allow
-          </button>
-          <button
-            type="button"
-            onClick={() => onResolve(false)}
-            className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs text-cronymax-title hover:bg-cronymax-float"
-          >
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onResolve(false);
+      }}
+    >
+      <DialogContent className="w-[340px]">
+        <DialogHeader>
+          <DialogTitle className="text-sm">Permission Request</DialogTitle>
+          <DialogDescription className="whitespace-pre-wrap text-sm">{perm.prompt}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button size="sm" variant="outline" onClick={() => onResolve(false)}>
             Deny
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+          <Button size="sm" onClick={() => onResolve(true)}>
+            Allow
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-// ── Tab bar ───────────────────────────────────────────────────────────────
+// ── Tab labels ────────────────────────────────────────────────────────────
 
 const TAB_LABELS: { id: SettingsTab; label: string }[] = [
   { id: "appearance", label: "Appearance" },
@@ -76,28 +88,6 @@ const TAB_LABELS: { id: SettingsTab; label: string }[] = [
   { id: "profiles", label: "Profiles" },
   { id: "runner", label: "Runner" },
 ];
-
-function TabBar({ tab, onChange }: { tab: SettingsTab; onChange: (t: SettingsTab) => void }) {
-  return (
-    <nav className="flex items-center gap-0 border-b border-cronymax-border bg-cronymax-float px-1">
-      {TAB_LABELS.map((t) => (
-        <button
-          key={t.id}
-          type="button"
-          onClick={() => onChange(t.id)}
-          className={
-            "border-b-2 px-3 py-1.5 text-xs transition " +
-            (tab === t.id
-              ? "border-cronymax-primary text-cronymax-title"
-              : "border-transparent text-cronymax-caption hover:text-cronymax-title")
-          }
-        >
-          {t.label}
-        </button>
-      ))}
-    </nav>
-  );
-}
 
 // ── App ───────────────────────────────────────────────────────────────────
 
@@ -109,7 +99,7 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const provRes = await browser.send("llm.providers.get");
+        const provRes = await shells.browser.llm.providers.get();
         const providers = JSON.parse(provRes.raw || "[]") as Array<{
           id: string;
           base_url?: string;
@@ -142,8 +132,8 @@ export function App() {
       const perm = state.permission;
       if (!perm) return;
       if (perm.requestId) {
-        browser
-          .send("permission.respond", {
+        shells.browser.permission
+          .respond({
             request_id: perm.requestId,
             decision: allow ? "allow" : "deny",
           })
@@ -156,35 +146,48 @@ export function App() {
   );
 
   const onClose = useCallback(() => {
-    browser.send("shell.popover_close").catch(() => {
+    shells.browser.shell.popover_close().catch(() => {
       /* ignore */
     });
   }, []);
 
   return (
-    <main className="relative flex h-screen w-screen flex-col bg-cronymax-base text-cronymax-title">
-      <header className="flex items-center justify-between border-b border-cronymax-border bg-cronymax-float px-4 py-2">
-        <h1 className="text-sm font-semibold tracking-wide">Settings</h1>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded px-2 py-0.5 text-xs text-cronymax-caption hover:bg-cronymax-base hover:text-cronymax-title"
-          title="Close"
-          aria-label="Close"
-        >
+    <main className="relative flex h-screen w-screen flex-col bg-background text-foreground">
+      <header className="flex shrink-0 items-center justify-between border-b border-border bg-card px-4 py-2">
+        <h1 className="text-sm font-semibold">Settings</h1>
+        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose} title="Close" aria-label="Close">
           <Icon name="close" size={12} aria-hidden="true" />
-        </button>
+        </Button>
       </header>
-
-      <TabBar tab={tab} onChange={setTab} />
-
-      <div className="flex-1 overflow-hidden">
-        {tab === "appearance" && <AppearanceTab />}
-        {tab === "providers" && <ProvidersTab />}
-        {tab === "profiles" && <ProfilesTab />}
-        {tab === "runner" && <RunnerTab />}
-      </div>
-
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as SettingsTab)}
+        className="flex flex-1 flex-col overflow-hidden"
+      >
+        <TabsList className="h-auto shrink-0 justify-start rounded-none border-b border-border bg-card px-1">
+          {TAB_LABELS.map((t) => (
+            <TabsTrigger
+              key={t.id}
+              value={t.id}
+              className="rounded-none border-b-2 border-transparent px-3 py-1.5 text-xs data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+            >
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        <TabsContent value="appearance" className="mt-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
+          <AppearanceTab />
+        </TabsContent>
+        <TabsContent value="providers" className="mt-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
+          <ProvidersTab />
+        </TabsContent>
+        <TabsContent value="profiles" className="mt-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
+          <ProfilesTab />
+        </TabsContent>
+        <TabsContent value="runner" className="mt-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
+          <RunnerTab />
+        </TabsContent>
+      </Tabs>
       {state.permission && <PermissionOverlay perm={state.permission} onResolve={onResolvePermission} />}
     </main>
   );

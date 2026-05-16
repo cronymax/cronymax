@@ -22,9 +22,9 @@ function base64ToBytes(b64: string): Uint8Array {
  * Auto-unsubscribes on unmount and resubscribes after a space switch.
  */
 export function useTerminalOutput(tid: string, onData: (data: Uint8Array) => void): void {
-  useRuntimeEvent(`terminal:${tid}`, (eventJson: string) => {
+  useRuntimeEvent(`terminal:${tid}`, (event: unknown) => {
     try {
-      const ev = JSON.parse(eventJson) as Record<string, unknown>;
+      const ev = event as Record<string, unknown>;
       const pl = ev?.payload as Record<string, unknown> | undefined;
       if (pl?.kind !== "raw") return;
       const dataObj = pl?.data as Record<string, unknown> | undefined;

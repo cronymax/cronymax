@@ -285,6 +285,28 @@ pub enum ControlRequest {
         flow_id: String,
         text: String,
     },
+
+    // ── Activity panel ────────────────────────────────────────────────────
+    /// Return the current snapshot of all runs and pending reviews for a
+    /// given space. Used by the Activity panel on mount to hydrate its
+    /// initial state without waiting for live events.
+    GetSpaceSnapshot {
+        space_id: String,
+    },
+
+    // ── Session introspection ─────────────────────────────────────────────
+    /// List all chat sessions in the workspace, sorted by `updated_at_ms`
+    /// descending. Returns `{sessions:[SessionMeta]}`.
+    SessionList {
+        workspace_root: String,
+    },
+
+    /// Return the LLM message thread and metadata for a single session.
+    /// Returns `{messages, compacted, turn_count}`.
+    SessionThreadInspect {
+        workspace_root: String,
+        session_id: String,
+    },
 }
 
 /// Reply to a [`ControlRequest`].
@@ -316,6 +338,13 @@ pub enum ControlResponse {
     /// Generic data response (workspace/file/flow queries).
     Data {
         payload: serde_json::Value,
+    },
+
+    /// Snapshot of all runs and pending reviews for a single space.
+    /// Returned in reply to `GetSpaceSnapshot`.
+    SpaceSnapshot {
+        runs: Vec<serde_json::Value>,
+        pending_reviews: Vec<serde_json::Value>,
     },
 
     /// Generic failure envelope. The runtime always prefers a typed

@@ -1,10 +1,6 @@
 name: critic
-description: "Technical reviewer — produces structured JSON critique of any draft document."
-display_name: Critic
-kind: reviewer
-llm:
-  provider: openai
-  model: gpt-4o-mini
+kind: worker
+llm: gpt-4
 system_prompt: |
   You are a thorough technical reviewer. You read a draft document and produce
   structured critique. Always respond with a SINGLE JSON object on the FIRST
@@ -22,4 +18,12 @@ system_prompt: |
   - Prefer "warn" for unclear or under-specified content; "info" for nits.
   - If you have no comments, respond with { "comments": [] }.
   - Do NOT include any prose outside the JSON object.
-output_format: json
+  
+memory_namespace: critic
+tools:
+  - flow.submit_review
+  - search_workspace
+  - grep_workspace
+  - glob_files
+  - read_file
+  - list_dir

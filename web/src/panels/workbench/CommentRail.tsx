@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 
 import { parseBlockComments } from "./blockIds";
 import type { WorkbenchParams } from "./url";
@@ -47,10 +47,6 @@ interface DocReviewState {
   comments: DocCommentDto[];
 }
 
-interface ReviewsListResponse {
-  docs: Record<string, DocReviewState>;
-}
-
 // ── component ────────────────────────────────────────────────────────────
 
 interface RailProps {
@@ -78,10 +74,10 @@ export function CommentRail({ params, currentMarkdown, onJumpToBlock }: RailProp
   const refresh = useCallback(async () => {
     if (!params.runId) return;
     try {
-      const res = (await browser.send("review.list", {
+      const res = await shells.review.list({
         flow: params.flow,
         run_id: params.runId,
-      })) as ReviewsListResponse;
+      });
       setDocState(res.docs[params.doc] ?? null);
       setError(null);
     } catch (err) {
@@ -165,7 +161,7 @@ export function CommentRail({ params, currentMarkdown, onJumpToBlock }: RailProp
         ))}
         {orphan.length > 0 && (
           <section className="mt-2 border-t border-gray-200 pt-2">
-            <div className="px-1 py-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+            <div className="px-1 py-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
               Orphaned ({orphan.length})
             </div>
             {orphan.map((c) => (
@@ -202,7 +198,7 @@ function BlockGroup(props: {
       <button
         type="button"
         onClick={onJump}
-        className="block w-full text-left text-[10px] font-mono text-gray-500 hover:text-gray-900"
+        className="block w-full text-left text-xs font-mono text-gray-500 hover:text-gray-900"
         title="Click to scroll editor to this block"
       >
         block {blockId.slice(0, 8)}…
@@ -226,7 +222,7 @@ function CommentCard(props: { comment: DocCommentDto; params: WorkbenchParams; o
     setBusy("accept");
     setError(null);
     try {
-      const res = (await browser.send("document.suggestion.apply", {
+      const res = (await shells.document.suggestion.apply({
         flow: params.flow,
         run_id: params.runId,
         name: params.doc,
@@ -252,7 +248,7 @@ function CommentCard(props: { comment: DocCommentDto; params: WorkbenchParams; o
       // Append a follow-up comment of body "(suggestion dismissed)" and
       // mark this comment resolved at the current revision (matching
       // the spec for Task 7.3).
-      await browser.send("review.comment", {
+      await shells.review.comment({
         flow: params.flow,
         run_id: params.runId,
         name: params.doc,
@@ -269,18 +265,18 @@ function CommentCard(props: { comment: DocCommentDto; params: WorkbenchParams; o
   const hasSuggestion = !!comment.suggestion;
   return (
     <div className="rounded border border-gray-200 bg-gray-50 p-2">
-      <div className="flex items-center justify-between text-[10px] text-gray-500">
+      <div className="flex items-center justify-between text-xs text-gray-500">
         <span>{comment.author}</span>
         <span>{comment.kind}</span>
       </div>
       <div className="mt-1 whitespace-pre-wrap text-xs text-gray-800">{comment.body}</div>
       {hasSuggestion && (
-        <div className="mt-1 rounded border border-emerald-200 bg-emerald-50 p-1 font-mono text-[10px] text-emerald-900 whitespace-pre-wrap">
+        <div className="mt-1 rounded border border-emerald-200 bg-emerald-50 p-1 font-mono text-xs text-emerald-900 whitespace-pre-wrap">
           {comment.suggestion}
         </div>
       )}
       {error && (
-        <div className="mt-1 rounded border border-red-200 bg-red-50 p-1 text-[10px] text-red-700">
+        <div className="mt-1 rounded border border-red-200 bg-red-50 p-1 text-xs text-red-700">
           {error.includes("stale_revision")
             ? "This suggestion was made against an older revision; please review and re-apply manually."
             : error}
@@ -292,7 +288,7 @@ function CommentCard(props: { comment: DocCommentDto; params: WorkbenchParams; o
             type="button"
             disabled={busy !== ""}
             onClick={accept}
-            className="rounded bg-emerald-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+            className="rounded bg-emerald-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
           >
             {busy === "accept" ? "Applying…" : "Accept"}
           </button>
@@ -300,7 +296,7 @@ function CommentCard(props: { comment: DocCommentDto; params: WorkbenchParams; o
             type="button"
             disabled={busy !== ""}
             onClick={dismiss}
-            className="rounded border border-gray-300 bg-white px-2 py-0.5 text-[10px] font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+            className="rounded border border-gray-300 bg-white px-2 py-0.5 text-xs font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50"
           >
             {busy === "dismiss" ? "…" : "Dismiss"}
           </button>
@@ -331,7 +327,7 @@ function ComposerModal(props: {
     setPosting(true);
     setError(null);
     try {
-      await browser.send("review.comment", {
+      await shells.review.comment({
         flow: params.flow,
         run_id: params.runId,
         name: params.doc,
@@ -356,7 +352,7 @@ function ComposerModal(props: {
       <div className="w-96 rounded bg-white p-4 shadow-lg">
         <div className="mb-2 text-sm font-medium">New comment</div>
         {blockId && (
-          <div className="mb-2 font-mono text-[10px] text-gray-500">anchored to block {blockId.slice(0, 8)}…</div>
+          <div className="mb-2 font-mono text-xs text-gray-500">anchored to block {blockId.slice(0, 8)}…</div>
         )}
         <textarea
           value={body}

@@ -66,7 +66,7 @@ struct ThemeChrome {
   cef_color_t bg_mask;       // --color-cronymax-bg-mask
   cef_color_t border;        // --color-cronymax-border
   cef_color_t text_title;    // --color-cronymax-text-title
-  cef_color_t text_caption;  // --color-cronymax-text-caption
+  cef_color_t text_caption;  // --color-cronymax-text-xs
 };
 ```
 

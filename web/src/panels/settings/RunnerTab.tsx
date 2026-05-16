@@ -1,7 +1,8 @@
 import { type KeyboardEvent, useCallback, useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
 import { Icon } from "../../components/Icon";
 import { useBridgeEvent } from "../../hooks/useBridgeEvent";
-import { browser } from "../../shells/bridge";
+import { browser, shells } from "../../shells/bridge";
 import { agentRun } from "../../shells/runtime";
 import { useStore } from "./store";
 
@@ -23,24 +24,24 @@ function SpaceRow({
       onClick={onActivate}
       className={
         "group flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 text-xs " +
-        (active
-          ? "bg-cronymax-float text-cronymax-title"
-          : "text-cronymax-caption hover:bg-cronymax-float hover:text-cronymax-title")
+        (active ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card hover:text-foreground")
       }
     >
       <span className="flex-1 truncate">{space.name}</span>
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="icon"
+        className="h-5 w-5 opacity-0 transition group-hover:opacity-100"
         onClick={(e) => {
           e.stopPropagation();
           onDelete();
         }}
-        className="opacity-0 transition group-hover:opacity-100"
         title="Delete space"
         aria-label="Delete space"
       >
         <Icon name="close" size={12} aria-hidden="true" />
-      </button>
+      </Button>
     </li>
   );
 }
@@ -50,7 +51,7 @@ export function RunnerTab() {
 
   const loadSpaces = useCallback(async () => {
     try {
-      const spaces = await browser.send("space.list");
+      const spaces = await shells.browser.space.list();
       dispatch({ type: "setSpaces", spaces });
     } catch (e) {
       console.warn("space.list failed", e);
@@ -66,7 +67,7 @@ export function RunnerTab() {
   const switchSpace = useCallback(
     async (id: string) => {
       try {
-        await browser.send("space.switch", { space_id: id });
+        await shells.browser.space.switch({ space_id: id });
         dispatch({ type: "setActiveSpace", id });
       } catch (e) {
         console.warn("space.switch failed", e);
@@ -80,7 +81,7 @@ export function RunnerTab() {
       // eslint-disable-next-line no-alert
       if (!confirm(`Delete space "${name}"?`)) return;
       try {
-        await browser.send("space.delete", { space_id: id });
+        await shells.browser.space.delete({ space_id: id });
         await loadSpaces();
       } catch (e) {
         console.warn("space.delete failed", e);
@@ -94,7 +95,7 @@ export function RunnerTab() {
     const root = prompt("Root path:", "/");
     if (!root) return;
     try {
-      await browser.send("space.create", {
+      await shells.browser.space.create({
         root_path: root,
         profile_id: "default",
       });
@@ -117,7 +118,7 @@ export function RunnerTab() {
     try {
       runId = await agentRun(text);
       if (!runId) throw new Error("runtime did not return run_id");
-      await browser.send("events.subscribe", { run_id: runId }).catch(() => {
+      await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
         /* ignore */
       });
     } catch (err) {
@@ -179,16 +180,12 @@ export function RunnerTab() {
 
   return (
     <div className="flex h-full flex-col">
-      <section className="border-b border-cronymax-border px-3 py-2">
-        <div className="mb-1 flex items-center justify-between text-xs text-cronymax-caption">
+      <section className="border-b border-border px-3 py-2">
+        <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
           <span>Spaces</span>
-          <button
-            type="button"
-            onClick={() => void newSpace()}
-            className="rounded bg-cronymax-base px-1.5 text-cronymax-title hover:bg-cronymax-float"
-          >
+          <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={() => void newSpace()}>
             +
-          </button>
+          </Button>
         </div>
         <ul className="flex flex-col gap-px">
           {state.spaces.map((sp) => (
@@ -209,19 +206,14 @@ export function RunnerTab() {
         onKeyDown={onTaskKeyDown}
         spellCheck={false}
         placeholder="Ask the agent…  (⌘/Ctrl+Enter to run)"
-        className="m-3 min-h-[80px] resize-y rounded border border-cronymax-border bg-cronymax-float p-2 text-sm text-cronymax-title outline-none focus:border-cronymax-primary"
+        className="m-3 min-h-[80px] resize-y rounded border border-border bg-card p-2 text-sm text-foreground outline-none focus:border-ring"
       />
       <div className="flex justify-end gap-2 px-3">
-        <button
-          type="button"
-          onClick={() => void runTask()}
-          disabled={state.status === "running"}
-          className="rounded bg-cronymax-primary px-3 py-1 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-        >
+        <Button type="button" onClick={() => void runTask()} disabled={state.status === "running"}>
           Run
-        </button>
+        </Button>
       </div>
-      <pre className="m-3 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-cronymax-border bg-cronymax-float p-2 text-xs text-cronymax-title">
+      <pre className="m-3 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-card p-2 text-xs text-foreground">
         {state.result}
       </pre>
     </div>

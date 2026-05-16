@@ -17,32 +17,31 @@ declare global {
     cronymax?: {
       /** Renderer ↔ browser-process IPC (cefQuery + dispatch). */
       browser?: {
-        /** Aliased from window.cefQuery by App::OnContextCreated (C++). */
-        query?: (opts: {
-          request: string;
-          onSuccess: (response: string) => void;
-          onFailure: (errorCode: number, errorMessage: string) => void;
-          persistent?: boolean;
-        }) => number;
-        /** Aliased from window.cefQueryCancel by App::OnContextCreated (C++). */
-        queryCancel?: (queryId: number) => void;
+        /**
+         * Binary msgpack fast path injected by App::OnContextCreated (C++).
+         * Sends a binary-framed request to the browser process and returns a
+         * Promise resolving with the decoded response object.
+         */
+        send?: (channel: string, payload: unknown) => Promise<unknown>;
+
         /** Set by bridge.ts; called by C++ (bridge_handler.cc / main_window.cc). */
-        onDispatch?: (event: string, payload: unknown) => void;
+        on?: (event: string, payload: unknown) => void;
       };
       /** Renderer ↔ Rust runtime IPC via CEF process messages (injected by App::OnContextCreated). */
       runtime?: {
         /**
          * Send a ControlRequest to the Rust runtime via CEF process message.
          * `request` must be a ControlRequest-shaped object (with a `kind` field).
-         * Returns a Promise resolving with the ControlResponse JSON string.
+         * Returns a Promise resolving with the decoded ControlResponse object.
          */
-        send(request: Record<string, unknown>): Promise<string>;
+        send(request: Record<string, unknown>): Promise<unknown>;
+
         /**
-         * Subscribe to a runtime topic via CEF process message.
-         * The callback receives the inner event object JSON string.
-         * Returns an unsubscribe function.
+         * Called by C++ (renderer app.cc) when a kMsgRuntimeEvent arrives.
+         * bridge.ts assigns this to route events to JS subscribers.
+         * Args: (subId: subscription UUID, event: decoded inner event object).
          */
-        subscribe(topic: string, callback: (event: string) => void): () => void;
+        on?: (subId: string, event: unknown) => void;
       };
     };
   }

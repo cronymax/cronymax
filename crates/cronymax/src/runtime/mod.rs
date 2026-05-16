@@ -37,6 +37,7 @@
 pub mod authority;
 pub mod chat_store;
 pub mod handler;
+pub mod middleware;
 pub mod persistence;
 pub mod prompt;
 pub mod sessions;

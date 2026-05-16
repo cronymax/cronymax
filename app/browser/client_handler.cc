@@ -38,8 +38,11 @@ bool ClientHandler::OnProcessMessageReceived(
     CefProcessId source_process,
     CefRefPtr<CefProcessMessage> message) {
   CEF_REQUIRE_UI_THREAD();
-  if (bridge_handler_ &&
+  if (bridge_handler_ && message->GetName() == kMsgRuntimeCtrl &&
       bridge_handler_->HandleRuntimeProcessMessage(browser, frame, message))
+    return true;
+  if (bridge_handler_ && message->GetName() == kMsgBrowserCtrl &&
+      bridge_handler_->HandleBrowserCtrlMessage(browser, frame, message))
     return true;
   return message_router_->OnProcessMessageReceived(browser, frame,
                                                    source_process, message);

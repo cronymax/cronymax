@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Separator } from "@/components/ui/separator";
 import type { TraceEntry } from "./store";
 
 interface Props {
@@ -25,8 +27,8 @@ const GLYPHS: Record<TraceEntry["kind"], string> = {
 };
 
 const GLYPH_COLORS: Record<TraceEntry["kind"], string> = {
-  run_start: "text-cronymax-caption",
-  assistant_turn: "text-cronymax-primary",
+  run_start: "text-muted-foreground",
+  assistant_turn: "text-primary",
   tool_start: "text-amber-400",
   tool_done: "text-green-400",
   approval_request: "text-orange-400",
@@ -176,47 +178,48 @@ function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
   const detail = isRunStart ? null : entryDetail(entry);
 
   return (
-    <div className={indented ? "ml-4" : ""}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-cronymax-border/30 transition"
-      >
-        <span className={`w-4 shrink-0 text-center font-mono text-[11px] ${glyphColor}`}>{glyph}</span>
-        <span className="flex-1 truncate font-mono text-[11px] text-cronymax-caption">{label}</span>
-        {!isRunStart && (
-          <span className="shrink-0 font-mono text-[10px] text-cronymax-caption opacity-60">
-            {fmtRelTs(base, entry.ts)}
-          </span>
-        )}
-        <span className="shrink-0 text-[10px] text-cronymax-caption opacity-40">{open ? "▾" : "▸"}</span>
-      </button>
-
-      {open && isRunStart && entry.kind === "run_start" && (
-        <div className="ml-6 mt-0.5 space-y-1">
-          <div className="text-[10px] text-cronymax-caption opacity-70 font-mono">
-            Tools: {entry.tools.join(", ") || "(none)"}
-          </div>
-          <pre className="max-h-[240px] overflow-y-auto rounded bg-cronymax-base px-2 py-1 font-mono text-[10px] text-cronymax-caption whitespace-pre-wrap break-all">
-            {entry.systemPrompt || "(no system prompt)"}
-          </pre>
-          {entry.userInput && (
-            <>
-              <div className="text-[10px] text-cronymax-caption opacity-70 font-mono mt-1">User message:</div>
-              <pre className="max-h-[240px] overflow-y-auto rounded bg-cronymax-base px-2 py-1 font-mono text-[10px] text-cronymax-caption whitespace-pre-wrap break-all">
-                {entry.userInput}
-              </pre>
-            </>
+    <Collapsible open={open} onOpenChange={setOpen} className={indented ? "ml-4" : ""}>
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-border/30 transition"
+        >
+          <span className={`w-4 shrink-0 text-center font-mono text-xs ${glyphColor}`}>{glyph}</span>
+          <span className="flex-1 truncate font-mono text-xs text-muted-foreground">{label}</span>
+          {!isRunStart && (
+            <span className="shrink-0 font-mono text-xs text-muted-foreground opacity-60">
+              {fmtRelTs(base, entry.ts)}
+            </span>
           )}
-        </div>
-      )}
+          <span className="shrink-0 text-xs text-muted-foreground opacity-40">{open ? "▾" : "▸"}</span>
+        </button>
+      </CollapsibleTrigger>
 
-      {open && !isRunStart && (
-        <pre className="ml-6 max-h-[200px] overflow-y-auto rounded bg-cronymax-base px-2 py-1 font-mono text-[10px] text-cronymax-caption whitespace-pre-wrap break-all">
-          {JSON.stringify(detail, null, 2)}
-        </pre>
-      )}
-    </div>
+      <CollapsibleContent>
+        {isRunStart && entry.kind === "run_start" ? (
+          <div className="ml-6 mt-0.5 space-y-1">
+            <div className="text-xs text-muted-foreground opacity-70 font-mono">
+              Tools: {entry.tools.join(", ") || "(none)"}
+            </div>
+            <pre className="max-h-[240px] overflow-y-auto rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
+              {entry.systemPrompt || "(no system prompt)"}
+            </pre>
+            {entry.userInput && (
+              <>
+                <div className="text-xs text-muted-foreground opacity-70 font-mono mt-1">User message:</div>
+                <pre className="max-h-[240px] overflow-y-auto rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
+                  {entry.userInput}
+                </pre>
+              </>
+            )}
+          </div>
+        ) : (
+          <pre className="ml-6 max-h-[200px] overflow-y-auto rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
+            {JSON.stringify(detail, null, 2)}
+          </pre>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -232,32 +235,38 @@ export function TraceViewer({ entries, startExpanded }: Props) {
   const outputTokens = usage?.outputTokens ?? 0;
 
   return (
-    <div className="rounded border border-cronymax-border bg-cronymax-float text-xs">
+    <Collapsible
+      open={!collapsed}
+      onOpenChange={(o) => setCollapsed(!o)}
+      className="rounded border border-border bg-card text-xs"
+    >
       {/* Header / toggle */}
-      <button
-        type="button"
-        onClick={() => setCollapsed((v) => !v)}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-cronymax-border/20 transition"
-      >
-        <span className="font-mono text-[10px] text-cronymax-caption">{collapsed ? "▶" : "▼"}</span>
-        <span className="text-[11px] font-semibold text-cronymax-caption">Trace</span>
-        <span className="text-[10px] text-cronymax-caption opacity-60">
-          {entries.length} {entries.length === 1 ? "entry" : "entries"}
-          {dur ? ` · ${dur}` : ""}
-          {usage
-            ? ` · ${fmtTokenCount(inputTokens + outputTokens)} tok (↑${fmtTokenCount(inputTokens)} ↓${fmtTokenCount(outputTokens)})`
-            : ""}
-        </span>
-      </button>
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-border/20 transition"
+        >
+          <span className="font-mono text-xs text-muted-foreground">{collapsed ? "▶" : "▼"}</span>
+          <span className="text-xs font-semibold text-muted-foreground">Trace</span>
+          <span className="text-xs text-muted-foreground opacity-60">
+            {entries.length} {entries.length === 1 ? "entry" : "entries"}
+            {dur ? ` · ${dur}` : ""}
+            {usage
+              ? ` · ${fmtTokenCount(inputTokens + outputTokens)} tok (↑${fmtTokenCount(inputTokens)} ↓${fmtTokenCount(outputTokens)})`
+              : ""}
+          </span>
+        </button>
+      </CollapsibleTrigger>
 
       {/* Waterfall rows */}
-      {!collapsed && (
-        <div className="border-t border-cronymax-border px-1 py-1 space-y-0.5">
+      <CollapsibleContent>
+        <Separator />
+        <div className="px-1 py-1 space-y-0.5">
           {sortedEntries(entries).map((entry, i) => (
             <TraceRow key={i} entry={entry} base={base} />
           ))}
         </div>
-      )}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

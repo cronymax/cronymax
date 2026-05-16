@@ -23,6 +23,16 @@ set(CRONYMAX_APP_SRCS
   app/browser/app_delegate.h
   app/browser/bridge_handler.cc
   app/browser/bridge_handler.h
+  app/browser/bridge_registry.cc
+  app/browser/bridge_registry.h
+  app/browser/shells/content.cc
+  app/browser/shells/events.cc
+  app/browser/shells/permission.cc
+  app/browser/shells/runtime.cc
+  app/browser/shells/space.cc
+  app/browser/shells/terminal.cc
+  app/browser/shells/ui.cc
+  app/browser/shells/workspace.cc
   app/browser/client_handler.cc
   app/browser/client_handler.h
   app/browser/main_window.cc

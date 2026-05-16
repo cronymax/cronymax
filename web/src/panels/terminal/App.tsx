@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 import { terminal as rt_terminal } from "@/shells/runtime";
 import { useStore } from "./store";
 import { XtermPane } from "./XtermPane";
@@ -42,8 +42,8 @@ export function App() {
   // ── initial load ─────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    browser
-      .send("terminal.list")
+    shells.browser.terminal
+      .list()
       .then(async (res) => {
         if (cancelled) return;
         const items = res?.items ?? [];
@@ -55,7 +55,7 @@ export function App() {
         } else {
           // No terminals exist yet — create one for this panel.
           try {
-            const newTid = await browser.send("terminal.new");
+            const newTid = await shells.browser.terminal.new();
             const tid = typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
             dispatch({ type: "ensurePane", tid });
             dispatch({ type: "setActive", tid });
@@ -130,12 +130,12 @@ export function App() {
   const activeTid = state.activeTid;
 
   return (
-    <main className={`flex h-screen flex-col bg-[#292929] text-cronymax-title`}>
+    <main className="flex h-screen flex-col bg-background text-foreground">
       {/* Title bar — shows "Terminal" label + current working directory */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-cronymax-border bg-cronymax-float px-4 py-1.5">
-        <span className="shrink-0 font-mono text-xs font-semibold text-cronymax-title">Terminal</span>
+      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-4 py-1.5">
+        <span className="shrink-0 font-mono text-xs font-semibold text-foreground">Terminal</span>
         {activeCwd && (
-          <span className="truncate rounded bg-cronymax-float px-2 py-0.5 font-mono text-[12px] text-cronymax-title">
+          <span className="truncate rounded bg-card px-2 py-0.5 font-mono text-[12px] text-foreground">
             {abbreviatePath(activeCwd)}
           </span>
         )}
@@ -146,7 +146,7 @@ export function App() {
         {activeTid ? (
           <XtermPane key={activeTid} tid={activeTid} onCwdChange={handleCwdChange} />
         ) : (
-          <div className="flex h-full items-center justify-center text-xs text-cronymax-muted">
+          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
             No terminal yet — create one from the sidebar.
           </div>
         )}

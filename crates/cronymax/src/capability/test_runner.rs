@@ -555,7 +555,7 @@ pub async fn tool_get_last_report(store: &LastReportStore, run_id: &str) -> Tool
 
 pub fn discover_tool_def() -> ToolDef {
     ToolDef {
-        name: "test_runner.discover".into(),
+        name: "test_runner_discover".into(),
         description: "Scan the workspace for test suites (Jest, Vitest, Pytest, Go test). \
                        Returns a list of DiscoveredSuite objects."
             .into(),
@@ -568,8 +568,8 @@ pub fn discover_tool_def() -> ToolDef {
 
 pub fn run_suite_tool_def() -> ToolDef {
     ToolDef {
-        name: "test_runner.run_suite".into(),
-        description: "Run a test suite discovered by test_runner.discover. \
+        name: "test_runner_run_suite".into(),
+        description: "Run a test suite discovered by test_runner_discover. \
                        Returns a TestRunnerResult with pass/fail counts and failure details."
             .into(),
         parameters: serde_json::json!({
@@ -577,7 +577,7 @@ pub fn run_suite_tool_def() -> ToolDef {
             "properties": {
                 "suite": {
                     "type": "string",
-                    "description": "The suite name returned by test_runner.discover"
+                    "description": "The suite name returned by test_runner_discover"
                 },
                 "filter": {
                     "type": "string",
@@ -591,7 +591,7 @@ pub fn run_suite_tool_def() -> ToolDef {
 
 pub fn get_last_report_tool_def() -> ToolDef {
     ToolDef {
-        name: "test_runner.get_last_report".into(),
+        name: "test_runner_get_last_report".into(),
         description: "Return the most recent TestRunnerResult for the current flow run, \
                        or null if no test has been run yet."
             .into(),

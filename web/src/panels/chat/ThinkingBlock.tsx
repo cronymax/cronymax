@@ -37,7 +37,7 @@ export function ThinkingBlock({ thinkingText, sealed, elapsedMs }: ThinkingBlock
   // even before any thinking text has arrived.
   if (!sealed) {
     return (
-      <div className="mb-2 flex items-center gap-1.5 text-xs text-cronymax-caption italic select-none">
+      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground italic select-none">
         <span>Thinking</span>
         <ThinkingDots />
       </div>
@@ -54,13 +54,13 @@ export function ThinkingBlock({ thinkingText, sealed, elapsedMs }: ThinkingBlock
   return (
     <details
       ref={detailsRef}
-      className="mb-2 rounded-md border border-cronymax-border bg-cronymax-bg-secondary overflow-hidden"
+      className="mb-2 rounded-md border border-border bg-secondary overflow-hidden"
       onToggle={(e) => setExpanded((e.target as HTMLDetailsElement).open)}
     >
-      <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-xs font-medium text-cronymax-caption hover:text-cronymax-title select-none">
+      <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground select-none">
         <span>Thinking ({elapsedSec}s)</span>
         <span
-          className="ml-2 text-[10px] transition-transform duration-200"
+          className="ml-2 text-xs transition-transform duration-200"
           style={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}
           aria-hidden
         >
@@ -68,7 +68,7 @@ export function ThinkingBlock({ thinkingText, sealed, elapsedMs }: ThinkingBlock
         </span>
       </summary>
       {expanded && (
-        <div className="border-t border-cronymax-border px-3 py-2 text-xs text-cronymax-caption">
+        <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
           <Streamdown animated={false} isAnimating={false}>
             {displayText}
           </Streamdown>

@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useReducer, useRef } from "react";
-import { browser } from "@/shells/bridge";
+import { browser, shells } from "@/shells/bridge";
 import type { AppEvent } from "@/types/events";
 
 export interface Scope {
@@ -168,7 +168,7 @@ export function useEventStream(scope: Scope) {
 
     (async () => {
       try {
-        const res = await browser.send("events.list", {
+        const res = await shells.browser.events.list({
           flow_id: scope.flow_id,
           run_id: scope.run_id,
           limit: 200,
@@ -187,7 +187,7 @@ export function useEventStream(scope: Scope) {
       }
 
       try {
-        await browser.send("events.subscribe", {
+        await shells.browser.events.subscribe({
           flow_id: scope.flow_id,
           run_id: scope.run_id,
         });

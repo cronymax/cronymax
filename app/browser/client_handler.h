@@ -107,6 +107,13 @@ class ClientHandler : public CefClient,
   void OnSpaceSwitch(const std::string& old_id, const std::string& new_id) {
     bridge_handler_->OnSpaceSwitch(old_id, new_id);
   }
+  // Pass-through to BridgeHandler::SendEvent so MainWindow can dispatch
+  // browser-side events to a renderer without a direct BridgeHandler pointer.
+  void SendBrowserEvent(CefRefPtr<CefBrowser> browser,
+                        std::string_view event,
+                        std::string_view payload) {
+    bridge_handler_->SendBrowserEvent(browser, event, payload);
+  }
 
   // Called by MainWindow so OnAfterCreated can set browser_id on the new tab.
   std::function<void(int browser_id)> on_browser_created;

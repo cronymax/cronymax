@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 import { CommentRail } from "./CommentRail";
 import { readParams, setMode, type WorkbenchMode, type WorkbenchParams } from "./url";
 
@@ -38,7 +38,7 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen flex-col bg-white text-gray-900">
+    <div className="flex h-screen flex-col bg-background text-foreground">
       <Header flow={params.flow} doc={params.doc} mode={params.mode} onSwitch={switchMode} />
       <div className="flex min-h-0 flex-1">
         <main className="min-h-0 flex-1 overflow-hidden">
@@ -61,10 +61,10 @@ function RailHost({ params }: { params: WorkbenchParams }) {
   const refresh = useCallback(async () => {
     if (!params.flow || !params.doc) return;
     try {
-      const res = (await browser.send("document.read", {
+      const res = await shells.document.read({
         flow: params.flow,
         name: params.doc,
-      })) as { content: string };
+      });
       setContent(res.content ?? "");
     } catch {
       // Best-effort: leave content empty so all comments appear orphaned.
@@ -111,13 +111,13 @@ function Header({
 }) {
   const tabClass = (m: WorkbenchMode) =>
     `px-3 py-1 text-xs font-medium rounded ${
-      mode === m ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+      mode === m ? "bg-foreground text-background" : "bg-muted text-muted-foreground hover:bg-accent"
     }`;
   return (
-    <header className="flex items-center justify-between border-b border-gray-200 px-4 py-2">
+    <header className="flex items-center justify-between border-b border-border px-4 py-2">
       <div className="text-sm">
         <span className="font-semibold">{doc}</span>
-        <span className="ml-2 text-gray-500">· {flow}</span>
+        <span className="ml-2 text-muted-foreground">· {flow}</span>
       </div>
       <div className="flex gap-1">
         <button className={tabClass("wysiwyg")} onClick={() => onSwitch("wysiwyg")}>
@@ -179,5 +179,5 @@ function LazyDiff({ params }: { params: WorkbenchParams }) {
 }
 
 function Loading({ label }: { label: string }) {
-  return <div className="flex h-full items-center justify-center text-sm text-gray-500">{label}</div>;
+  return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{label}</div>;
 }

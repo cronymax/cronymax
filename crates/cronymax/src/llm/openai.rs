@@ -209,6 +209,15 @@ async fn pump(response: reqwest::Response, tx: mpsc::UnboundedSender<LlmEvent>) 
 
 fn parse_chunk(payload: &str, tx: &mpsc::UnboundedSender<LlmEvent>) -> anyhow::Result<()> {
     let chunk: WireChunk = serde_json::from_str(payload)?;
+
+    // Emit usage event if present (typically on the final chunk before [DONE])
+    if let Some(usage) = chunk.usage {
+        let _ = tx.send(LlmEvent::Usage {
+            input_tokens: usage.prompt_tokens,
+            output_tokens: usage.completion_tokens,
+        });
+    }
+
     let Some(choice) = chunk.choices.into_iter().next() else {
         return Ok(());
     };
@@ -391,6 +400,14 @@ impl<'a> From<&'a ToolDef> for WireTool<'a> {
 struct WireChunk {
     #[serde(default)]
     choices: Vec<WireChoice>,
+    #[serde(default)]
+    usage: Option<WireUsage>,
+}
+
+#[derive(serde::Deserialize)]
+struct WireUsage {
+    prompt_tokens: u64,
+    completion_tokens: u64,
 }
 
 #[derive(serde::Deserialize)]
@@ -428,4 +445,69 @@ struct WireFunctionDelta {
     name: Option<String>,
     #[serde(default)]
     arguments: Option<String>,
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    fn collect_from_payload(payload: &str) -> Vec<LlmEvent> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _ = parse_chunk(payload, &tx);
+        drop(tx);
+        let mut out = vec![];
+        while let Ok(ev) = rx.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    // ── 10.4: LlmEvent::Usage emitted from OpenAI SSE chunk with usage field ──
+
+    #[test]
+    fn usage_event_emitted_from_openai_chunk_with_usage() {
+        // Typical final chunk from OpenAI stream_options.include_usage=true.
+        let payload = r#"{
+            "choices": [{"delta": {"content": null}, "finish_reason": "stop", "index": 0}],
+            "usage": {"prompt_tokens": 15, "completion_tokens": 8}
+        }"#;
+
+        let events = collect_from_payload(payload);
+
+        let usage_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, LlmEvent::Usage { .. }))
+            .collect();
+
+        assert_eq!(
+            usage_events.len(),
+            1,
+            "expected 1 Usage event, got {:?}",
+            events
+        );
+        assert!(
+            matches!(
+                usage_events[0],
+                LlmEvent::Usage {
+                    input_tokens: 15,
+                    output_tokens: 8
+                }
+            ),
+            "expected Usage {{ input=15, output=8 }}, got {:?}",
+            usage_events[0]
+        );
+    }
+
+    #[test]
+    fn no_usage_event_when_usage_field_absent() {
+        let payload = r#"{
+            "choices": [{"delta": {"content": "Hi"}, "finish_reason": null, "index": 0}]
+        }"#;
+        let events = collect_from_payload(payload);
+        let has_usage = events.iter().any(|e| matches!(e, LlmEvent::Usage { .. }));
+        assert!(!has_usage, "expected no Usage event, got {:?}", events);
+    }
 }

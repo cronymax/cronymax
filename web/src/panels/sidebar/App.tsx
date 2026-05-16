@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { useDragRegions } from "@/hooks/useDragRegions";
-import { browser } from "@/shells/bridge";
+import { shells } from "@/shells/bridge";
 import type { TabKind, TabSummary } from "@/types";
 import { useStore } from "./store";
 
@@ -59,9 +59,7 @@ function Row({
       onClick={onActivate}
       className={
         "no-drag group flex h-7 cursor-pointer items-center gap-2 rounded-md px-2 text-xs " +
-        (active
-          ? "bg-cronymax-active text-cronymax-title"
-          : "text-cronymax-caption hover:bg-cronymax-hover hover:text-cronymax-title")
+        (active ? "bg-primary/20 text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")
       }
     >
       <span className="flex h-3.5 w-3.5 flex-none items-center justify-center">
@@ -92,7 +90,7 @@ function Row({
           e.preventDefault();
           onClose();
         }}
-        className="flex h-4 w-4 flex-none items-center justify-center rounded text-cronymax-caption opacity-60 hover:bg-cronymax-border hover:text-white hover:opacity-100"
+        className="flex h-4 w-4 flex-none items-center justify-center rounded text-muted-foreground opacity-60 hover:bg-accent hover:text-foreground hover:opacity-100"
         aria-label="Close"
       >
         <Icon name="close" size={12} aria-hidden="true" />
@@ -111,7 +109,7 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const snap = await browser.send("shell.tabs_list");
+        const snap = await shells.browser.shell.tabs_list();
         dispatch({
           type: "setTabs",
           tabs: snap.tabs ?? [],
@@ -137,7 +135,7 @@ export function App() {
   // ── Actions ────────────────────────────────────────────────────────
   const activate = useCallback(async (tab: TabSummary) => {
     try {
-      await browser.send("shell.tab_switch", { id: tab.id });
+      await shells.browser.shell.tab_switch({ id: tab.id });
     } catch (e) {
       console.warn("shell.tab_switch failed", e);
     }
@@ -145,7 +143,7 @@ export function App() {
 
   const close = useCallback(async (tab: TabSummary) => {
     try {
-      await browser.send("shell.tab_close", { id: tab.id });
+      await shells.browser.shell.tab_close({ id: tab.id });
     } catch (e) {
       console.warn("shell.tab_close failed", e);
     }
@@ -154,16 +152,14 @@ export function App() {
   return (
     <aside
       ref={dragRef as React.RefObject<HTMLElement>}
-      className="app-drag flex h-full flex-col bg-cronymax-body pt-7 text-cronymax-title"
+      className="app-drag flex h-full flex-col bg-transparent pt-7 text-foreground"
     >
       {/* Items section */}
       <section className="no-drag flex-1 overflow-auto px-2 pb-4 pt-2">
         {switching && (
-          <div className="mb-2 rounded bg-cronymax-float px-2 py-1 text-[11px] text-cronymax-caption">
-            Restarting runtime…
-          </div>
+          <div className="mb-2 rounded bg-card px-2 py-1 text-xs text-muted-foreground">Restarting runtime…</div>
         )}
-        <div className="no-drag px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-cronymax-caption">
+        <div className="no-drag px-2 pb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Tabs
         </div>
         <ul className="no-drag space-y-0.5">
