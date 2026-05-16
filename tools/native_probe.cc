@@ -206,19 +206,12 @@ int main(int argc, char** argv) {
   }
 
   if (mode == "read") {
-    if (argc < 4) {
-      Usage();
-      return 2;
-    }
-    cronymax::FileBroker broker(workspace);
-    const auto result =
-        broker.ReadText(cronymax::Actor::kAgent, workspace / argv[3]);
-    if (!result.ok) {
-      std::cerr << result.error << "\n";
-      return 1;
-    }
-    std::cout << result.data;
-    return 0;
+    // FileBroker/Actor moved into the Rust runtime; this probe path
+    // is no longer wired up. Kept as a stub so the existing CLI surface
+    // doesn't disappear silently.
+    std::cerr
+        << "read mode removed (FileBroker now lives in the Rust runtime)\n";
+    return 1;
   }
 
   if (mode == "agent") {
