@@ -553,6 +553,7 @@ mod tests {
             messages,
             tools: vec![],
             temperature: None,
+            reasoning_effort: None,
             thinking: None,
         }
     }
