@@ -1,5 +1,9 @@
+import { Check, ChevronsUpDown } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { inputCls } from "../panels/flows/App";
+import { Button } from "@/components/ui/button";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 
 // ── Providers tab ─────────────────────────────────────────────────────────
 type ProviderKind = "openai" | "anthropic" | "ollama" | "github_copilot" | "custom";
@@ -54,6 +58,7 @@ export function ModelSelect({
   const [models, setModels] = useState<string[]>([]);
   const [fetching, setFetching] = useState(false);
   const [fetchErr, setFetchErr] = useState<string | null>(null);
+  const [comboOpen, setComboOpen] = useState(false);
 
   const doFetch = useCallback(async () => {
     setFetching(true);
@@ -75,48 +80,51 @@ export function ModelSelect({
   return (
     <div className="space-y-1">
       <div className="flex gap-1">
-        <input
-          className={`${inputCls} flex-1`}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          list="model-datalist"
-          placeholder="gpt-4o-mini"
-        />
-        <datalist id="model-datalist">
-          {models.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
-        <button
+        <Popover open={comboOpen} onOpenChange={setComboOpen}>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="outline" className="flex-1 h-7 justify-between text-xs font-normal truncate">
+              <span className="truncate">{value || "Select model…"}</span>
+              <ChevronsUpDown size={12} className="ml-1 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="p-0 w-[280px]" align="start">
+            <Command>
+              <CommandInput placeholder="Search models…" className="h-8 text-xs" />
+              <CommandList>
+                <CommandEmpty>No models found.</CommandEmpty>
+                <CommandGroup>
+                  {models.map((m) => (
+                    <CommandItem
+                      key={m}
+                      value={m}
+                      onSelect={(v) => {
+                        onChange(v);
+                        setComboOpen(false);
+                      }}
+                      className="text-xs"
+                    >
+                      <Check size={12} className={cn("mr-2 shrink-0", m === value ? "opacity-100" : "opacity-0")} />
+                      <span className="font-mono truncate">{m}</span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+        <Button
           type="button"
+          variant="outline"
+          size="sm"
           onClick={() => void doFetch()}
           disabled={fetching || !provider.base_url}
           title="Fetch available models"
-          className="rounded border border-cronymax-border px-2 text-xs hover:bg-cronymax-float disabled:opacity-40"
+          className="px-2 text-xs"
         >
           {fetching ? "…" : "⟳"}
-        </button>
+        </Button>
       </div>
-      {fetchErr && <p className="text-[11px] text-red-400">fetch failed: {fetchErr}</p>}
-      {models.length > 0 && !fetching && (
-        <div className="flex max-h-[120px] flex-wrap gap-1 overflow-y-auto pt-0.5">
-          {models.map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => onChange(m)}
-              className={
-                "rounded border px-1.5 py-0.5 text-[11px] " +
-                (m === value
-                  ? "border-cronymax-primary bg-cronymax-primary/20 text-cronymax-title"
-                  : "border-cronymax-border text-cronymax-caption hover:text-cronymax-title")
-              }
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-      )}
+      {fetchErr && <p className="text-xs text-red-400">fetch failed: {fetchErr}</p>}
     </div>
   );
 }

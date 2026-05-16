@@ -35,9 +35,7 @@ export function WysiwygMarkdown({ value, onChange, readOnly, className }: Props)
 
   return (
     <div className={className}>
-      <Suspense
-        fallback={<div className="text-[11px] text-cronymax-caption opacity-60 px-2 py-1">Loading editor…</div>}
-      >
+      <Suspense fallback={<div className="text-xs text-cronymax-caption opacity-60 px-2 py-1">Loading editor…</div>}>
         <MilkdownEditor value={value} onChange={onChange!} />
       </Suspense>
     </div>

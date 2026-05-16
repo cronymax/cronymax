@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { shells } from "../../shells/bridge";
-import { Field, inputCls } from "./App";
+import { Field } from "./App";
 
 // ── Profiles tab ─────────────────────────────────────────────────────────
 interface ProfileRecord {
@@ -93,41 +96,45 @@ function ProfileForm({
   };
 
   const taCls =
-    "w-full min-h-[80px] resize-y rounded border border-cronymax-border " +
-    "bg-cronymax-base px-2 py-1 font-mono text-xs text-cronymax-title " +
-    "outline-none focus:border-cronymax-primary";
+    "w-full min-h-[80px] resize-y rounded border border-border " +
+    "bg-background px-2 py-1 font-mono text-xs text-foreground " +
+    "outline-none focus:border-ring";
 
   return (
-    <div className="mt-2 rounded border border-cronymax-border bg-cronymax-float p-3 text-xs">
+    <div className="mt-2 rounded border border-border bg-card p-3 text-xs">
       <Field label="Profile name">
-        <input
-          className={inputCls}
+        <Input
+          className="h-7 text-xs"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. Restricted"
           disabled={isDefault}
         />
-        {isDefault && (
-          <p className="mt-1 text-[11px] text-cronymax-caption">The default profile name cannot be changed.</p>
-        )}
+        {isDefault && <p className="mt-1 text-xs text-muted-foreground">The default profile name cannot be changed.</p>}
       </Field>
       <Field label="Memory ID">
-        <input
-          className={inputCls}
+        <Input
+          className="h-7 text-xs"
           value={memoryId}
           onChange={(e) => setMemoryId(e.target.value)}
           placeholder={initial.id || "default"}
           spellCheck={false}
         />
-        <p className="mt-1 text-[11px] text-cronymax-caption">
+        <p className="mt-1 text-xs text-muted-foreground">
           Runtime memory path uses this ID: cronymax/Memories/&lt;memory_id&gt;
         </p>
       </Field>
       <Field label="Network">
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={allowNet} onChange={(e) => setAllowNet(e.target.checked)} />
-          Allow outbound network access
-        </label>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="profile-allow-net"
+            checked={allowNet}
+            onCheckedChange={(checked) => setAllowNet(checked === true)}
+          />
+          <label htmlFor="profile-allow-net" className="cursor-pointer text-xs">
+            Allow outbound network access
+          </label>
+        </div>
       </Field>
       <Field label="Extra readable paths (one per line)">
         <textarea
@@ -157,7 +164,7 @@ function ProfileForm({
         />
       </Field>
       {missingPaths.length > 0 && (
-        <div className="mb-2 rounded border border-yellow-400/40 bg-yellow-50/10 px-2 py-1.5 text-[11px] text-yellow-600">
+        <div className="mb-2 rounded border border-yellow-400/40 bg-yellow-50/10 px-2 py-1.5 text-xs text-yellow-600">
           <span className="font-medium">Paths not found on disk:</span>
           <ul className="mt-0.5 list-inside list-disc space-y-0.5 font-mono">
             {missingPaths.map((p) => (
@@ -168,34 +175,26 @@ function ProfileForm({
       )}
       {err && <p className="mb-2 text-xs text-red-500">{err}</p>}
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => void handleSave()}
-          disabled={busy}
-          className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-        >
+        <Button type="button" size="sm" onClick={() => void handleSave()} disabled={busy}>
           Save
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={busy}
-          className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs text-cronymax-title hover:bg-cronymax-float"
-        >
+        </Button>
+        <Button type="button" size="sm" variant="outline" onClick={onCancel} disabled={busy}>
           Cancel
-        </button>
+        </Button>
         {onDelete && !isDefault && (
-          <button
+          <Button
             type="button"
+            size="sm"
+            variant="destructive"
+            className="ml-auto"
             onClick={() => void handleDelete()}
             disabled={busy}
-            className="ml-auto rounded border border-red-400 px-3 py-1 text-xs text-red-500 hover:bg-red-50"
           >
             Delete
-          </button>
+          </Button>
         )}
         {isDefault && (
-          <span className="ml-auto text-[11px] text-cronymax-caption" title="The default profile cannot be deleted">
+          <span className="ml-auto text-xs text-muted-foreground" title="The default profile cannot be deleted">
             🔒 Cannot delete default
           </span>
         )}
@@ -209,13 +208,15 @@ function NewProfileForm({ onCreated }: { onCreated: () => void }) {
 
   if (!open) {
     return (
-      <button
+      <Button
         type="button"
+        variant="outline"
+        size="sm"
+        className="mt-3 border-dashed text-xs"
         onClick={() => setOpen(true)}
-        className="mt-3 rounded border border-dashed border-cronymax-border px-3 py-1.5 text-xs text-cronymax-caption hover:text-cronymax-title"
       >
         + New profile
-      </button>
+      </Button>
     );
   }
 
@@ -301,24 +302,25 @@ export function ProfilesTab() {
 
   return (
     <div className="h-full overflow-auto p-4">
-      <p className="mb-4 text-[11px] text-cronymax-caption">
+      <p className="mb-4 text-xs text-muted-foreground">
         Named sandbox profiles are stored in <code>~/.cronymax/profiles/</code>. Assign a profile to a workspace when
         opening a folder.
       </p>
       {msg && <p className="mb-3 text-xs text-red-500">{msg}</p>}
       <div className="max-w-[600px] space-y-2">
         {profiles.map((p) => (
-          <div key={p.id} className="rounded border border-cronymax-border bg-cronymax-base">
-            <button
+          <div key={p.id} className="rounded border border-border bg-background">
+            <Button
               type="button"
+              variant="ghost"
               onClick={() => setExpandedId((prev) => (prev === p.id ? null : p.id))}
-              className="flex w-full items-center justify-between px-3 py-2 text-left text-xs"
+              className="flex h-auto w-full items-center justify-between px-3 py-2 text-left text-xs font-normal"
             >
-              <span className="font-medium text-cronymax-title">{p.name}</span>
-              <span className="text-cronymax-caption">
+              <span className="font-medium text-foreground">{p.name}</span>
+              <span className="text-muted-foreground">
                 {p.allow_network ? "network ✓" : "network ✗"} · {p.id === "default" ? "🔒 default" : p.id}
               </span>
-            </button>
+            </Button>
             {expandedId === p.id && (
               <ProfileForm
                 initial={p}
@@ -332,7 +334,7 @@ export function ProfilesTab() {
         ))}
       </div>
       <NewProfileForm onCreated={() => void reload()} />
-      {busy && <p className="mt-3 text-[11px] text-cronymax-caption">Saving…</p>}
+      {busy && <p className="mt-3 text-xs text-muted-foreground">Saving…</p>}
     </div>
   );
 }

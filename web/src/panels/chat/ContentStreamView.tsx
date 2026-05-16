@@ -19,7 +19,7 @@ function LoadingDots() {
   }, []);
   const dots = ".".repeat(frame);
   return (
-    <div className="flex items-center gap-1.5 text-xs text-cronymax-caption italic select-none">
+    <div className="flex items-center gap-1.5 text-xs text-muted-foreground italic select-none">
       <span>Working</span>
       <span className="inline-block w-4 text-left">{dots}</span>
     </div>
@@ -59,7 +59,7 @@ export function ContentStreamView({ segments, isStreaming }: Props) {
         if (seg.kind === "text") {
           const isLastText = i === lastTextIdx;
           return (
-            <div key={i} className="text-sm text-cronymax-title">
+            <div key={i} className="text-sm text-foreground">
               <Streamdown animated isAnimating={isStreaming && isLastText}>
                 {seg.content}
               </Streamdown>

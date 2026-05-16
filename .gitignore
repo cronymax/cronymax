@@ -7,6 +7,7 @@ out/
 compile_commands.json
 
 # Web (Vite + pnpm)
+bun.lock
 node_modules/
 web/dist/
 web/.vite/

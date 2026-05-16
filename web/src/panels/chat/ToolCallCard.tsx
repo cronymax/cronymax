@@ -38,60 +38,60 @@ export function ToolCallCard({ segment }: Props) {
   const isError = segment.status === "error";
 
   const statusGlyph = isDone ? (
-    <span className="text-green-400 font-mono text-[11px]">✓</span>
+    <span className="text-green-400 font-mono text-xs">✓</span>
   ) : isError ? (
-    <span className="text-red-400 font-mono text-[11px]">✗</span>
+    <span className="text-red-400 font-mono text-xs">✗</span>
   ) : null;
 
   return (
-    <div className="my-1 rounded border border-cronymax-border bg-cronymax-float overflow-hidden">
+    <div className="my-1 rounded border border-border bg-card overflow-hidden">
       {/* Card header — always visible */}
       <button
         type="button"
         disabled={isRunning}
         onClick={() => !isRunning && setExpanded((v) => !v)}
         className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition${
-          isRunning ? " cursor-default" : " hover:bg-cronymax-border/20 cursor-pointer"
+          isRunning ? " cursor-default" : " hover:bg-border/20 cursor-pointer"
         }`}
       >
         {/* Running indicator */}
         {isRunning && <Spinner />}
 
         {/* Tool name */}
-        <span className="flex-1 font-mono text-[11px] text-cronymax-caption truncate">{segment.tool}</span>
+        <span className="flex-1 font-mono text-xs text-muted-foreground truncate">{segment.tool}</span>
 
         {/* Status glyph */}
         {statusGlyph}
 
         {/* Duration */}
         {!isRunning && segment.durationMs != null && (
-          <span className="shrink-0 font-mono text-[10px] text-cronymax-caption opacity-60">
+          <span className="shrink-0 font-mono text-xs text-muted-foreground opacity-60">
             {fmtDurationMs(segment.durationMs)}
           </span>
         )}
 
         {/* Expand/collapse chevron */}
         {!isRunning && (
-          <span className="shrink-0 text-[10px] text-cronymax-caption opacity-40">{expanded ? "▾" : "▸"}</span>
+          <span className="shrink-0 text-xs text-muted-foreground opacity-40">{expanded ? "▾" : "▸"}</span>
         )}
       </button>
 
       {/* Expanded args + result */}
       {expanded && !isRunning && (
-        <div className="border-t border-cronymax-border px-2.5 py-2 space-y-2">
+        <div className="border-t border-border px-2.5 py-2 space-y-2">
           <div>
-            <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-cronymax-caption opacity-60">
+            <div className="mb-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground opacity-60">
               Args
             </div>
-            <pre className="max-h-[200px] overflow-y-auto rounded bg-cronymax-base px-2 py-1 font-mono text-[10px] text-cronymax-caption whitespace-pre-wrap break-all">
+            <pre className="max-h-[200px] overflow-y-auto rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
               {JSON.stringify(segment.args, null, 2)}
             </pre>
           </div>
           <div>
-            <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-cronymax-caption opacity-60">
+            <div className="mb-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground opacity-60">
               Result
             </div>
-            <pre className="max-h-[200px] overflow-y-auto rounded bg-cronymax-base px-2 py-1 font-mono text-[10px] text-cronymax-caption whitespace-pre-wrap break-all">
+            <pre className="max-h-[200px] overflow-y-auto rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
               {segment.result != null ? JSON.stringify(segment.result, null, 2) : "(no result)"}
             </pre>
           </div>

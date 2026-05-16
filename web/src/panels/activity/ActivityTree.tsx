@@ -11,7 +11,7 @@ export function ActivityTree({ groups, reviews, onReviewResolved }: Props) {
   const { chatGroups, flowGroups } = groups;
 
   if (chatGroups.size === 0 && flowGroups.size === 0) {
-    return <div className="flex flex-1 items-center justify-center text-xs text-cronymax-caption">No runs yet</div>;
+    return <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">No runs yet</div>;
   }
 
   return (
@@ -19,14 +19,12 @@ export function ActivityTree({ groups, reviews, onReviewResolved }: Props) {
       {/* ── Chat section ──────────────────────────────────────────────── */}
       {chatGroups.size > 0 && (
         <div className="mb-3">
-          <div className="px-2 py-1 text-[11px] font-semibold text-cronymax-caption uppercase tracking-wide">
-            💬 Chat
-          </div>
+          <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">💬 Chat</div>
           {[...chatGroups.entries()].map(([sessionId, runs]) => (
             <div key={sessionId} className="mb-2">
-              <div className="px-2 py-0.5 text-cronymax-title font-medium truncate">
+              <div className="truncate px-2 py-0.5 font-medium text-foreground">
                 {sessionId.slice(0, 12)}
-                <span className="ml-1 text-cronymax-caption font-normal">
+                <span className="ml-1 font-normal text-muted-foreground">
                   · {runs.length} run{runs.length !== 1 ? "s" : ""}
                 </span>
               </div>
@@ -43,14 +41,12 @@ export function ActivityTree({ groups, reviews, onReviewResolved }: Props) {
       {/* ── Flows section ─────────────────────────────────────────────── */}
       {flowGroups.size > 0 && (
         <div>
-          <div className="px-2 py-1 text-[11px] font-semibold text-cronymax-caption uppercase tracking-wide">
-            🔀 Flows
-          </div>
+          <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">🔀 Flows</div>
           {[...flowGroups.entries()].map(([flowRunId, runs]) => (
             <div key={flowRunId} className="mb-2">
-              <div className="px-2 py-0.5 text-cronymax-title font-medium truncate">
+              <div className="truncate px-2 py-0.5 font-medium text-foreground">
                 Flow run <span className="font-mono">{flowRunId.slice(0, 8)}</span>
-                <span className="ml-1 text-cronymax-caption font-normal">
+                <span className="ml-1 font-normal text-muted-foreground">
                   · {runs.length} agent{runs.length !== 1 ? "s" : ""}
                 </span>
               </div>

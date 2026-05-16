@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { WysiwygMarkdown } from "../../components/WysiwygMarkdown";
 import { docType } from "../../shells/runtime";
-import { Field, inputCls } from "./App";
+import { Field } from "./App";
 
 // ── Doc Types tab ─────────────────────────────────────────────────────────
 interface DocTypeSummary {
@@ -21,6 +25,7 @@ const EMPTY_DOC_TYPE: DocTypeDraft = {
 };
 export function DocTypesTab() {
   const [docTypes, setDocTypes] = useState<DocTypeSummary[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState<DocTypeDraft | null>(null);
   const [creating, setCreating] = useState(false);
@@ -31,8 +36,10 @@ export function DocTypesTab() {
     try {
       const res = await docType.list();
       setDocTypes((res.doc_types ?? []) as DocTypeSummary[]);
+      setLoaded(true);
     } catch (err) {
       setError(`doc_type.list: ${(err as Error).message}`);
+      setLoaded(true);
     }
   }, []);
 
@@ -113,37 +120,41 @@ export function DocTypesTab() {
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-[200px] flex-col border-r border-cronymax-border bg-cronymax-float">
-        <div className="flex items-center justify-between border-b border-cronymax-border px-2 py-1.5">
+      <aside className="flex w-[200px] flex-col border-r border-border bg-card">
+        <div className="flex items-center justify-between px-2 py-1.5">
           <span className="text-xs font-semibold">Doc Types</span>
-          <button
-            type="button"
-            onClick={onNew}
-            className="rounded bg-cronymax-primary px-1.5 py-0.5 text-xs text-white hover:opacity-90"
-            title="New doc type"
-          >
+          <Button type="button" size="icon" className="h-5 w-5 text-xs" onClick={onNew} title="New doc type">
             +
-          </button>
+          </Button>
         </div>
+        <Separator />
         <ul className="flex-1 overflow-auto py-1">
-          {docTypes.length === 0 && (
-            <li className="px-2 py-1 text-[11px] text-cronymax-caption">No doc types found.</li>
+          {!loaded && (
+            <>
+              <Skeleton className="mx-2 my-1 h-8" />
+              <Skeleton className="mx-2 my-1 h-8" />
+              <Skeleton className="mx-2 my-1 h-8" />
+            </>
+          )}
+          {loaded && docTypes.length === 0 && (
+            <li className="px-2 py-1 text-xs text-muted-foreground">No doc types found.</li>
           )}
           {docTypes.map((dt) => (
             <li key={dt.name}>
-              <button
+              <Button
                 type="button"
+                variant="ghost"
                 onClick={() => void onSelect(dt)}
                 className={
-                  "flex w-full flex-col items-start px-2 py-1 text-left text-xs " +
+                  "flex h-auto w-full flex-col items-start px-2 py-1 text-left text-xs font-normal " +
                   (selected === dt.name && !creating
-                    ? "bg-cronymax-primary/15 text-cronymax-title"
-                    : "text-cronymax-caption hover:bg-cronymax-base hover:text-cronymax-title")
+                    ? "bg-primary/15 text-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground")
                 }
               >
                 <span className="font-medium">{dt.name}</span>
-                <span className="text-[10px] opacity-70">{dt.user_defined ? "user" : "built-in"}</span>
-              </button>
+                <span className="text-xs opacity-70">{dt.user_defined ? "user" : "built-in"}</span>
+              </Button>
             </li>
           ))}
         </ul>
@@ -151,7 +162,7 @@ export function DocTypesTab() {
 
       <section className="flex-1 overflow-auto p-3">
         {!draft && (
-          <p className="text-xs text-cronymax-caption">
+          <p className="text-xs text-muted-foreground">
             Select a doc type to view its Markdown description, or click <b>+</b> to create a new one. User-defined doc
             types are stored in <code>.cronymax/doc-types/&lt;name&gt;.yaml</code> and appear alongside built-ins in the
             Flow PRODUCES picker.
@@ -163,25 +174,23 @@ export function DocTypesTab() {
               {creating ? "New doc type" : `${editable ? "Edit" : "View"}: ${selected}`}
             </h2>
             {!creating && !selectedIsUserDefined && (
-              <p className="mb-3 rounded border border-cronymax-border bg-cronymax-float p-2 text-[11px] text-cronymax-caption">
+              <p className="mb-3 rounded border border-border bg-card p-2 text-xs text-muted-foreground">
                 Built-in doc types are read-only. Create a user doc type to define your own document structure.
               </p>
             )}
             <Field label="Name (file basename)">
-              <input
-                className={inputCls}
+              <Input
+                className="h-7 text-xs"
                 value={draft.name}
                 disabled={!creating}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 placeholder="my-doc-type"
               />
-              {!creating && (
-                <p className="mt-1 text-[10px] text-cronymax-caption">Rename by deleting and recreating.</p>
-              )}
+              {!creating && <p className="mt-1 text-xs text-muted-foreground">Rename by deleting and recreating.</p>}
             </Field>
             <Field label="Display name">
-              <input
-                className={inputCls}
+              <Input
+                className="h-7 text-xs"
                 value={draft.display_name}
                 disabled={!editable}
                 onChange={(e) => setDraft({ ...draft, display_name: e.target.value })}
@@ -199,36 +208,27 @@ export function DocTypesTab() {
             {error && <p className="mb-3 text-xs text-red-300">{error}</p>}
             {editable && (
               <div className="mt-3 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void onSave()}
-                  disabled={busy}
-                  className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-                >
+                <Button type="button" size="sm" onClick={() => void onSave()} disabled={busy}>
                   {creating ? "Create" : "Save"}
-                </button>
+                </Button>
                 {!creating && selectedIsUserDefined && (
-                  <button
-                    type="button"
-                    onClick={() => void onDelete()}
-                    disabled={busy}
-                    className="rounded border border-red-500/50 bg-red-500/10 px-3 py-1 text-xs text-red-300 hover:bg-red-500/20 disabled:opacity-50"
-                  >
+                  <Button type="button" size="sm" variant="destructive" onClick={() => void onDelete()} disabled={busy}>
                     Delete
-                  </button>
+                  </Button>
                 )}
-                <button
+                <Button
                   type="button"
+                  size="sm"
+                  variant="outline"
                   onClick={() => {
                     setDraft(null);
                     setCreating(false);
                     setSelected(null);
                     setError(null);
                   }}
-                  className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs hover:bg-cronymax-float"
                 >
                   Cancel
-                </button>
+                </Button>
               </div>
             )}
           </div>

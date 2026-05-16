@@ -95,7 +95,7 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
           <span className="font-semibold text-amber-300">Tool approval required</span>
           <span
             className={
-              "rounded px-1.5 py-0.5 text-[10px] font-mono " +
+              "rounded px-1.5 py-0.5 text-xs font-mono " +
               (trust === "autopilot"
                 ? "bg-green-500/20 text-green-300"
                 : trust === "bypass"
@@ -106,14 +106,14 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
             {TRUST_LABELS[trust]}
           </span>
         </div>
-        <span className="font-mono text-[11px] text-cronymax-caption">
-          category: <span className="text-cronymax-title">{category}</span>
+        <span className="font-mono text-xs text-muted-foreground">
+          category: <span className="text-foreground">{category}</span>
         </span>
       </div>
 
       <div className="mb-2">
-        <div className="mb-1 font-semibold text-cronymax-title">{toolName}</div>
-        <pre className="max-h-[120px] overflow-y-auto rounded bg-cronymax-base px-2 py-1 font-mono text-[11px] text-cronymax-caption whitespace-pre-wrap break-all">
+        <div className="mb-1 font-semibold text-foreground">{toolName}</div>
+        <pre className="max-h-[120px] overflow-y-auto rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
           {truncateJson(args)}
         </pre>
       </div>
@@ -137,7 +137,7 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
           type="button"
           onClick={() => void handleTrustAlways()}
           disabled={saving}
-          className="ml-auto rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs text-cronymax-caption hover:text-cronymax-title disabled:opacity-50"
+          className="ml-auto rounded border border-border bg-background px-3 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
         >
           Trust &quot;{category}&quot; always
         </button>

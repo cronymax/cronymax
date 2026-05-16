@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { type LlmProvider, ModelSelect } from "../../components/ModelSelect";
 import { WysiwygMarkdown } from "../../components/WysiwygMarkdown";
 import { shells } from "../../shells/bridge";
 import { agentRegistry } from "../../shells/runtime";
-import { Field, inputCls } from "./App";
+import { Field } from "./App";
 
 // ── Agents tab ────────────────────────────────────────────────────────────
 interface AgentSummary {
@@ -99,29 +104,24 @@ function ToolCheckboxes({ value, onChange }: { value: string[]; onChange: (v: st
         const groupPartial = !groupChecked && group.tools.some((t) => effectiveSet.has(t));
         return (
           <div key={group.label}>
-            <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-semibold text-cronymax-title">
-              <input
-                type="checkbox"
-                checked={groupChecked}
-                ref={(el) => {
-                  if (el) el.indeterminate = groupPartial;
-                }}
-                onChange={() => toggleGroup(group)}
-                className="accent-cronymax-primary"
+            <div className="flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-foreground">
+              <Checkbox
+                checked={groupPartial ? "indeterminate" : groupChecked}
+                onCheckedChange={() => toggleGroup(group)}
               />
               {group.label}
-            </label>
-            <div className="ml-4 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+            </div>
+            <div className="ml-5 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
               {group.tools.map((tool) => (
-                <label key={tool} className="flex cursor-pointer items-center gap-1 text-[11px] text-cronymax-caption">
-                  <input
-                    type="checkbox"
+                <div key={tool} className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground">
+                  <Checkbox
                     checked={effectiveSet.has(tool)}
-                    onChange={() => toggle(tool)}
-                    className="accent-cronymax-primary"
+                    onCheckedChange={(checked) => {
+                      if (checked !== "indeterminate") toggle(tool);
+                    }}
                   />
                   {tool}
-                </label>
+                </div>
               ))}
             </div>
           </div>
@@ -129,18 +129,18 @@ function ToolCheckboxes({ value, onChange }: { value: string[]; onChange: (v: st
       })}
       {unknownTools.length > 0 && (
         <div>
-          <span className="text-[11px] font-semibold text-cronymax-title">Other</span>
-          <div className="ml-4 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+          <span className="text-xs font-semibold text-foreground">Other</span>
+          <div className="ml-5 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
             {unknownTools.map((tool) => (
-              <label key={tool} className="flex cursor-pointer items-center gap-1 text-[11px] text-cronymax-caption">
-                <input
-                  type="checkbox"
+              <div key={tool} className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground">
+                <Checkbox
                   checked={effectiveSet.has(tool)}
-                  onChange={() => toggle(tool)}
-                  className="accent-cronymax-primary"
+                  onCheckedChange={(checked) => {
+                    if (checked !== "indeterminate") toggle(tool);
+                  }}
                 />
                 {tool}
-              </label>
+              </div>
             ))}
           </div>
         </div>
@@ -150,6 +150,7 @@ function ToolCheckboxes({ value, onChange }: { value: string[]; onChange: (v: st
 }
 export function AgentsTab() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState<AgentDetail | null>(null);
   const [creating, setCreating] = useState(false);
@@ -249,8 +250,10 @@ export function AgentsTab() {
         res = await agentRegistry.list();
       }
       setAgents(res.agents ?? []);
+      setLoaded(true);
     } catch (err) {
       setError(`agent.registry.list: ${(err as Error).message}`);
+      setLoaded(true);
     }
   }, []);
 
@@ -336,37 +339,41 @@ export function AgentsTab() {
 
   return (
     <div className="flex h-full">
-      <aside className="flex w-[200px] flex-col border-r border-cronymax-border bg-cronymax-float">
-        <div className="flex items-center justify-between border-b border-cronymax-border px-2 py-1.5">
+      <aside className="flex w-[200px] flex-col border-r border-border bg-card">
+        <div className="flex items-center justify-between px-2 py-1.5">
           <span className="text-xs font-semibold">Agents</span>
-          <button
-            type="button"
-            onClick={onNew}
-            className="rounded bg-cronymax-primary px-1.5 py-0.5 text-xs text-white hover:opacity-90"
-            title="New agent"
-          >
+          <Button type="button" size="icon" className="h-5 w-5 text-xs" onClick={onNew} title="New agent">
             +
-          </button>
+          </Button>
         </div>
+        <Separator />
         <ul className="flex-1 overflow-auto py-1">
-          {agents.length === 0 && (
-            <li className="px-2 py-1 text-[11px] text-cronymax-caption">No agents registered.</li>
+          {!loaded && (
+            <>
+              <Skeleton className="mx-2 my-1 h-8" />
+              <Skeleton className="mx-2 my-1 h-8" />
+              <Skeleton className="mx-2 my-1 h-8" />
+            </>
+          )}
+          {loaded && agents.length === 0 && (
+            <li className="px-2 py-1 text-xs text-muted-foreground">No agents registered.</li>
           )}
           {agents.map((a) => (
             <li key={a.name}>
-              <button
+              <Button
                 type="button"
+                variant="ghost"
                 onClick={() => onSelect(a.name)}
                 className={
-                  "flex w-full flex-col items-start px-2 py-1 text-left text-xs " +
+                  "flex h-auto w-full flex-col items-start px-2 py-1 text-left text-xs font-normal " +
                   (selected === a.name && !creating
-                    ? "bg-cronymax-primary/15 text-cronymax-title"
-                    : "text-cronymax-caption hover:bg-cronymax-base hover:text-cronymax-title")
+                    ? "bg-primary/15 text-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground")
                 }
               >
                 <span className="font-medium">{a.name}</span>
-                <span className="text-[10px] opacity-70">{a.llm}</span>
-              </button>
+                <span className="text-xs opacity-70">{a.llm}</span>
+              </Button>
             </li>
           ))}
         </ul>
@@ -374,7 +381,7 @@ export function AgentsTab() {
 
       <section className="flex-1 overflow-auto p-3">
         {!draft && (
-          <p className="text-xs text-cronymax-caption">
+          <p className="text-xs text-muted-foreground">
             Select an agent to view or edit, or click <b>+</b> to create one. Files live under{" "}
             <code>.cronymax/agents/&lt;name&gt;.agent.yaml</code>.
           </p>
@@ -384,41 +391,42 @@ export function AgentsTab() {
             <h2 className="mb-3 text-sm font-semibold">{creating ? "New agent" : `Edit: ${selected}`}</h2>
             {draft.prompt_sealed ? (
               <>
-                <p className="mb-4 rounded border border-cronymax-border bg-cronymax-float px-3 py-2 text-xs text-cronymax-caption">
+                <p className="mb-4 rounded border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
                   Built-in agent — configuration is sealed and read-only.
                 </p>
                 <Field label="System prompt">
-                  <pre className="whitespace-pre-wrap rounded border border-cronymax-border bg-cronymax-base px-3 py-2 text-xs text-cronymax-body">
+                  <pre className="whitespace-pre-wrap rounded border border-border bg-background px-3 py-2 text-xs text-foreground">
                     {draft.system_prompt}
                   </pre>
                 </Field>
                 <div className="flex items-center gap-2">
-                  <button
+                  <Button
                     type="button"
+                    variant="outline"
+                    size="sm"
                     onClick={() => {
                       setDraft(null);
                       setCreating(false);
                       setSelected(null);
                       setError(null);
                     }}
-                    className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs hover:bg-cronymax-float"
                   >
                     Close
-                  </button>
+                  </Button>
                 </div>
               </>
             ) : (
               <>
                 <Field label="Name (file basename)">
-                  <input
-                    className={inputCls}
+                  <Input
+                    className="h-7 text-xs"
                     value={draft.name}
                     disabled={!creating}
                     onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                     placeholder="my_worker"
                   />
                   {!creating && (
-                    <p className="mt-1 text-[10px] text-cronymax-caption">Rename by deleting and recreating.</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Rename by deleting and recreating.</p>
                   )}
                 </Field>
                 <Field label="LLM model">
@@ -429,8 +437,8 @@ export function AgentsTab() {
                       provider={activeProvider}
                     />
                   ) : (
-                    <input
-                      className={inputCls}
+                    <Input
+                      className="h-7 text-xs"
                       value={draft.llm}
                       onChange={(e) => setDraft({ ...draft, llm: e.target.value })}
                       placeholder="(uses provider default)"
@@ -438,8 +446,8 @@ export function AgentsTab() {
                   )}
                 </Field>
                 <Field label="Memory namespace (optional)">
-                  <input
-                    className={inputCls}
+                  <Input
+                    className="h-7 text-xs"
                     value={draft.memory_namespace}
                     onChange={(e) => setDraft({ ...draft, memory_namespace: e.target.value })}
                     placeholder="(defaults to agent name)"
@@ -457,36 +465,33 @@ export function AgentsTab() {
                 </Field>
                 {error && <p className="mb-3 text-xs text-red-300">{error}</p>}
                 <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void onSave()}
-                    disabled={busy}
-                    className="rounded bg-cronymax-primary px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-                  >
+                  <Button type="button" size="sm" onClick={() => void onSave()} disabled={busy}>
                     {creating ? "Create" : "Save"}
-                  </button>
+                  </Button>
                   {!creating && (
-                    <button
+                    <Button
                       type="button"
+                      size="sm"
+                      variant="destructive"
                       onClick={() => void onDelete()}
                       disabled={busy}
-                      className="rounded border border-red-500/50 bg-red-500/10 px-3 py-1 text-xs text-red-300 hover:bg-red-500/20 disabled:opacity-50"
                     >
                       Delete
-                    </button>
+                    </Button>
                   )}
-                  <button
+                  <Button
                     type="button"
+                    size="sm"
+                    variant="outline"
                     onClick={() => {
                       setDraft(null);
                       setCreating(false);
                       setSelected(null);
                       setError(null);
                     }}
-                    className="rounded border border-cronymax-border bg-cronymax-base px-3 py-1 text-xs hover:bg-cronymax-float"
                   >
                     Cancel
-                  </button>
+                  </Button>
                 </div>
               </>
             )}

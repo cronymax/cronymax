@@ -88,14 +88,14 @@ export function PromptPopover({ prompt, onClose, onSave }: Props) {
   return (
     <div
       ref={containerRef}
-      className="absolute bottom-full left-0 right-0 z-50 mb-1 rounded-lg border border-cronymax-border bg-cronymax-float shadow-lg overflow-hidden"
+      className="absolute bottom-full left-0 right-0 z-50 mb-1 rounded-lg border border-border bg-card shadow-lg overflow-hidden"
     >
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-cronymax-border px-2.5 py-1.5">
-        <span className="font-mono text-[11px] text-cronymax-caption">
+      <div className="flex items-center justify-between border-b border-border px-2.5 py-1.5">
+        <span className="font-mono text-xs text-muted-foreground">
           <span className="opacity-50">/</span>
-          <span className="text-cronymax-title">{prompt.label}</span>
-          <span className="ml-1 opacity-50 text-[10px]">.prompt.md</span>
+          <span className="text-foreground">{prompt.label}</span>
+          <span className="ml-1 opacity-50 text-xs">.prompt.md</span>
         </span>
         <div className="flex items-center gap-1">
           {!isEditing && onSave && (
@@ -103,7 +103,7 @@ export function PromptPopover({ prompt, onClose, onSave }: Props) {
               type="button"
               title="Edit"
               onClick={handleEdit}
-              className="rounded px-1.5 py-0.5 text-[11px] text-cronymax-caption hover:bg-cronymax-border/40 hover:text-cronymax-title transition"
+              className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-border/40 hover:text-foreground transition"
             >
               ✎
             </button>
@@ -112,7 +112,7 @@ export function PromptPopover({ prompt, onClose, onSave }: Props) {
             type="button"
             title="Close"
             onClick={onClose}
-            className="rounded px-1.5 py-0.5 text-[11px] text-cronymax-caption hover:bg-cronymax-border/40 hover:text-cronymax-title transition"
+            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-border/40 hover:text-foreground transition"
           >
             ×
           </button>
@@ -131,14 +131,14 @@ export function PromptPopover({ prompt, onClose, onSave }: Props) {
 
       {/* Footer (edit mode only) */}
       {isEditing && (
-        <div className="border-t border-cronymax-border px-2.5 py-1.5 flex items-center justify-between gap-2">
-          {error ? <span className="text-[11px] text-red-400 flex-1">{error}</span> : <span />}
+        <div className="border-t border-border px-2.5 py-1.5 flex items-center justify-between gap-2">
+          {error ? <span className="text-xs text-red-400 flex-1">{error}</span> : <span />}
           <div className="flex items-center gap-1.5">
             <button
               type="button"
               onClick={handleCancel}
               disabled={mode === "saving"}
-              className="rounded border border-cronymax-border px-2 py-0.5 text-[11px] text-cronymax-caption hover:bg-cronymax-border/30 disabled:opacity-50 transition"
+              className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-border/30 disabled:opacity-50 transition"
             >
               Cancel
             </button>
@@ -146,7 +146,7 @@ export function PromptPopover({ prompt, onClose, onSave }: Props) {
               type="button"
               onClick={() => void handleSave()}
               disabled={mode === "saving"}
-              className="rounded bg-cronymax-primary px-2 py-0.5 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-50 transition"
+              className="rounded bg-primary px-2 py-0.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 transition"
             >
               {mode === "saving" ? "Saving…" : "Save to file"}
             </button>

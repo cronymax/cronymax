@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { z } from "zod";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { browser, shells } from "@/shells/bridge";
 import type { AppEvent, InboxRowSchema } from "@/types/events";
 
@@ -84,21 +91,21 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen flex-col bg-cronymax-body text-cronymax-title">
-      <header className="flex items-center gap-2 border-b border-cronymax-border bg-cronymax-base px-3 py-2">
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      <header className="flex items-center gap-2 border-b border-border bg-card px-3 py-2">
         <div className="text-sm font-medium">Inbox</div>
         <div className="text-xs opacity-60">
           {unreadCount} unread · {needsActionCount} need action
         </div>
         <div className="flex-1" />
-        <div className="flex rounded border border-cronymax-border overflow-hidden">
+        <div className="flex overflow-hidden rounded border border-border">
           {(["unread", "read", "snoozed", "all"] as const).map((s) => (
             <button
               key={s}
               type="button"
               className={
                 "px-2 py-1 text-xs " +
-                (stateFilter === s ? "bg-cronymax-primary text-white" : "bg-cronymax-base hover:bg-cronymax-float")
+                (stateFilter === s ? "bg-primary text-primary-foreground" : "bg-card hover:bg-accent")
               }
               onClick={() => setStateFilter(s)}
             >
@@ -132,78 +139,58 @@ interface RowProps {
 }
 
 function Row({ row, onRead, onSnooze }: RowProps) {
-  const [snoozeOpen, setSnoozeOpen] = useState(false);
   return (
-    <div className="flex items-start gap-2 border-b border-cronymax-border px-3 py-2">
+    <div className="flex items-start gap-2 border-b border-border px-3 py-2">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 text-xs">
-          <span className="rounded bg-cronymax-float px-1.5 py-0.5 font-mono">{row.kind || "event"}</span>
+          <span className="rounded bg-card px-1.5 py-0.5 font-mono">{row.kind || "event"}</span>
           <span className="opacity-60 font-mono truncate">{row.flow_id}</span>
           <span
             className={
-              "rounded px-1.5 py-0.5 text-[10px] uppercase " +
+              "rounded px-1.5 py-0.5 text-xs uppercase " +
               (row.state === "unread"
                 ? "bg-amber-700/40 text-amber-200"
                 : row.state === "snoozed"
-                  ? "bg-cronymax-float text-cronymax-title/70"
-                  : "bg-cronymax-float text-cronymax-title/50")
+                  ? "bg-card text-foreground/70"
+                  : "bg-card text-foreground/50")
             }
           >
             {row.state}
           </span>
         </div>
-        <div className="mt-1 font-mono text-[11px] opacity-50 truncate">id: {row.event_id}</div>
+        <div className="mt-1 font-mono text-xs opacity-50 truncate">id: {row.event_id}</div>
       </div>
       <div className="flex flex-col items-end gap-1">
         {row.state !== "read" && (
-          <button
-            type="button"
-            className="rounded bg-cronymax-primary/80 px-2 py-1 text-xs text-white hover:bg-cronymax-primary"
-            onClick={onRead}
-          >
+          <Button size="sm" onClick={onRead}>
             Acknowledge
-          </button>
+          </Button>
         )}
-        <div className="relative">
-          <button
-            type="button"
-            className="rounded bg-cronymax-float px-2 py-1 text-xs hover:bg-cronymax-base"
-            onClick={() => setSnoozeOpen((v) => !v)}
-          >
-            Snooze ▾
-          </button>
-          {snoozeOpen && (
-            <div className="absolute right-0 z-10 mt-1 flex flex-col rounded border border-cronymax-border bg-cronymax-base shadow">
-              {SNOOZE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.label}
-                  type="button"
-                  className="px-3 py-1 text-left text-xs hover:bg-cronymax-float"
-                  onClick={() => {
-                    setSnoozeOpen(false);
-                    onSnooze(opt.ms);
-                  }}
-                >
-                  {opt.label}
-                </button>
-              ))}
-              <button
-                type="button"
-                className="px-3 py-1 text-left text-xs hover:bg-cronymax-float"
-                onClick={() => {
-                  setSnoozeOpen(false);
-                  const hrs = window.prompt("Snooze for how many hours?", "8");
-                  const n = hrs ? Number(hrs) : NaN;
-                  if (Number.isFinite(n) && n > 0) {
-                    onSnooze(n * 60 * 60 * 1000);
-                  }
-                }}
-              >
-                Custom…
-              </button>
-            </div>
-          )}
-        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm">
+              Snooze ▾
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {SNOOZE_OPTIONS.map((opt) => (
+              <DropdownMenuItem key={opt.label} onClick={() => onSnooze(opt.ms)}>
+                {opt.label}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuItem
+              onClick={() => {
+                const hrs = window.prompt("Snooze for how many hours?", "8");
+                const n = hrs ? Number(hrs) : Number.NaN;
+                if (Number.isFinite(n) && n > 0) {
+                  onSnooze(n * 60 * 60 * 1000);
+                }
+              }}
+            >
+              Custom…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   );

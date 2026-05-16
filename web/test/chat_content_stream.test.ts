@@ -285,7 +285,7 @@ describe("appendThinkingSegment reducer logic", () => {
     const last = contentStream[contentStream.length - 1];
     let next: ContentSegment[];
     if (last?.kind === "thinking" && !last.sealed) {
-      next = [...contentStream.slice(0, -1), { ...last, content: last.content + "delta" }];
+      next = [...contentStream.slice(0, -1), { ...last, content: `${last.content}delta` }];
     } else {
       next = [...contentStream, { kind: "thinking", content: "delta", sealed: false, elapsedMs: 0 }];
     }
@@ -299,7 +299,7 @@ describe("appendThinkingSegment reducer logic", () => {
     const last = contentStream[contentStream.length - 1];
     let next: ContentSegment[];
     if (last?.kind === "thinking" && !last.sealed) {
-      next = [...contentStream.slice(0, -1), { ...last, content: last.content + "second" }];
+      next = [...contentStream.slice(0, -1), { ...last, content: `${last.content}second` }];
     } else {
       next = [...contentStream, { kind: "thinking", content: "second", sealed: false, elapsedMs: 0 }];
     }
@@ -313,7 +313,7 @@ describe("appendThinkingSegment reducer logic", () => {
     const last = contentStream[contentStream.length - 1];
     let next: ContentSegment[];
     if (last?.kind === "thinking" && !last.sealed) {
-      next = [...contentStream.slice(0, -1), { ...last, content: last.content + "new" }];
+      next = [...contentStream.slice(0, -1), { ...last, content: `${last.content}new` }];
     } else {
       next = [...contentStream, { kind: "thinking", content: "new", sealed: false, elapsedMs: 0 }];
     }

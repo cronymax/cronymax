@@ -1,4 +1,5 @@
 import { type KeyboardEvent, useCallback, useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
 import { Icon } from "../../components/Icon";
 import { useBridgeEvent } from "../../hooks/useBridgeEvent";
 import { browser, shells } from "../../shells/bridge";
@@ -23,24 +24,24 @@ function SpaceRow({
       onClick={onActivate}
       className={
         "group flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 text-xs " +
-        (active
-          ? "bg-cronymax-float text-cronymax-title"
-          : "text-cronymax-caption hover:bg-cronymax-float hover:text-cronymax-title")
+        (active ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card hover:text-foreground")
       }
     >
       <span className="flex-1 truncate">{space.name}</span>
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="icon"
+        className="h-5 w-5 opacity-0 transition group-hover:opacity-100"
         onClick={(e) => {
           e.stopPropagation();
           onDelete();
         }}
-        className="opacity-0 transition group-hover:opacity-100"
         title="Delete space"
         aria-label="Delete space"
       >
         <Icon name="close" size={12} aria-hidden="true" />
-      </button>
+      </Button>
     </li>
   );
 }
@@ -179,16 +180,12 @@ export function RunnerTab() {
 
   return (
     <div className="flex h-full flex-col">
-      <section className="border-b border-cronymax-border px-3 py-2">
-        <div className="mb-1 flex items-center justify-between text-xs text-cronymax-caption">
+      <section className="border-b border-border px-3 py-2">
+        <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
           <span>Spaces</span>
-          <button
-            type="button"
-            onClick={() => void newSpace()}
-            className="rounded bg-cronymax-base px-1.5 text-cronymax-title hover:bg-cronymax-float"
-          >
+          <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={() => void newSpace()}>
             +
-          </button>
+          </Button>
         </div>
         <ul className="flex flex-col gap-px">
           {state.spaces.map((sp) => (
@@ -209,19 +206,14 @@ export function RunnerTab() {
         onKeyDown={onTaskKeyDown}
         spellCheck={false}
         placeholder="Ask the agent…  (⌘/Ctrl+Enter to run)"
-        className="m-3 min-h-[80px] resize-y rounded border border-cronymax-border bg-cronymax-float p-2 text-sm text-cronymax-title outline-none focus:border-cronymax-primary"
+        className="m-3 min-h-[80px] resize-y rounded border border-border bg-card p-2 text-sm text-foreground outline-none focus:border-ring"
       />
       <div className="flex justify-end gap-2 px-3">
-        <button
-          type="button"
-          onClick={() => void runTask()}
-          disabled={state.status === "running"}
-          className="rounded bg-cronymax-primary px-3 py-1 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-        >
+        <Button type="button" onClick={() => void runTask()} disabled={state.status === "running"}>
           Run
-        </button>
+        </Button>
       </div>
-      <pre className="m-3 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-cronymax-border bg-cronymax-float p-2 text-xs text-cronymax-title">
+      <pre className="m-3 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-card p-2 text-xs text-foreground">
         {state.result}
       </pre>
     </div>

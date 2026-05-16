@@ -9,7 +9,7 @@ interface Props {
 
 const STATUS_BADGE: Record<string, string> = {
   running: "bg-amber-500/20 text-amber-300",
-  pending: "bg-cronymax-border/30 text-cronymax-caption",
+  pending: "bg-muted/50 text-muted-foreground",
   succeeded: "bg-green-500/20 text-green-400",
   failed: "bg-red-500/20 text-red-400",
   cancelled: "bg-red-500/10 text-red-500/70",
@@ -40,22 +40,22 @@ function formatMs(ms: number): string {
 
 export function RunRow({ run, review, onReviewResolved }: Props) {
   const shortId = run.id.slice(0, 8);
-  const badge = STATUS_BADGE[run.status] ?? "bg-cronymax-border/30 text-cronymax-caption";
+  const badge = STATUS_BADGE[run.status] ?? "bg-muted/50 text-muted-foreground";
   const label = STATUS_LABEL[run.status] ?? run.status;
   const totalTokens = run.input_tokens + run.output_tokens;
 
   return (
     <div className="ml-4 mb-1">
-      <div className="flex items-center gap-2 px-2 py-1 rounded hover:bg-cronymax-hover text-xs">
-        <span className="font-mono text-cronymax-caption">{shortId}</span>
-        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${badge}`}>{label}</span>
+      <div className="flex items-center gap-2 px-2 py-1 rounded hover:bg-accent/50 text-xs">
+        <span className="font-mono text-muted-foreground">{shortId}</span>
+        <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${badge}`}>{label}</span>
         {run.turn_count > 0 && (
-          <span className="text-cronymax-caption">
+          <span className="text-muted-foreground">
             {run.turn_count} turn{run.turn_count !== 1 ? "s" : ""}
           </span>
         )}
-        {totalTokens > 0 && <span className="text-cronymax-caption">{formatTokens(totalTokens)} tok</span>}
-        {run.total_duration_ms > 0 && <span className="text-cronymax-caption">{formatMs(run.total_duration_ms)}</span>}
+        {totalTokens > 0 && <span className="text-muted-foreground">{formatTokens(totalTokens)} tok</span>}
+        {run.total_duration_ms > 0 && <span className="text-muted-foreground">{formatMs(run.total_duration_ms)}</span>}
       </div>
 
       {run.status === "awaiting_review" && review && review.state === "pending" && (

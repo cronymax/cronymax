@@ -43,7 +43,7 @@ export function ErrorBanners({ errors }: Props) {
           className="flex items-start gap-2 rounded border border-red-500/40 bg-red-900/30 px-2 py-1 text-xs text-red-200"
         >
           <div className="flex-1">
-            <div className="font-mono text-[10px] opacity-70">
+            <div className="font-mono text-xs opacity-70">
               {e.payload.scope} · {e.payload.code}
             </div>
             <div>{e.payload.message}</div>

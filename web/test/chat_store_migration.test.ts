@@ -8,12 +8,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ContentSegment, ConversationBlock, PersistedChatData } from "../src/panels/chat/store";
-import {
-  loadChatData,
-  persistChatData,
-  rehydrateContentStream,
-  stripContentStreamResults,
-} from "../src/panels/chat/store";
+import { loadChatData, persistChatData } from "../src/panels/chat/store";
 
 // Provide a minimal localStorage mock
 const storage: Record<string, string> = {};

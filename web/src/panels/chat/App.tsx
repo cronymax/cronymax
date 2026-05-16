@@ -1,3 +1,4 @@
+import { Check, ChevronsUpDown } from "lucide-react";
 import {
   type ChangeEvent,
   type ClipboardEvent,
@@ -10,7 +11,13 @@ import {
   useState,
 } from "react";
 import { FlowInstancesBar } from "@/components/FlowInstancesBar";
+import { Button } from "@/components/ui/button";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
+import { cn } from "@/lib/utils";
 import { browser, shells } from "@/shells/bridge";
 import { agentRegistry, agentRun, b64ToUtf8, terminal as rt_terminal } from "@/shells/runtime";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
@@ -92,7 +99,7 @@ function UserMessageContent({ text, onPillClick }: { text: string; onPillClick?:
             key={i}
             type="button"
             onClick={() => onPillClick?.(word.slice(1))}
-            className="inline-flex items-center rounded-md bg-cronymax-primary/15 border border-cronymax-primary/30 px-1.5 py-0 text-[11px] font-mono text-cronymax-primary align-middle mr-0.5 cursor-pointer hover:bg-cronymax-primary/25 transition-colors"
+            className="inline-flex items-center rounded-md bg-primary/15 border border-primary/30 px-1.5 py-0 text-xs font-mono text-primary align-middle mr-0.5 cursor-pointer hover:bg-primary/25 transition-colors"
           >
             <span className="opacity-60">/</span>
             {word.slice(1)}
@@ -164,20 +171,20 @@ function fmtDuration(ms: number): string {
 function ThreadSummary({ thread, onExpand }: { thread: Thread; onExpand: () => void }) {
   const lastMsg = thread.messages.at(-1);
   return (
-    <div className="mt-2 rounded border border-cronymax-border bg-cronymax-float px-3 py-2 text-xs">
+    <div className="mt-2 rounded border border-border bg-card px-3 py-2 text-xs">
       <div className="flex items-center gap-2">
-        <span className="font-semibold capitalize text-cronymax-primary">{thread.action}</span>
-        <span className="text-cronymax-caption">
+        <span className="font-semibold capitalize text-primary">{thread.action}</span>
+        <span className="text-muted-foreground">
           {thread.messages.length} message
           {thread.messages.length !== 1 ? "s" : ""}
         </span>
-        {thread.running && <span className="text-cronymax-caption italic">running…</span>}
-        <button type="button" onClick={onExpand} className="ml-auto text-cronymax-primary hover:underline">
+        {thread.running && <span className="text-muted-foreground italic">running…</span>}
+        <button type="button" onClick={onExpand} className="ml-auto text-primary hover:underline">
           View thread ⇄
         </button>
       </div>
       {lastMsg && (
-        <div className="mt-1 truncate text-cronymax-caption">
+        <div className="mt-1 truncate text-muted-foreground">
           {lastMsg.role === "assistant" ? lastMsg.content.slice(0, 80) : ""}
         </div>
       )}
@@ -202,27 +209,24 @@ function ConversationBlockView({
   return (
     <div
       className={`py-4 space-y-2 transition-all duration-500${
-        isHighlighted ? " rounded-md ring-2 ring-cronymax-primary/40" : ""
+        isHighlighted ? " rounded-md ring-2 ring-primary/40" : ""
       }`}
       data-block-id={block.id}
     >
       {/* User message */}
-      <div className="rounded-md bg-cronymax-primary/10 px-3 py-2">
-        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cronymax-primary">You</div>
+      <div className="rounded-md bg-primary/10 px-3 py-2">
+        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-primary">You</div>
         {block.attachments.length > 0 && (
           <div className="mb-1 flex flex-wrap gap-1">
             {block.attachments.map((a) => (
-              <span
-                key={a.id}
-                className="rounded-full bg-cronymax-border px-2 py-0.5 text-[10px] text-cronymax-caption"
-              >
+              <span key={a.id} className="rounded-full bg-border px-2 py-0.5 text-xs text-muted-foreground">
                 {a.kind === "comment" ? "💬 " : a.kind === "image" ? "🖼 " : "📎 "}
                 {a.label}
               </span>
             ))}
           </div>
         )}
-        <div className="whitespace-pre-wrap break-words text-sm text-cronymax-title">
+        <div className="whitespace-pre-wrap break-words text-sm text-foreground">
           <UserMessageContent
             text={block.userContent}
             onPillClick={(label) => setActivePillLabel((prev) => (prev === label ? null : label))}
@@ -247,7 +251,7 @@ function ConversationBlockView({
       {/* Content stream — renders text, tool cards, and thinking in order */}
       {(block.contentStream.length > 0 || block.status === "running") && (
         <div className="px-1">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cronymax-caption">
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             {block.agentName || "Assistant"}
           </div>
           <ContentStreamView segments={block.contentStream} isStreaming={isStreaming} />
@@ -304,22 +308,22 @@ function ShellBlockView({
   return (
     <div
       className={`py-4 space-y-1.5 transition-all duration-500${
-        isHighlighted ? " rounded-md ring-2 ring-cronymax-primary/40" : ""
+        isHighlighted ? " rounded-md ring-2 ring-primary/40" : ""
       }`}
       data-block-id={block.id}
     >
       {/* Header — highlighted command prompt */}
-      <div className="flex items-center gap-2 rounded-md bg-cronymax-primary/10 px-3 py-1.5">
+      <div className="flex items-center gap-2 rounded-md bg-primary/10 px-3 py-1.5">
         <span className={`font-mono text-sm font-bold ${statusColor}`}>{statusGlyph}</span>
-        <span className="flex-1 font-mono text-sm text-cronymax-title">$ {block.command}</span>
+        <span className="flex-1 font-mono text-sm text-foreground">$ {block.command}</span>
         {block.exitCode !== null && block.exitCode !== 0 && (
-          <span className="text-[10px] text-red-400">exit {block.exitCode}</span>
+          <span className="text-xs text-red-400">exit {block.exitCode}</span>
         )}
-        {duration && <span className="text-[10px] text-cronymax-caption">{duration}</span>}
+        {duration && <span className="text-xs text-muted-foreground">{duration}</span>}
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
-          className="text-[10px] text-cronymax-caption hover:text-cronymax-title"
+          className="text-xs text-muted-foreground hover:text-foreground"
         >
           {collapsed ? "▶" : "▼"}
         </button>
@@ -327,7 +331,7 @@ function ShellBlockView({
 
       {/* Output */}
       {!collapsed && block.output && (
-        <pre className="max-h-80 overflow-y-auto rounded bg-cronymax-base px-3 py-1.5 font-mono text-[11px] text-cronymax-caption">
+        <pre className="max-h-80 overflow-y-auto rounded bg-background px-3 py-1.5 font-mono text-xs text-muted-foreground">
           {block.output}
         </pre>
       )}
@@ -340,7 +344,7 @@ function ShellBlockView({
               key={act}
               type="button"
               onClick={() => onAction(act.toLowerCase(), block)}
-              className="rounded border border-cronymax-border bg-cronymax-base px-2 py-0.5 text-[10px] text-cronymax-caption hover:text-cronymax-title"
+              className="rounded border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground"
             >
               {act}
             </button>
@@ -417,24 +421,24 @@ function AttachmentTray({
   const images = attachments.filter((a) => a.kind === "image");
 
   const Pill = ({ a }: { a: Attachment }) => (
-    <span className="flex items-center gap-1 rounded-full bg-cronymax-float border border-cronymax-border px-2 py-0.5 text-[10px] text-cronymax-caption">
+    <span className="flex items-center gap-1 rounded-full bg-card border border-border px-2 py-0.5 text-xs text-muted-foreground">
       {a.kind === "comment" ? "💬" : a.kind === "image" ? "🖼" : "📎"}
       <span
         className={`max-w-[100px] truncate${
-          a.kind === "comment" && onCommentClick ? " cursor-pointer hover:text-cronymax-title" : ""
+          a.kind === "comment" && onCommentClick ? " cursor-pointer hover:text-foreground" : ""
         }`}
         onClick={a.kind === "comment" && onCommentClick ? () => onCommentClick(a) : undefined}
       >
         {a.label}
       </span>
-      <button type="button" onClick={() => onRemove(a.id)} className="ml-0.5 text-cronymax-caption hover:text-red-400">
+      <button type="button" onClick={() => onRemove(a.id)} className="ml-0.5 text-muted-foreground hover:text-red-400">
         ×
       </button>
     </span>
   );
 
   return (
-    <div className="flex flex-wrap gap-1.5 border-t border-cronymax-border px-2 py-1.5">
+    <div className="flex flex-wrap gap-1.5 border-t border-border px-2 py-1.5">
       {comments.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {comments.map((a) => (
@@ -478,6 +482,8 @@ export function App() {
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   /** Model options grouped by provider name, loaded from llm.providers.get */
   const [modelGroups, setModelGroups] = useState<{ label: string; models: string[] }[]>([]);
+  /** Controls the model Combobox popover */
+  const [modelComboOpen, setModelComboOpen] = useState(false);
   /** Prompt pills attached to the current message (like VS Code slash commands). */
   const [attachedPrompts, setAttachedPrompts] = useState<{ id: string; label: string; content: string }[]>([]);
   /** ID of the pill whose PromptPopover is currently open (null = none). */
@@ -1396,7 +1402,7 @@ export function App() {
             args: {
               message: isBridgeError
                 ? "Runtime is reconnecting. Please wait for the banner to clear, then try again."
-                : "Failed to start: " + errMsg,
+                : `Failed to start: ${errMsg}`,
             },
             ts: Date.now(),
           },
@@ -1673,42 +1679,41 @@ export function App() {
   }, []);
 
   return (
-    <main className="flex h-screen flex-col bg-cronymax-base text-cronymax-title">
+    <main className="flex h-screen flex-col bg-background text-foreground">
       {/* Header */}
-      <header className="flex items-center gap-3 border-b border-cronymax-border bg-cronymax-float px-3 py-2 text-sm">
+      <header className="flex items-center gap-3 border-b border-border bg-card px-3 py-2 text-sm">
         <span className="flex-1 truncate font-semibold">{state.chatName}</span>
 
-        <label className="flex items-center gap-1 text-xs text-cronymax-caption">
+        <div className="flex items-center gap-1 text-xs text-muted-foreground">
           Flow:
-          <select
+          <Select
             value={state.selectedFlow}
-            onChange={(e) => {
-              dispatch({ type: "setSelectedFlow", name: e.target.value });
-              persistSelectedFlow(e.target.value);
+            onValueChange={(v) => {
+              dispatch({ type: "setSelectedFlow", name: v });
+              persistSelectedFlow(v);
             }}
-            className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs text-cronymax-title"
           >
-            {state.flows.length === 0 && <option value="">(no flows)</option>}
-            {state.flows.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
-        </label>
+            <SelectTrigger className="h-6 w-auto max-w-[140px] border-border bg-background text-xs">
+              <SelectValue placeholder="(no flows)" />
+            </SelectTrigger>
+            <SelectContent>
+              {state.flows.map((n) => (
+                <SelectItem key={n} value={n} className="text-xs">
+                  {n}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
-        <button
-          type="button"
-          onClick={onClear}
-          className="rounded border border-cronymax-border bg-cronymax-base px-2 py-0.5 text-xs text-cronymax-title hover:bg-cronymax-hover"
-        >
+        <Button type="button" variant="outline" size="sm" onClick={onClear} className="h-6 px-2 text-xs">
           Clear
-        </button>
+        </Button>
       </header>
 
       {/* Migration notice */}
       {state.migrationNotice && (
-        <div className="flex items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1 text-[11px] text-amber-300">
+        <div className="flex items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs text-amber-300">
           <span className="flex-1">{state.migrationNotice}</span>
           <button
             type="button"
@@ -1722,7 +1727,7 @@ export function App() {
 
       {/* Runtime reconnecting banner */}
       {state.isReconnecting && (
-        <div className="flex items-center gap-2 border-b border-blue-500/40 bg-blue-500/10 px-3 py-1 text-[11px] text-blue-300">
+        <div className="flex items-center gap-2 border-b border-blue-500/40 bg-blue-500/10 px-3 py-1 text-xs text-blue-300">
           <span className="animate-pulse">⟳</span>
           <span>Reconnecting to runtime…</span>
         </div>
@@ -1730,13 +1735,13 @@ export function App() {
 
       {/* Agent load error */}
       {agentLoadError && (
-        <div className="border-b border-red-500/40 bg-red-500/10 px-3 py-1 text-[11px] text-red-300">
+        <div className="border-b border-red-500/40 bg-red-500/10 px-3 py-1 text-xs text-red-300">
           agent.registry.list failed: {agentLoadError}
         </div>
       )}
 
       {/* Block timeline */}
-      <div ref={timelineRef} className="flex-1 overflow-y-auto divide-y divide-cronymax-border px-4 py-2">
+      <div ref={timelineRef} className="flex-1 overflow-y-auto divide-y divide-border px-4 py-2">
         {state.blocks.map((b) => (
           <BlockView
             key={b.id}
@@ -1752,7 +1757,7 @@ export function App() {
       {/* ── Floating selection tooltip ─────────────────────────────── */}
       {activeSelection && (
         <div
-          className="fixed z-50 rounded-lg border border-cronymax-border bg-cronymax-body shadow-xl"
+          className="fixed z-50 rounded-lg border border-border bg-background shadow-xl"
           style={{
             top: activeSelection.anchorRect.top - 8,
             left: activeSelection.anchorRect.left + activeSelection.anchorRect.width / 2,
@@ -1771,14 +1776,14 @@ export function App() {
           <div className="flex items-center gap-0.5 px-1.5 pt-1.5">
             <button
               type="button"
-              className="rounded px-2 py-0.5 text-[11px] text-cronymax-caption hover:text-cronymax-title hover:bg-cronymax-hover transition"
+              className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition"
               onClick={() => navigator.clipboard.writeText(activeSelection.selectedText)}
             >
               Copy
             </button>
             <button
               type="button"
-              className="rounded px-2 py-0.5 text-[11px] text-cronymax-primary hover:bg-cronymax-primary/20 transition"
+              className="rounded px-2 py-0.5 text-xs text-primary hover:bg-primary/20 transition"
               onClick={() => {
                 const commentId = crypto.randomUUID();
                 dispatch({
@@ -1801,12 +1806,12 @@ export function App() {
           </div>
           {/* Comment input */}
           <div className="px-2 pb-2 pt-1">
-            <input
+            <Input
               type="text"
               value={commentDraft}
               onChange={(e) => setCommentDraft(e.target.value)}
               placeholder="Add a comment… (Enter to pin)"
-              className="w-52 rounded border border-cronymax-border bg-cronymax-base px-2 py-1 text-[11px] text-cronymax-title placeholder:text-cronymax-caption outline-none focus:border-cronymax-primary"
+              className="h-7 w-52 text-xs"
               onFocus={() => setFrozenSelection(selectionInfo ?? frozenSelection)}
               onBlur={() => setFrozenSelection(null)}
               onKeyDown={(e) => {
@@ -1866,8 +1871,8 @@ export function App() {
         <div className="relative">
           {/* ── Slash / @ picker ──────────────────────────────────────── */}
           {picker && pickerItems.length > 0 && (
-            <div className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-lg border border-cronymax-border bg-cronymax-float shadow-lg overflow-hidden">
-              <div className="px-2 pt-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-cronymax-caption">
+            <div className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-lg border border-border bg-card shadow-lg overflow-hidden">
+              <div className="px-2 pt-1.5 pb-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 {picker.type === "slash" ? "Commands" : "Agents"}
               </div>
               {pickerItems.map((item, idx) => (
@@ -1877,8 +1882,8 @@ export function App() {
                   className={
                     "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition " +
                     (idx === pickerIdx
-                      ? "bg-cronymax-primary/20 text-cronymax-title"
-                      : "text-cronymax-caption hover:bg-cronymax-hover hover:text-cronymax-title")
+                      ? "bg-primary/20 text-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
                   }
                   onMouseEnter={() => setPickerIdx(idx)}
                   onMouseDown={(e) => {
@@ -1887,12 +1892,12 @@ export function App() {
                     commitPickerItem(item);
                   }}
                 >
-                  <span className="font-mono font-semibold text-cronymax-primary w-5 text-center shrink-0">
+                  <span className="font-mono font-semibold text-primary w-5 text-center shrink-0">
                     {picker.type === "slash" ? "/" : "@"}
                   </span>
                   <span className="font-semibold">{item.label}</span>
                   {item.description && (
-                    <span className="truncate text-cronymax-caption ml-1">— {item.description}</span>
+                    <span className="truncate text-muted-foreground ml-1">— {item.description}</span>
                   )}
                 </button>
               ))}
@@ -1902,10 +1907,10 @@ export function App() {
           {/* Editor card */}
           <div
             className={
-              "flex flex-col rounded-xl border bg-cronymax-base transition-colors " +
+              "flex flex-col rounded-xl border bg-background transition-colors " +
               (inputMode === "shell"
                 ? "border-amber-500/70 bg-amber-500/5"
-                : "border-cronymax-border focus-within:border-cronymax-primary/60")
+                : "border-border focus-within:border-primary/60")
             }
           >
             {/* Attached prompt pills (VS-Code-style slash command references) */}
@@ -1936,10 +1941,10 @@ export function App() {
                   <span
                     key={p.id}
                     className={
-                      "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-mono cursor-pointer transition " +
+                      "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs font-mono cursor-pointer transition " +
                       (activePillId === p.id
-                        ? "bg-cronymax-primary/25 border-cronymax-primary/60 text-cronymax-primary"
-                        : "bg-cronymax-primary/15 border-cronymax-primary/30 text-cronymax-primary hover:bg-cronymax-primary/25")
+                        ? "bg-primary/25 border-primary/60 text-primary"
+                        : "bg-primary/15 border-primary/30 text-primary hover:bg-primary/25")
                     }
                     onClick={() => setActivePillId((prev) => (prev === p.id ? null : p.id))}
                   >
@@ -1966,17 +1971,15 @@ export function App() {
               <div className="flex items-center gap-1.5 px-3 pt-2 pb-0">
                 <span
                   className={
-                    "rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold " +
-                    (inputMode === "shell"
-                      ? "bg-amber-500/20 text-amber-300"
-                      : "bg-cronymax-primary/20 text-cronymax-primary")
+                    "rounded px-1.5 py-0.5 text-xs font-mono font-semibold " +
+                    (inputMode === "shell" ? "bg-amber-500/20 text-amber-300" : "bg-primary/20 text-primary")
                   }
                 >
                   {inputMode === "shell" ? "$ shell" : "/ command"}
                 </span>
                 <button
                   type="button"
-                  className="text-[10px] text-cronymax-caption hover:text-cronymax-title ml-auto"
+                  className="text-xs text-muted-foreground hover:text-foreground ml-auto"
                   onClick={() => {
                     if (inputRef.current) inputRef.current.value = "";
                     setInputMode("chat");
@@ -2007,44 +2010,87 @@ export function App() {
               onChange={onInputChange}
               onInput={onTextareaInput}
               onPaste={onPaste}
-              className="w-full resize-none bg-transparent px-3 py-2.5 text-sm text-cronymax-title outline-none placeholder:text-cronymax-caption"
+              className="w-full resize-none bg-transparent px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
 
             {/* Bottom toolbar row */}
             <div className="flex items-center gap-1.5 px-2 pb-2">
               {/* Add button */}
-              <button
+              <Button
                 type="button"
+                variant="outline"
+                size="sm"
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-1 rounded-md border border-cronymax-border bg-cronymax-base px-2 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title hover:bg-cronymax-float transition"
+                className="h-7 gap-1 px-2 text-xs text-muted-foreground"
                 title="Add file / image"
               >
                 <span className="text-sm leading-none">+</span>
                 <span>Add</span>
-              </button>
+              </Button>
               <input ref={fileInputRef} type="file" className="hidden" multiple onChange={onFileChange} />
 
-              {/* Model dropdown */}
-              <select
-                value={state.model}
-                onChange={(e) => {
-                  dispatch({ type: "setModel", model: e.target.value });
-                  persistSelectedModel(e.target.value);
-                }}
-                className="rounded-md border border-cronymax-border bg-cronymax-base px-1.5 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title transition max-w-[130px] truncate"
-                title="LLM model"
-              >
-                <option value="">provider default</option>
-                {modelGroups.map((g) => (
-                  <optgroup key={g.label} label={g.label}>
-                    {g.models.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
+              {/* Model combobox */}
+              <Popover open={modelComboOpen} onOpenChange={setModelComboOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 max-w-[140px] justify-between gap-1 px-2 text-xs text-muted-foreground font-normal"
+                    title="LLM model"
+                  >
+                    <span className="truncate">{state.model || "provider default"}</span>
+                    <ChevronsUpDown size={10} className="shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="p-0 w-[220px]" align="start" side="top">
+                  <Command>
+                    <CommandInput placeholder="Search models…" className="h-7 text-xs" />
+                    <CommandList>
+                      <CommandEmpty className="text-xs">No models.</CommandEmpty>
+                      <CommandGroup>
+                        <CommandItem
+                          value=""
+                          onSelect={() => {
+                            dispatch({ type: "setModel", model: "" });
+                            persistSelectedModel("");
+                            setModelComboOpen(false);
+                          }}
+                          className="text-xs"
+                        >
+                          <Check
+                            size={10}
+                            className={cn("mr-2 shrink-0", !state.model ? "opacity-100" : "opacity-0")}
+                          />
+                          <span className="text-muted-foreground italic">provider default</span>
+                        </CommandItem>
+                      </CommandGroup>
+                      {modelGroups.map((g) => (
+                        <CommandGroup key={g.label} heading={g.label}>
+                          {g.models.map((m) => (
+                            <CommandItem
+                              key={m}
+                              value={m}
+                              onSelect={(v) => {
+                                dispatch({ type: "setModel", model: v });
+                                persistSelectedModel(v);
+                                setModelComboOpen(false);
+                              }}
+                              className="text-xs"
+                            >
+                              <Check
+                                size={10}
+                                className={cn("mr-2 shrink-0", m === state.model ? "opacity-100" : "opacity-0")}
+                              />
+                              <span className="font-mono truncate">{m}</span>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      ))}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
 
               <div className="flex-1" />
 
@@ -2052,7 +2098,7 @@ export function App() {
               <button
                 type="submit"
                 disabled={state.running || state.isReconnecting}
-                className="flex items-center justify-center rounded-md bg-cronymax-primary w-7 h-7 text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex items-center justify-center rounded-md bg-primary w-7 h-7 text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 title="Send (Enter)"
               >
                 {state.running ? (

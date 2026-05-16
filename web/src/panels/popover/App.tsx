@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/button";
 import { browser, shells } from "@/shells/bridge";
 
 export function App() {
@@ -28,9 +29,7 @@ export function App() {
   }
 
   return (
-    // Toolbar background uses the theme float surface so it matches the
-    // rounded card below it regardless of light/dark mode.
-    <div className="flex h-full w-full items-center gap-1 px-2" style={{ background: "var(--color-cronymax-float)" }}>
+    <div className="flex h-full w-full items-center gap-1 bg-card px-2">
       {/* URL input — no standalone background; blends into the toolbar */}
       <input
         ref={inputRef}
@@ -40,46 +39,28 @@ export function App() {
         onKeyDown={handleKeyDown}
         onFocus={(e) => e.currentTarget.select()}
         spellCheck={false}
-        className="min-w-0 flex-1 rounded px-2 py-1 text-xs outline-none"
-        style={{
-          background: "transparent",
-          color: "var(--color-cronymax-title)",
-          border: "none",
-        }}
+        className="min-w-0 flex-1 rounded bg-transparent px-2 py-1 text-xs text-foreground outline-none"
       />
 
       {/* Action buttons — 32×32 hit area, rounded hover highlight */}
       {(
         [
-          { icon: "refresh", event: "browser.shell.popover_refresh", title: "Reload" },
-          {
-            icon: "link-external",
-            event: "browser.shell.popover_open_as_tab",
-            title: "Open as tab",
-          },
-          { icon: "close", event: "browser.shell.popover_close", title: "Close" },
+          ["refresh", "browser.shell.popover_refresh", "Reload"],
+          ["link-external", "browser.shell.popover_open_as_tab", "Open as tab"],
+          ["close", "browser.shell.popover_close", "Close"],
         ] as const
-      ).map(({ icon, event, title }) => (
-        <button
+      ).map(([icon, event, title]) => (
+        <Button
           key={event}
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 shrink-0 text-muted-foreground"
           onClick={() => browser.send(event, {})}
           title={title}
           aria-label={title}
-          className="
-            shrink-0 flex h-8 w-8 items-center justify-center rounded
-            transition-colors duration-100
-            hover:bg-[color:var(--color-cronymax-hover)]
-            active:bg-[color:var(--color-cronymax-pressed)]
-          "
-          style={{
-            color: "var(--color-cronymax-caption)",
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-          }}
         >
           <Icon name={icon} />
-        </button>
+        </Button>
       ))}
     </div>
   );

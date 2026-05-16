@@ -21,6 +21,10 @@ import {
   useState,
 } from "react";
 import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { agentRegistry, docType, flow, flowRun } from "@/shells/runtime";
 import {
   type FlowSpec,
@@ -49,7 +53,7 @@ const NODE_W = 200;
 const NODE_H = 72;
 
 /** Uniform node style — all agents look the same regardless of role. */
-const NODE_BG_CLS = "bg-cronymax-primary/15 border-cronymax-primary/40";
+const NODE_BG_CLS = "bg-primary/15 border-primary/40";
 
 // ── edge routing helpers ─────────────────────────────────────────────────
 /**
@@ -164,34 +168,35 @@ function CheckboxDropdown({
 
   return (
     <div ref={ref} className="relative">
-      <button
+      <Button
         type="button"
+        variant="outline"
+        size="sm"
         onClick={() => setOpen((v) => !v)}
         className={
-          "flex w-full items-center justify-between rounded border px-2 py-1 text-xs " +
-          (selected.length > 0
-            ? "border-cronymax-primary/60 bg-cronymax-primary/10 text-cronymax-title"
-            : "border-cronymax-border bg-cronymax-base text-cronymax-caption hover:text-cronymax-title")
+          "flex h-7 w-full items-center justify-between px-2 text-xs font-normal " +
+          (selected.length > 0 ? "border-primary/60 bg-primary/10" : "")
         }
       >
         <span className="truncate">{displayText}</span>
         <Icon name={open ? "chevron-up" : "chevron-down"} size={10} aria-hidden="true" />
-      </button>
+      </Button>
       {open && options.length > 0 && (
-        <div className="absolute right-0 z-20 mt-0.5 min-w-[160px] rounded border border-cronymax-border bg-cronymax-float p-1 shadow-lg">
+        <div className="absolute right-0 z-20 mt-0.5 min-w-[160px] rounded border border-border bg-card p-1 shadow-lg">
           {options.map((opt) => (
-            <label
+            <div
               key={opt.value}
-              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-cronymax-base"
+              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-accent"
+              onClick={() => onToggle(opt.value)}
             >
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={selected.includes(opt.value)}
-                onChange={() => onToggle(opt.value)}
-                className="shrink-0"
+                className="pointer-events-none shrink-0"
+                tabIndex={-1}
+                aria-hidden="true"
               />
               <span>{opt.label}</span>
-            </label>
+            </div>
           ))}
         </div>
       )}
@@ -202,14 +207,13 @@ function CheckboxDropdown({
 function FieldGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-3">
-      <div className="mb-1 text-[11px] uppercase tracking-wide text-cronymax-caption">{label}</div>
+      <div className="mb-1 text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
       {children}
     </div>
   );
 }
 
-const INPUT_CLS =
-  "w-full rounded border border-cronymax-border bg-cronymax-base px-2 py-1 text-xs text-cronymax-title outline-none focus:border-cronymax-primary";
+const INPUT_CLS = "h-7 w-full text-xs";
 
 export function Flows() {
   // The graph panel exposes its own Provider so its store stays isolated
@@ -530,67 +534,85 @@ export function FlowEditor() {
   }, [dispatch]);
 
   // ── render ──────────────────────────────────────────────────────────────
-  const btnCls =
-    "rounded border border-cronymax-border bg-cronymax-base px-2 py-1 text-xs text-cronymax-title hover:bg-cronymax-float";
-  const btnDangerCls =
-    "rounded border border-red-500/50 bg-red-500/10 px-2 py-1 text-xs text-red-300 hover:bg-red-500/20";
-
   return (
-    <main className="flex h-full flex-col bg-cronymax-base text-cronymax-title">
+    <main className="flex h-full flex-col bg-background text-foreground">
       {/* Toolbar */}
-      <header className="flex flex-wrap items-center gap-2 border-b border-cronymax-border bg-cronymax-float px-3 py-2 text-xs">
+      <header className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-3 py-2 text-xs">
         <span className="font-semibold">Flow</span>
-        <select
-          value={state.activeFlowName}
-          onChange={(e) => onSelectFlow(e.target.value)}
-          className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs"
-          title="Switch flow"
+        <Select
+          value={state.activeFlowName || "__empty__"}
+          onValueChange={(v) => onSelectFlow(v === "__empty__" ? "" : v)}
         >
-          {state.flowNames.length === 0 ? (
-            <option value="">(no saved flows)</option>
-          ) : (
-            state.flowNames.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))
-          )}
-        </select>
-        <input
+          <SelectTrigger className="h-6 w-[140px] text-xs" title="Switch flow">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {state.flowNames.length === 0 ? (
+              <SelectItem value="__empty__" className="text-xs">
+                (no saved flows)
+              </SelectItem>
+            ) : (
+              state.flowNames.map((n) => (
+                <SelectItem key={n} value={n} className="text-xs">
+                  {n}
+                </SelectItem>
+              ))
+            )}
+          </SelectContent>
+        </Select>
+        <Input
           type="text"
           value={state.flowNameInput}
           onChange={(e) => dispatch({ type: "setFlowNameInput", value: e.target.value })}
           placeholder="flow name"
-          className="rounded border border-cronymax-border bg-cronymax-base px-1.5 py-0.5 text-xs outline-none focus:border-cronymax-primary"
+          className="h-6 w-[120px] text-xs"
         />
         <div className="ml-auto flex items-center gap-1.5">
-          <button type="button" onClick={() => setAgentPickerOpen(true)} className={btnCls} title="Add a node">
-            + Node
-          </button>
-          <span className="mx-1 h-4 w-px bg-cronymax-border" />
-          <button type="button" onClick={onSaveFlow} className={`${btnCls} inline-flex items-center gap-1`}>
-            <Icon name="save" size={12} aria-hidden="true" /> Save
-          </button>
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => setAgentPickerOpen(true)}
+            title="Add a node"
+          >
+            + Node
+          </Button>
+          <span className="mx-1 h-4 w-px bg-border" />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 inline-flex items-center gap-1 text-xs"
+            onClick={onSaveFlow}
+          >
+            <Icon name="save" size={12} aria-hidden="true" /> Save
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
             onClick={onDeleteFlow}
-            className={`${btnCls} inline-flex items-center gap-1`}
             title="Delete this flow"
             aria-label="Delete this flow"
           >
             <Icon name="trash" size={12} aria-hidden="true" />
-          </button>
-          <button type="button" onClick={onClear} className={btnDangerCls}>
+          </Button>
+          <Button type="button" variant="destructive" size="sm" className="h-7 text-xs" onClick={onClear}>
             Clear
-          </button>
-          <span className="mx-1 h-4 w-px bg-cronymax-border" />
+          </Button>
+          <span className="mx-1 h-4 w-px bg-border" />
           {activeRunId && (
             <>
-              <span className="text-cronymax-description">
-                run: <code className="font-mono text-[10px]">{activeRunId.slice(0, 8)}…</code>
+              <span className="text-muted-foreground">
+                run: <code className="font-mono text-xs">{activeRunId.slice(0, 8)}…</code>
               </span>
-              <button
+              <Button
                 type="button"
+                variant="destructive"
+                size="sm"
+                className="h-7 inline-flex items-center gap-1 text-xs"
                 onClick={async () => {
                   try {
                     await flowRun.cancel(activeRunId);
@@ -600,10 +622,9 @@ export function FlowEditor() {
                   setActiveRunId(null);
                   dispatch({ type: "setRunning", running: false });
                 }}
-                className={`${btnDangerCls} inline-flex items-center gap-1`}
               >
                 Cancel
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -613,7 +634,7 @@ export function FlowEditor() {
       <div className="flex flex-1 overflow-hidden">
         {/* Canvas */}
         <div
-          className="relative flex-1 overflow-auto bg-cronymax-base"
+          className="relative flex-1 overflow-auto bg-background"
           onClick={(e) => {
             if (e.target === e.currentTarget) {
               dispatch({ type: "select", id: null });
@@ -725,7 +746,7 @@ export function FlowEditor() {
                 minHeight: NODE_H,
               };
               const ring = isSelected
-                ? "ring-2 ring-cronymax-primary"
+                ? "ring-2 ring-primary"
                 : isRunning
                   ? "ring-2 ring-yellow-400 animate-pulse"
                   : isDone
@@ -745,33 +766,35 @@ export function FlowEditor() {
                   }
                 >
                   <div className="mb-1 flex items-center gap-1.5">
-                    <span className="rounded bg-black/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide">Agent</span>
+                    <span className="rounded bg-black/30 px-1.5 py-0.5 text-xs uppercase tracking-wide">Agent</span>
                     {isLead && (
                       <span
                         title="Lead agent: handles unaddressed messages and cannot be deleted."
-                        className="rounded bg-cronymax-primary/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-cronymax-primary"
+                        className="rounded bg-primary/30 px-1.5 py-0.5 text-xs uppercase tracking-wide text-primary"
                       >
                         Lead
                       </span>
                     )}
                     <span className="flex-1 truncate font-medium">{n.name}</span>
                     {!isLead && (
-                      <button
+                      <Button
                         type="button"
+                        variant="ghost"
+                        size="icon"
                         data-role="delete"
                         onClick={(e) => {
                           e.stopPropagation();
                           dispatch({ type: "deleteNode", id: n.id });
                         }}
-                        className="text-cronymax-caption hover:text-red-300"
+                        className="h-5 w-5 text-muted-foreground hover:text-destructive"
                         title="Delete"
                         aria-label="Delete"
                       >
                         <Icon name="close" size={12} aria-hidden="true" />
-                      </button>
+                      </Button>
                     )}
                   </div>
-                  <code className="block truncate text-[11px] text-cronymax-caption">
+                  <code className="block truncate text-xs text-muted-foreground">
                     {previewLine(n) || "no doc-type set"}
                   </code>
                 </div>
@@ -834,44 +857,47 @@ export function FlowEditor() {
             }}
           />
         ) : (
-          <div className="flex h-full w-7 shrink-0 flex-col items-center border-l border-cronymax-border bg-cronymax-float">
-            <button
+          <div className="flex h-full w-7 shrink-0 flex-col items-center border-l border-border bg-card">
+            <Button
               type="button"
+              variant="ghost"
+              size="icon"
               onClick={() => setInspectorOpen(true)}
-              className="mt-2 rounded p-1 text-cronymax-caption hover:text-cronymax-title"
+              className="mt-2 h-6 w-6"
               title="Expand inspector"
               aria-label="Expand inspector"
             >
               <Icon name="chevron-left" size={12} aria-hidden="true" />
-            </button>
+            </Button>
           </div>
         )}
       </div>
 
       {/* Trace bar */}
-      <section
-        className={`border-t border-cronymax-border bg-cronymax-float transition-all ${traceOpen ? "h-40" : "h-7"}`}
-      >
-        <div className="flex items-center justify-between border-b border-cronymax-border px-3 py-1 text-xs">
-          <button
+      <section className={`border-t border-border bg-card transition-all ${traceOpen ? "h-40" : "h-7"}`}>
+        <div className="flex items-center justify-between border-b border-border px-3 py-1 text-xs">
+          <Button
             type="button"
+            variant="ghost"
             onClick={() => setTraceOpen((v) => !v)}
-            className="text-cronymax-caption hover:text-cronymax-title"
+            className="h-6 px-0 text-xs text-muted-foreground hover:text-foreground"
           >
             Trace {traceOpen ? "▾" : "▸"}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
             onClick={() => dispatch({ type: "clearTrace" })}
-            className="text-cronymax-caption hover:text-cronymax-title"
+            className="h-6 text-xs text-muted-foreground hover:text-foreground"
           >
             Clear
-          </button>
+          </Button>
         </div>
         {traceOpen && (
           <pre
             ref={traceLogRef}
-            className="h-[calc(100%-1.75rem)] overflow-auto whitespace-pre-wrap break-words p-2 font-mono text-[11px] text-cronymax-caption"
+            className="h-[calc(100%-1.75rem)] overflow-auto whitespace-pre-wrap break-words p-2 font-mono text-xs text-muted-foreground"
           >
             {state.trace}
           </pre>
@@ -927,22 +953,24 @@ function Inspector({
 
   if (!node) {
     return (
-      <aside className="flex h-full w-[320px] flex-col border-l border-cronymax-border bg-cronymax-float">
-        <div className="flex items-center justify-between border-b border-cronymax-border px-3 py-2 text-sm">
+      <aside className="flex h-full w-[320px] flex-col border-l border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm">
           <span>Inspector</span>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={onToggleCollapse}
-            className="text-cronymax-caption hover:text-cronymax-title"
+            className="h-6 w-6 text-muted-foreground"
             aria-label="Collapse inspector"
           >
             <Icon name="chevron-right" size={12} aria-hidden="true" />
-          </button>
+          </Button>
         </div>
-        <p className="px-3 py-2 text-xs text-cronymax-caption">
+        <p className="px-3 py-2 text-xs text-muted-foreground">
           Click a node to edit the Agent it represents and its produced documents (each with its own reviewer list).
         </p>
-        <p className="px-3 py-2 text-xs text-cronymax-caption">
+        <p className="px-3 py-2 text-xs text-muted-foreground">
           Click an edge label to set the doc-type carried over the edge or require human approval.
         </p>
       </aside>
@@ -996,85 +1024,102 @@ function Inspector({
   }
 
   return (
-    <aside className="flex h-full w-[320px] flex-col border-l border-cronymax-border bg-cronymax-float">
-      <div className="flex items-center justify-between border-b border-cronymax-border px-3 py-2 text-sm">
+    <aside className="flex h-full w-[320px] flex-col border-l border-border bg-card">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm">
         <span className="truncate">Agent: {node.name}</span>
         <div className="flex items-center gap-1">
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={onToggleCollapse}
-            className="text-cronymax-caption hover:text-cronymax-title"
+            className="h-6 w-6 text-muted-foreground"
             aria-label="Collapse inspector"
           >
             <Icon name="chevron-right" size={12} aria-hidden="true" />
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={onClose}
-            className="text-cronymax-caption hover:text-cronymax-title"
+            className="h-6 w-6 text-muted-foreground"
             aria-label="Close"
           >
             <Icon name="close" size={12} aria-hidden="true" />
-          </button>
+          </Button>
         </div>
       </div>
       <div className="flex-1 overflow-auto px-3 py-2">
         <FieldGroup label="Display Label">
-          <input className={INPUT_CLS} value={node.name} onChange={(e) => onChangeName(e.target.value)} />
+          <Input className={INPUT_CLS} value={node.name} onChange={(e) => onChangeName(e.target.value)} />
         </FieldGroup>
 
         <FieldGroup label="Agent">
-          <select
-            className={INPUT_CLS}
-            value={cfg.agent_name ?? ""}
-            onChange={(e) => {
-              const name = e.target.value;
-              onChangeConfig("agent_name", name);
-            }}
+          <Select
+            value={cfg.agent_name || "__none__"}
+            onValueChange={(v) => onChangeConfig("agent_name", v === "__none__" ? "" : v)}
           >
-            <option value="">(choose an agent)</option>
-            {state.agentCatalog.map((a) => (
-              <option key={a.name} value={a.name}>
-                {a.name}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="h-7 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__" className="text-xs">
+                (choose an agent)
+              </SelectItem>
+              {state.agentCatalog.map((a) => (
+                <SelectItem key={a.name} value={a.name} className="text-xs">
+                  {a.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </FieldGroup>
 
         <FieldGroup label="Produces">
           <div className="flex flex-col gap-2">
             {produces.map((entry, idx) => (
-              <div key={idx} className="rounded border border-cronymax-border/60 bg-cronymax-base p-2">
+              <div key={idx} className="rounded border border-border/60 bg-background p-2">
                 {/* Doc-type row */}
                 <div className="mb-1.5 flex items-center gap-1">
-                  <select
-                    className={`${INPUT_CLS} flex-1`}
-                    value={entry.doc_type}
-                    onChange={(e) => updateEntry(idx, { doc_type: e.target.value })}
+                  <Select
+                    value={entry.doc_type || "__none__"}
+                    onValueChange={(v) => updateEntry(idx, { doc_type: v === "__none__" ? "" : v })}
                   >
-                    <option value="">(choose doc-type)</option>
-                    {entry.doc_type && !state.docTypeCatalog.find((d) => d.name === entry.doc_type) && (
-                      <option value={entry.doc_type}>{entry.doc_type}</option>
-                    )}
-                    {state.docTypeCatalog.map((d) => (
-                      <option key={d.name} value={d.name}>
-                        {d.display_name} ({d.name})
-                      </option>
-                    ))}
-                  </select>
-                  <button
+                    <SelectTrigger className="h-7 flex-1 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__" className="text-xs">
+                        (choose doc-type)
+                      </SelectItem>
+                      {entry.doc_type && !state.docTypeCatalog.find((d) => d.name === entry.doc_type) && (
+                        <SelectItem value={entry.doc_type} className="text-xs">
+                          {entry.doc_type}
+                        </SelectItem>
+                      )}
+                      {state.docTypeCatalog.map((d) => (
+                        <SelectItem key={d.name} value={d.name} className="text-xs">
+                          {d.display_name} ({d.name})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="icon"
                     onClick={() => removeEntry(idx)}
-                    className="shrink-0 text-cronymax-caption hover:text-red-300"
+                    className="h-5 w-5 shrink-0 text-muted-foreground hover:text-destructive"
                     aria-label="Remove"
                   >
                     <Icon name="close" size={11} aria-hidden="true" />
-                  </button>
+                  </Button>
                 </div>
                 {/* Per-entry reviewers */}
                 {state.agentCatalog.length > 0 && (
                   <>
-                    <div className="mb-0.5 text-[10px] uppercase tracking-wide text-cronymax-caption">Reviewers</div>
+                    <div className="mb-0.5 text-xs uppercase tracking-wide text-muted-foreground">Reviewers</div>
                     <CheckboxDropdown
                       label="(no reviewers)"
                       options={state.agentCatalog.map((a) => ({
@@ -1091,19 +1136,21 @@ function Inspector({
                 )}
               </div>
             ))}
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="sm"
               onClick={addEntry}
-              className="rounded border border-dashed border-cronymax-border/60 py-1 text-[11px] text-cronymax-caption hover:border-cronymax-primary hover:text-cronymax-primary"
+              className="w-full border-dashed text-xs text-muted-foreground hover:border-primary hover:text-primary"
             >
               + Add Document
-            </button>
+            </Button>
           </div>
         </FieldGroup>
 
         {produces.length > 1 && state.agentCatalog.length > 0 && (
           <FieldGroup label="Batch Reviewers">
-            <p className="mb-1.5 text-[11px] text-cronymax-caption">Toggle a reviewer across all documents at once:</p>
+            <p className="mb-1.5 text-xs text-muted-foreground">Toggle a reviewer across all documents at once:</p>
             <div className="flex flex-wrap gap-2">
               {state.agentCatalog.map((a) => {
                 const allHave =
@@ -1121,34 +1168,35 @@ function Inspector({
                     .includes(a.name),
                 );
                 return (
-                  <label
+                  <Button
                     key={a.name}
+                    type="button"
+                    variant="ghost"
+                    onClick={() => batchToggleReviewer(a.name, !allHave)}
                     className={
-                      "flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[11px] " +
+                      "h-auto flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-xs font-normal " +
                       (allHave
-                        ? "bg-cronymax-primary/20 text-cronymax-title"
+                        ? "bg-primary/20 text-foreground"
                         : someHave
-                          ? "bg-cronymax-primary/10 text-cronymax-caption"
-                          : "bg-cronymax-base text-cronymax-caption hover:text-cronymax-title")
+                          ? "bg-primary/10 text-muted-foreground"
+                          : "text-muted-foreground hover:text-foreground")
                     }
                   >
-                    <input
-                      type="checkbox"
-                      checked={allHave}
-                      ref={(el) => {
-                        if (el) el.indeterminate = someHave && !allHave;
-                      }}
-                      onChange={(e) => batchToggleReviewer(a.name, e.target.checked)}
+                    <Checkbox
+                      checked={allHave ? true : someHave ? "indeterminate" : false}
+                      className="pointer-events-none shrink-0"
+                      tabIndex={-1}
+                      aria-hidden="true"
                     />
                     <span>{a.name}</span>
-                  </label>
+                  </Button>
                 );
               })}
             </div>
           </FieldGroup>
         )}
 
-        <div className="mt-4 text-[11px] text-cronymax-caption">Node #{node.id}</div>
+        <div className="mt-4 text-xs text-muted-foreground">Node #{node.id}</div>
       </div>
     </aside>
   );
@@ -1172,26 +1220,30 @@ function EdgeInspector({
   const from = state.nodes.find((n) => n.id === edge.from_id);
   const to = state.nodes.find((n) => n.id === edge.to_id);
   return (
-    <aside className="flex h-full w-[320px] flex-col border-l border-cronymax-border bg-cronymax-float">
-      <div className="flex items-center justify-between border-b border-cronymax-border px-3 py-2 text-sm">
+    <aside className="flex h-full w-[320px] flex-col border-l border-border bg-card">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2 text-sm">
         <span className="truncate">Edge</span>
         <div className="flex items-center gap-1">
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={onToggleCollapse}
-            className="text-cronymax-caption hover:text-cronymax-title"
+            className="h-6 w-6 text-muted-foreground"
             aria-label="Collapse inspector"
           >
             <Icon name="chevron-right" size={12} aria-hidden="true" />
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={onClose}
-            className="text-cronymax-caption hover:text-cronymax-title"
+            className="h-6 w-6 text-muted-foreground"
             aria-label="Close"
           >
             <Icon name="close" size={12} aria-hidden="true" />
-          </button>
+          </Button>
         </div>
       </div>
       <div className="flex-1 overflow-auto px-3 py-2">
@@ -1202,41 +1254,47 @@ function EdgeInspector({
         </FieldGroup>
 
         <FieldGroup label="Doc-type carried (port)">
-          <select
-            className={INPUT_CLS}
-            value={edge.port ?? ""}
-            onChange={(e) => onChangeEdge({ port: e.target.value })}
+          <Select
+            value={edge.port || "__none__"}
+            onValueChange={(v) => onChangeEdge({ port: v === "__none__" ? "" : v })}
           >
-            <option value="">(no document)</option>
-            {edge.port && !state.docTypeCatalog.find((d) => d.name === edge.port) && (
-              <option value={edge.port}>{edge.port}</option>
-            )}
-            {state.docTypeCatalog.map((d) => (
-              <option key={d.name} value={d.name}>
-                {d.display_name} ({d.name})
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="h-7 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__" className="text-xs">
+                (no document)
+              </SelectItem>
+              {edge.port && !state.docTypeCatalog.find((d) => d.name === edge.port) && (
+                <SelectItem value={edge.port} className="text-xs">
+                  {edge.port}
+                </SelectItem>
+              )}
+              {state.docTypeCatalog.map((d) => (
+                <SelectItem key={d.name} value={d.name} className="text-xs">
+                  {d.display_name} ({d.name})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </FieldGroup>
 
         <FieldGroup label="Approval">
-          <label className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
+          <div className="flex items-center gap-2 text-xs">
+            <Checkbox
+              id="edge-requires-approval"
               checked={!!edge.requires_human_approval}
-              onChange={(e) => onChangeEdge({ requires_human_approval: e.target.checked })}
+              onCheckedChange={(checked) => onChangeEdge({ requires_human_approval: checked === true })}
             />
-            <span>Require human approval before transition</span>
-          </label>
+            <label htmlFor="edge-requires-approval" className="cursor-pointer">
+              Require human approval before transition
+            </label>
+          </div>
         </FieldGroup>
 
-        <button
-          type="button"
-          onClick={onDelete}
-          className="mt-4 rounded border border-red-500/50 bg-red-500/10 px-2 py-1 text-xs text-red-300 hover:bg-red-500/20"
-        >
+        <Button type="button" variant="destructive" size="sm" className="mt-4" onClick={onDelete}>
           Delete edge
-        </button>
+        </Button>
       </div>
     </aside>
   );
@@ -1255,36 +1313,39 @@ function AgentPicker({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
       <div
-        className="w-[420px] max-h-[70vh] overflow-auto rounded-md border border-cronymax-border bg-cronymax-float p-3 shadow-xl"
+        className="w-[420px] max-h-[70vh] overflow-auto rounded-md border border-border bg-card p-3 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-semibold">Add Agent</span>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon"
             onClick={onClose}
-            className="text-cronymax-caption hover:text-cronymax-title"
+            className="h-6 w-6 text-muted-foreground"
             aria-label="Close"
           >
             <Icon name="close" size={12} aria-hidden="true" />
-          </button>
+          </Button>
         </div>
         {agents.length === 0 ? (
-          <p className="text-xs text-cronymax-caption">
+          <p className="text-xs text-muted-foreground">
             No agents registered. Define agents under your workspace’s <code>agents/</code> directory and reload.
           </p>
         ) : (
           <ul className="flex flex-col gap-1">
             {agents.map((a) => (
               <li key={a.name}>
-                <button
+                <Button
                   type="button"
+                  variant="outline"
                   onClick={() => onPick(a.name)}
-                  className="flex w-full items-center justify-between rounded border border-cronymax-border bg-cronymax-base px-2 py-1.5 text-left text-xs hover:bg-cronymax-float"
+                  className="flex h-auto w-full items-center justify-between px-2 py-1.5 text-left text-xs font-normal"
                 >
                   <span className="font-medium">{a.name}</span>
-                  <span className="text-[10px] text-cronymax-caption">{a.llm}</span>
-                </button>
+                  <span className="text-xs text-muted-foreground">{a.llm}</span>
+                </Button>
               </li>
             ))}
           </ul>

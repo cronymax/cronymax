@@ -108,8 +108,8 @@ function SubRunRow({ run }: { run: SubRunEntry }) {
 
   return (
     <div className="flex items-center gap-2 px-3 py-0.5">
-      <span className="truncate text-[11px] text-cronymax-title font-mono w-28">{label}</span>
-      <span className={`text-[10px] ${statusColor}`}>{run.status}</span>
+      <span className="truncate text-xs text-cronymax-title font-mono w-28">{label}</span>
+      <span className={`text-xs ${statusColor}`}>{run.status}</span>
     </div>
   );
 }
@@ -239,11 +239,11 @@ export function FlowInstancesBar({ sessionId }: Props) {
             onClick={() => setExpandedId((prev) => (prev === run.flow_run_id ? null : run.flow_run_id))}
           >
             <StatusIcon status={run.status} />
-            <span className="text-[11px] font-mono text-cronymax-caption">{run.flow_run_id.slice(0, 8)}</span>
-            <span className="text-[11px] text-cronymax-caption">#{run.index}</span>
+            <span className="text-xs font-mono text-cronymax-caption">{run.flow_run_id.slice(0, 8)}</span>
+            <span className="text-xs text-cronymax-caption">#{run.index}</span>
             <span
               className={
-                "ml-auto text-[10px] " +
+                "ml-auto text-xs " +
                 (run.status === "human_review_pending"
                   ? "text-amber-400 font-semibold"
                   : run.status === "completed"
