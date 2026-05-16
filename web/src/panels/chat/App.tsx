@@ -4,7 +4,6 @@ import {
   type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -19,22 +18,29 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { cn } from "@/lib/utils";
 import { browser, shells } from "@/shells/bridge";
+import { listProviderModels } from "@/shells/llm";
 import { agentRegistry, agentRun, b64ToUtf8, terminal as rt_terminal } from "@/shells/runtime";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
 import { ContentStreamView } from "./ContentStreamView";
 import { PromptPopover } from "./PromptPopover";
 import {
+  type AnthropicEffort,
   type Attachment,
   type Block,
   type ConversationBlock,
   chatNameFor,
   ensureChat,
+  loadAnthropicEffort,
   loadChatData,
   loadFlowsList,
+  loadReasoningEffort,
   loadSelectedModel,
+  persistAnthropicEffort,
   persistChatData,
+  persistReasoningEffort,
   persistSelectedFlow,
   persistSelectedModel,
+  type ReasoningEffort,
   type ShellBlock,
   type Thread,
   useStore,
@@ -474,14 +480,39 @@ export function App() {
   const [agentLoadError, setAgentLoadError] = useState<string | null>(null);
   const [inputMode, setInputMode] = useState<"chat" | "shell" | "command">("chat");
   const [commentDraft, setCommentDraft] = useState("");
+  /** Per-chat reasoning_effort override. "" = use agent/provider default. */
+  const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(() => loadReasoningEffort());
+  const reasoningEffortRef = useRef(reasoningEffort);
+  reasoningEffortRef.current = reasoningEffort;
+  /** Per-chat Anthropic adaptive-effort override. "" = use server default. */
+  const [anthropicEffort, setAnthropicEffortState] = useState<AnthropicEffort>(() => loadAnthropicEffort());
+  const anthropicEffortRef = useRef(anthropicEffort);
+  anthropicEffortRef.current = anthropicEffort;
 
   // ── slash / @ picker state ─────────────────────────────────────────────
   const [picker, setPicker] = useState<PickerState | null>(null);
   const [pickerIdx, setPickerIdx] = useState(0);
   const [workspacePrompts, setWorkspacePrompts] = useState<PickerItem[]>([]);
   const [workspaceRoot, setWorkspaceRoot] = useState("");
-  /** Model options grouped by provider name, loaded from llm.providers.get */
-  const [modelGroups, setModelGroups] = useState<{ label: string; models: string[] }[]>([]);
+  /** Model options grouped by provider name, loaded from llm.providers.get.
+   * Carries each group's provider config so picking a model from a non-active
+   * group can override the request's base_url / api_key / kind for that run. */
+  const [modelGroups, setModelGroups] = useState<
+    {
+      label: string;
+      id: string;
+      kind: string;
+      base_url: string;
+      api_key: string;
+      models: string[];
+    }[]
+  >([]);
+  /** ID + kind of the currently-active provider — used as the fallback when
+   * `state.model` is empty (provider default) or doesn't match any known
+   * model entry, and to detect when the picked model belongs to a non-active
+   * group (triggering per-run provider override). */
+  const [activeProviderId, setActiveProviderId] = useState<string>("");
+  const [activeProviderKind, setActiveProviderKind] = useState<string>("");
   /** Controls the model Combobox popover */
   const [modelComboOpen, setModelComboOpen] = useState(false);
   /** Prompt pills attached to the current message (like VS Code slash commands). */
@@ -517,7 +548,7 @@ export function App() {
     // Load model list from configured providers
     shells.browser.llm.providers
       .get()
-      .then(async ({ raw }) => {
+      .then(async ({ raw, active_id }) => {
         if (!raw) return;
         interface StoredProvider {
           id: string;
@@ -527,48 +558,38 @@ export function App() {
           api_key: string;
           default_model: string;
         }
-        const COPILOT_FALLBACK = ["gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet", "o3-mini"];
         const providers: StoredProvider[] = JSON.parse(raw);
-        const groups: { label: string; models: string[] }[] = [];
+        const active = providers.find((p) => p.id === active_id);
+        if (active) {
+          setActiveProviderId(active.id);
+          setActiveProviderKind(active.kind);
+        }
+        const groups: {
+          label: string;
+          id: string;
+          kind: string;
+          base_url: string;
+          api_key: string;
+          models: string[];
+        }[] = [];
         for (const p of providers) {
           if (!p.base_url) continue;
           let models: string[] = [];
           try {
-            if (p.kind === "anthropic") {
-              models = ["claude-opus-4-5", "claude-sonnet-4-5", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"];
-            } else if (p.kind === "ollama") {
-              const base = p.base_url.replace(/\/v1\/?$/, "");
-              const r = await fetch(`${base}/api/tags`, {
-                signal: AbortSignal.timeout(4000),
-              });
-              if (r.ok) {
-                const d = (await r.json()) as { models?: { name: string }[] };
-                models = (d.models ?? []).map((m) => m.name).sort();
-              }
-            } else {
-              // openai-compat / github_copilot / custom — try GET /models
-              const headers: Record<string, string> = {
-                Accept: "application/json",
-              };
-              if (p.api_key) headers.Authorization = `Bearer ${p.api_key}`;
-              const url = `${p.base_url.replace(/\/?$/, "")}/models`;
-              const r = await fetch(url, {
-                headers,
-                signal: AbortSignal.timeout(5000),
-              });
-              if (r.ok) {
-                const d = (await r.json()) as { data?: { id: string }[] };
-                models = (d.data ?? []).map((m) => m.id).sort();
-              }
-              if (models.length === 0 && p.kind === "github_copilot") {
-                models = COPILOT_FALLBACK;
-              }
-            }
+            models = await listProviderModels(p);
           } catch {
-            if (p.kind === "github_copilot") models = COPILOT_FALLBACK;
+            /* keep models empty; fall through to default_model below */
           }
           if (models.length === 0 && p.default_model) models = [p.default_model];
-          if (models.length > 0) groups.push({ label: p.name || p.kind, models });
+          if (models.length > 0)
+            groups.push({
+              label: p.name || p.kind,
+              id: p.id,
+              kind: p.kind,
+              base_url: p.base_url,
+              api_key: p.api_key,
+              models,
+            });
         }
         setModelGroups(groups);
       })
@@ -583,31 +604,28 @@ export function App() {
 
   // ── comment attachment → scroll & highlight ────────────────────────────
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null);
-  const onCommentAttachmentClick = useCallback(
-    (a: Attachment) => {
-      if (!a.commentId) return;
-      // Find the block that owns this comment
-      let blockId: string | undefined;
-      for (const blk of state.blocks) {
-        if (blk.comments.find((c) => c.id === a.commentId)) {
-          blockId = blk.id;
-          break;
-        }
+  const onCommentAttachmentClick = (a: Attachment) => {
+    if (!a.commentId) return;
+    // Find the block that owns this comment
+    let blockId: string | undefined;
+    for (const blk of state.blocks) {
+      if (blk.comments.find((c) => c.id === a.commentId)) {
+        blockId = blk.id;
+        break;
       }
-      if (!blockId) return;
-      // Scroll to the comment annotation, or the block if annotation not rendered yet
-      const target =
-        timelineRef.current?.querySelector(`[data-comment-id="${a.commentId}"]`) ??
-        timelineRef.current?.querySelector(`[data-block-id="${blockId}"]`);
-      target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      setHighlightedBlockId(blockId);
-      setTimeout(() => setHighlightedBlockId(null), 1600);
-    },
-    [state.blocks],
-  );
+    }
+    if (!blockId) return;
+    // Scroll to the comment annotation, or the block if annotation not rendered yet
+    const target =
+      timelineRef.current?.querySelector(`[data-comment-id="${a.commentId}"]`) ??
+      timelineRef.current?.querySelector(`[data-block-id="${blockId}"]`);
+    target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    setHighlightedBlockId(blockId);
+    setTimeout(() => setHighlightedBlockId(null), 1600);
+  };
 
   // ── agent catalog ─────────────────────────────────────────────────────
-  const refreshAgents = useCallback(async () => {
+  const refreshAgents = async () => {
     try {
       const res = await agentRegistry.list();
       dispatch({ type: "setAgents", agents: res.agents ?? [] });
@@ -615,36 +633,33 @@ export function App() {
     } catch (err) {
       setAgentLoadError((err as Error).message);
     }
-  }, [dispatch]);
+  };
 
   // ── ensure terminal session for this chat tab ─────────────────────────
-  const ensureChatTerminal = useCallback(
-    async (currentTid: string | null, chatId: string) => {
-      // Validate the cached terminal ID: it won't survive an app restart,
-      // so check whether it's still present in the C++ process before reusing.
-      if (currentTid) {
-        try {
-          const { items } = await shells.browser.terminal.list();
-          if (items.some((t) => t.id === currentTid)) return currentTid;
-        } catch {
-          // Fall through to create a new terminal.
-        }
-      }
+  const ensureChatTerminal = async (currentTid: string | null, chatId: string) => {
+    // Validate the cached terminal ID: it won't survive an app restart,
+    // so check whether it's still present in the C++ process before reusing.
+    if (currentTid) {
       try {
-        const newTid = await shells.browser.terminal.new();
-        const tid = typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
-        await rt_terminal.start(tid);
-        dispatch({ type: "setTerminalTid", tid });
-        // Persist immediately
-        const { data } = loadChatData(chatId);
-        persistChatData(chatId, { ...data, terminalTid: tid });
-        return tid;
+        const { items } = await shells.browser.terminal.list();
+        if (items.some((t) => t.id === currentTid)) return currentTid;
       } catch {
-        return null;
+        // Fall through to create a new terminal.
       }
-    },
-    [dispatch],
-  );
+    }
+    try {
+      const newTid = await shells.browser.terminal.new();
+      const tid = typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
+      await rt_terminal.start(tid);
+      dispatch({ type: "setTerminalTid", tid });
+      // Persist immediately
+      const { data } = loadChatData(chatId);
+      persistChatData(chatId, { ...data, terminalTid: tid });
+      return tid;
+    } catch {
+      return null;
+    }
+  };
 
   // ── init ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -716,8 +731,12 @@ export function App() {
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
+    // Run once on mount. refreshAgents/ensureChatTerminal are plain functions
+    // (re-created each render); listing them here would re-fire init every
+    // render and reset state.blocks via loadChat, making just-sent message
+    // cards flash and disappear.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dispatch, refreshAgents]);
+  }, []);
 
   // Use refs so the listener always reads latest values without re-subscribing.
   const runningBlockIdRef = useRef<string | null>(null);
@@ -813,585 +832,565 @@ export function App() {
   }, [state.blocks, state.running]);
 
   // ── input mode detection + prefix auto-strip ─────────────────────────
-  const onInputChange = useCallback(
-    (e: ChangeEvent<HTMLTextAreaElement>) => {
-      const el = e.currentTarget;
-      const v = el.value;
-      const caret = el.selectionStart ?? v.length;
+  const onInputChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    const v = el.value;
+    const caret = el.selectionStart ?? v.length;
 
-      // Shell mode: text starts with "$"
-      if (v.startsWith("$")) {
-        setInputMode("shell");
-        el.value = v.startsWith("$ ") ? v.slice(2) : v.slice(1);
-        setPicker(null);
-        return;
-      }
-
-      if (v === "") {
-        setInputMode("chat");
-        setPicker(null);
-        return;
-      }
-
-      // Look for the trigger character that starts the current "word" at cursor.
-      // We search backwards from the caret to find the nearest trigger.
-      const textBeforeCaret = v.slice(0, caret);
-
-      // Find `/` trigger: only at start of a line or the very beginning of input.
-      const slashMatch = textBeforeCaret.match(/(?:^|\n)(\/[^\s]*)$/);
-      if (slashMatch) {
-        const query = slashMatch[1]!.slice(1); // strip the leading "/"
-        const triggerStart = caret - slashMatch[1]!.length;
-        setPicker({ type: "slash", query, triggerStart });
-        setPickerIdx(0);
-        setInputMode("command");
-        return;
-      }
-
-      // Find `@` trigger: at word boundary anywhere in the input.
-      const atMatch = textBeforeCaret.match(/(?:^|[\s,]|^)(@[^\s@]*)$/);
-      if (atMatch) {
-        const query = atMatch[1]!.slice(1); // strip the leading "@"
-        const triggerStart = caret - atMatch[1]!.length;
-        setPicker({ type: "at", query, triggerStart });
-        setPickerIdx(0);
-        if (inputMode !== "shell") setInputMode("chat");
-        return;
-      }
-
-      // No active trigger — close picker and update mode normally
+    // Shell mode: text starts with "$"
+    if (v.startsWith("$")) {
+      setInputMode("shell");
+      el.value = v.startsWith("$ ") ? v.slice(2) : v.slice(1);
       setPicker(null);
-      if (inputMode === "command") setInputMode("chat");
-    },
-    [inputMode],
-  );
+      return;
+    }
+
+    if (v === "") {
+      setInputMode("chat");
+      setPicker(null);
+      return;
+    }
+
+    // Look for the trigger character that starts the current "word" at cursor.
+    // We search backwards from the caret to find the nearest trigger.
+    const textBeforeCaret = v.slice(0, caret);
+
+    // Find `/` trigger: only at start of a line or the very beginning of input.
+    const slashMatch = textBeforeCaret.match(/(?:^|\n)(\/[^\s]*)$/);
+    if (slashMatch) {
+      const query = slashMatch[1]!.slice(1); // strip the leading "/"
+      const triggerStart = caret - slashMatch[1]!.length;
+      setPicker({ type: "slash", query, triggerStart });
+      setPickerIdx(0);
+      setInputMode("command");
+      return;
+    }
+
+    // Find `@` trigger: at word boundary anywhere in the input.
+    const atMatch = textBeforeCaret.match(/(?:^|[\s,]|^)(@[^\s@]*)$/);
+    if (atMatch) {
+      const query = atMatch[1]!.slice(1); // strip the leading "@"
+      const triggerStart = caret - atMatch[1]!.length;
+      setPicker({ type: "at", query, triggerStart });
+      setPickerIdx(0);
+      if (inputMode !== "shell") setInputMode("chat");
+      return;
+    }
+
+    // No active trigger — close picker and update mode normally
+    setPicker(null);
+    if (inputMode === "command") setInputMode("chat");
+  };
 
   // ── paste → attach ────────────────────────────────────────────────────
-  const onPaste = useCallback(
-    (e: ClipboardEvent<HTMLTextAreaElement>) => {
-      const items = Array.from(e.clipboardData.items);
-      const imageItem = items.find((i) => i.type.startsWith("image/"));
-      if (imageItem) {
-        e.preventDefault();
-        const file = imageItem.getAsFile();
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          const dataUrl = ev.target?.result as string;
-          dispatch({
-            type: "addAttachment",
-            attachment: {
-              id: crypto.randomUUID(),
-              kind: "image",
-              label: file.name || "pasted-image",
-              content: dataUrl,
-            },
-          });
-        };
-        reader.readAsDataURL(file);
-      }
-    },
-    [dispatch],
-  );
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData.items);
+    const imageItem = items.find((i) => i.type.startsWith("image/"));
+    if (imageItem) {
+      e.preventDefault();
+      const file = imageItem.getAsFile();
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
+        dispatch({
+          type: "addAttachment",
+          attachment: {
+            id: crypto.randomUUID(),
+            kind: "image",
+            label: file.name || "pasted-image",
+            content: dataUrl,
+          },
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   // ── file picker ────────────────────────────────────────────────────────
-  const onFileChange = useCallback(
-    (e: ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(e.target.files ?? []);
-      for (const file of files) {
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          const content = ev.target?.result as string;
-          dispatch({
-            type: "addAttachment",
-            attachment: {
-              id: crypto.randomUUID(),
-              kind: file.type.startsWith("image/") ? "image" : "file",
-              label: file.name,
-              content,
-            },
-          });
-        };
-        if (file.type.startsWith("image/")) {
-          reader.readAsDataURL(file);
-        } else {
-          reader.readAsText(file);
-        }
+  const onFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    for (const file of files) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const content = ev.target?.result as string;
+        dispatch({
+          type: "addAttachment",
+          attachment: {
+            id: crypto.randomUUID(),
+            kind: file.type.startsWith("image/") ? "image" : "file",
+            label: file.name,
+            content,
+          },
+        });
+      };
+      if (file.type.startsWith("image/")) {
+        reader.readAsDataURL(file);
+      } else {
+        reader.readAsText(file);
       }
-      e.target.value = "";
-    },
-    [dispatch],
-  );
+    }
+    e.target.value = "";
+  };
 
   // Per-block sentinel info: start marker, end marker, and whether the start
   // marker has already been seen (so preamble / echo lines are discarded).
   const shellSentinelRef = useRef<Map<string, { start: string; end: string; capturing: boolean }>>(new Map());
 
   // ── send / run ─────────────────────────────────────────────────────────
-  const onRun = useCallback(
-    async (rawText: string, displayText?: string) => {
-      if (state.running || state.isReconnecting || !state.activeChatId) return;
-      const chatId = state.activeChatId;
+  const onRun = async (rawText: string, displayText?: string) => {
+    if (state.running || state.isReconnecting || !state.activeChatId) return;
+    const chatId = state.activeChatId;
 
-      // Detect shell mode: rawText starts with "$" OR inputMode is "shell"
-      const isShellCmd = rawText.trimStart().startsWith("$") || inputMode === "shell";
-      if (isShellCmd) {
-        // Strip leading "$ " or "$" if present (user may have typed it or mode stripped it)
-        const command = rawText.replace(/^\s*\$\s*/, "").trim();
-        const tid = await ensureChatTerminal(state.terminalTid, chatId);
-        if (!tid) return;
+    // Detect shell mode: rawText starts with "$" OR inputMode is "shell"
+    const isShellCmd = rawText.trimStart().startsWith("$") || inputMode === "shell";
+    if (isShellCmd) {
+      // Strip leading "$ " or "$" if present (user may have typed it or mode stripped it)
+      const command = rawText.replace(/^\s*\$\s*/, "").trim();
+      const tid = await ensureChatTerminal(state.terminalTid, chatId);
+      if (!tid) return;
 
-        const blockId = crypto.randomUUID();
-        // Start/end sentinels — only hex chars, safe through JSON serialization.
-        // Anything before the start marker (shell prompt, command echo) is discarded;
-        // only what appears between start and end is shown as output.
-        const nonce = Array.from(crypto.getRandomValues(new Uint8Array(8)))
-          .map((b) => b.toString(16).padStart(2, "0"))
-          .join("");
-        const startMarker = `__cx_s_${nonce}__`;
-        const endMarker = `__cx_e_${nonce}__`;
-        shellSentinelRef.current.set(blockId, {
-          start: startMarker,
-          end: endMarker,
-          capturing: false,
-        });
+      const blockId = crypto.randomUUID();
+      // Start/end sentinels — only hex chars, safe through JSON serialization.
+      // Anything before the start marker (shell prompt, command echo) is discarded;
+      // only what appears between start and end is shown as output.
+      const nonce = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      const startMarker = `__cx_s_${nonce}__`;
+      const endMarker = `__cx_e_${nonce}__`;
+      shellSentinelRef.current.set(blockId, {
+        start: startMarker,
+        end: endMarker,
+        capturing: false,
+      });
 
-        const shellBlock: import("./store").ShellBlock = {
-          kind: "shell",
+      const shellBlock: import("./store").ShellBlock = {
+        kind: "shell",
+        id: blockId,
+        command,
+        output: "",
+        rawBuf: "",
+        status: "running",
+        exitCode: null,
+        startedAt: Date.now(),
+        endedAt: null,
+        comments: [],
+      };
+      dispatch({ type: "createBlock", block: shellBlock });
+      dispatch({ type: "setRunningBlockId", id: blockId });
+      dispatch({ type: "setRunning", running: true });
+      dispatch({ type: "clearPinnedComments" });
+      // Eagerly update the block-id ref so the runtime event handler is
+      // ready immediately — before React re-renders and updates from state.
+      runningBlockIdRef.current = blockId;
+
+      // Bracket the command with start/end markers so preamble (prompt, echo)
+      // is automatically discarded. Single-quoted start (no expansion needed).
+      const wrapped = `echo '${startMarker}'; ${command}; _ec=$?; echo "${endMarker}:$_ec"`;
+      try {
+        await rt_terminal.run(tid, wrapped);
+      } catch {
+        dispatch({
+          type: "finalizeShellBlock",
           id: blockId,
-          command,
-          output: "",
-          rawBuf: "",
-          status: "running",
-          exitCode: null,
-          startedAt: Date.now(),
-          endedAt: null,
-          comments: [],
-        };
-        dispatch({ type: "createBlock", block: shellBlock });
-        dispatch({ type: "setRunningBlockId", id: blockId });
-        dispatch({ type: "setRunning", running: true });
-        dispatch({ type: "clearPinnedComments" });
-        // Eagerly update the block-id ref so the runtime event handler is
-        // ready immediately — before React re-renders and updates from state.
-        runningBlockIdRef.current = blockId;
-
-        // Bracket the command with start/end markers so preamble (prompt, echo)
-        // is automatically discarded. Single-quoted start (no expansion needed).
-        const wrapped = `echo '${startMarker}'; ${command}; _ec=$?; echo "${endMarker}:$_ec"`;
-        try {
-          await rt_terminal.run(tid, wrapped);
-        } catch {
-          dispatch({
-            type: "finalizeShellBlock",
-            id: blockId,
-            exitCode: 1,
-            now: Date.now(),
-          });
-          dispatch({ type: "setRunning", running: false });
-          dispatch({ type: "setRunningBlockId", id: null });
-          shellSentinelRef.current.delete(blockId);
-          return;
-        }
-
-        // Safety timeout 5 min
-        setTimeout(
-          () => {
-            if (runningBlockIdRef.current === blockId) {
-              dispatch({ type: "setRunning", running: false });
-              dispatch({ type: "setRunningBlockId", id: null });
-              shellSentinelRef.current.delete(blockId);
-            }
-          },
-          5 * 60 * 1000,
-        );
+          exitCode: 1,
+          now: Date.now(),
+        });
+        dispatch({ type: "setRunning", running: false });
+        dispatch({ type: "setRunningBlockId", id: null });
+        shellSentinelRef.current.delete(blockId);
         return;
       }
 
-      // ── Normal conversation run ─────────────────────────────────────
-      dispatch({ type: "setRunning", running: true });
-
-      let speaker = "";
-      let body = rawText;
-      const agentNames = state.agents.map((a) => a.name);
-      const parsed = parseMention(rawText, agentNames);
-      if (parsed.agent) {
-        speaker = parsed.agent;
-        body = parsed.body;
-      } else if (state.selectedFlow) {
-        speaker = state.selectedFlow;
-      } else {
-        speaker = agentNames[0] || "";
-      }
-
-      const blockId = crypto.randomUUID();
-      const block: import("./store").ConversationBlock = {
-        kind: "conversation",
-        id: blockId,
-        userContent: displayText ?? rawText,
-        attachments: state.attachments.slice(),
-        contentStream: [],
-        assistantContent: "",
-        agentName: speaker || undefined,
-        traceEntries: [],
-        status: "running",
-        comments: [],
-        createdAt: Date.now(),
-        thinkingText: "",
-        thinkingSealed: false,
-        thinkingStartedAt: null,
-        thinkingElapsedMs: 0,
-      };
-      dispatch({ type: "createBlock", block });
-      dispatch({ type: "setRunningBlockId", id: blockId });
-      // Clear attachments from tray after capturing snapshot into block
-      dispatch({ type: "clearAttachments" });
-      dispatch({ type: "clearPinnedComments" });
-
-      let hasContent = false;
-      let thinkingStartedAt: number | null = null;
-      let thinkingSealed = false;
-      // Dedup key = "<subscription_id>:<sequence>" so that concurrent
-      // conversations whose Rust subscriptions independently start at seq=0
-      // never cross-contaminate each other's dedup sets.
-      const seenSeqs = new Set<string>();
-      let runId = "";
-
-      // Track pending review info from awaiting_review status so we can
-      // pair it with the arriving PermissionRequest event.
-      let pendingReviewId: string | null = null;
-
-      const off = browser.on("event", (raw: unknown) => {
-        const ev = raw as Record<string, unknown> | null;
-        if (!ev) return;
-
-        if (ev.tag === "event") {
-          const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
-          const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
-          const pRunId =
-            (pl.run_id as string | undefined) ?? ((inner as Record<string, unknown>).run_id as string | undefined);
-          // Filter by run_id BEFORE deduplicating so that a different run's
-          // seq=0 does not consume our seq=0 from the dedup set.
-          if (pRunId && runId && pRunId !== runId) return;
-          const subId = (ev.subscription as string | undefined) ?? "";
-          const seq = inner.sequence as number | undefined;
-          if (typeof seq === "number") {
-            const dedupKey = `${subId}:${seq}`;
-            if (seenSeqs.has(dedupKey)) return;
-            seenSeqs.add(dedupKey);
+      // Safety timeout 5 min
+      setTimeout(
+        () => {
+          if (runningBlockIdRef.current === blockId) {
+            dispatch({ type: "setRunning", running: false });
+            dispatch({ type: "setRunningBlockId", id: null });
+            shellSentinelRef.current.delete(blockId);
           }
-          const kind = pl.kind as string | undefined;
+        },
+        5 * 60 * 1000,
+      );
+      return;
+    }
 
-          if (kind === "thinking_token") {
-            const delta = pl.delta as string | undefined;
-            if (delta) {
-              if (thinkingStartedAt === null) {
-                thinkingStartedAt = Date.now();
-              }
-              dispatch({
-                type: "appendThinkingSegment",
-                id: blockId,
-                delta,
-              });
+    // ── Normal conversation run ─────────────────────────────────────
+    dispatch({ type: "setRunning", running: true });
+
+    let speaker = "";
+    let body = rawText;
+    const agentNames = state.agents.map((a) => a.name);
+    const parsed = parseMention(rawText, agentNames);
+    if (parsed.agent) {
+      speaker = parsed.agent;
+      body = parsed.body;
+    } else if (state.selectedFlow) {
+      speaker = state.selectedFlow;
+    } else {
+      speaker = agentNames[0] || "";
+    }
+
+    const blockId = crypto.randomUUID();
+    const block: import("./store").ConversationBlock = {
+      kind: "conversation",
+      id: blockId,
+      userContent: displayText ?? rawText,
+      attachments: state.attachments.slice(),
+      contentStream: [],
+      assistantContent: "",
+      agentName: speaker || undefined,
+      traceEntries: [],
+      status: "running",
+      comments: [],
+      createdAt: Date.now(),
+      thinkingText: "",
+      thinkingSealed: false,
+      thinkingStartedAt: null,
+      thinkingElapsedMs: 0,
+    };
+    dispatch({ type: "createBlock", block });
+    dispatch({ type: "setRunningBlockId", id: blockId });
+    // Clear attachments from tray after capturing snapshot into block
+    dispatch({ type: "clearAttachments" });
+    dispatch({ type: "clearPinnedComments" });
+
+    let hasContent = false;
+    let thinkingStartedAt: number | null = null;
+    let thinkingSealed = false;
+    // Dedup key = "<subscription_id>:<sequence>" so that concurrent
+    // conversations whose Rust subscriptions independently start at seq=0
+    // never cross-contaminate each other's dedup sets.
+    const seenSeqs = new Set<string>();
+    let runId = "";
+    // Last error surfaced via a "trace.error" event from the runtime
+    // (e.g. LLM HTTP failure). Used as the assistantText fallback when
+    // the run terminates without producing any tokens.
+    let lastErrorMessage = "";
+
+    // Track pending review info from awaiting_review status so we can
+    // pair it with the arriving PermissionRequest event.
+    let pendingReviewId: string | null = null;
+
+    const off = browser.on("event", (raw: unknown) => {
+      const ev = raw as Record<string, unknown> | null;
+      if (!ev) return;
+
+      if (ev.tag === "event") {
+        const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
+        const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
+        const pRunId =
+          (pl.run_id as string | undefined) ?? ((inner as Record<string, unknown>).run_id as string | undefined);
+        // Filter by run_id BEFORE deduplicating so that a different run's
+        // seq=0 does not consume our seq=0 from the dedup set.
+        if (pRunId && runId && pRunId !== runId) return;
+        const subId = (ev.subscription as string | undefined) ?? "";
+        const seq = inner.sequence as number | undefined;
+        if (typeof seq === "number") {
+          const dedupKey = `${subId}:${seq}`;
+          if (seenSeqs.has(dedupKey)) return;
+          seenSeqs.add(dedupKey);
+        }
+        const kind = pl.kind as string | undefined;
+
+        if (kind === "thinking_token") {
+          const delta = pl.delta as string | undefined;
+          if (delta) {
+            if (thinkingStartedAt === null) {
+              thinkingStartedAt = Date.now();
             }
-          } else if (kind === "token") {
-            // First text token seals the thinking segment if thinking is in progress.
+            dispatch({
+              type: "appendThinkingSegment",
+              id: blockId,
+              delta,
+            });
+          }
+        } else if (kind === "token") {
+          // First text token seals the thinking segment if thinking is in progress.
+          if (thinkingStartedAt !== null && !thinkingSealed) {
+            thinkingSealed = true;
+            const elapsedMs = Date.now() - thinkingStartedAt;
+            dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
+          }
+          const content = (pl.delta ?? pl.content) as string | undefined;
+          if (content) {
+            hasContent = true;
+            dispatch({
+              type: "appendContentText",
+              id: blockId,
+              delta: content,
+            });
+          }
+        } else if (kind === "run_status") {
+          const status = pl.status as string | undefined;
+          if (status === "succeeded" || status === "failed" || status === "cancelled") {
+            dispatch({ type: "clearAwaitingApproval" });
+            // Seal any pending thinking segment before finalizing.
             if (thinkingStartedAt !== null && !thinkingSealed) {
               thinkingSealed = true;
               const elapsedMs = Date.now() - thinkingStartedAt;
               dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
             }
-            const content = (pl.delta ?? pl.content) as string | undefined;
-            if (content) {
-              hasContent = true;
+            if (!hasContent) {
+              // Prefer a concrete failure reason if the runtime surfaced
+              // one (RunStatus.detail.message or a prior trace.error).
+              // Fall back to the generic placeholder.
+              const detail = (pl.detail as Record<string, unknown> | undefined) ?? {};
+              const detailMsg = typeof detail.message === "string" ? detail.message : "";
+              let fallback: string;
+              if (status === "succeeded") {
+                fallback = "(completed)";
+              } else if (detailMsg) {
+                fallback = `(${status}) ${detailMsg}`;
+              } else if (lastErrorMessage) {
+                fallback = `(${status}) ${lastErrorMessage}`;
+              } else {
+                fallback = "(no output)";
+              }
               dispatch({
                 type: "appendContentText",
                 id: blockId,
-                delta: content,
+                delta: fallback,
               });
+              hasContent = true;
             }
-          } else if (kind === "run_status") {
-            const status = pl.status as string | undefined;
-            if (status === "succeeded" || status === "failed" || status === "cancelled") {
-              dispatch({ type: "clearAwaitingApproval" });
-              // Seal any pending thinking segment before finalizing.
-              if (thinkingStartedAt !== null && !thinkingSealed) {
-                thinkingSealed = true;
-                const elapsedMs = Date.now() - thinkingStartedAt;
-                dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
-              }
-              if (!hasContent) {
-                const fallback = status === "succeeded" ? "(completed)" : "(no output)";
-                dispatch({
-                  type: "appendContentText",
-                  id: blockId,
-                  delta: fallback,
-                });
-                hasContent = true;
-              }
-              dispatch({
-                type: "finalizeBlock",
-                id: blockId,
-                status: status === "succeeded" ? "ok" : "fail",
-                agentName: speaker || undefined,
-              });
+            dispatch({
+              type: "finalizeBlock",
+              id: blockId,
+              status: status === "succeeded" ? "ok" : "fail",
+              agentName: speaker || undefined,
+            });
 
-              // Persist
-              const { data } = loadChatData(chatId);
-              persistChatData(chatId, { ...data, blocks: [...data.blocks] });
+            // Persist
+            const { data } = loadChatData(chatId);
+            persistChatData(chatId, { ...data, blocks: [...data.blocks] });
 
-              off();
-              dispatch({ type: "setRunning", running: false });
-              dispatch({ type: "setRunningBlockId", id: null });
-              inputRef.current?.focus();
-            } else if (status === "awaiting_review") {
-              // Agent is waiting for approval — store the review_id if available
-              const rid = pl.review_id as string | undefined;
-              if (rid) pendingReviewId = rid;
-              // Don't finalize or stop running — just await PermissionRequest event
-            } else if (status === "running") {
-              // Resumed after approval was granted
-              dispatch({ type: "clearAwaitingApproval" });
-            }
-          } else if (kind === "permission_request") {
-            // Tool approval request: read trust and decide automatically or ask user
-            const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
-            const req = (pl.request as Record<string, unknown> | undefined) ?? {};
-            const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
-            const args = req.args ?? pl.args ?? {};
-            const category = toolName.split("_")[0] ?? toolName;
+            off();
+            dispatch({ type: "setRunning", running: false });
+            dispatch({ type: "setRunningBlockId", id: null });
+            inputRef.current?.focus();
+          } else if (status === "awaiting_review") {
+            // Agent is waiting for approval — store the review_id if available
+            const rid = pl.review_id as string | undefined;
+            if (rid) pendingReviewId = rid;
+            // Don't finalize or stop running — just await PermissionRequest event
+          } else if (status === "running") {
+            // Resumed after approval was granted
+            dispatch({ type: "clearAwaitingApproval" });
+          }
+        } else if (kind === "permission_request") {
+          // Tool approval request: read trust and decide automatically or ask user
+          const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
+          const req = (pl.request as Record<string, unknown> | undefined) ?? {};
+          const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
+          const args = req.args ?? pl.args ?? {};
+          const category = toolName.split("_")[0] ?? toolName;
 
-            // Read trust level for this category from localStorage
-            const trustMap = loadTrustMap();
-            const trust = trustMap[category] ?? "ask";
+          // Read trust level for this category from localStorage
+          const trustMap = loadTrustMap();
+          const trust = trustMap[category] ?? "ask";
 
-            if (trust === "autopilot") {
-              browser.send("review.approve", { review_id: reviewId }).catch(() => undefined);
-            } else if (trust === "bypass") {
-              browser.send("review.request_changes", { review_id: reviewId }).catch(() => undefined);
-            } else {
-              // "ask" — show the approval card
-              dispatch({
-                type: "setAwaitingApproval",
-                runId,
+          if (trust === "autopilot") {
+            browser.send("review.approve", { review_id: reviewId }).catch(() => undefined);
+          } else if (trust === "bypass") {
+            browser.send("review.request_changes", { review_id: reviewId }).catch(() => undefined);
+          } else {
+            // "ask" — show the approval card
+            dispatch({
+              type: "setAwaitingApproval",
+              runId,
+              reviewId,
+              toolName,
+              args,
+            });
+            dispatch({
+              type: "appendTraceEntry",
+              id: blockId,
+              entry: {
+                kind: "approval_request",
                 reviewId,
-                toolName,
+                tool: toolName,
                 args,
-              });
-              dispatch({
-                type: "appendTraceEntry",
-                id: blockId,
-                entry: {
-                  kind: "approval_request",
-                  reviewId,
-                  tool: toolName,
-                  args,
-                  ts: Date.now(),
-                },
-              });
-            }
-          } else if (kind === "trace") {
-            // Structured trace events from the runtime
-            const trace = (pl.trace as Record<string, unknown> | undefined) ?? pl;
-            const traceKind = trace.kind as string | undefined;
+                ts: Date.now(),
+              },
+            });
+          }
+        } else if (kind === "trace") {
+          // Structured trace events from the runtime
+          const trace = (pl.trace as Record<string, unknown> | undefined) ?? pl;
+          const traceKind = trace.kind as string | undefined;
 
-            if (traceKind === "run_start") {
-              dispatch({
-                type: "appendTraceEntry",
-                id: blockId,
-                entry: {
-                  kind: "run_start",
-                  model: (trace.model as string | undefined) ?? "",
-                  systemPrompt: (trace.system_prompt as string | undefined) ?? "",
-                  userInput: (trace.user_input as string | undefined) ?? "",
-                  tools: (trace.tools as string[] | undefined) ?? [],
-                  turnsLimit: (trace.turns_limit as number | undefined) ?? 0,
-                  ts: Date.now(),
-                },
-              });
-            } else if (traceKind === "assistant_turn") {
-              // Extract optional usage and duration emitted by agent-run-middleware
-              const usageRaw = trace.usage as Record<string, number> | undefined;
-              const usage = usageRaw
-                ? {
-                    inputTokens: (usageRaw.input_tokens as number) ?? 0,
-                    outputTokens: (usageRaw.output_tokens as number) ?? 0,
-                  }
-                : undefined;
-              const turnDurationMs = trace.duration_ms as number | undefined;
-              dispatch({
-                type: "appendTraceEntry",
-                id: blockId,
-                entry: {
-                  kind: "assistant_turn",
-                  // Rust emits "turn" (not "turn_id")
-                  turnId: (trace.turn as number | undefined) ?? (trace.turn_id as number | undefined) ?? 0,
-                  text: (trace.text as string | undefined) ?? "",
-                  finishReason: (trace.finish_reason as string | undefined) ?? "",
-                  ts: Date.now(),
-                  ...(usage ? { usage } : {}),
-                  ...(turnDurationMs != null ? { durationMs: turnDurationMs } : {}),
-                },
-              });
-            } else if (traceKind === "tool_start") {
-              const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
-              const tool = (trace.tool as string | undefined) ?? "";
-              const args = trace.arguments ?? trace.args ?? {};
-              dispatch({
-                type: "appendTraceEntry",
-                id: blockId,
-                entry: {
-                  kind: "tool_start",
-                  toolCallId,
-                  tool,
-                  args,
-                  ts: Date.now(),
-                },
-              });
-              // Also add a running tool_call segment to the content stream
-              dispatch({
-                type: "appendToolCallSegment",
-                id: blockId,
+          if (traceKind === "run_start") {
+            dispatch({
+              type: "appendTraceEntry",
+              id: blockId,
+              entry: {
+                kind: "run_start",
+                model: (trace.model as string | undefined) ?? "",
+                systemPrompt: (trace.system_prompt as string | undefined) ?? "",
+                userInput: (trace.user_input as string | undefined) ?? "",
+                tools: (trace.tools as string[] | undefined) ?? [],
+                turnsLimit: (trace.turns_limit as number | undefined) ?? 0,
+                ts: Date.now(),
+              },
+            });
+          } else if (traceKind === "assistant_turn") {
+            // Extract optional usage and duration emitted by agent-run-middleware
+            const usageRaw = trace.usage as Record<string, number> | undefined;
+            const usage = usageRaw
+              ? {
+                  inputTokens: (usageRaw.input_tokens as number) ?? 0,
+                  outputTokens: (usageRaw.output_tokens as number) ?? 0,
+                }
+              : undefined;
+            const turnDurationMs = trace.duration_ms as number | undefined;
+            dispatch({
+              type: "appendTraceEntry",
+              id: blockId,
+              entry: {
+                kind: "assistant_turn",
+                // Rust emits "turn" (not "turn_id")
+                turnId: (trace.turn as number | undefined) ?? (trace.turn_id as number | undefined) ?? 0,
+                text: (trace.text as string | undefined) ?? "",
+                finishReason: (trace.finish_reason as string | undefined) ?? "",
+                ts: Date.now(),
+                ...(usage ? { usage } : {}),
+                ...(turnDurationMs != null ? { durationMs: turnDurationMs } : {}),
+              },
+            });
+          } else if (traceKind === "tool_start") {
+            const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+            const tool = (trace.tool as string | undefined) ?? "";
+            const args = trace.arguments ?? trace.args ?? {};
+            dispatch({
+              type: "appendTraceEntry",
+              id: blockId,
+              entry: {
+                kind: "tool_start",
                 toolCallId,
                 tool,
                 args,
-              });
-            } else if (traceKind === "tool_done") {
-              const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
-              const tool = (trace.tool as string | undefined) ?? "";
-              const result = trace.result ?? {};
-              const isError = (trace.is_error as boolean | undefined) ?? false;
-              const durationMs = trace.duration_ms as number | undefined;
-              dispatch({
-                type: "appendTraceEntry",
-                id: blockId,
-                entry: {
-                  kind: "tool_done",
-                  toolCallId,
-                  tool,
-                  result,
-                  terminal: (trace.terminal as boolean | undefined) ?? false,
-                  ts: Date.now(),
-                },
-              });
-              // Update the tool_call segment in the content stream
-              dispatch({
-                type: "updateToolCallSegment",
-                id: blockId,
+                ts: Date.now(),
+              },
+            });
+            // Also add a running tool_call segment to the content stream
+            dispatch({
+              type: "appendToolCallSegment",
+              id: blockId,
+              toolCallId,
+              tool,
+              args,
+            });
+          } else if (traceKind === "tool_done") {
+            const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+            const tool = (trace.tool as string | undefined) ?? "";
+            const result = trace.result ?? {};
+            const isError = (trace.is_error as boolean | undefined) ?? false;
+            const durationMs = trace.duration_ms as number | undefined;
+            dispatch({
+              type: "appendTraceEntry",
+              id: blockId,
+              entry: {
+                kind: "tool_done",
                 toolCallId,
-                status: isError ? "error" : "done",
+                tool,
                 result,
-                ...(durationMs != null ? { durationMs } : {}),
-              });
-            } else if (traceKind === "review_resolved") {
-              const resolvedId = (trace.review_id as string | undefined) ?? "";
-              const decision = (trace.decision as string | undefined) === "approve" ? "approve" : "reject";
-              dispatch({
-                type: "appendTraceEntry",
-                id: blockId,
-                entry: {
-                  kind: "approval_resolved",
-                  reviewId: resolvedId,
-                  decision,
-                  ts: Date.now(),
+                terminal: (trace.terminal as boolean | undefined) ?? false,
+                ts: Date.now(),
+              },
+            });
+            // Update the tool_call segment in the content stream
+            dispatch({
+              type: "updateToolCallSegment",
+              id: blockId,
+              toolCallId,
+              status: isError ? "error" : "done",
+              result,
+              ...(durationMs != null ? { durationMs } : {}),
+            });
+          } else if (traceKind === "error") {
+            // Emitted by the agent loop when the LLM stream itself
+            // fails (HTTP error, timeout, etc.). Stash the message so
+            // the run_status handler can surface it in place of
+            // "(no output)", and add a visible trace entry too.
+            const msg = (trace.message as string | undefined) ?? "";
+            if (msg) lastErrorMessage = msg;
+            dispatch({
+              type: "appendTraceEntry",
+              id: blockId,
+              entry: {
+                kind: "tool_start",
+                toolCallId: "",
+                tool: "error",
+                args: {
+                  where: (trace.where as string | undefined) ?? "",
+                  message: msg || "error",
                 },
-              });
-            } else if (traceKind === "reflection") {
-              dispatch({
-                type: "appendTraceEntry",
-                id: blockId,
-                entry: {
-                  kind: "reflection",
-                  turn: (trace.turn as number | undefined) ?? 0,
-                  text: (trace.text as string | undefined) ?? "",
-                  ts: Date.now(),
-                },
-              });
-            } else if (traceKind === "memory_write") {
-              dispatch({
-                type: "appendTraceEntry",
-                id: blockId,
-                entry: {
-                  kind: "memory_write",
-                  namespace: (trace.namespace as string | undefined) ?? "",
-                  key: (trace.key as string | undefined) ?? "",
-                  source: (trace.source as string | undefined) ?? "",
-                  ts: Date.now(),
-                },
-              });
-            }
-          } else if (kind === "log") {
-            // Legacy log events — emit as tool_start-like trace entries for visibility
-            const message = (pl.message as string | undefined) ?? "";
-            if (message) {
-              dispatch({
-                type: "appendTraceEntry",
-                id: blockId,
-                entry: {
-                  kind: "tool_start",
-                  toolCallId: "",
-                  tool: "log",
-                  args: { message },
-                  ts: Date.now(),
-                },
-              });
-            }
+                ts: Date.now(),
+              },
+            });
+          } else if (traceKind === "review_resolved") {
+            const resolvedId = (trace.review_id as string | undefined) ?? "";
+            const decision = (trace.decision as string | undefined) === "approve" ? "approve" : "reject";
+            dispatch({
+              type: "appendTraceEntry",
+              id: blockId,
+              entry: {
+                kind: "approval_resolved",
+                reviewId: resolvedId,
+                decision,
+                ts: Date.now(),
+              },
+            });
+          } else if (traceKind === "reflection") {
+            dispatch({
+              type: "appendTraceEntry",
+              id: blockId,
+              entry: {
+                kind: "reflection",
+                turn: (trace.turn as number | undefined) ?? 0,
+                text: (trace.text as string | undefined) ?? "",
+                ts: Date.now(),
+              },
+            });
+          } else if (traceKind === "memory_write") {
+            dispatch({
+              type: "appendTraceEntry",
+              id: blockId,
+              entry: {
+                kind: "memory_write",
+                namespace: (trace.namespace as string | undefined) ?? "",
+                key: (trace.key as string | undefined) ?? "",
+                source: (trace.source as string | undefined) ?? "",
+                ts: Date.now(),
+              },
+            });
           }
-          return;
+        } else if (kind === "log") {
+          // Legacy log events — emit as tool_start-like trace entries for visibility
+          const message = (pl.message as string | undefined) ?? "";
+          if (message) {
+            dispatch({
+              type: "appendTraceEntry",
+              id: blockId,
+              entry: {
+                kind: "tool_start",
+                toolCallId: "",
+                tool: "log",
+                args: { message },
+                ts: Date.now(),
+              },
+            });
+          }
         }
+        return;
+      }
 
-        if (typeof ev.run_id === "string" && ev.run_id !== runId) return;
-        if (ev.kind === "error") {
-          const pl2 = (ev.payload as Record<string, unknown> | undefined) ?? {};
-          dispatch({
-            type: "appendTraceEntry",
-            id: blockId,
-            entry: {
-              kind: "tool_start",
-              toolCallId: "",
-              tool: "error",
-              args: { message: pl2.message ?? "error" },
-              ts: Date.now(),
-            },
-          });
-        }
-      });
-
-      try {
-        // Inject pinned selection comments into the task body
-        const commentAtts = block.attachments.filter((a) => a.kind === "comment");
-        if (commentAtts.length > 0) {
-          const selContext = commentAtts
-            .map((a) => {
-              const txt = a.selectedText ?? a.label;
-              return a.commentText ? `> ${txt}\n[Comment]: ${a.commentText}` : `> ${txt}`;
-            })
-            .join("\n\n");
-          body = `[Referenced selections]\n${selContext}\n\n${body}`;
-        }
-        // Inject workspace CWD
-        if (workspaceRoot) {
-          body = `[Workspace: ${workspaceRoot}]\n\n${body}`;
-        }
-        runId = await agentRun(body, {
-          session_id: chatId,
-          agent_id: state.selectedFlow ? undefined : state.agentId || undefined,
-          model_override: state.model || undefined,
-          flow_id: state.selectedFlow || undefined,
-        });
-        if (!runId) throw new Error("runtime did not return run_id");
-        await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
-          /* ignore */
-        });
-      } catch (err) {
-        off();
-        const errMsg = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
-        const isBridgeError = errMsg.includes("bridge invoke failed") || errMsg.includes("send_failed");
-        dispatch({
-          type: "finalizeBlock",
-          id: blockId,
-          status: "fail",
-        });
+      if (typeof ev.run_id === "string" && ev.run_id !== runId) return;
+      if (ev.kind === "error") {
+        const pl2 = (ev.payload as Record<string, unknown> | undefined) ?? {};
         dispatch({
           type: "appendTraceEntry",
           id: blockId,
@@ -1399,47 +1398,100 @@ export function App() {
             kind: "tool_start",
             toolCallId: "",
             tool: "error",
-            args: {
-              message: isBridgeError
-                ? "Runtime is reconnecting. Please wait for the banner to clear, then try again."
-                : `Failed to start: ${errMsg}`,
-            },
+            args: { message: pl2.message ?? "error" },
             ts: Date.now(),
           },
         });
-        if (isBridgeError) {
-          dispatch({ type: "setReconnecting", reconnecting: true });
-        }
-        dispatch({ type: "clearAwaitingApproval" });
-        dispatch({ type: "setRunning", running: false });
-        dispatch({ type: "setRunningBlockId", id: null });
-        return;
       }
+    });
 
-      setTimeout(
-        () => {
-          off();
-          if (state.running) {
-            dispatch({ type: "setRunning", running: false });
-            dispatch({ type: "setRunningBlockId", id: null });
-          }
+    try {
+      // Inject pinned selection comments into the task body
+      const commentAtts = block.attachments.filter((a) => a.kind === "comment");
+      if (commentAtts.length > 0) {
+        const selContext = commentAtts
+          .map((a) => {
+            const txt = a.selectedText ?? a.label;
+            return a.commentText ? `> ${txt}\n[Comment]: ${a.commentText}` : `> ${txt}`;
+          })
+          .join("\n\n");
+        body = `[Referenced selections]\n${selContext}\n\n${body}`;
+      }
+      // Inject workspace CWD
+      if (workspaceRoot) {
+        body = `[Workspace: ${workspaceRoot}]\n\n${body}`;
+      }
+      // Per-message overrides from the chat toolbar; `""` is dropped so
+      // the agent/provider default kicks in.
+      const runOpts: Parameters<typeof agentRun>[1] = {
+        session_id: chatId,
+        agent_id: state.selectedFlow ? undefined : state.agentId || undefined,
+        flow_id: state.selectedFlow || undefined,
+      };
+      if (reasoningEffortRef.current) runOpts.reasoning_effort = reasoningEffortRef.current;
+      if (anthropicEffortRef.current) runOpts.anthropic_effort = anthropicEffortRef.current;
+      if (state.model) runOpts.model = state.model;
+      // If the picked model belongs to a non-active provider group, send
+      // that provider's wire config alongside so the request actually
+      // routes there instead of being sent to the active provider's
+      // endpoint with a model name it doesn't recognise.
+      if (state.model) {
+        const owner = modelGroups.find((g) => g.models.includes(state.model));
+        if (owner && owner.id !== activeProviderId) {
+          runOpts.provider_kind = owner.kind;
+          runOpts.base_url = owner.base_url;
+          if (owner.api_key) runOpts.api_key = owner.api_key;
+        }
+      }
+      runId = await agentRun(body, runOpts);
+      if (!runId) throw new Error("runtime did not return run_id");
+      await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
+        /* ignore */
+      });
+    } catch (err) {
+      off();
+      const errMsg = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
+      const isBridgeError = errMsg.includes("bridge invoke failed") || errMsg.includes("send_failed");
+      dispatch({
+        type: "finalizeBlock",
+        id: blockId,
+        status: "fail",
+      });
+      dispatch({
+        type: "appendTraceEntry",
+        id: blockId,
+        entry: {
+          kind: "tool_start",
+          toolCallId: "",
+          tool: "error",
+          args: {
+            message: isBridgeError
+              ? "Runtime is reconnecting. Please wait for the banner to clear, then try again."
+              : `Failed to start: ${errMsg}`,
+          },
+          ts: Date.now(),
         },
-        5 * 60 * 1000,
-      );
-    },
-    [
-      state.running,
-      state.activeChatId,
-      state.terminalTid,
-      state.selectedFlow,
-      state.agents,
-      state.attachments,
-      inputMode,
-      dispatch,
-      ensureChatTerminal,
-      workspaceRoot,
-    ],
-  );
+      });
+      if (isBridgeError) {
+        dispatch({ type: "setReconnecting", reconnecting: true });
+      }
+      dispatch({ type: "clearAwaitingApproval" });
+      dispatch({ type: "setRunning", running: false });
+      dispatch({ type: "setRunningBlockId", id: null });
+      return;
+    }
+
+    setTimeout(
+      () => {
+        off();
+        if (state.running) {
+          dispatch({ type: "setRunning", running: false });
+          dispatch({ type: "setRunningBlockId", id: null });
+        }
+      },
+      5 * 60 * 1000,
+    );
+  };
 
   // Finalize shell block when OSC 133 D sets status away from "running"
   useEffect(() => {
@@ -1494,51 +1546,45 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch, state.runningBlockId]);
 
-  const onShellAction = useCallback(
-    (action: string, block: ShellBlock) => {
-      // Spawn a thread on the block by running a prompt with context
-      const prompt = `${action}: \`\`\`\n$ ${block.command}\n${block.output}\n\`\`\``;
-      void onRun(prompt);
-    },
-    [onRun],
-  );
+  const onShellAction = (action: string, block: ShellBlock) => {
+    // Spawn a thread on the block by running a prompt with context
+    const prompt = `${action}: \`\`\`\n$ ${block.command}\n${block.output}\n\`\`\``;
+    void onRun(prompt);
+  };
 
-  const onSubmit = useCallback(
-    (e: FormEvent<HTMLFormElement>) => {
-      e.preventDefault();
-      // If the picker is open, submit should commit the selection, not run the message.
-      if (picker) return;
-      const typed = inputRef.current?.value.trim() || "";
-      if (!typed && attachedPrompts.length === 0) return;
-      if (inputRef.current) inputRef.current.value = "";
-      setInputMode("chat");
-      // Collect content from explicitly-attached picker pills.
-      const parts = attachedPrompts.map((p) => p.content);
-      const attachedIds = new Set(attachedPrompts.map((p) => p.id));
-      // Auto-resolve any /slug tokens typed directly in the textarea.
-      // This lets the user type "/opsx-explore <question>" without opening
-      // the picker — the content is injected exactly as if picked.
-      const pillRe = /^\/([a-z0-9_][a-z0-9_-]*)$/i;
-      let remaining = typed;
-      for (const word of typed.split(/\s+/)) {
-        const m = word.match(pillRe);
-        if (!m) continue;
-        const hit = workspacePrompts.find((p) => p.label === m[1]);
-        if (hit?.content && !attachedIds.has(hit.id)) {
-          parts.unshift(hit.content);
-          attachedIds.add(hit.id);
-          remaining = remaining.replace(word, "").trim();
-        }
+  const onSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    // If the picker is open, submit should commit the selection, not run the message.
+    if (picker) return;
+    const typed = inputRef.current?.value.trim() || "";
+    if (!typed && attachedPrompts.length === 0) return;
+    if (inputRef.current) inputRef.current.value = "";
+    setInputMode("chat");
+    // Collect content from explicitly-attached picker pills.
+    const parts = attachedPrompts.map((p) => p.content);
+    const attachedIds = new Set(attachedPrompts.map((p) => p.id));
+    // Auto-resolve any /slug tokens typed directly in the textarea.
+    // This lets the user type "/opsx-explore <question>" without opening
+    // the picker — the content is injected exactly as if picked.
+    const pillRe = /^\/([a-z0-9_][a-z0-9_-]*)$/i;
+    let remaining = typed;
+    for (const word of typed.split(/\s+/)) {
+      const m = word.match(pillRe);
+      if (!m) continue;
+      const hit = workspacePrompts.find((p) => p.label === m[1]);
+      if (hit?.content && !attachedIds.has(hit.id)) {
+        parts.unshift(hit.content);
+        attachedIds.add(hit.id);
+        remaining = remaining.replace(word, "").trim();
       }
-      if (remaining) parts.push(remaining);
-      // Build a concise display label (pill names + typed text, no content dump).
-      const displayParts = attachedPrompts.map((p) => `/${p.label}`);
-      if (typed) displayParts.push(typed);
-      setAttachedPrompts([]);
-      void onRun(parts.join("\n\n"), displayParts.join(" ") || typed);
-    },
-    [onRun, picker, attachedPrompts, workspacePrompts],
-  );
+    }
+    if (remaining) parts.push(remaining);
+    // Build a concise display label (pill names + typed text, no content dump).
+    const displayParts = attachedPrompts.map((p) => `/${p.label}`);
+    if (typed) displayParts.push(typed);
+    setAttachedPrompts([]);
+    void onRun(parts.join("\n\n"), displayParts.join(" ") || typed);
+  };
 
   // ── picker items ────────────────────────────────────────────────────────
   const pickerItems = useMemo<PickerItem[]>(() => {
@@ -1562,103 +1608,97 @@ export function App() {
   }, [picker, state.agents, workspacePrompts]);
 
   /** Commit a selected picker item, updating the textarea value. */
-  const commitPickerItem = useCallback(
-    (item: PickerItem) => {
-      const el = inputRef.current;
-      if (!el || !picker) return;
+  const commitPickerItem = (item: PickerItem) => {
+    const el = inputRef.current;
+    if (!el || !picker) return;
 
-      if (picker.type === "slash") {
-        // Replace the "/query" token with nothing (the action handles the rest)
-        el.value = el.value.slice(0, picker.triggerStart) + el.value.slice(el.selectionStart ?? el.value.length);
-        el.style.height = "auto";
-        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-        setPicker(null);
-        setInputMode("chat");
-        el.focus();
-        if (item.action === "clear") {
-          // Execute the clear command inline
-          dispatch({ type: "clearHistory" });
-          if (state.activeChatId) {
-            persistChatData(state.activeChatId, {
-              blocks: [],
-              terminalTid: state.terminalTid,
-              model: state.model,
-            });
-          }
-        } else if (item.action === "new") {
-          // Focus textarea so user can start a fresh message (new chat
-          // creation is handled by the tab manager on the host side).
-          el.value = "";
-          el.style.height = "auto";
-        } else if (item.content) {
-          // Always attach as a pill so the user can type additional context
-          // before submitting. The pill content is prepended to their message
-          // in onSubmit. Focus the textarea so they can start typing immediately.
-          setAttachedPrompts((prev) => {
-            if (prev.some((p) => p.id === item.id)) return prev;
-            return [...prev, { id: item.id, label: item.label, content: item.content! }];
+    if (picker.type === "slash") {
+      // Replace the "/query" token with nothing (the action handles the rest)
+      el.value = el.value.slice(0, picker.triggerStart) + el.value.slice(el.selectionStart ?? el.value.length);
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+      setPicker(null);
+      setInputMode("chat");
+      el.focus();
+      if (item.action === "clear") {
+        // Execute the clear command inline
+        dispatch({ type: "clearHistory" });
+        if (state.activeChatId) {
+          persistChatData(state.activeChatId, {
+            blocks: [],
+            terminalTid: state.terminalTid,
+            model: state.model,
           });
         }
-      } else {
-        // "@" picker: splice in "@AgentName "
-        const prefix = el.value.slice(0, picker.triggerStart);
-        const suffix = el.value.slice(el.selectionStart ?? el.value.length);
-        const replacement = `@${item.label} `;
-        el.value = prefix + replacement + suffix;
-        // Move cursor after the inserted mention
-        const newCaret = picker.triggerStart + replacement.length;
-        el.setSelectionRange(newCaret, newCaret);
+      } else if (item.action === "new") {
+        // Focus textarea so user can start a fresh message (new chat
+        // creation is handled by the tab manager on the host side).
+        el.value = "";
         el.style.height = "auto";
-        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-        setPicker(null);
-        el.focus();
+      } else if (item.content) {
+        // Always attach as a pill so the user can type additional context
+        // before submitting. The pill content is prepended to their message
+        // in onSubmit. Focus the textarea so they can start typing immediately.
+        setAttachedPrompts((prev) => {
+          if (prev.some((p) => p.id === item.id)) return prev;
+          return [...prev, { id: item.id, label: item.label, content: item.content! }];
+        });
       }
-    },
-    [picker, dispatch, state.activeChatId, state.terminalTid, state.model],
-  );
+    } else {
+      // "@" picker: splice in "@AgentName "
+      const prefix = el.value.slice(0, picker.triggerStart);
+      const suffix = el.value.slice(el.selectionStart ?? el.value.length);
+      const replacement = `@${item.label} `;
+      el.value = prefix + replacement + suffix;
+      // Move cursor after the inserted mention
+      const newCaret = picker.triggerStart + replacement.length;
+      el.setSelectionRange(newCaret, newCaret);
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+      setPicker(null);
+      el.focus();
+    }
+  };
 
-  const onKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      // When picker is open, intercept navigation keys
-      if (picker && pickerItems.length > 0) {
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          setPickerIdx((i) => Math.min(i + 1, pickerItems.length - 1));
-          return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          setPickerIdx((i) => Math.max(i - 1, 0));
-          return;
-        }
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          const item = pickerItems[pickerIdx];
-          if (item) commitPickerItem(item);
-          return;
-        }
-        if (e.key === "Escape") {
-          e.preventDefault();
-          setPicker(null);
-          setInputMode("chat");
-          return;
-        }
-        if (e.key === "Tab") {
-          e.preventDefault();
-          const item = pickerItems[pickerIdx];
-          if (item) commitPickerItem(item);
-          return;
-        }
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // When picker is open, intercept navigation keys
+    if (picker && pickerItems.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setPickerIdx((i) => Math.min(i + 1, pickerItems.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setPickerIdx((i) => Math.max(i - 1, 0));
+        return;
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        e.currentTarget.form?.requestSubmit();
+        const item = pickerItems[pickerIdx];
+        if (item) commitPickerItem(item);
+        return;
       }
-    },
-    [picker, pickerItems, pickerIdx, commitPickerItem],
-  );
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setPicker(null);
+        setInputMode("chat");
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        const item = pickerItems[pickerIdx];
+        if (item) commitPickerItem(item);
+        return;
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      e.currentTarget.form?.requestSubmit();
+    }
+  };
 
-  const onClear = useCallback(() => {
+  const onClear = () => {
     dispatch({ type: "clearHistory" });
     if (state.activeChatId) {
       persistChatData(state.activeChatId, {
@@ -1667,16 +1707,16 @@ export function App() {
         model: state.model,
       });
     }
-  }, [dispatch, state.activeChatId, state.terminalTid, state.model]);
+  };
 
   const runningBlockId = state.runningBlockId;
 
   // Copilot-like textarea auto-height
-  const onTextareaInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
+  const onTextareaInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
     const el = e.currentTarget;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-  }, []);
+  };
 
   return (
     <main className="flex h-screen flex-col bg-background text-foreground">
@@ -2091,6 +2131,59 @@ export function App() {
                   </Command>
                 </PopoverContent>
               </Popover>
+
+              {/* Effort selector — provider-kind aware. Anthropic uses its
+                  own enum (low/medium/high/max), OpenAI uses
+                  minimal/low/medium/high/xhigh. Copilot proxies the underlying
+                  model and ignores both, so we hide the selector. Unknown
+                  providers default to the OpenAI selector. */}
+              {(() => {
+                // Prefer the kind of the group containing the selected model;
+                // fall back to the currently-active provider's kind (covers
+                // empty `state.model` = "provider default" and unrecognised
+                // model strings).
+                const currentKind = modelGroups.find((g) => g.models.includes(state.model))?.kind || activeProviderKind;
+                if (currentKind === "github_copilot") return null;
+                if (currentKind === "anthropic") {
+                  return (
+                    <select
+                      value={anthropicEffort}
+                      onChange={(e) => {
+                        const v = e.target.value as AnthropicEffort;
+                        setAnthropicEffortState(v);
+                        persistAnthropicEffort(v);
+                      }}
+                      className="rounded-md border border-cronymax-border bg-cronymax-base px-1.5 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title transition"
+                      title="Anthropic adaptive thinking effort (claude-* models)"
+                    >
+                      <option value="">think: default</option>
+                      <option value="low">think: low</option>
+                      <option value="medium">think: medium</option>
+                      <option value="high">think: high</option>
+                      <option value="max">think: max</option>
+                    </select>
+                  );
+                }
+                return (
+                  <select
+                    value={reasoningEffort}
+                    onChange={(e) => {
+                      const v = e.target.value as ReasoningEffort;
+                      setReasoningEffortState(v);
+                      persistReasoningEffort(v);
+                    }}
+                    className="rounded-md border border-cronymax-border bg-cronymax-base px-1.5 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title transition"
+                    title="Reasoning effort (OpenAI gpt-5 / o-series)"
+                  >
+                    <option value="">think: default</option>
+                    <option value="minimal">think: minimal</option>
+                    <option value="low">think: low</option>
+                    <option value="medium">think: medium</option>
+                    <option value="high">think: high</option>
+                    <option value="xhigh">think: xhigh</option>
+                  </select>
+                );
+              })()}
 
               <div className="flex-1" />
 

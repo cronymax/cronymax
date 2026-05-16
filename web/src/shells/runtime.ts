@@ -36,6 +36,34 @@ export interface AgentDetail extends AgentEntry {
   system_prompt: string;
   memory_namespace: string;
   tools: string[];
+  /** OpenAI reasoning_effort hint (`minimal` | `low` | `medium` | `high`). */
+  reasoning_effort?: string;
+}
+
+/** Per-message LLM overrides for an agent run (chat-UI selections, etc.). */
+export interface AgentRunOptions {
+  /** OpenAI reasoning_effort. Empty/undefined = don't override. */
+  reasoning_effort?: string;
+  /** Anthropic adaptive thinking effort
+   * (`low` | `medium` | `high` | `max`). Empty/undefined = don't override. */
+  anthropic_effort?: string;
+  /** Override the active provider's default model. */
+  model?: string;
+  /** Override the active provider's wire kind for this run. Set when the
+   * user picks a model belonging to a non-active provider group. */
+  provider_kind?: string;
+  /** Override the active provider's base URL for this run. */
+  base_url?: string;
+  /** Override the active provider's API key for this run. */
+  api_key?: string;
+  /** Continue an existing chat session by id. */
+  session_id?: string;
+  /** Name for a newly-created session. */
+  session_name?: string;
+  /** Authored agent id (chat agent selector). */
+  agent_id?: string;
+  /** When set, starts a flow run with this flow id instead of a direct agent run. */
+  flow_id?: string;
 }
 
 export const agentRegistry = {
@@ -115,7 +143,10 @@ export const flowRun = {
 
 /**
  * Start an agent run for a given task string.
- * The browser process injects LLM config and workspace context.
+ * The browser process injects LLM config and workspace context. Per-message
+ * overrides in `opts` (model, reasoning_effort) are forwarded through
+ * `payload.llm.*` and merged with the active provider record on the C++
+ * side — caller-supplied values win.
  * Returns the run_id assigned by the Rust runtime.
  *
  * Pass `session_id` (e.g. the chat tab id) to enable session continuity:
@@ -123,26 +154,23 @@ export const flowRun = {
  * updated thread back to the session on completion.
  *
  * Pass `agent_id` to route to a specific agent definition (e.g. `"crony"`).
- * Pass `model_override` to override the provider's default model for this run.
+ * Pass `model` to override the provider's default model for this run.
  */
-export async function agentRun(
-  task: string,
-  opts?: {
-    session_id?: string;
-    session_name?: string;
-    agent_id?: string;
-    model_override?: string;
-    /** When set, starts a flow run with this flow id instead of a direct agent run. */
-    flow_id?: string;
-  },
-): Promise<string> {
+export async function agentRun(task: string, opts: AgentRunOptions = {}): Promise<string> {
   const payload: Record<string, unknown> = { task };
-  if (opts?.model_override) payload.model_override = opts.model_override;
-  if (opts?.flow_id) payload.flow_id = opts.flow_id;
+  const llm: Record<string, unknown> = {};
+  if (opts.reasoning_effort) llm.reasoning_effort = opts.reasoning_effort;
+  if (opts.anthropic_effort) llm.anthropic_effort = opts.anthropic_effort;
+  if (opts.model) llm.model = opts.model;
+  if (opts.provider_kind) llm.provider_kind = opts.provider_kind;
+  if (opts.base_url) llm.base_url = opts.base_url;
+  if (opts.api_key) llm.api_key = opts.api_key;
+  if (Object.keys(llm).length > 0) payload.llm = llm;
+  if (opts.flow_id) payload.flow_id = opts.flow_id;
   const req: Record<string, unknown> = { payload };
-  if (opts?.session_id) req.session_id = opts.session_id;
-  if (opts?.session_name) req.session_name = opts.session_name;
-  if (opts?.agent_id) req.agent_id = opts.agent_id;
+  if (opts.session_id) req.session_id = opts.session_id;
+  if (opts.session_name) req.session_name = opts.session_name;
+  if (opts.agent_id) req.agent_id = opts.agent_id;
   const res = (await runtimeSend("start.run", req)) as { run_id?: string };
   if (!res.run_id) throw new Error("runtime did not return run_id");
   return res.run_id;

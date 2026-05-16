@@ -120,13 +120,18 @@ pub struct ToolDef {
 /// Thinking / reasoning configuration attached to an [`LlmRequest`].
 ///
 /// The provider translates this into the correct wire representation:
-/// - [`ThinkingConfig::Adaptive`] → Anthropic `{"type":"adaptive","display":"summarized"}`
+/// - [`ThinkingConfig::Adaptive`] → Anthropic `{"type":"adaptive","display":"summarized","effort":...}`
 /// - [`ThinkingConfig::Budget`]   → Anthropic/compat `{"type":"enabled","budget_tokens":N}`
 /// - [`ThinkingConfig::ReasoningEffort`] → OpenAI `{"reasoning_effort":"medium"}`
 #[derive(Clone, Debug)]
 pub enum ThinkingConfig {
-    /// Adaptive summarised thinking (Anthropic claude-* models).
-    Adaptive { summarized: bool },
+    /// Adaptive summarised thinking (Anthropic claude-* models). `effort`
+    /// is the Anthropic adaptive effort level (`low` | `medium` | `high` |
+    /// `max`); `None` omits the field and lets the server pick its default.
+    Adaptive {
+        summarized: bool,
+        effort: Option<String>,
+    },
     /// Fixed token budget (Anthropic and compatible proxies).
     Budget { budget_tokens: u32 },
     /// Reasoning effort level (OpenAI o1-*, o3-*, o4-* models).
@@ -143,6 +148,10 @@ pub struct LlmRequest {
     /// Sampling temperature (`None` lets the provider apply its own
     /// default).
     pub temperature: Option<f32>,
+    /// OpenAI reasoning_effort hint for gpt-5 / o-series models
+    /// (`minimal` | `low` | `medium` | `high`). `None` means "don't
+    /// send the field" — let the model use its default.
+    pub reasoning_effort: Option<String>,
     /// Optional thinking/reasoning config. When `Some`, the provider
     /// includes the appropriate thinking parameters in the request.
     pub thinking: Option<ThinkingConfig>,
@@ -155,6 +164,7 @@ impl LlmRequest {
             messages,
             tools: Vec::new(),
             temperature: None,
+            reasoning_effort: None,
             thinking: None,
         }
     }

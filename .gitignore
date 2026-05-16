@@ -5,6 +5,13 @@
 build/
 out/
 compile_commands.json
+# CEF binary distribution — downloaded by cmake/CefDist.cmake into
+# build/cef-staging/. Any cef/ at the repo root is accidental.
+/cef/
+
+# Runtime logs (the top-level `*.log` rule above only matches files,
+# not directories — be explicit so `log/` doesn't show up untracked).
+/log/
 
 # Web (Vite + pnpm)
 bun.lock

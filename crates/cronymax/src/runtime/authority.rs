@@ -841,6 +841,14 @@ impl RuntimeAuthority {
             action,
         })?;
         let label = status_label(&next);
+        // Surface the failure reason in the event payload so UI surfaces
+        // can show *why* the run failed instead of an empty "(no output)".
+        let detail = match &next {
+            RunStatus::Failed { message } if !message.is_empty() => {
+                Some(serde_json::json!({ "message": message }))
+            }
+            _ => None,
+        };
         run.status = next;
         run.updated_at_ms = now;
         self.persistence.save(&inner.snapshot)?;
@@ -850,7 +858,7 @@ impl RuntimeAuthority {
             RuntimeEventPayload::RunStatus {
                 run_id: run_id.to_string(),
                 status: label.into(),
-                detail: None,
+                detail,
             },
         );
         Ok(())

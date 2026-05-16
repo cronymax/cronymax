@@ -870,6 +870,7 @@ impl FlowRuntime {
     /// - `Ok(None)` — still waiting for other reviewers.
     /// - `Ok(Some(contexts))` — all verdicts are in; either approval cascades
     ///   or rejection requeue context is returned.
+    #[allow(clippy::too_many_arguments)]
     pub async fn on_reviewer_verdict(
         &self,
         run_id: &str,
@@ -1440,6 +1441,7 @@ impl FlowRuntime {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn upsert_review_state(
         &self,
         flow_id: &str,

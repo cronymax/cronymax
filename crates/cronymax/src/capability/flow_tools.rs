@@ -480,6 +480,7 @@ pub fn register_flow_tools(
 /// * `flow_run_id` — the run containing the document.
 /// * `spawn_fn` — callback used to launch agent loops for any produced
 ///   [`InvocationContext`] values (e.g. rejection requeue).
+#[allow(clippy::too_many_arguments)]
 pub fn register_submit_review(
     builder: &mut DispatcherBuilder,
     flow_runtime: Arc<FlowRuntime>,

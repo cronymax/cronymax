@@ -37,14 +37,59 @@ const GLYPH_COLORS: Record<TraceEntry["kind"], string> = {
   memory_write: "text-sky-400",
 };
 
+/**
+ * Pull the most informative one-liner out of a tool-call args object
+ * so the trace row shows what *actually* happened without having to
+ * click each entry open. Examples: shell command, file path, query.
+ */
+function summarizeArgs(args: unknown): string {
+  // tool_start "arguments" arrives from the runtime as the raw JSON
+  // string the model produced; try to parse so we can pull useful keys.
+  let value: unknown = args;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        value = JSON.parse(trimmed);
+      } catch {
+        return value as string;
+      }
+    } else {
+      return value as string;
+    }
+  }
+  if (!value || typeof value !== "object") return "";
+  const obj = value as Record<string, unknown>;
+  // Common keys ordered from most to least specific.
+  const keys = ["command", "cmd", "path", "file", "file_path", "query", "url", "name", "message"];
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "string" && v) return v;
+  }
+  // Fallback: stringify the first scalar field we find.
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === "string" && v) return `${k}=${v}`;
+    if (typeof v === "number" || typeof v === "boolean") return `${k}=${String(v)}`;
+  }
+  return "";
+}
+
+function truncate(s: string, max = 80): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + "…";
+}
+
 function entryLabel(entry: TraceEntry): string {
   switch (entry.kind) {
     case "run_start":
       return `${entry.model} · ${entry.tools.length} tools · max ${entry.turnsLimit} turns`;
     case "assistant_turn":
       return `turn ${entry.turnId}${entry.finishReason ? ` (${entry.finishReason})` : ""}`;
-    case "tool_start":
-      return entry.tool || "tool";
+    case "tool_start": {
+      const tool = entry.tool || "tool";
+      const summary = truncate(summarizeArgs(entry.args));
+      return summary ? `${tool}: ${summary}` : tool;
+    }
     case "tool_done":
       return `${entry.tool || "tool"} done`;
     case "approval_request":

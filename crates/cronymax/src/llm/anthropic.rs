@@ -28,6 +28,11 @@ use super::messages::{ChatMessage, ChatRole, FinishReason, LlmRequest, ThinkingC
 use super::provider::{LlmEvent, LlmProvider, LlmStream};
 use super::stream::UnboundedReceiverStream;
 
+/// Anthropic API contract version pinned in the `anthropic-version` header.
+/// Required by `/v1/*` endpoints; not related to the model version.
+/// See <https://docs.anthropic.com/en/api/versioning>.
+pub const ANTHROPIC_API_VERSION: &str = "2023-06-01";
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /// Per-instance configuration for `AnthropicProvider`.
@@ -97,7 +102,7 @@ impl LlmProvider for AnthropicProvider {
             .http
             .post(&url)
             .header("content-type", "application/json")
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("accept", "text/event-stream");
 
         if let Some(key) = &self.config.api_key {
@@ -175,9 +180,19 @@ fn build_wire_request(req: &LlmRequest, model: &str, max_tokens: u32) -> serde_j
     }
 
     // Attach thinking parameters.
+    //
+    // Anthropic's adaptive thinking effort lives in the top-level
+    // `output_config` field, NOT inside `thinking`. Placing `effort`
+    // inside `thinking` is silently dropped by lenient proxies (and
+    // raises ValidationException on Bedrock). See:
+    //   https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html
     if let Some(thinking) = &req.thinking {
+        let mut adaptive_effort: Option<&str> = None;
         body["thinking"] = match thinking {
-            ThinkingConfig::Adaptive { .. } => {
+            ThinkingConfig::Adaptive { effort, .. } => {
+                if let Some(e) = effort {
+                    adaptive_effort = Some(e.as_str());
+                }
                 serde_json::json!({ "type": "adaptive", "display": "summarized" })
             }
             ThinkingConfig::Budget { budget_tokens } => {
@@ -191,8 +206,10 @@ fn build_wire_request(req: &LlmRequest, model: &str, max_tokens: u32) -> serde_j
             let obj = body.as_object_mut().unwrap();
             obj.remove("thinking");
         }
+        if let Some(eff) = adaptive_effort {
+            body["output_config"] = serde_json::json!({ "effort": eff });
+        }
     }
-
     body
 }
 
@@ -553,6 +570,7 @@ mod tests {
             messages,
             tools: vec![],
             temperature: None,
+            reasoning_effort: None,
             thinking: None,
         }
     }
@@ -604,10 +622,40 @@ mod tests {
     #[test]
     fn adaptive_thinking_config_serialized() {
         let mut req = make_request(vec![ChatMessage::user("think")]);
-        req.thinking = Some(ThinkingConfig::Adaptive { summarized: true });
+        req.thinking = Some(ThinkingConfig::Adaptive {
+            summarized: true,
+            effort: None,
+        });
         let body = build_wire_request(&req, "claude-3-5-sonnet-20241022", 8192);
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["thinking"]["display"], "summarized");
+        assert!(body["thinking"].get("effort").is_none());
+    }
+
+    #[test]
+    fn adaptive_thinking_config_effort_serialized() {
+        let mut req = make_request(vec![ChatMessage::user("think")]);
+        req.thinking = Some(ThinkingConfig::Adaptive {
+            summarized: true,
+            effort: Some("max".into()),
+        });
+        let body = build_wire_request(&req, "claude-3-5-sonnet-20241022", 8192);
+        // Effort lives in top-level output_config, not inside thinking.
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(body["thinking"].get("effort").is_none());
+        assert_eq!(body["output_config"]["effort"], "max");
+    }
+
+    #[test]
+    fn adaptive_thinking_without_effort_omits_output_config() {
+        let mut req = make_request(vec![ChatMessage::user("think")]);
+        req.thinking = Some(ThinkingConfig::Adaptive {
+            summarized: true,
+            effort: None,
+        });
+        let body = build_wire_request(&req, "claude-3-5-sonnet-20241022", 8192);
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(body.get("output_config").is_none());
     }
 
     #[test]

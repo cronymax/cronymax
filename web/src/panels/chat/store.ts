@@ -1099,3 +1099,36 @@ export function persistSelectedModel(model: string): void {
     /* ignore */
   }
 }
+
+/** Reasoning-effort override chosen in the chat toolbar. Empty = "use default". */
+export type ReasoningEffort = "" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export function loadReasoningEffort(): ReasoningEffort {
+  const v = localStorage.getItem("chat_reasoning_effort") || "";
+  return v === "minimal" || v === "low" || v === "medium" || v === "high" || v === "xhigh" ? v : "";
+}
+
+export function persistReasoningEffort(v: ReasoningEffort): void {
+  try {
+    localStorage.setItem("chat_reasoning_effort", v);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Anthropic adaptive-thinking effort override chosen in the chat toolbar.
+ * Empty = "use server default" (typically "high"). */
+export type AnthropicEffort = "" | "low" | "medium" | "high" | "max";
+
+export function loadAnthropicEffort(): AnthropicEffort {
+  const v = localStorage.getItem("chat_anthropic_effort") || "";
+  return v === "low" || v === "medium" || v === "high" || v === "max" ? v : "";
+}
+
+export function persistAnthropicEffort(v: AnthropicEffort): void {
+  try {
+    localStorage.setItem("chat_anthropic_effort", v);
+  } catch {
+    /* ignore */
+  }
+}

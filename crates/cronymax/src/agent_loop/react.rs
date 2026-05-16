@@ -83,6 +83,9 @@ pub struct LoopConfig {
     pub user_input: String,
     pub max_turns: usize,
     pub temperature: Option<f32>,
+    /// OpenAI reasoning_effort (`minimal`/`low`/`medium`/`high`) forwarded
+    /// on every LLM request in the loop. `None` = omit the field.
+    pub reasoning_effort: Option<String>,
     pub llm: Arc<dyn LlmProvider>,
     pub tools: Arc<dyn ToolDispatcher>,
     /// Optional thinking/reasoning config. When `Some`, it is attached to
@@ -117,6 +120,7 @@ impl std::fmt::Debug for LoopConfig {
             .field("user_input_len", &self.user_input.len())
             .field("max_turns", &self.max_turns)
             .field("temperature", &self.temperature)
+            .field("reasoning_effort", &self.reasoning_effort)
             .field("thinking", &self.thinking.as_ref().map(|_| "<config>"))
             .field("llm", &"<provider>")
             .field("tools", &"<dispatcher>")
@@ -298,13 +302,33 @@ impl ReactLoop {
                 messages: self.history.clone(),
                 tools: self.config.tools.definitions(),
                 temperature: self.config.temperature,
+                reasoning_effort: self.config.reasoning_effort.clone(),
                 thinking: self.config.thinking.clone(),
             };
 
-            let mut stream = self.config.llm.stream(req).await.map_err(|e| {
-                info!(run = %self.run_id, error = %e, "llm stream failed");
-                LoopError::Provider(e)
-            })?;
+            let mut stream = match self.config.llm.stream(req).await {
+                Ok(s) => s,
+                Err(e) => {
+                    // reqwest hides the actual root cause (DNS error,
+                    // connection timeout, TLS handshake, ...) inside
+                    // anyhow's source chain — flatten it into one
+                    // string so the UI gets actionable context.
+                    let full = format_error_chain(&e);
+                    info!(run = %self.run_id, error = %full, "llm stream failed");
+                    self.authority.emit_for_run(
+                        self.run_id,
+                        RuntimeEventPayload::Trace {
+                            run_id: self.run_id.to_string(),
+                            trace: serde_json::json!({
+                                "kind": "error",
+                                "where": "llm.stream",
+                                "message": full,
+                            }),
+                        },
+                    );
+                    return Err(LoopError::Provider(e));
+                }
+            };
 
             let mut text = String::new();
             let mut thinking_buf = String::new(); // accumulated thinking; NOT added to history
@@ -343,11 +367,19 @@ impl ReactLoop {
                         arguments_chunk,
                     } => {
                         let entry = calls.entry(index).or_default();
+                        // Only overwrite if the provider sent a
+                        // non-empty value — some compat APIs spam
+                        // `name: ""` deltas that would otherwise wipe
+                        // a previously-set name.
                         if let Some(id) = id {
-                            entry.id = id;
+                            if !id.is_empty() {
+                                entry.id = id;
+                            }
                         }
                         if let Some(name) = name {
-                            entry.name = name;
+                            if !name.is_empty() {
+                                entry.name = name;
+                            }
                         }
                         if let Some(chunk) = arguments_chunk {
                             entry.arguments.push_str(&chunk);
@@ -367,6 +399,17 @@ impl ReactLoop {
                         break;
                     }
                     LlmEvent::Error { message } => {
+                        self.authority.emit_for_run(
+                            self.run_id,
+                            RuntimeEventPayload::Trace {
+                                run_id: self.run_id.to_string(),
+                                trace: serde_json::json!({
+                                    "kind": "error",
+                                    "where": "llm.stream.event",
+                                    "message": &message,
+                                }),
+                            },
+                        );
                         return Err(LoopError::Provider(anyhow::anyhow!(message)));
                     }
                 }
@@ -417,6 +460,51 @@ impl ReactLoop {
                             "finish_reason=tool_calls but no calls accumulated; terminating"
                         );
                         return Ok(());
+                    }
+                    // Dump everything we accumulated so the UI/logs can
+                    // show what arrived from the provider. Catches
+                    // cases where a non-standard streaming format
+                    // produced empty names or ids.
+                    self.authority.emit_for_run(
+                        self.run_id,
+                        RuntimeEventPayload::Trace {
+                            run_id: self.run_id.to_string(),
+                            trace: serde_json::json!({
+                                "kind": "tool_calls_parsed",
+                                "turn": turn_id,
+                                "calls": tool_calls.iter().map(|c| serde_json::json!({
+                                    "id": c.id,
+                                    "name": c.name,
+                                    "args_len": c.arguments.len(),
+                                    "args_preview": c.arguments.chars().take(200).collect::<String>(),
+                                })).collect::<Vec<_>>(),
+                            }),
+                        },
+                    );
+                    // Bail early on malformed calls — otherwise we'd
+                    // dispatch with an empty name, get back
+                    // "no tool registered: ", feed that to the model,
+                    // and the model keeps retrying until max_turns.
+                    if let Some(bad) = tool_calls.iter().find(|c| c.name.is_empty()) {
+                        let msg = format!(
+                            "provider returned a tool_call with empty name (id={:?}, args_len={}). \
+                             This usually means the OpenAI-compatible endpoint streams tool_calls \
+                             in a non-standard format (e.g. via `message` instead of `delta`, or \
+                             omits `function.name`). The chat cannot proceed.",
+                            bad.id, bad.arguments.len()
+                        );
+                        self.authority.emit_for_run(
+                            self.run_id,
+                            RuntimeEventPayload::Trace {
+                                run_id: self.run_id.to_string(),
+                                trace: serde_json::json!({
+                                    "kind": "error",
+                                    "where": "react.tool_calls",
+                                    "message": &msg,
+                                }),
+                            },
+                        );
+                        return Err(LoopError::Provider(anyhow::anyhow!(msg)));
                     }
                     let mut terminal_seen = false;
                     for call in &tool_calls {
@@ -576,6 +664,7 @@ impl ReactLoop {
             messages: reflect_history,
             tools: vec![], // No tools during reflection.
             temperature: Some(0.3),
+            reasoning_effort: None,
             thinking: None,
         };
 
@@ -629,6 +718,24 @@ struct AccumCall {
     id: String,
     name: String,
     arguments: String,
+}
+
+/// Walk an `anyhow::Error`'s source chain and join every layer with
+/// `: `. reqwest wraps things deeply (e.g. `error sending request →
+/// connection error → tcp connect error → operation timed out`); we
+/// want the user to see the root cause too.
+fn format_error_chain(e: &anyhow::Error) -> String {
+    let mut out = e.to_string();
+    let mut src = e.source();
+    while let Some(s) = src {
+        let msg = s.to_string();
+        if !out.contains(&msg) {
+            out.push_str(": ");
+            out.push_str(&msg);
+        }
+        src = s.source();
+    }
+    out
 }
 
 #[allow(dead_code)]
@@ -692,6 +799,7 @@ mod tests {
             user_input: "hello".into(),
             max_turns: 10,
             temperature: None,
+            reasoning_effort: None,
             llm,
             tools,
             thinking: None,
@@ -917,11 +1025,8 @@ mod tests {
         // Wait until the run transitions to AwaitingReview (PermissionRequest event).
         let review_id: ReviewId = loop {
             let ev = receiver.recv().await.expect("subscription channel closed");
-            match ev.payload {
-                RuntimeEventPayload::PermissionRequest { review_id, .. } => {
-                    break ReviewId(Uuid::parse_str(&review_id).expect("valid uuid"));
-                }
-                _ => {}
+            if let RuntimeEventPayload::PermissionRequest { review_id, .. } = ev.payload {
+                break ReviewId(Uuid::parse_str(&review_id).expect("valid uuid"));
             }
         };
 
@@ -966,11 +1071,8 @@ mod tests {
 
         let review_id: ReviewId = loop {
             let ev = receiver.recv().await.expect("subscription channel closed");
-            match ev.payload {
-                RuntimeEventPayload::PermissionRequest { review_id, .. } => {
-                    break ReviewId(Uuid::parse_str(&review_id).expect("valid uuid"));
-                }
-                _ => {}
+            if let RuntimeEventPayload::PermissionRequest { review_id, .. } = ev.payload {
+                break ReviewId(Uuid::parse_str(&review_id).expect("valid uuid"));
             }
         };
 

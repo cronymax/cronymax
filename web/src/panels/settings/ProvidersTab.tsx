@@ -11,13 +11,16 @@ import { useStore } from "./store";
 type ProviderKind = "openai" | "anthropic" | "ollama" | "github_copilot" | "custom";
 const KIND_PRESETS: Record<ProviderKind, { base_url: string; default_model: string; display: string }> = {
   openai: {
-    base_url: "https://api.openai.com/v1",
+    base_url: "https://api.openai.com",
     default_model: "gpt-4o-mini",
     display: "OpenAI",
   },
   anthropic: {
-    base_url: "https://api.anthropic.com/v1",
-    default_model: "claude-3-5-sonnet-latest",
+    base_url: "https://api.anthropic.com",
+    // Sonnet 4.6 is Anthropic's recommended default — best
+    // balance of speed, cost, and capability; supports adaptive
+    // thinking + effort out of the box.
+    default_model: "claude-sonnet-4-6",
     display: "Anthropic",
   },
   ollama: {
@@ -42,6 +45,8 @@ function newProvider(kind: ProviderKind = "openai"): LlmProvider {
     base_url: preset.base_url,
     api_key: "",
     default_model: preset.default_model,
+    reasoning_effort: "",
+    anthropic_effort: "",
   };
 }
 
@@ -184,6 +189,8 @@ function parseProviders(raw: string): LlmProvider[] {
         base_url: String(x.base_url ?? ""),
         api_key: String(x.api_key ?? ""),
         default_model: String(x.default_model ?? ""),
+        reasoning_effort: typeof x.reasoning_effort === "string" ? x.reasoning_effort : "",
+        anthropic_effort: typeof x.anthropic_effort === "string" ? x.anthropic_effort : "",
       }));
   } catch {
     return [];
@@ -531,7 +538,7 @@ export function ProvidersTab() {
                 className="h-7 text-xs"
                 value={draft.base_url}
                 onChange={(e) => setDraft({ ...draft, base_url: e.target.value })}
-                placeholder="https://api.openai.com/v1"
+                placeholder="https://api.openai.com"
               />
             </Field>
             <Field label="API key">
@@ -559,6 +566,72 @@ export function ProvidersTab() {
                 provider={draft}
               />
             </Field>
+            {draft.kind === "anthropic" ? (
+              <Field label="Thinking effort">
+                <Select
+                  value={draft.anthropic_effort || "none"}
+                  onValueChange={(v) => setDraft({ ...draft, anthropic_effort: v === "none" ? "" : v })}
+                >
+                  <SelectTrigger
+                    className="h-7 text-xs"
+                    title="Default adaptive-thinking effort for Anthropic claude-* models. Per-message chat dropdown can override."
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none" className="text-xs">
+                      none (use model default)
+                    </SelectItem>
+                    <SelectItem value="low" className="text-xs">
+                      low
+                    </SelectItem>
+                    <SelectItem value="medium" className="text-xs">
+                      medium
+                    </SelectItem>
+                    <SelectItem value="high" className="text-xs">
+                      high
+                    </SelectItem>
+                    <SelectItem value="max" className="text-xs">
+                      max
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            ) : draft.kind === "ollama" ? null : (
+              <Field label="Reasoning effort">
+                <Select
+                  value={draft.reasoning_effort || "none"}
+                  onValueChange={(v) => setDraft({ ...draft, reasoning_effort: v === "none" ? "" : v })}
+                >
+                  <SelectTrigger
+                    className="h-7 text-xs"
+                    title="Default reasoning_effort for OpenAI gpt-5 / o-series. Per-message chat dropdown can override."
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none" className="text-xs">
+                      none (use model default)
+                    </SelectItem>
+                    <SelectItem value="minimal" className="text-xs">
+                      minimal
+                    </SelectItem>
+                    <SelectItem value="low" className="text-xs">
+                      low
+                    </SelectItem>
+                    <SelectItem value="medium" className="text-xs">
+                      medium
+                    </SelectItem>
+                    <SelectItem value="high" className="text-xs">
+                      high
+                    </SelectItem>
+                    <SelectItem value="xhigh" className="text-xs">
+                      xhigh
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
 
             {msg && <p className="mb-3 text-xs text-muted-foreground">{msg}</p>}
             <div className="flex items-center gap-2">

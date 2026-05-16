@@ -39,7 +39,7 @@ use crate::flow::definition::FlowDefinition;
 use crate::flow::runtime::{FlowRuntime, InvocationContext};
 use crate::llm::{
     copilot_auth, AnthropicConfig, AnthropicProvider, CapabilityResolver, OpenAiConfig,
-    OpenAiProvider,
+    OpenAiProvider, ThinkingConfig,
 };
 use crate::protocol::capabilities::CapabilityResponse;
 use crate::protocol::control::{ControlError, ControlRequest, ControlResponse, ReviewDecision};
@@ -58,6 +58,27 @@ use uuid::Uuid;
 use super::authority::{AuthorityError, RuntimeAuthority, SubscribeOutcome};
 use super::state::{PermissionState, ReviewId, RunId, SessionId, Space, SpaceId};
 
+/// Apply a per-run Anthropic effort override onto a model-derived
+/// `ThinkingConfig`. Only the `Adaptive` variant carries an effort field;
+/// other variants pass through unchanged. `None` for `override_effort`
+/// leaves the existing value (typically the server default) intact.
+fn apply_anthropic_effort_override(
+    cfg: Option<ThinkingConfig>,
+    override_effort: Option<&str>,
+) -> Option<ThinkingConfig> {
+    let Some(eff) = override_effort.map(str::trim).filter(|s| !s.is_empty()) else {
+        return cfg;
+    };
+    match cfg {
+        Some(ThinkingConfig::Adaptive { summarized, .. }) => Some(ThinkingConfig::Adaptive {
+            summarized,
+            effort: Some(eff.to_owned()),
+        }),
+        // Other variants don't take an effort; leave unchanged.
+        other => other,
+    }
+}
+
 // ── Shared context for one flow run ──────────────────────────────────────────
 
 /// Context cloned into the supervision task and agent-spawn helper so
@@ -75,6 +96,14 @@ struct FlowRunContext {
     api_key: Option<String>,
     model: String,
     provider_kind: String,
+    /// OpenAI reasoning_effort hint inherited from the start_run payload
+    /// (`payload.llm.reasoning_effort`). Per-agent YAML can override this.
+    reasoning_effort: Option<String>,
+    /// Anthropic adaptive thinking effort inherited from the start_run
+    /// payload (`payload.llm.anthropic_effort`). One of
+    /// `low` | `medium` | `high` | `max`. Only applied when the underlying
+    /// provider is native Anthropic.
+    anthropic_effort: Option<String>,
     /// Sandbox policy for capability gates. `None` = permissive (no checks).
     sandbox_policy: Option<Arc<SandboxPolicy>>,
     /// Workspace-scoped cache directory used for ChatStore persistence.
@@ -290,7 +319,7 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
         // don't accept the Anthropic-style `thinking` field.
         let thinking_config = if is_anthropic {
             let caps = CapabilityResolver::resolve(&model, &base_url, api_key.as_deref()).await;
-            caps.thinking_config()
+            apply_anthropic_effort_override(caps.thinking_config(), ctx.anthropic_effort.as_deref())
         } else {
             None
         };
@@ -327,12 +356,20 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
                 }
             }
         };
+        // Per-agent yaml takes precedence over the flow-run default
+        // (which itself came from payload.llm.reasoning_effort).
+        let effective_effort = if !agent_def.reasoning_effort.is_empty() {
+            Some(agent_def.reasoning_effort.clone())
+        } else {
+            ctx.reasoning_effort.clone()
+        };
         let cfg = LoopConfig {
             model: model.clone(),
             system_prompt: Some(system_message.clone()),
             user_input: "Continue with your assigned task as described above.".to_owned(),
             max_turns: 99999,
             temperature: None,
+            reasoning_effort: effective_effort,
             llm,
             tools,
             thinking: thinking_config,
@@ -497,6 +534,7 @@ fn spawn_chat_turn(ctx: FlowRunContext, session_id: String, message: String) {
             user_input: message,
             max_turns: 99999,
             temperature: None,
+            reasoning_effort: None,
             llm,
             tools,
             thinking: None,
@@ -807,6 +845,25 @@ impl Handler for RuntimeHandler {
                     .and_then(|v| v.as_str())
                     .unwrap_or("openai_compat")
                     .to_string();
+                // Optional OpenAI reasoning_effort: minimal/low/medium/high.
+                // Source: payload.llm.reasoning_effort, set by the host from
+                // either the active provider record or a per-message UI override.
+                let reasoning_effort: Option<String> = llm_obj
+                    .and_then(|l| l.get("reasoning_effort"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .filter(|s| {
+                        matches!(s.as_str(), "minimal" | "low" | "medium" | "high" | "xhigh")
+                    });
+                // Optional Anthropic adaptive effort: low/medium/high/max.
+                // Source: payload.llm.anthropic_effort, set by the host from a
+                // per-message UI override. Only meaningful for native
+                // Anthropic providers; ignored elsewhere.
+                let anthropic_effort: Option<String> = llm_obj
+                    .and_then(|l| l.get("anthropic_effort"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .filter(|s| matches!(s.as_str(), "low" | "medium" | "high" | "max"));
                 let user_input = payload
                     .get("task")
                     .and_then(|v| v.as_str())
@@ -1037,6 +1094,8 @@ impl Handler for RuntimeHandler {
                                 api_key: api_key.clone(),
                                 model: model.clone(),
                                 provider_kind: provider_kind.clone(),
+                                reasoning_effort: reasoning_effort.clone(),
+                                anthropic_effort: anthropic_effort.clone(),
                                 sandbox_policy: self.sandbox_policy.clone(),
                                 workspace_cache_dir: self.workspace_cache_dir.clone(),
                             };
@@ -1349,6 +1408,8 @@ impl Handler for RuntimeHandler {
                                                         api_key: sup_api_key.clone(),
                                                         model: sup_model.clone(),
                                                         provider_kind: sup_provider_kind.clone(),
+                                                        reasoning_effort: None,
+                                                        anthropic_effort: None,
                                                         sandbox_policy: sup_sandbox.clone(),
                                                         workspace_cache_dir: sup_wcd.clone(),
                                                     };
@@ -1445,6 +1506,8 @@ impl Handler for RuntimeHandler {
                                         api_key: api_key_for_spawn.clone(),
                                         model: model_for_spawn.clone(),
                                         provider_kind: provider_kind_for_spawn.clone(),
+                                        reasoning_effort: None,
+                                        anthropic_effort: None,
                                         sandbox_policy: sandbox_for_spawn.clone(),
                                         workspace_cache_dir: wcd_for_spawn.clone(),
                                     };
@@ -1497,6 +1560,8 @@ impl Handler for RuntimeHandler {
                                             api_key: api_key.clone(),
                                             model: model.clone(),
                                             provider_kind: provider_kind.clone(),
+                                            reasoning_effort: None,
+                                            anthropic_effort: None,
                                             sandbox_policy: self.sandbox_policy.clone(),
                                             workspace_cache_dir: self.workspace_cache_dir.clone(),
                                         };
@@ -1591,6 +1656,8 @@ impl Handler for RuntimeHandler {
                         let workspace_cache_dir_clone = self.workspace_cache_dir.clone();
                         let is_copilot = provider_kind == "github_copilot";
                         let is_anthropic = provider_kind == "anthropic";
+                        let chat_reasoning_effort = reasoning_effort.clone();
+                        let chat_anthropic_effort = anthropic_effort.clone();
                         tokio::spawn(async move {
                             // For GitHub Copilot, exchange the stored GitHub OAuth token for
                             // the short-lived Copilot API token required by the API.
@@ -1634,11 +1701,10 @@ impl Handler for RuntimeHandler {
                                     effective_api_key.as_deref(),
                                 )
                                 .await;
-                                let cfg = caps.thinking_config();
-                                if cfg.is_some() {
-                                    info!(%run_id, %model, "react_loop: thinking config resolved");
-                                }
-                                cfg
+                                apply_anthropic_effort_override(
+                                    caps.thinking_config(),
+                                    chat_anthropic_effort.as_deref(),
+                                )
                             } else {
                                 None
                             };
@@ -1676,6 +1742,13 @@ impl Handler for RuntimeHandler {
                                     }
                                 }
                             };
+                            // Chat without a flow / authored system prompt
+                            // gets a small default so the model has a clear
+                            // "you may stop now" condition. Without this,
+                            // gpt-4o-class models often keep calling tools
+                            // until max_turns hits.
+                            let chat_system_prompt = effective_system_prompt
+                                .or_else(|| Some(default_chat_system_prompt()));
 
                             // Compact the session thread before starting the run
                             // if it is approaching the model's context limit.
@@ -1730,10 +1803,11 @@ impl Handler for RuntimeHandler {
 
                             let cfg = LoopConfig {
                                 model,
-                                system_prompt: effective_system_prompt,
+                                system_prompt: chat_system_prompt,
                                 user_input,
                                 max_turns: 99999,
                                 temperature: None,
+                                reasoning_effort: chat_reasoning_effort,
                                 llm,
                                 tools,
                                 thinking: thinking_config,
@@ -1976,6 +2050,10 @@ impl Handler for RuntimeHandler {
                 let workspace_cache_dir_clone = self.workspace_cache_dir.clone();
                 let is_copilot = provider_kind == "github_copilot";
                 let is_anthropic = provider_kind == "anthropic";
+                // Resumed runs don't have per-message reasoning_effort plumbed
+                // through the persisted run state yet; fall back to the
+                // provider/agent defaults applied by the loop config.
+                let chat_reasoning_effort: Option<String> = None;
 
                 tokio::spawn(async move {
                     let (effective_api_key, copilot_mode) = if is_copilot {
@@ -2068,6 +2146,7 @@ impl Handler for RuntimeHandler {
                         user_input,
                         max_turns: 99999,
                         temperature: None,
+                        reasoning_effort: chat_reasoning_effort.clone(),
                         llm,
                         tools,
                         thinking: thinking_config,
@@ -2667,6 +2746,7 @@ impl Handler for RuntimeHandler {
                             "system_prompt": d.system_prompt,
                             "memory_namespace": d.memory_namespace,
                             "tools": d.tools,
+                            "reasoning_effort": d.reasoning_effort,
                             "builtin": false,
                             "prompt_sealed": false,
                         }),
@@ -3254,6 +3334,20 @@ impl RuntimeHandler {
 }
 
 /// Base64-encode bytes for terminal output events.
+/// Minimal default system prompt for ad-hoc chat (no flow, no authored
+/// agent yaml). Without this, agentic models like gpt-4o keep calling
+/// tools until max_turns runs out because nothing tells them when the
+/// task is "done enough" to write a final answer.
+fn default_chat_system_prompt() -> String {
+    [
+        "You are a helpful coding assistant operating inside a developer's workspace.",
+        "You may use the provided tools (shell, filesystem, etc.) to investigate the project, but only when the user's request actually requires it.",
+        "Use the minimum number of tool calls needed. As soon as you have enough information to answer, stop calling tools and reply to the user with a concise summary.",
+        "If the request is purely conversational, answer directly without invoking any tool.",
+    ]
+    .join(" ")
+}
+
 fn base64_encode(data: &[u8]) -> String {
     // Simple base64 without dependencies — use the alphabet directly.
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

@@ -1,6 +1,6 @@
 //! Model capability probing and caching.
 //!
-//! On first use, [`CapabilityResolver::resolve`] attempts a `GET {base_url}/models`
+//! On first use, [`CapabilityResolver::resolve`] attempts a `GET {base_url}/v1/models`
 //! call to discover thinking/reasoning capabilities. Results are cached to
 //! `~/.cronymax/model-caps-<sha256(base_url)>.json` with a 1-hour TTL. On any
 //! failure the built-in static table is used as a fallback.
@@ -45,7 +45,10 @@ impl ModelCapabilities {
     pub fn thinking_config(&self) -> Option<ThinkingConfig> {
         match &self.thinking {
             ThinkingSupport::None => None,
-            ThinkingSupport::Adaptive { .. } => Some(ThinkingConfig::Adaptive { summarized: true }),
+            ThinkingSupport::Adaptive { .. } => Some(ThinkingConfig::Adaptive {
+                summarized: true,
+                effort: None,
+            }),
             ThinkingSupport::Budget { min, max } => {
                 // Cap at min(max, 16000) but keep at least min.
                 let budget = (*max).min(16_000).max(*min);
@@ -193,7 +196,7 @@ struct ModelSupports {
     reasoning_effort: Option<Vec<String>>,
 }
 
-/// Try `GET {base_url}/models` and find `model_id` in the response. Returns
+/// Try `GET {base_url}/v1/models` and find `model_id` in the response. Returns
 /// `None` on any failure so the caller can fall back to the static table.
 async fn probe_models(
     http: &reqwest::Client,
@@ -201,7 +204,10 @@ async fn probe_models(
     model_id: &str,
     api_key: Option<&str>,
 ) -> Option<ModelCapabilities> {
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    // Normalize base_url so a trailing `/v1` (legacy convention) doesn't
+    // produce `/v1/v1/models`.
+    let base = base_url.trim_end_matches('/').trim_end_matches("/v1");
+    let url = format!("{base}/v1/models");
     let mut req = http.get(&url).header("accept", "application/json");
     if let Some(key) = api_key {
         req = req.bearer_auth(key);
@@ -251,7 +257,7 @@ impl CapabilityResolver {
     ///
     /// Order:
     /// 1. In-process cache (1-hour TTL at `~/.cronymax/model-caps-*.json`)
-    /// 2. Dynamic `GET {base_url}/models` probe
+    /// 2. Dynamic `GET {base_url}/v1/models` probe
     /// 3. Static fallback table
     pub async fn resolve(
         model_id: &str,
@@ -348,8 +354,9 @@ mod tests {
                 max_budget: 32_000,
             },
         };
-        if let Some(ThinkingConfig::Adaptive { summarized }) = caps.thinking_config() {
+        if let Some(ThinkingConfig::Adaptive { summarized, effort }) = caps.thinking_config() {
             assert!(summarized);
+            assert!(effort.is_none());
         } else {
             panic!("expected Adaptive config");
         }

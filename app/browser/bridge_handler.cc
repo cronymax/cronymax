@@ -156,13 +156,15 @@ class LlmConfigEnricher : public ControlEnricher {
       return;
     if (!req.contains("payload") || !req["payload"].is_object())
       return;
-    if (!req["payload"].contains("task") || req["payload"].contains("llm"))
+    if (!req["payload"].contains("task"))
       return;
 
     std::string base_url = "https://api.openai.com/v1";
     std::string api_key;
     std::string model = "gpt-4o-mini";
     std::string provider_kind = "openai_compat";
+    std::string reasoning_effort;
+    std::string anthropic_effort;
 
     const std::string providers_raw = sm->store().GetKv("llm.providers");
     const std::string active_id = sm->store().GetKv("llm.active_provider_id");
@@ -186,6 +188,14 @@ class LlmConfigEnricher : public ControlEnricher {
             const std::string pk = p.value("kind", std::string{});
             if (!pk.empty())
               provider_kind = pk;
+            if (const auto it = p.find("reasoning_effort");
+                it != p.end() && it->is_string()) {
+              reasoning_effort = it->get<std::string>();
+            }
+            if (const auto it = p.find("anthropic_effort");
+                it != p.end() && it->is_string()) {
+              anthropic_effort = it->get<std::string>();
+            }
             break;
           }
         }
@@ -196,17 +206,27 @@ class LlmConfigEnricher : public ControlEnricher {
         base_url = llm_cfg.base_url;
       api_key = llm_cfg.api_key;
     }
-    req["payload"]["llm"] = {
-        {"base_url", base_url},
-        {"api_key", api_key},
-        {"model", model},
-        {"provider_kind", provider_kind},
-    };
+    // Ensure payload.llm exists, then merge: renderer-supplied fields win.
+    if (!req["payload"].contains("llm") || !req["payload"]["llm"].is_object())
+      req["payload"]["llm"] = nlohmann::json::object();
+    auto& llm = req["payload"]["llm"];
+    if (!llm.contains("base_url"))
+      llm["base_url"] = base_url;
+    if (!llm.contains("api_key"))
+      llm["api_key"] = api_key;
+    if (!llm.contains("model"))
+      llm["model"] = model;
+    if (!llm.contains("provider_kind"))
+      llm["provider_kind"] = provider_kind;
+    if (!llm.contains("reasoning_effort") && !reasoning_effort.empty())
+      llm["reasoning_effort"] = reasoning_effort;
+    if (!llm.contains("anthropic_effort") && !anthropic_effort.empty())
+      llm["anthropic_effort"] = anthropic_effort;
     if (req["payload"].contains("model_override")) {
       const std::string mo =
           req["payload"].value("model_override", std::string{});
       if (!mo.empty())
-        req["payload"]["llm"]["model"] = mo;
+        llm["model"] = mo;
       req["payload"].erase("model_override");
     }
   }
