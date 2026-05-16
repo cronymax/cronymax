@@ -164,6 +164,7 @@ class LlmConfigEnricher : public ControlEnricher {
     std::string model = "gpt-4o-mini";
     std::string provider_kind = "openai_compat";
     std::string reasoning_effort;
+    std::string anthropic_effort;
 
     const std::string providers_raw = sm->store().GetKv("llm.providers");
     const std::string active_id = sm->store().GetKv("llm.active_provider_id");
@@ -191,6 +192,10 @@ class LlmConfigEnricher : public ControlEnricher {
                 it != p.end() && it->is_string()) {
               reasoning_effort = it->get<std::string>();
             }
+            if (const auto it = p.find("anthropic_effort");
+                it != p.end() && it->is_string()) {
+              anthropic_effort = it->get<std::string>();
+            }
             break;
           }
         }
@@ -215,6 +220,8 @@ class LlmConfigEnricher : public ControlEnricher {
       llm["provider_kind"] = provider_kind;
     if (!llm.contains("reasoning_effort") && !reasoning_effort.empty())
       llm["reasoning_effort"] = reasoning_effort;
+    if (!llm.contains("anthropic_effort") && !anthropic_effort.empty())
+      llm["anthropic_effort"] = anthropic_effort;
     if (req["payload"].contains("model_override")) {
       const std::string mo =
           req["payload"].value("model_override", std::string{});

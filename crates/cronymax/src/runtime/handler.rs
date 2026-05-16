@@ -39,7 +39,7 @@ use crate::flow::definition::FlowDefinition;
 use crate::flow::runtime::{FlowRuntime, InvocationContext};
 use crate::llm::{
     copilot_auth, AnthropicConfig, AnthropicProvider, CapabilityResolver, OpenAiConfig,
-    OpenAiProvider,
+    OpenAiProvider, ThinkingConfig,
 };
 use crate::protocol::capabilities::CapabilityResponse;
 use crate::protocol::control::{ControlError, ControlRequest, ControlResponse, ReviewDecision};
@@ -57,6 +57,27 @@ use uuid::Uuid;
 
 use super::authority::{AuthorityError, RuntimeAuthority, SubscribeOutcome};
 use super::state::{PermissionState, ReviewId, RunId, SessionId, Space, SpaceId};
+
+/// Apply a per-run Anthropic effort override onto a model-derived
+/// `ThinkingConfig`. Only the `Adaptive` variant carries an effort field;
+/// other variants pass through unchanged. `None` for `override_effort`
+/// leaves the existing value (typically the server default) intact.
+fn apply_anthropic_effort_override(
+    cfg: Option<ThinkingConfig>,
+    override_effort: Option<&str>,
+) -> Option<ThinkingConfig> {
+    let Some(eff) = override_effort.map(str::trim).filter(|s| !s.is_empty()) else {
+        return cfg;
+    };
+    match cfg {
+        Some(ThinkingConfig::Adaptive { summarized, .. }) => Some(ThinkingConfig::Adaptive {
+            summarized,
+            effort: Some(eff.to_owned()),
+        }),
+        // Other variants don't take an effort; leave unchanged.
+        other => other,
+    }
+}
 
 // ── Shared context for one flow run ──────────────────────────────────────────
 
@@ -78,6 +99,11 @@ struct FlowRunContext {
     /// OpenAI reasoning_effort hint inherited from the start_run payload
     /// (`payload.llm.reasoning_effort`). Per-agent YAML can override this.
     reasoning_effort: Option<String>,
+    /// Anthropic adaptive thinking effort inherited from the start_run
+    /// payload (`payload.llm.anthropic_effort`). One of
+    /// `low` | `medium` | `high` | `max`. Only applied when the underlying
+    /// provider is native Anthropic.
+    anthropic_effort: Option<String>,
     /// Sandbox policy for capability gates. `None` = permissive (no checks).
     sandbox_policy: Option<Arc<SandboxPolicy>>,
     /// Workspace-scoped cache directory used for ChatStore persistence.
@@ -293,7 +319,7 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
         // don't accept the Anthropic-style `thinking` field.
         let thinking_config = if is_anthropic {
             let caps = CapabilityResolver::resolve(&model, &base_url, api_key.as_deref()).await;
-            caps.thinking_config()
+            apply_anthropic_effort_override(caps.thinking_config(), ctx.anthropic_effort.as_deref())
         } else {
             None
         };
@@ -829,6 +855,15 @@ impl Handler for RuntimeHandler {
                     .filter(|s| {
                         matches!(s.as_str(), "minimal" | "low" | "medium" | "high" | "xhigh")
                     });
+                // Optional Anthropic adaptive effort: low/medium/high/max.
+                // Source: payload.llm.anthropic_effort, set by the host from a
+                // per-message UI override. Only meaningful for native
+                // Anthropic providers; ignored elsewhere.
+                let anthropic_effort: Option<String> = llm_obj
+                    .and_then(|l| l.get("anthropic_effort"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .filter(|s| matches!(s.as_str(), "low" | "medium" | "high" | "max"));
                 let user_input = payload
                     .get("task")
                     .and_then(|v| v.as_str())
@@ -1060,6 +1095,7 @@ impl Handler for RuntimeHandler {
                                 model: model.clone(),
                                 provider_kind: provider_kind.clone(),
                                 reasoning_effort: reasoning_effort.clone(),
+                                anthropic_effort: anthropic_effort.clone(),
                                 sandbox_policy: self.sandbox_policy.clone(),
                                 workspace_cache_dir: self.workspace_cache_dir.clone(),
                             };
@@ -1373,6 +1409,7 @@ impl Handler for RuntimeHandler {
                                                         model: sup_model.clone(),
                                                         provider_kind: sup_provider_kind.clone(),
                                                         reasoning_effort: None,
+                                                        anthropic_effort: None,
                                                         sandbox_policy: sup_sandbox.clone(),
                                                         workspace_cache_dir: sup_wcd.clone(),
                                                     };
@@ -1470,6 +1507,7 @@ impl Handler for RuntimeHandler {
                                         model: model_for_spawn.clone(),
                                         provider_kind: provider_kind_for_spawn.clone(),
                                         reasoning_effort: None,
+                                        anthropic_effort: None,
                                         sandbox_policy: sandbox_for_spawn.clone(),
                                         workspace_cache_dir: wcd_for_spawn.clone(),
                                     };
@@ -1523,6 +1561,7 @@ impl Handler for RuntimeHandler {
                                             model: model.clone(),
                                             provider_kind: provider_kind.clone(),
                                             reasoning_effort: None,
+                                            anthropic_effort: None,
                                             sandbox_policy: self.sandbox_policy.clone(),
                                             workspace_cache_dir: self.workspace_cache_dir.clone(),
                                         };
@@ -1618,6 +1657,7 @@ impl Handler for RuntimeHandler {
                         let is_copilot = provider_kind == "github_copilot";
                         let is_anthropic = provider_kind == "anthropic";
                         let chat_reasoning_effort = reasoning_effort.clone();
+                        let chat_anthropic_effort = anthropic_effort.clone();
                         tokio::spawn(async move {
                             // For GitHub Copilot, exchange the stored GitHub OAuth token for
                             // the short-lived Copilot API token required by the API.
@@ -1661,11 +1701,10 @@ impl Handler for RuntimeHandler {
                                     effective_api_key.as_deref(),
                                 )
                                 .await;
-                                let cfg = caps.thinking_config();
-                                if cfg.is_some() {
-                                    info!(%run_id, %model, "react_loop: thinking config resolved");
-                                }
-                                cfg
+                                apply_anthropic_effort_override(
+                                    caps.thinking_config(),
+                                    chat_anthropic_effort.as_deref(),
+                                )
                             } else {
                                 None
                             };

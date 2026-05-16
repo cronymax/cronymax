@@ -4,9 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { listProviderModels, type ProviderKind } from "@/shells/llm";
 
 // ── Providers tab ─────────────────────────────────────────────────────────
-type ProviderKind = "openai" | "anthropic" | "ollama" | "github_copilot" | "custom";
 
 export interface LlmProvider {
   id: string;
@@ -15,37 +15,12 @@ export interface LlmProvider {
   base_url: string;
   api_key: string;
   default_model: string;
-  /** Default reasoning_effort for runs against this provider. Empty = none. */
+  /** Default reasoning_effort for OpenAI-style runs against this provider
+   * (gpt-5 / o-series). Empty = none. */
   reasoning_effort?: string;
-}
-const ANTHROPIC_MODELS = [
-  "claude-opus-4-5",
-  "claude-sonnet-4-5",
-  "claude-3-5-sonnet-latest",
-  "claude-3-5-haiku-latest",
-  "claude-3-opus-20240229",
-];
-
-async function listProviderModels(provider: LlmProvider): Promise<string[]> {
-  const { kind, base_url, api_key } = provider;
-  if (!base_url) return [];
-  if (kind === "anthropic") return ANTHROPIC_MODELS;
-  if (kind === "ollama") {
-    const base = base_url.replace(/\/v1\/?$/, "");
-    const res = await fetch(`${base}/api/tags`, {
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) throw new Error(`/api/tags ${res.status}`);
-    const data = await res.json();
-    return ((data.models ?? []) as { name: string }[]).map((m) => m.name).sort();
-  }
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (api_key) headers.Authorization = `Bearer ${api_key}`;
-  const url = `${base_url.replace(/\/?$/, "")}/models`;
-  const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
-  if (!res.ok) throw new Error(`/models ${res.status}`);
-  const data = await res.json();
-  return ((data.data ?? []) as { id: string }[]).map((m) => m.id).sort();
+  /** Default Anthropic adaptive-thinking effort (claude-* models).
+   * Values: "" | "low" | "medium" | "high" | "max". Empty = none. */
+  anthropic_effort?: string;
 }
 
 export function ModelSelect({

@@ -3,7 +3,7 @@
 //! Implements the same wire shape the renderer used in
 //! `web/src/agent_runtime/llm.js`:
 //!
-//! * `POST {base_url}/chat/completions`
+//! * `POST {base_url}/v1/chat/completions`
 //! * Body: `{ model, messages, stream: true, tools?, tool_choice: "auto" }`
 //! * Response: `text/event-stream`, lines prefixed `data: `, each
 //!   payload is a JSON `ChatCompletionChunk`.
@@ -55,7 +55,7 @@ pub struct OpenAiConfig {
 impl Default for OpenAiConfig {
     fn default() -> Self {
         Self {
-            base_url: "https://api.openai.com/v1".into(),
+            base_url: "https://api.openai.com".into(),
             api_key: None,
             default_model: "gpt-4o-mini".into(),
             connect_timeout: Duration::from_secs(30),
@@ -94,10 +94,14 @@ impl OpenAiProvider {
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
     async fn stream(&self, request: LlmRequest) -> anyhow::Result<LlmStream> {
-        let url = format!(
-            "{}/chat/completions",
-            self.config.base_url.trim_end_matches('/')
-        );
+        // Normalize base_url so a trailing `/v1` (legacy convention) doesn't
+        // produce `/v1/v1/chat/completions` when we append `/v1/...`.
+        let base = self
+            .config
+            .base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/v1");
+        let url = format!("{base}/v1/chat/completions");
         let body = WireRequest::from_request(&request, &self.config.default_model);
 
         let mut req = self

@@ -30,7 +30,7 @@ pub mod provider;
 pub mod registry;
 mod stream;
 
-pub use anthropic::{AnthropicConfig, AnthropicProvider};
+pub use anthropic::{AnthropicConfig, AnthropicProvider, ANTHROPIC_API_VERSION};
 pub use capabilities::{CapabilityResolver, ModelCapabilities, ThinkingSupport};
 pub use messages::{
     ChatMessage, ChatRole, FinishReason, LlmRequest, ThinkingConfig, ToolCall, ToolDef,

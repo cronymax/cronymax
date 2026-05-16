@@ -44,8 +44,18 @@ export interface AgentDetail extends AgentEntry {
 export interface AgentRunOptions {
   /** OpenAI reasoning_effort. Empty/undefined = don't override. */
   reasoning_effort?: string;
+  /** Anthropic adaptive thinking effort
+   * (`low` | `medium` | `high` | `max`). Empty/undefined = don't override. */
+  anthropic_effort?: string;
   /** Override the active provider's default model. */
   model?: string;
+  /** Override the active provider's wire kind for this run. Set when the
+   * user picks a model belonging to a non-active provider group. */
+  provider_kind?: string;
+  /** Override the active provider's base URL for this run. */
+  base_url?: string;
+  /** Override the active provider's API key for this run. */
+  api_key?: string;
   /** Continue an existing chat session by id. */
   session_id?: string;
   /** Name for a newly-created session. */
@@ -150,7 +160,11 @@ export async function agentRun(task: string, opts: AgentRunOptions = {}): Promis
   const payload: Record<string, unknown> = { task };
   const llm: Record<string, unknown> = {};
   if (opts.reasoning_effort) llm.reasoning_effort = opts.reasoning_effort;
+  if (opts.anthropic_effort) llm.anthropic_effort = opts.anthropic_effort;
   if (opts.model) llm.model = opts.model;
+  if (opts.provider_kind) llm.provider_kind = opts.provider_kind;
+  if (opts.base_url) llm.base_url = opts.base_url;
+  if (opts.api_key) llm.api_key = opts.api_key;
   if (Object.keys(llm).length > 0) payload.llm = llm;
   if (opts.flow_id) payload.flow_id = opts.flow_id;
   const req: Record<string, unknown> = { payload };

@@ -120,13 +120,18 @@ pub struct ToolDef {
 /// Thinking / reasoning configuration attached to an [`LlmRequest`].
 ///
 /// The provider translates this into the correct wire representation:
-/// - [`ThinkingConfig::Adaptive`] → Anthropic `{"type":"adaptive","display":"summarized"}`
+/// - [`ThinkingConfig::Adaptive`] → Anthropic `{"type":"adaptive","display":"summarized","effort":...}`
 /// - [`ThinkingConfig::Budget`]   → Anthropic/compat `{"type":"enabled","budget_tokens":N}`
 /// - [`ThinkingConfig::ReasoningEffort`] → OpenAI `{"reasoning_effort":"medium"}`
 #[derive(Clone, Debug)]
 pub enum ThinkingConfig {
-    /// Adaptive summarised thinking (Anthropic claude-* models).
-    Adaptive { summarized: bool },
+    /// Adaptive summarised thinking (Anthropic claude-* models). `effort`
+    /// is the Anthropic adaptive effort level (`low` | `medium` | `high` |
+    /// `max`); `None` omits the field and lets the server pick its default.
+    Adaptive {
+        summarized: bool,
+        effort: Option<String>,
+    },
     /// Fixed token budget (Anthropic and compatible proxies).
     Budget { budget_tokens: u32 },
     /// Reasoning effort level (OpenAI o1-*, o3-*, o4-* models).

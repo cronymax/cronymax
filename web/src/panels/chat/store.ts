@@ -1115,3 +1115,20 @@ export function persistReasoningEffort(v: ReasoningEffort): void {
     /* ignore */
   }
 }
+
+/** Anthropic adaptive-thinking effort override chosen in the chat toolbar.
+ * Empty = "use server default" (typically "high"). */
+export type AnthropicEffort = "" | "low" | "medium" | "high" | "max";
+
+export function loadAnthropicEffort(): AnthropicEffort {
+  const v = localStorage.getItem("chat_anthropic_effort") || "";
+  return v === "low" || v === "medium" || v === "high" || v === "max" ? v : "";
+}
+
+export function persistAnthropicEffort(v: AnthropicEffort): void {
+  try {
+    localStorage.setItem("chat_anthropic_effort", v);
+  } catch {
+    /* ignore */
+  }
+}
