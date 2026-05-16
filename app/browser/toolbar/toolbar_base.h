@@ -69,7 +69,7 @@ class ToolbarBase : public ThemeAwareView {
 
   // ThemeAwareView: sets bg_float on all panels, re-tints all action buttons,
   // calls ApplyMiddleTheme. Final in ToolbarBase.
-  void ApplyTheme(const ThemeChrome& chrome) override final;
+  void ApplyTheme(const ThemeChrome& chrome) final;
 
   CefRefPtr<CefPanel> root() const { return root_; }
   CefRefPtr<CefPanel> leading() const { return leading_; }

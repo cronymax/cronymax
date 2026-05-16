@@ -23,7 +23,7 @@ class SidebarView : public ThemeAwareView {
   SidebarView(ResourceContext* resource_ctx,
               ThemeContext* theme_ctx,
               CefRefPtr<ClientHandler> client_handler);
-  ~SidebarView();
+  ~SidebarView() override;
 
   // Creates the CefBrowserView and returns it. The caller (MainWindow) must
   // add it to body_panel_ and set flex = 0.

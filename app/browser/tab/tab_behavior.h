@@ -16,7 +16,7 @@ class TabToolbar;
 
 class TabBehavior : public ThemeAwareView {
  public:
-  virtual ~TabBehavior() = default;
+  ~TabBehavior() override = default;
 
   virtual TabKind Kind() const = 0;
 
