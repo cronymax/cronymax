@@ -3,7 +3,7 @@
 #include <sstream>
 #include <string>
 
-#include "browser/space_manager.h"
+#include "runtime/space_manager.h"
 #include "runtime/space_store.h"
 
 namespace {
