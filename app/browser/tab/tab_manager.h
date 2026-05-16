@@ -34,6 +34,12 @@ struct OpenParams {
   std::string display_name;
   // Optional seed metadata (e.g. "chat_id" for restored chat tabs).
   std::map<std::string, std::string> meta;
+  // If true, create the web tab with "about:blank" and defer navigation
+  // until the tab is first activated. Used by RestoreWebTabs().
+  bool lazy_load = false;
+  // Seed title shown in the sidebar while the tab is pending (lazy_load
+  // only). Falls back to `url` when empty.
+  std::string restore_title;
 };
 
 // Lightweight per-tab snapshot used by `shell.tabs_list` events. Phase 2

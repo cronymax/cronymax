@@ -283,6 +283,9 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
     if (!id.empty())
       shell_model_.tabs_->Activate(id);
   }
+  // Restore web tabs from the previous session (lazy-load; no navigation until
+  // each tab is first activated).
+  RestoreWebTabs();
 
 #if defined(__APPLE__)
   // Arc-style: translucent NSWindow with hidden title bar. Posted onto the
@@ -518,9 +521,14 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
       Tab* active = shell_model_.tabs_ ? shell_model_.tabs_->Active() : nullptr;
       if (!active || active->kind() != TabKind::kWeb)
         return;
-      if (auto* wb = static_cast<WebTabBehavior*>(active->behavior()))
+      if (auto* wb = static_cast<WebTabBehavior*>(active->behavior())) {
+        // Lazy-load restored tabs on first activation.
+        std::string pending = wb->TakePendingUrl();
+        if (!pending.empty())
+          wb->Navigate(pending);
         if (auto bv = wb->browser_view())
           bv->RequestFocus();
+      }
     };
     cv_host.update_popover_visibility = [this]() { UpdatePopoverVisibility(); };
     content_view_ = std::make_unique<ContentView>(
@@ -1384,6 +1392,35 @@ bool MainWindow::RestoreSidebarTabs() {
   if (!activate_id.empty())
     shell_model_.tabs_->Activate(activate_id);
   return !first_id.empty();
+}
+
+// ---------------------------------------------------------------------------
+// Web tab session restore
+// ---------------------------------------------------------------------------
+
+void MainWindow::RestoreWebTabs() {
+  if (!shell_model_.tabs_)
+    return;
+  Space* sp = shell_model_.space_manager_.ActiveSpace();
+  if (!sp)
+    return;
+  const auto rows =
+      shell_model_.space_manager_.store().ListTabsForSpace(sp->id);
+  for (const auto& row : rows) {
+    if (row.url.empty())
+      continue;
+    OpenParams params;
+    params.url = row.url;
+    params.lazy_load = true;
+    params.restore_title = row.title;
+    const TabId id = shell_model_.tabs_->Open(TabKind::kWeb, params);
+    if (id.empty())
+      continue;
+    // Seed the DB mapping so PersistTabClosed() and PersistTabTitlesIfChanged()
+    // operate on the pre-existing row instead of creating a duplicate.
+    tab_db_ids_[id] = row.id;
+    tab_persisted_titles_[id] = row.title;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -169,6 +169,10 @@ class MainWindow : public CefWindowDelegate,
   // caller should open the default tab instead.
   void PersistSidebarTabs();
   bool RestoreSidebarTabs();
+  // Restore web tabs from the previous session (browser_tabs SQLite table).
+  // Creates lazy-load tabs in session order; no-op if no active Space or
+  // no rows exist.
+  void RestoreWebTabs();
 
   // unified-toolbar: merged popover lifecycle + overlay management.
   // Constructed by BuildOverlaySlots().

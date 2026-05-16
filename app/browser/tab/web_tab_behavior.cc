@@ -158,6 +158,19 @@ void WebTabBehavior::FocusUrlField() {
     toolbar_->FocusUrlField();
 }
 
+void WebTabBehavior::SetRestoredState(const std::string& url,
+                                      const std::string& title) {
+  pending_url_ = url;
+  current_url_ = url;
+  current_title_ = title.empty() ? url : title;
+}
+
+std::string WebTabBehavior::TakePendingUrl() {
+  std::string url;
+  std::swap(url, pending_url_);
+  return url;
+}
+
 void WebTabBehavior::Navigate(const std::string& url) {
   std::string final_url = url;
   if (final_url.find("://") == std::string::npos) {

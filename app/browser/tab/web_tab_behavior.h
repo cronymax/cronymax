@@ -63,6 +63,14 @@ class WebTabBehavior : public TabBehavior {
     request_context_ = std::move(ctx);
   }
 
+  // Session-restore: seed display state from the previous session and defer
+  // actual navigation until TakePendingUrl() is consumed (first activation).
+  // Must be called before Tab::Build().
+  void SetRestoredState(const std::string& url, const std::string& title);
+  // Returns the pending URL and clears it.  Returns empty string when no
+  // pending URL is set (i.e. after first activation or for non-restored tabs).
+  std::string TakePendingUrl();
+
  private:
   // Called by the per-browser listener once the browser is realized.
   void OnAddressChange(const std::string& url);
@@ -87,6 +95,8 @@ class WebTabBehavior : public TabBehavior {
   std::string initial_url_;
   std::string current_url_;
   std::string current_title_;
+  // Non-empty only for lazily-restored tabs; consumed on first activation.
+  std::string pending_url_;
   bool is_loading_ = false;
   bool can_go_back_ = false;
   bool can_go_forward_ = false;

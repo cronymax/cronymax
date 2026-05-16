@@ -228,8 +228,11 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
       if (!client_handler_)
         return nullptr;
       const std::string url = resolve_url("https://www.google.com");
-      auto beh =
-          std::make_unique<WebTabBehavior>(client_handler_, theme_ctx_, url);
+      const std::string init_url = params.lazy_load ? "about:blank" : url;
+      auto beh = std::make_unique<WebTabBehavior>(client_handler_, theme_ctx_,
+                                                  init_url);
+      if (params.lazy_load)
+        beh->SetRestoredState(url, params.restore_title);
       beh->SetRequestContext(request_context_);
       return beh;
     }
