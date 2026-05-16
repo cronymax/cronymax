@@ -31,4 +31,5 @@ system_prompt: |
   changes, always populate at least one entry in `gaps`. Be specific about
   which section contains the gap and what concrete change would resolve it.
 memory_namespace: qa-critic
-tools: []
+tools:
+  - flow.submit_review

@@ -31,6 +31,7 @@ use crate::agent_loop::{
 use crate::capability::agent_loader;
 use crate::capability::dispatcher::HostCapabilityDispatcher;
 use crate::capability::filesystem::{LocalFilesystem, WorkspaceScope};
+use crate::capability::flow_tools::{register_flow_tools, register_submit_review, SpawnAgentFn};
 use crate::capability::notify::NullNotify;
 use crate::capability::shell::LocalShell;
 use crate::capability::submit_document::DocumentSubmitted;
@@ -76,6 +77,9 @@ struct FlowRunContext {
     provider_kind: String,
     /// Sandbox policy for capability gates. `None` = permissive (no checks).
     sandbox_policy: Option<Arc<SandboxPolicy>>,
+    /// Workspace-scoped cache directory used for ChatStore persistence.
+    /// Present when the runtime was initialised with a `workspace_cache_dir`.
+    workspace_cache_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for FlowRunContext {
@@ -205,6 +209,29 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
         cap_builder.register_search(ctx.workspace_root.clone());
         cap_builder.register_git(ctx.workspace_root.clone());
 
+        // For reviewer agents, wire flow.submit_review so they can return verdicts.
+        if inv_ctx.trigger.kind == "reviewer_invocation" {
+            if let (Some(producer_node), Some(port)) = (
+                inv_ctx.trigger.from_node.clone(),
+                inv_ctx.trigger.approved_port.clone(),
+            ) {
+                let fctx_spawn = ctx.clone();
+                let spawn_fn: SpawnAgentFn = Arc::new(move |_flow_run_id, agent_id, inv_ctx| {
+                    spawn_agent_loop(fctx_spawn.clone(), agent_id, inv_ctx);
+                });
+                register_submit_review(
+                    &mut cap_builder,
+                    ctx.flow_runtime.clone(),
+                    ctx.workspace_root.clone(),
+                    agent_id.clone(),
+                    producer_node,
+                    port,
+                    ctx.flow_run_id.clone(),
+                    spawn_fn,
+                );
+            }
+        }
+
         // Apply tool allow-list from agent YAML (empty = all tools).
         if !agent_def.tools.is_empty() {
             cap_builder.set_allowed_tools(agent_def.tools.clone());
@@ -324,6 +351,181 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
     });
 }
 
+/// Deliver a notification message to the `__chat__` session for a flow run.
+///
+/// Loads the session thread, prepends the notification as a user message,
+/// and runs one ReactLoop turn so the chat LLM can respond. The updated
+/// thread is flushed back for the next turn.
+fn spawn_chat_turn(ctx: FlowRunContext, session_id: String, message: String) {
+    let sid = SessionId(session_id);
+    let run_id = match ctx.authority.start_run_with_session(
+        ctx.space_id,
+        None,
+        serde_json::json!({}),
+        Some(sid.clone()),
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            warn!(error = %e, "spawn_chat_turn: authority.start_run failed");
+            return;
+        }
+    };
+
+    // Tag the run with the originating flow_run_id so the FlowInstancesBar
+    // can group it with the other runs in this flow.
+    if !ctx.flow_run_id.is_empty() {
+        ctx.authority
+            .set_run_flow_id(run_id, ctx.flow_run_id.clone());
+    }
+
+    tokio::spawn(async move {
+        // Load the chat session's prior thread from the ChatStore (JSONL)
+        // when available. This avoids using the authority snapshot which
+        // may contain stale/corrupted messages from earlier failed runs.
+        // Falls back to the authority snapshot if no ChatStore is configured.
+        let thread = if let Some(ref cache_dir) = ctx.workspace_cache_dir {
+            crate::runtime::chat_store::ChatStore::new(cache_dir).load_history(&sid)
+        } else {
+            ctx.authority.session_thread(&sid).unwrap_or_default()
+        };
+        // Capture the length before thread is moved into LoopConfig so
+        // the post-run flush can compute the delta to append.
+        let prior_thread_len = thread.len();
+
+        let chat_agent_def = agent_loader::load_agent(&ctx.workspace_root, "__chat__").await;
+
+        let system_prompt = if chat_agent_def.system_prompt.is_empty() {
+            None
+        } else {
+            Some(chat_agent_def.system_prompt.clone())
+        };
+
+        // Build a minimal capability dispatcher for the notification turn.
+        let mut cap_builder = HostCapabilityDispatcher::builder();
+        cap_builder.register_shell(Arc::new(LocalShell::new(&ctx.workspace_root)), false);
+        cap_builder.register_filesystem(
+            Arc::new(LocalFilesystem),
+            WorkspaceScope::new(&ctx.workspace_root),
+        );
+        cap_builder.register_notify(Arc::new(NullNotify));
+        cap_builder.register_search(ctx.workspace_root.clone());
+        cap_builder.register_git(ctx.workspace_root.clone());
+
+        // Wire flow.* tools so the chat LLM can approve/reject during this turn.
+        let fctx_spawn = ctx.clone();
+        let spawn_fn: SpawnAgentFn = Arc::new(move |_flow_run_id, agent_id, inv_ctx| {
+            spawn_agent_loop(fctx_spawn.clone(), agent_id, inv_ctx);
+        });
+        register_flow_tools(
+            &mut cap_builder,
+            ctx.flow_runtime.clone(),
+            ctx.workspace_root.clone(),
+            sid.0.clone(),
+            spawn_fn,
+        );
+
+        if !chat_agent_def.tools.is_empty() {
+            cap_builder.set_allowed_tools(chat_agent_def.tools.clone());
+        }
+
+        let tools = Arc::new(cap_builder.build());
+
+        let model = if chat_agent_def.llm_model.is_empty() {
+            ctx.model.clone()
+        } else {
+            chat_agent_def.llm_model.clone()
+        };
+
+        let authority = ctx.authority.clone();
+        let is_anthropic = ctx.provider_kind == "anthropic";
+        let is_copilot = ctx.provider_kind == "github_copilot";
+
+        let (api_key, copilot_mode) = if is_copilot {
+            match ctx.api_key.as_deref() {
+                Some(github_token) if !github_token.is_empty() => {
+                    let http = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(30))
+                        .build()
+                        .unwrap_or_default();
+                    match copilot_auth::exchange_for_copilot_token(&http, github_token).await {
+                        Ok(ct) => (Some(ct.token), true),
+                        Err(_) => (ctx.api_key.clone(), true),
+                    }
+                }
+                _ => (ctx.api_key.clone(), true),
+            }
+        } else {
+            (ctx.api_key.clone(), false)
+        };
+
+        let llm: Arc<dyn crate::llm::LlmProvider> = if is_anthropic {
+            let cfg = AnthropicConfig {
+                base_url: ctx.base_url.clone(),
+                api_key,
+                default_model: model.clone(),
+                ..Default::default()
+            };
+            match AnthropicProvider::new(cfg) {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    warn!(error = %e, "spawn_chat_turn: AnthropicProvider::new failed");
+                    let _ = authority.fail_run(run_id, e.to_string());
+                    return;
+                }
+            }
+        } else {
+            let llm_cfg = OpenAiConfig {
+                base_url: ctx.base_url.clone(),
+                api_key,
+                default_model: model.clone(),
+                copilot_mode,
+                ..Default::default()
+            };
+            match OpenAiProvider::new(llm_cfg) {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    warn!(error = %e, "spawn_chat_turn: OpenAiProvider::new failed");
+                    let _ = authority.fail_run(run_id, e.to_string());
+                    return;
+                }
+            }
+        };
+
+        let cfg = LoopConfig {
+            model: model.clone(),
+            system_prompt,
+            user_input: message,
+            max_turns: 99999,
+            temperature: None,
+            llm,
+            tools,
+            thinking: None,
+            initial_thread: Some(thread),
+            session_id: Some(sid.clone()),
+            reflection: None,
+            write_namespace: None,
+            memory_manager: None,
+            middleware: build_middleware_chain(authority.clone()),
+        };
+        let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
+        if let Err(e) = result {
+            warn!(error = %e, "spawn_chat_turn: chat loop failed");
+        }
+
+        // Flush the updated thread back to the authority snapshot and
+        // persist the new turns to the ChatStore (JSONL) if configured.
+        if let Some(updated_thread) = authority.session_thread(&sid) {
+            let _ = authority.flush_thread(&sid, updated_thread.clone());
+            if let Some(ref cache_dir) = ctx.workspace_cache_dir {
+                if updated_thread.len() > prior_thread_len {
+                    let store = crate::runtime::chat_store::ChatStore::new(cache_dir);
+                    let _ = store.append_turns(&sid, &updated_thread[prior_thread_len..]);
+                }
+            }
+        }
+    });
+}
+
 /// Adapter that turns a [`RuntimeAuthority`] into a dispatch
 /// [`Handler`].
 #[derive(Debug)]
@@ -345,6 +547,10 @@ pub struct RuntimeHandler {
     /// Per-flow-run contexts keyed by `flow_run_id` so `ResolveReview`
     /// can look up the `FlowRuntime` for a given flow run.
     flow_contexts: Mutex<HashMap<String /* flow_run_id */, FlowRunContext>>,
+    /// Shared `FlowRuntime` instances keyed by workspace root (as a String).
+    /// Created lazily on first flow operation for a workspace and rehydrated
+    /// from disk so state persists across app restarts.
+    flow_runtimes: Mutex<HashMap<String, Arc<FlowRuntime>>>,
     /// One-shot senders awaiting a `CapabilityReply` from the C++ host.
     /// Keyed by the `CorrelationId` that was sent with the `CapabilityCall`.
     pending_capabilities:
@@ -436,6 +642,7 @@ impl RuntimeHandler {
             sink: Mutex::new(None),
             fanout: Mutex::new(HashMap::new()),
             flow_contexts: Mutex::new(HashMap::new()),
+            flow_runtimes: Mutex::new(HashMap::new()),
             pending_capabilities: Mutex::new(HashMap::new()),
             terminal_managers: terminal_managers
                 .unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new()))),
@@ -447,6 +654,35 @@ impl RuntimeHandler {
     /// Call this before the handler is used for `start_run`.
     pub fn set_workspace_cache_dir(&mut self, dir: PathBuf) {
         self.workspace_cache_dir = Some(dir);
+    }
+
+    /// Return the shared [`FlowRuntime`] for `workspace_root`, creating and
+    /// rehydrating it from disk on first access.
+    ///
+    /// Returns `(runtime, is_new)` — `is_new` is `true` the first time this
+    /// workspace is accessed so the caller can fire startup notifications.
+    async fn get_or_init_flow_runtime(
+        &self,
+        workspace_root: &std::path::Path,
+    ) -> (Arc<FlowRuntime>, bool) {
+        let key = workspace_root.to_string_lossy().into_owned();
+        // Fast path — already created.
+        if let Some(rt) = self.flow_runtimes.lock().get(&key).cloned() {
+            return (rt, false);
+        }
+        // Slow path — create, rehydrate, insert.
+        let rt = Arc::new(FlowRuntime::new(workspace_root));
+        let count = rt.rehydrate_from_disk().await;
+        if count > 0 {
+            info!(%count, workspace = %key, "flow_runtime: rehydrated runs from disk");
+        }
+        let mut map = self.flow_runtimes.lock();
+        // Double-check: another task may have inserted while we were rehydrating.
+        if let Some(existing) = map.get(&key).cloned() {
+            return (existing, false);
+        }
+        map.insert(key, rt.clone());
+        (rt, true)
     }
 
     pub fn authority(&self) -> &RuntimeAuthority {
@@ -641,7 +877,14 @@ impl Handler for RuntimeHandler {
                     );
                     // Load history from ChatStore if available, else fall back
                     // to the snapshot thread (legacy / no workspace_cache_dir).
-                    let thread = if let Some(ref cache_dir) = self.workspace_cache_dir {
+                    // Flow runs always start fresh — never continue from the chat
+                    // session thread. Each flow invocation is an independent task
+                    // execution; reusing the prior thread causes role-alternation
+                    // corruption when LLM calls fail and the broken history is
+                    // flushed back to the session on each retry.
+                    let thread = if flow_id_opt.is_some() {
+                        Vec::new()
+                    } else if let Some(ref cache_dir) = self.workspace_cache_dir {
                         let store = crate::runtime::chat_store::ChatStore::new(cache_dir);
                         store.load_history(&s_id)
                     } else {
@@ -746,13 +989,19 @@ impl Handler for RuntimeHandler {
                                 }
                             };
 
-                            let flow_rt = Arc::new(FlowRuntime::new(&workspace_root));
+                            let flow_rt = self.get_or_init_flow_runtime(&workspace_root).await.0;
 
                             let (flow_run_id, entry_contexts) = match flow_def_opt {
                                 Some(ref flow_def) => {
                                     match flow_rt.start_run(flow_def, &initial_input).await {
                                         Ok((frid, ctxs)) => {
                                             info!(%run_id, flow_run_id = %frid, flow_id = %fid, "start_run: flow run created");
+                                            // Register the chat session so the supervision task
+                                            // can route human-review notifications back to the
+                                            // originating chat session via spawn_chat_turn.
+                                            if let Some(ref sid) = maybe_session_id {
+                                                flow_rt.register_chat_session(&frid, sid.0.clone());
+                                            }
                                             (frid, ctxs)
                                         }
                                         Err(e) => {
@@ -789,6 +1038,7 @@ impl Handler for RuntimeHandler {
                                 model: model.clone(),
                                 provider_kind: provider_kind.clone(),
                                 sandbox_policy: self.sandbox_policy.clone(),
+                                workspace_cache_dir: self.workspace_cache_dir.clone(),
                             };
                             self.flow_contexts
                                 .lock()
@@ -869,12 +1119,44 @@ impl Handler for RuntimeHandler {
                                         Ok(contexts) => {
                                             for inv_ctx in contexts {
                                                 let agent_id = inv_ctx.owner.clone();
-                                                info!(
-                                                    agent_id,
-                                                    node_id = %inv_ctx.node_id,
-                                                    "supervision: spawning downstream agent"
-                                                );
-                                                spawn_agent_loop(fctx.clone(), agent_id, inv_ctx);
+                                                if agent_id == "human" {
+                                                    // Human review pending — notify the chat session.
+                                                    if let Some(session_id) = fctx
+                                                        .flow_runtime
+                                                        .lookup_chat_session(&fctx.flow_run_id)
+                                                    {
+                                                        let port = inv_ctx
+                                                            .trigger
+                                                            .approved_port
+                                                            .as_deref()
+                                                            .unwrap_or("?");
+                                                        let producer = inv_ctx
+                                                            .trigger
+                                                            .from_node
+                                                            .as_deref()
+                                                            .unwrap_or("?");
+                                                        let msg = format!(
+                                                            "📋 **Review requested**: Node `{producer}` has submitted the document at port `{port}` for your review.\n\
+                                                             Use `flow_get_pending_reviews` to list pending documents and `flow_approve` or `flow_request_changes` to respond."
+                                                        );
+                                                        spawn_chat_turn(
+                                                            fctx.clone(),
+                                                            session_id,
+                                                            msg,
+                                                        );
+                                                    }
+                                                } else {
+                                                    info!(
+                                                        agent_id,
+                                                        node_id = %inv_ctx.node_id,
+                                                        "supervision: spawning downstream agent"
+                                                    );
+                                                    spawn_agent_loop(
+                                                        fctx.clone(),
+                                                        agent_id,
+                                                        inv_ctx,
+                                                    );
+                                                }
                                             }
                                         }
                                         Err(e) => {
@@ -944,6 +1226,290 @@ impl Handler for RuntimeHandler {
                         }
                         cap_builder.register_search(workspace_root.clone());
                         cap_builder.register_git(workspace_root.clone());
+
+                        // Register flow.* tools for the chat session when a flow context
+                        // is available. The session id (if any) is registered so human-review
+                        // notifications can route back to this session.
+                        if let Some(ref flow_ctx) = maybe_flow_ctx {
+                            let fctx_spawn = flow_ctx.clone();
+                            let spawn_fn: SpawnAgentFn =
+                                Arc::new(move |_flow_run_id, agent_id, inv_ctx| {
+                                    spawn_agent_loop(fctx_spawn.clone(), agent_id, inv_ctx);
+                                });
+                            register_flow_tools(
+                                &mut cap_builder,
+                                flow_ctx.flow_runtime.clone(),
+                                workspace_root.clone(),
+                                maybe_session_id
+                                    .as_ref()
+                                    .map(|s| s.0.clone())
+                                    .unwrap_or_default(),
+                                spawn_fn,
+                            );
+                        } else {
+                            // Non-flow chat turn: register flow tools with the shared
+                            // FlowRuntime so the user can list/start/approve flows.
+                            let (shared_rt, is_new) =
+                                self.get_or_init_flow_runtime(&workspace_root).await;
+                            let flow_rt_for_spawn = shared_rt.clone();
+                            let flow_rt_for_tools = shared_rt.clone();
+                            let authority_for_spawn = self.authority.clone();
+                            let space_for_spawn = space;
+                            let workspace_root_for_spawn = workspace_root.clone();
+                            let base_url_for_spawn = base_url.clone();
+                            let api_key_for_spawn = api_key.clone();
+                            let model_for_spawn = model.clone();
+                            let provider_kind_for_spawn = provider_kind.clone();
+                            let sandbox_for_spawn = self.sandbox_policy.clone();
+                            let wcd_for_spawn = self.workspace_cache_dir.clone();
+                            // Per-run doc_tx map: lazily create supervision task on first
+                            // spawn for each flow_run_id.
+                            let run_doc_txs: Arc<
+                                Mutex<
+                                    HashMap<String, tokio::sync::mpsc::Sender<DocumentSubmitted>>,
+                                >,
+                            > = Arc::new(Mutex::new(HashMap::new()));
+                            let spawn_fn: SpawnAgentFn = Arc::new(
+                                move |flow_run_id, agent_id, inv_ctx| {
+                                    let doc_tx = {
+                                        let mut map = run_doc_txs.lock();
+                                        if let Some(tx) = map.get(&flow_run_id) {
+                                            tx.clone()
+                                        } else {
+                                            let (tx, mut rx) =
+                                                tokio::sync::mpsc::channel::<DocumentSubmitted>(64);
+                                            map.insert(flow_run_id.clone(), tx.clone());
+                                            // Start a supervision task for this flow run.
+                                            let sup_flow_run_id = flow_run_id.clone();
+                                            let sup_flow_rt = flow_rt_for_spawn.clone();
+                                            let sup_authority = authority_for_spawn.clone();
+                                            let sup_space = space_for_spawn;
+                                            let sup_workspace_root =
+                                                workspace_root_for_spawn.clone();
+                                            let sup_base_url = base_url_for_spawn.clone();
+                                            let sup_api_key = api_key_for_spawn.clone();
+                                            let sup_model = model_for_spawn.clone();
+                                            let sup_provider_kind = provider_kind_for_spawn.clone();
+                                            let sup_sandbox = sandbox_for_spawn.clone();
+                                            let sup_wcd = wcd_for_spawn.clone();
+                                            let tx_clone = tx.clone();
+                                            tokio::spawn(async move {
+                                                while let Some(evt) = rx.recv().await {
+                                                    info!(
+                                                        run_id = %evt.run_id,
+                                                        agent_id = %evt.agent_id,
+                                                        doc_type = %evt.doc_type,
+                                                        "supervision(chat): document submitted"
+                                                    );
+                                                    let flow_id = match sup_flow_rt
+                                                        .get_run(&sup_flow_run_id)
+                                                    {
+                                                        Some(s) => s.flow_id.clone(),
+                                                        None => {
+                                                            warn!(run_id = %evt.run_id, "supervision(chat): run not found");
+                                                            continue;
+                                                        }
+                                                    };
+                                                    let flow_def_path = sup_workspace_root
+                                                        .join(".cronymax")
+                                                        .join("flows")
+                                                        .join(&flow_id)
+                                                        .join("flow.yaml");
+                                                    let yaml = match tokio::fs::read_to_string(
+                                                        &flow_def_path,
+                                                    )
+                                                    .await
+                                                    {
+                                                        Ok(y) => y,
+                                                        Err(e) => {
+                                                            warn!(error = %e, "supervision(chat): failed to read flow.yaml");
+                                                            continue;
+                                                        }
+                                                    };
+                                                    let flow_def =
+                                                        match FlowDefinition::load_from_str(
+                                                            &yaml,
+                                                            &flow_def_path,
+                                                        ) {
+                                                            Ok(d) => d,
+                                                            Err(e) => {
+                                                                warn!(error = %e, "supervision(chat): failed to parse flow.yaml");
+                                                                continue;
+                                                            }
+                                                        };
+                                                    let fctx = FlowRunContext {
+                                                        authority: sup_authority.clone(),
+                                                        space_id: sup_space,
+                                                        workspace_root: sup_workspace_root.clone(),
+                                                        flow_id,
+                                                        flow_run_id: sup_flow_run_id.clone(),
+                                                        flow_runtime: sup_flow_rt.clone(),
+                                                        doc_tx: tx_clone.clone(),
+                                                        base_url: sup_base_url.clone(),
+                                                        api_key: sup_api_key.clone(),
+                                                        model: sup_model.clone(),
+                                                        provider_kind: sup_provider_kind.clone(),
+                                                        sandbox_policy: sup_sandbox.clone(),
+                                                        workspace_cache_dir: sup_wcd.clone(),
+                                                    };
+                                                    match sup_flow_rt
+                                                        .on_document_submitted(
+                                                            &evt.run_id,
+                                                            &evt.agent_id,
+                                                            &evt.doc_type,
+                                                            &evt.body,
+                                                            &flow_def,
+                                                            &evt.sha256,
+                                                            evt.revision,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Ok(contexts) => {
+                                                            for inv_ctx in contexts {
+                                                                let next_agent =
+                                                                    inv_ctx.owner.clone();
+                                                                if next_agent == "human" {
+                                                                    if let Some(sid) = sup_flow_rt
+                                                                        .lookup_chat_session(
+                                                                            &sup_flow_run_id,
+                                                                        )
+                                                                    {
+                                                                        let port = inv_ctx
+                                                                            .trigger
+                                                                            .approved_port
+                                                                            .as_deref()
+                                                                            .unwrap_or("?");
+                                                                        let producer = inv_ctx
+                                                                            .trigger
+                                                                            .from_node
+                                                                            .as_deref()
+                                                                            .unwrap_or("?");
+                                                                        let msg = format!(
+                                                                        "📋 **Review requested**: Node `{producer}` has submitted the document at port `{port}` for your review.\n\
+                                                                         Use `flow_get_pending_reviews` to list pending documents and `flow_approve` or `flow_request_changes` to respond."
+                                                                    );
+                                                                        spawn_chat_turn(
+                                                                            fctx.clone(),
+                                                                            sid,
+                                                                            msg,
+                                                                        );
+                                                                    }
+                                                                } else {
+                                                                    spawn_agent_loop(
+                                                                        fctx.clone(),
+                                                                        next_agent,
+                                                                        inv_ctx,
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            warn!(error = %e, run_id = %evt.run_id, "supervision(chat): on_document_submitted failed");
+                                                            if e.to_string()
+                                                                .contains("cycle limit exceeded")
+                                                            {
+                                                                let _ = sup_authority.fail_run(
+                                                                    RunId(
+                                                                        Uuid::parse_str(
+                                                                            &evt.run_id,
+                                                                        )
+                                                                        .unwrap_or_default(),
+                                                                    ),
+                                                                    e.to_string(),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                info!(flow_run_id = %sup_flow_run_id, "supervision(chat): doc channel closed");
+                                            });
+                                            tx
+                                        }
+                                    };
+                                    let flow_id = match flow_rt_for_spawn.get_run(&flow_run_id) {
+                                        Some(s) => s.flow_id.clone(),
+                                        None => {
+                                            warn!(%flow_run_id, "spawn_fn(chat): run not found");
+                                            return;
+                                        }
+                                    };
+                                    let fctx = FlowRunContext {
+                                        authority: authority_for_spawn.clone(),
+                                        space_id: space_for_spawn,
+                                        workspace_root: workspace_root_for_spawn.clone(),
+                                        flow_id,
+                                        flow_run_id: flow_run_id.clone(),
+                                        flow_runtime: flow_rt_for_spawn.clone(),
+                                        doc_tx,
+                                        base_url: base_url_for_spawn.clone(),
+                                        api_key: api_key_for_spawn.clone(),
+                                        model: model_for_spawn.clone(),
+                                        provider_kind: provider_kind_for_spawn.clone(),
+                                        sandbox_policy: sandbox_for_spawn.clone(),
+                                        workspace_cache_dir: wcd_for_spawn.clone(),
+                                    };
+                                    spawn_agent_loop(fctx, agent_id, inv_ctx);
+                                },
+                            );
+                            register_flow_tools(
+                                &mut cap_builder,
+                                flow_rt_for_tools,
+                                workspace_root.clone(),
+                                maybe_session_id
+                                    .as_ref()
+                                    .map(|s| s.0.clone())
+                                    .unwrap_or_default(),
+                                spawn_fn,
+                            );
+
+                            // On first access after app restart, notify the session
+                            // about any paused runs that have pending human reviews.
+                            if is_new {
+                                if let Some(ref sid) = maybe_session_id {
+                                    let paused_runs: Vec<_> = shared_rt
+                                        .list_runs()
+                                        .into_iter()
+                                        .filter(|r| {
+                                            r.status == crate::flow::runtime::FlowRunStatus::Paused
+                                        })
+                                        .filter(|r| r.originating_session_id.is_some())
+                                        .filter(|r| {
+                                            r.node_states.values().any(|ns| {
+                                                ns.ports.values().any(|&s| {
+                                                    s == crate::flow::runtime::PortStatus::InReview
+                                                })
+                                            })
+                                        })
+                                        .collect();
+
+                                    for run_state in paused_runs {
+                                        let (ntx, _) =
+                                            tokio::sync::mpsc::channel::<DocumentSubmitted>(1);
+                                        let notify_fctx = FlowRunContext {
+                                            authority: self.authority.clone(),
+                                            space_id: space,
+                                            workspace_root: workspace_root.clone(),
+                                            flow_id: run_state.flow_id.clone(),
+                                            flow_run_id: run_state.run_id.clone(),
+                                            flow_runtime: shared_rt.clone(),
+                                            doc_tx: ntx,
+                                            base_url: base_url.clone(),
+                                            api_key: api_key.clone(),
+                                            model: model.clone(),
+                                            provider_kind: provider_kind.clone(),
+                                            sandbox_policy: self.sandbox_policy.clone(),
+                                            workspace_cache_dir: self.workspace_cache_dir.clone(),
+                                        };
+                                        let msg = format!(
+                                            "📋 **Pending review** (restored after restart): Flow run `{}` (flow: `{}`) has documents awaiting your review.\n\
+                                             Use `flow_get_pending_reviews` to list them and `flow_approve` or `flow_request_changes` to respond.",
+                                            run_state.run_id, run_state.flow_id
+                                        );
+                                        spawn_chat_turn(notify_fctx, sid.0.clone(), msg);
+                                    }
+                                }
+                            }
+                        }
 
                         // For direct-chat (no flow), use pre-loaded Chat.agent.yaml to get tool
                         // allow-list and inject_workspace preference. Flow paths handled
@@ -1176,7 +1742,15 @@ impl Handler for RuntimeHandler {
                                 } else {
                                     Some(effective_thread)
                                 },
-                                session_id: maybe_session_id.clone(),
+                                // Flow runs must not flush their temporary PM-agent
+                                // history back to the chat session. Using None here
+                                // prevents ReactLoop from calling flush_thread and
+                                // contaminating the session thread with flow messages.
+                                session_id: if maybe_flow_ctx.is_some() {
+                                    None
+                                } else {
+                                    maybe_session_id.clone()
+                                },
                                 reflection: chat_agent_def
                                     .as_ref()
                                     .and_then(|d| d.reflection.clone()),
@@ -1199,14 +1773,20 @@ impl Handler for RuntimeHandler {
                             // If a ChatStore is configured, append the final session thread
                             // to history.jsonl. The ReactLoop already flushed to the authority
                             // snapshot internally; we read it back here to write the JSONL copy.
-                            if let (Some(ref sid), Some(ref cache_dir)) =
-                                (&maybe_session_id, &workspace_cache_dir_clone)
-                            {
-                                if let Some(thread) = authority.session_thread(sid) {
-                                    if !thread.is_empty() {
-                                        let store =
-                                            crate::runtime::chat_store::ChatStore::new(cache_dir);
-                                        let _ = store.append_turns(sid, &thread);
+                            // Flow runs must NOT write back to the chat session history — doing
+                            // so accumulates PM-agent messages across retries, which corrupts
+                            // the role-alternation sequence and causes subsequent LLM 400 errors.
+                            if maybe_flow_ctx.is_none() {
+                                if let (Some(ref sid), Some(ref cache_dir)) =
+                                    (&maybe_session_id, &workspace_cache_dir_clone)
+                                {
+                                    if let Some(thread) = authority.session_thread(sid) {
+                                        if !thread.is_empty() {
+                                            let store = crate::runtime::chat_store::ChatStore::new(
+                                                cache_dir,
+                                            );
+                                            let _ = store.append_turns(sid, &thread);
+                                        }
                                     }
                                 }
                             }

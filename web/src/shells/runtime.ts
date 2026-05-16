@@ -132,10 +132,13 @@ export async function agentRun(
     session_name?: string;
     agent_id?: string;
     model_override?: string;
+    /** When set, starts a flow run with this flow id instead of a direct agent run. */
+    flow_id?: string;
   },
 ): Promise<string> {
   const payload: Record<string, unknown> = { task };
   if (opts?.model_override) payload.model_override = opts.model_override;
+  if (opts?.flow_id) payload.flow_id = opts.flow_id;
   const req: Record<string, unknown> = { payload };
   if (opts?.session_id) req.session_id = opts.session_id;
   if (opts?.session_name) req.session_name = opts.session_name;

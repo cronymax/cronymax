@@ -689,6 +689,11 @@ bool RuntimeBridge::WaitForHandshake() {
 // ---------------------------------------------------------------------------
 
 void RuntimeBridge::PumpLoop() {
+  // Track when the last C++→Rust keepalive ping was sent.  We send one
+  // every 60 s so the Rust runtime's 180 s inbound-idle timer is never
+  // starved, even if the Rust→C++ ping/pong mechanism has an issue.
+  auto last_keepalive = std::chrono::steady_clock::now();
+
   while (!pump_stop_.load()) {
     crony_client_t* c = nullptr;
     {
@@ -713,6 +718,27 @@ void RuntimeBridge::PumpLoop() {
     if (rc == CRONY_ERR_WOULD_BLOCK) {
       // No message ready yet — yield and poll again.
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    // Proactive keepalive: send a Control{Ping} to the Rust runtime
+    // every 60 s.  This puts a message on the Rust inbound_rx channel
+    // and definitively resets its idle timer, regardless of whether
+    // the Rust→C++ Ping/Pong path is working.  Checked on every loop
+    // iteration so it fires even during busy agent tasks (when
+    // CRONY_ERR_WOULD_BLOCK is never hit).  The Rust dispatcher replies
+    // with Control{Pong} which HandleControlReply silently discards.
+    {
+      auto now = std::chrono::steady_clock::now();
+      if (now - last_keepalive >= std::chrono::seconds(60)) {
+        last_keepalive = now;
+        // id must be a valid UUID; use the nil UUID since we never track
+        // the reply — HandleControlReply silently drops unknown ids.
+        Invoke(
+            R"({"tag":"control","id":"00000000-0000-0000-0000-000000000000","request":{"kind":"ping"}})");
+      }
+    }
+
+    if (rc == CRONY_ERR_WOULD_BLOCK) {
       continue;
     }
     if (rc != CRONY_OK) {

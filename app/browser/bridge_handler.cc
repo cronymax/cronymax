@@ -156,8 +156,7 @@ class LlmConfigEnricher : public ControlEnricher {
       return;
     if (!req.contains("payload") || !req["payload"].is_object())
       return;
-    if (!req["payload"].contains("task") ||
-        req["payload"].contains("flow_id") || req["payload"].contains("llm"))
+    if (!req["payload"].contains("task") || req["payload"].contains("llm"))
       return;
 
     std::string base_url = "https://api.openai.com/v1";

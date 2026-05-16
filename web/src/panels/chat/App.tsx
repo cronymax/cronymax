@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { FlowInstancesBar } from "@/components/FlowInstancesBar";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { browser, shells } from "@/shells/bridge";
 import { agentRegistry, agentRun, b64ToUtf8, terminal as rt_terminal } from "@/shells/runtime";
@@ -23,7 +24,6 @@ import {
   ensureChat,
   loadChatData,
   loadFlowsList,
-  loadSavedGraph,
   loadSelectedModel,
   persistChatData,
   persistSelectedFlow,
@@ -145,14 +145,6 @@ const BUILTIN_COMMANDS: PickerItem[] = [
 ];
 
 // ── helpers ────────────────────────────────────────────────────────────
-
-function leadAgentOfFlow(flowName: string): string {
-  const spec = loadSavedGraph(flowName);
-  if (!spec?.nodes.length) return "";
-  const lead = spec.nodes.slice().sort((a, b) => Number(a.id) - Number(b.id))[0];
-  const cfg = (lead?.config ?? {}) as Record<string, unknown>;
-  return (cfg.agent_name as string) || lead?.type || "";
-}
 
 function parseMention(text: string, agents: string[]): { agent: string | null; body: string } {
   const m = text.match(/^@([A-Za-z0-9_.-]+)\s*(.*)$/s);
@@ -932,7 +924,7 @@ export function App() {
   // ── send / run ─────────────────────────────────────────────────────────
   const onRun = useCallback(
     async (rawText: string, displayText?: string) => {
-      if (state.running || !state.activeChatId) return;
+      if (state.running || state.isReconnecting || !state.activeChatId) return;
       const chatId = state.activeChatId;
 
       // Detect shell mode: rawText starts with "$" OR inputMode is "shell"
@@ -1020,8 +1012,10 @@ export function App() {
       if (parsed.agent) {
         speaker = parsed.agent;
         body = parsed.body;
+      } else if (state.selectedFlow) {
+        speaker = state.selectedFlow;
       } else {
-        speaker = leadAgentOfFlow(state.selectedFlow) || agentNames[0] || "";
+        speaker = agentNames[0] || "";
       }
 
       const blockId = crypto.randomUUID();
@@ -1375,8 +1369,9 @@ export function App() {
         }
         runId = await agentRun(body, {
           session_id: chatId,
-          agent_id: state.agentId || undefined,
+          agent_id: state.selectedFlow ? undefined : state.agentId || undefined,
           model_override: state.model || undefined,
+          flow_id: state.selectedFlow || undefined,
         });
         if (!runId) throw new Error("runtime did not return run_id");
         await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
@@ -1384,6 +1379,8 @@ export function App() {
         });
       } catch (err) {
         off();
+        const errMsg = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
+        const isBridgeError = errMsg.includes("bridge invoke failed") || errMsg.includes("send_failed");
         dispatch({
           type: "finalizeBlock",
           id: blockId,
@@ -1397,13 +1394,16 @@ export function App() {
             toolCallId: "",
             tool: "error",
             args: {
-              message:
-                "Failed to start: " +
-                (err instanceof Error ? err.message : typeof err === "string" ? err : String(err)),
+              message: isBridgeError
+                ? "Runtime is reconnecting. Please wait for the banner to clear, then try again."
+                : "Failed to start: " + errMsg,
             },
             ts: Date.now(),
           },
         });
+        if (isBridgeError) {
+          dispatch({ type: "setReconnecting", reconnecting: true });
+        }
         dispatch({ type: "clearAwaitingApproval" });
         dispatch({ type: "setRunning", running: false });
         dispatch({ type: "setRunningBlockId", id: null });
@@ -1838,6 +1838,9 @@ export function App() {
         </div>
       )}
 
+      {/* ── Flow instances bar — visible when session has active flow runs ── */}
+      <FlowInstancesBar sessionId={state.activeChatId} />
+
       {/* ── Copilot-like composer ──────────────────────────────────── */}
       <form onSubmit={onSubmit} className="px-3 pb-3 pt-1">
         {/* Approval card — shown when agent awaits tool review */}
@@ -2048,7 +2051,7 @@ export function App() {
               {/* Send button */}
               <button
                 type="submit"
-                disabled={state.running}
+                disabled={state.running || state.isReconnecting}
                 className="flex items-center justify-center rounded-md bg-cronymax-primary w-7 h-7 text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 title="Send (Enter)"
               >

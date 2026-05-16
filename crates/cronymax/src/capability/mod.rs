@@ -22,6 +22,7 @@ pub mod browser;
 pub mod code_search;
 pub mod dispatcher;
 pub mod filesystem;
+pub mod flow_tools;
 pub mod git;
 pub mod notify;
 pub mod shell;
@@ -35,6 +36,7 @@ pub use filesystem::{
     FilesystemCapability, LocalFilesystem, ReadFileRequest, ReadFileResult, WorkspaceScope,
     WriteFileRequest,
 };
+pub use flow_tools::{register_flow_tools, register_submit_review, SpawnAgentFn};
 pub use notify::{ApprovalRequest, ApprovalResponse, NotifyCapability};
 pub use shell::{
     classify_command, ExitStatus, LocalShell, RiskLevel, ShellCapability, ShellRequest, ShellResult,

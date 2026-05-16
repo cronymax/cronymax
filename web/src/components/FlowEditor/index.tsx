@@ -227,7 +227,6 @@ export function FlowEditor() {
   const [inspectorOpen, setInspectorOpen] = useState(true);
   // Active flow run state — set when a run is started, cleared on cancel.
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [runStarting, setRunStarting] = useState(false);
 
   // Drag state lives in a ref + local component state for live position.
   const dragRef = useRef<{
@@ -585,7 +584,7 @@ export function FlowEditor() {
             Clear
           </button>
           <span className="mx-1 h-4 w-px bg-cronymax-border" />
-          {activeRunId ? (
+          {activeRunId && (
             <>
               <span className="text-cronymax-description">
                 run: <code className="font-mono text-[10px]">{activeRunId.slice(0, 8)}…</code>
@@ -606,28 +605,6 @@ export function FlowEditor() {
                 Cancel
               </button>
             </>
-          ) : (
-            <button
-              type="button"
-              disabled={runStarting || !state.activeFlowName}
-              onClick={async () => {
-                if (!state.activeFlowName) return;
-                setRunStarting(true);
-                try {
-                  const res = await flowRun.start(state.activeFlowName);
-                  setActiveRunId(res.run_id);
-                  dispatch({ type: "setRunning", running: true });
-                } catch (err) {
-                  console.warn("[flow] flow.run.start failed:", (err as Error).message);
-                } finally {
-                  setRunStarting(false);
-                }
-              }}
-              className={`${btnCls} inline-flex items-center gap-1 disabled:opacity-50`}
-              title="Start a flow run for this flow"
-            >
-              {runStarting ? "Starting…" : "▶ Start Run"}
-            </button>
           )}
         </div>
       </header>
