@@ -562,19 +562,37 @@ export function ProvidersTab() {
               />
             </Field>
             <Field label="Reasoning effort">
-              <select
-                className={inputCls}
-                value={draft.reasoning_effort ?? ""}
-                onChange={(e) => setDraft({ ...draft, reasoning_effort: e.target.value })}
-                title="Default reasoning_effort for OpenAI gpt-5 / o-series. Per-message chat dropdown can override."
+              <Select
+                value={draft.reasoning_effort || "none"}
+                onValueChange={(v) => setDraft({ ...draft, reasoning_effort: v === "none" ? "" : v })}
               >
-                <option value="">none (use model default)</option>
-                <option value="minimal">minimal</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="xhigh">xhigh</option>
-              </select>
+                <SelectTrigger
+                  className="h-7 text-xs"
+                  title="Default reasoning_effort for OpenAI gpt-5 / o-series. Per-message chat dropdown can override."
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none" className="text-xs">
+                    none (use model default)
+                  </SelectItem>
+                  <SelectItem value="minimal" className="text-xs">
+                    minimal
+                  </SelectItem>
+                  <SelectItem value="low" className="text-xs">
+                    low
+                  </SelectItem>
+                  <SelectItem value="medium" className="text-xs">
+                    medium
+                  </SelectItem>
+                  <SelectItem value="high" className="text-xs">
+                    high
+                  </SelectItem>
+                  <SelectItem value="xhigh" className="text-xs">
+                    xhigh
+                  </SelectItem>
+                </SelectContent>
+              </Select>
             </Field>
 
             {msg && <p className="mb-3 text-xs text-muted-foreground">{msg}</p>}

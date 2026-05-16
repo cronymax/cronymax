@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn basic_ranking() {
-        let entries = vec![
+        let entries = [
             ("doc1", "the quick brown fox jumps over the lazy dog"),
             ("doc2", "a quick fox"),
             ("doc3", "something completely different"),

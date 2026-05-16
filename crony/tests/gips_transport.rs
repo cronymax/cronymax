@@ -122,7 +122,7 @@ impl Handler for PushOnConnectThenEcho {
             .await;
     }
 
-    async fn handle_control(&self, id: CorrelationId, request: ControlRequest) -> ControlResponse {
+    async fn handle_control(&self, _id: CorrelationId, request: ControlRequest) -> ControlResponse {
         match request {
             ControlRequest::Ping => ControlResponse::Pong,
             _ => ControlResponse::Err {

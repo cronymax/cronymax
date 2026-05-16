@@ -1025,11 +1025,8 @@ mod tests {
         // Wait until the run transitions to AwaitingReview (PermissionRequest event).
         let review_id: ReviewId = loop {
             let ev = receiver.recv().await.expect("subscription channel closed");
-            match ev.payload {
-                RuntimeEventPayload::PermissionRequest { review_id, .. } => {
-                    break ReviewId(Uuid::parse_str(&review_id).expect("valid uuid"));
-                }
-                _ => {}
+            if let RuntimeEventPayload::PermissionRequest { review_id, .. } = ev.payload {
+                break ReviewId(Uuid::parse_str(&review_id).expect("valid uuid"));
             }
         };
 
@@ -1074,11 +1071,8 @@ mod tests {
 
         let review_id: ReviewId = loop {
             let ev = receiver.recv().await.expect("subscription channel closed");
-            match ev.payload {
-                RuntimeEventPayload::PermissionRequest { review_id, .. } => {
-                    break ReviewId(Uuid::parse_str(&review_id).expect("valid uuid"));
-                }
-                _ => {}
+            if let RuntimeEventPayload::PermissionRequest { review_id, .. } = ev.payload {
+                break ReviewId(Uuid::parse_str(&review_id).expect("valid uuid"));
             }
         };
 
