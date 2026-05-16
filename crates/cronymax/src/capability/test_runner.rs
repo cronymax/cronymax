@@ -121,8 +121,14 @@ pub fn discover_suites(workspace_root: &Path) -> Vec<DiscoveredSuite> {
             if pkg.exists() {
                 if let Some(kind) = detect_js_runner(&pkg) {
                     let name = match kind {
-                        RunnerKind::Jest => format!("jest ({})", path.file_name().unwrap_or_default().to_string_lossy()),
-                        RunnerKind::Vitest => format!("vitest ({})", path.file_name().unwrap_or_default().to_string_lossy()),
+                        RunnerKind::Jest => format!(
+                            "jest ({})",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                        RunnerKind::Vitest => format!(
+                            "vitest ({})",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
                         _ => unreachable!(),
                     };
                     suites.push(DiscoveredSuite {
@@ -182,9 +188,7 @@ fn detect_js_runner(pkg_path: &Path) -> Option<RunnerKind> {
 
     // Check devDependencies, dependencies, and scripts for vitest or jest.
     let has_dep = |name: &str| -> bool {
-        v.get("devDependencies")
-            .and_then(|d| d.get(name))
-            .is_some()
+        v.get("devDependencies").and_then(|d| d.get(name)).is_some()
             || v.get("dependencies").and_then(|d| d.get(name)).is_some()
     };
     let scripts_contain = |name: &str| -> bool {
@@ -287,7 +291,10 @@ fn parse_jest_output(
 
 async fn run_vitest(project_root: &Path, filter: Option<&str>) -> anyhow::Result<TestRunnerResult> {
     let mut cmd = Command::new("npx");
-    cmd.arg("vitest").arg("run").arg("--reporter=json").current_dir(project_root);
+    cmd.arg("vitest")
+        .arg("run")
+        .arg("--reporter=json")
+        .current_dir(project_root);
     if let Some(f) = filter {
         cmd.arg(f);
     }
@@ -320,7 +327,8 @@ fn parse_vitest_output(
                         Some("passed") => passed += 1,
                         Some("failed") => {
                             failed += 1;
-                            let name = t["fullName"].as_str()
+                            let name = t["fullName"]
+                                .as_str()
                                 .or_else(|| t["title"].as_str())
                                 .unwrap_or("")
                                 .to_string();
@@ -379,7 +387,9 @@ fn parse_pytest_output(
     let passed = summary["passed"].as_u64().unwrap_or(0) as u32;
     let failed = summary["failed"].as_u64().unwrap_or(0) as u32;
     let skipped = summary["skipped"].as_u64().unwrap_or(0) as u32;
-    let total = summary["total"].as_u64().unwrap_or((passed + failed + skipped) as u64) as u32;
+    let total = summary["total"]
+        .as_u64()
+        .unwrap_or((passed + failed + skipped) as u64) as u32;
 
     let mut failures = Vec::new();
     if let Some(tests) = json["tests"].as_array() {
@@ -405,7 +415,10 @@ fn parse_pytest_output(
     })
 }
 
-async fn run_go_test(project_root: &Path, filter: Option<&str>) -> anyhow::Result<TestRunnerResult> {
+async fn run_go_test(
+    project_root: &Path,
+    filter: Option<&str>,
+) -> anyhow::Result<TestRunnerResult> {
     let mut cmd = Command::new("go");
     cmd.arg("test").arg("-json").current_dir(project_root);
     if let Some(f) = filter {
@@ -453,12 +466,18 @@ fn parse_go_test_output(
                     .remove(&test_name)
                     .map(|lines| lines.join(""))
                     .unwrap_or_default();
-                failures.push(TestFailure { name: test_name, message });
+                failures.push(TestFailure {
+                    name: test_name,
+                    message,
+                });
             }
             "skip" if !test_name.is_empty() => skipped += 1,
             "output" if !test_name.is_empty() => {
                 if let Some(output) = v["Output"].as_str() {
-                    failure_outputs.entry(test_name).or_default().push(output.to_string());
+                    failure_outputs
+                        .entry(test_name)
+                        .or_default()
+                        .push(output.to_string());
                 }
             }
             _ => {}
@@ -483,9 +502,7 @@ fn parse_go_test_output(
 /// Discover suites from `workspace_root`.
 pub async fn tool_discover(workspace_root: &Path) -> ToolOutcome {
     let suites = discover_suites(workspace_root);
-    ToolOutcome::Output(
-        serde_json::to_value(&suites).unwrap_or_else(|_| Value::Array(vec![])),
-    )
+    ToolOutcome::Output(serde_json::to_value(&suites).unwrap_or_else(|_| Value::Array(vec![])))
 }
 
 /// Run a named suite. `suite_name` must match a `DiscoveredSuite::name`.
@@ -520,7 +537,7 @@ pub async fn tool_run_suite(
     match result {
         Ok(r) => {
             store.set(run_id, r.clone());
-            ToolOutcome::Output(serde_json::to_value(&r).unwrap_or_else(|_| Value::Null))
+            ToolOutcome::Output(serde_json::to_value(&r).unwrap_or(Value::Null))
         }
         Err(e) => ToolOutcome::Error(format!("run_suite failed: {e}")),
     }
@@ -529,7 +546,7 @@ pub async fn tool_run_suite(
 /// Return the last stored report for `run_id`, or `null`.
 pub async fn tool_get_last_report(store: &LastReportStore, run_id: &str) -> ToolOutcome {
     match store.get(run_id) {
-        Some(r) => ToolOutcome::Output(serde_json::to_value(&r).unwrap_or_else(|_| Value::Null)),
+        Some(r) => ToolOutcome::Output(serde_json::to_value(&r).unwrap_or(Value::Null)),
         None => ToolOutcome::Output(Value::Null),
     }
 }
@@ -593,7 +610,9 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
 
-    fn ms(n: u64) -> Duration { Duration::from_millis(n) }
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
 
     // ── Jest parser ──────────────────────────────────────────────────────
 
@@ -702,7 +721,11 @@ mod tests {
             "name": "my-app",
             "devDependencies": { "jest": "^29" }
         });
-        std::fs::write(dir.path().join("package.json"), serde_json::to_string(&pkg).unwrap()).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            serde_json::to_string(&pkg).unwrap(),
+        )
+        .unwrap();
 
         let suites = discover_suites(dir.path());
         assert!(suites.iter().any(|s| s.runner == RunnerKind::Jest));
@@ -715,7 +738,11 @@ mod tests {
             "name": "my-app",
             "devDependencies": { "vitest": "^1" }
         });
-        std::fs::write(dir.path().join("package.json"), serde_json::to_string(&pkg).unwrap()).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            serde_json::to_string(&pkg).unwrap(),
+        )
+        .unwrap();
 
         let suites = discover_suites(dir.path());
         assert!(suites.iter().any(|s| s.runner == RunnerKind::Vitest));
@@ -745,17 +772,20 @@ mod tests {
     fn last_report_store_set_and_get() {
         let store = LastReportStore::new();
         assert!(store.get("run-1").is_none());
-        store.set("run-1", TestRunnerResult {
-            suite: "jest".into(),
-            runner: RunnerKind::Jest,
-            total: 5,
-            passed: 5,
-            failed: 0,
-            skipped: 0,
-            duration_ms: 100,
-            failures: vec![],
-            coverage: None,
-        });
+        store.set(
+            "run-1",
+            TestRunnerResult {
+                suite: "jest".into(),
+                runner: RunnerKind::Jest,
+                total: 5,
+                passed: 5,
+                failed: 0,
+                skipped: 0,
+                duration_ms: 100,
+                failures: vec![],
+                coverage: None,
+            },
+        );
         assert_eq!(store.get("run-1").unwrap().passed, 5);
     }
 }

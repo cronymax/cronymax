@@ -30,12 +30,10 @@ export class ErrorBoundary extends Component<Props, State> {
       if (this.props.fallback) return this.props.fallback(this.state.err);
       return (
         <div className="m-4 rounded-popover border border-cronymax-error bg-cronymax-base p-4 text-cronymax-title">
-          <h3 className="text-sm font-semibold text-cronymax-error mb-2">
-            panel error
-          </h3>
+          <h3 className="text-sm font-semibold text-cronymax-error mb-2">panel error</h3>
           <pre className="text-xs whitespace-pre-wrap font-mono text-cronymax-caption">
             {this.state.err.message}
-            {this.state.err.stack ? "\n\n" + this.state.err.stack : ""}
+            {this.state.err.stack ? `\n\n${this.state.err.stack}` : ""}
           </pre>
         </div>
       );

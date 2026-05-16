@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::capability::shell::{ExitStatus, ShellCapability, ShellRequest, ShellResult};
 use super::broker::{Actor, PermissionBroker};
 use super::policy::SandboxPolicy;
+use crate::capability::shell::{ExitStatus, ShellCapability, ShellRequest, ShellResult};
 
 /// Shell capability wrapper that checks [`SandboxPolicy`] before delegating
 /// to the inner implementation.
@@ -20,22 +20,25 @@ pub struct PolicyShell<S> {
 
 impl<S: ShellCapability> PolicyShell<S> {
     pub fn new(inner: S, broker: PermissionBroker, policy: Arc<SandboxPolicy>) -> Self {
-        Self { inner, broker, policy }
+        Self {
+            inner,
+            broker,
+            policy,
+        }
     }
 }
 
 #[async_trait]
 impl<S: ShellCapability> ShellCapability for PolicyShell<S> {
     async fn run(&self, request: ShellRequest) -> anyhow::Result<ShellResult> {
-        let decision = self.broker.check_exec(Actor::Agent, &request.command, &self.policy);
+        let decision = self
+            .broker
+            .check_exec(Actor::Agent, &request.command, &self.policy);
         if !decision.allowed {
             return Ok(ShellResult {
-                exit_status: ExitStatus::Code(126),  // "command not permitted"
+                exit_status: ExitStatus::Code(126), // "command not permitted"
                 stdout: String::new(),
-                stderr: format!(
-                    "sandbox policy denied execution: {}",
-                    decision.reason
-                ),
+                stderr: format!("sandbox policy denied execution: {}", decision.reason),
                 elapsed_ms: 0,
             });
         }

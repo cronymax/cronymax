@@ -14,8 +14,9 @@ static INIT: Once = Once::new();
 pub fn install(filter: Option<&str>) {
     INIT.call_once(|| {
         let env = match filter {
-            Some(directive) => EnvFilter::try_new(directive)
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            Some(directive) => {
+                EnvFilter::try_new(directive).unwrap_or_else(|_| EnvFilter::new("info"))
+            }
             None => EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("info,cronymax=info,crony=info")),
         };

@@ -40,7 +40,4 @@ function reducer(s: State, a: Action): State {
   }
 }
 
-export const { Provider, useStore } = createPanelStore<State, Action>(
-  reducer,
-  initial,
-);
+export const { Provider, useStore } = createPanelStore<State, Action>(reducer, initial);

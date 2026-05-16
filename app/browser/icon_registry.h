@@ -5,7 +5,8 @@
 // Owned process-wide. Init() rasterises every SVG (embedded at compile time
 // via icon_data.cc) into CefImage objects at 16px and 20px logical sizes
 // (with HiDPI scaling). Buttons throughout the native chrome are constructed
-// via MakeIconButton / MakeIconLabelButton, both of which read from the registry.
+// via MakeIconButton / MakeIconLabelButton, both of which read from the
+// registry.
 
 #ifndef CRONYMAX_BROWSER_ICON_REGISTRY_H_
 #define CRONYMAX_BROWSER_ICON_REGISTRY_H_
@@ -30,13 +31,15 @@ enum class IconId {
   kNewTab,
   kClose,
   kSettings,
+  kFlows,
   kTabTerminal,
   kTabChat,
-  kTabAgent,
-  kTabGraph,
   kTabWeb,
   kRestart,
   kSidebarToggle,  // layout-sidebar-left — hide/show sidebar
+  kCopy,           // copy — clipboard copy action
+  kOpenInProduct,
+  kOpenInWindow,
   kCount,  // sentinel
 };
 
@@ -54,22 +57,24 @@ class IconRegistry {
   // backgrounds). Falls back to 16px and logs a warning for unsupported sizes.
   // Aborts with a fatal log if `id` is out of range. Safe to call on any
   // thread after Init().
-  static CefRefPtr<CefImage> GetImage(IconId id, int logical_size = 16,
+  static CefRefPtr<CefImage> GetImage(IconId id,
+                                      int logical_size = 16,
                                       bool dark_mode = true);
 
   // Re-apply the correctly-tinted icon images for all four button states on
   // an existing button. Call from ApplyThemeColors / ApplyThemeChrome when
   // the theme changes so icon tint tracks the background.
-  static void ApplyToButton(CefRefPtr<CefLabelButton> btn, IconId id,
-                             bool dark_mode, int logical_size = 16);
+  static void ApplyToButton(CefRefPtr<CefLabelButton> btn,
+                            IconId id,
+                            bool dark_mode,
+                            int logical_size = 16);
 };
 
 // Factory: icon-only CefLabelButton with no visible text. The accessible
 // name is also used as the tooltip.
-CefRefPtr<CefLabelButton> MakeIconButton(
-    CefRefPtr<CefButtonDelegate> delegate,
-    IconId id,
-    std::string_view accessible_name);
+CefRefPtr<CefLabelButton> MakeIconButton(CefRefPtr<CefButtonDelegate> delegate,
+                                         IconId id,
+                                         std::string_view accessible_name);
 
 // Factory: CefLabelButton with both an icon image and a visible text label.
 CefRefPtr<CefLabelButton> MakeIconLabelButton(
@@ -84,7 +89,9 @@ CefRefPtr<CefLabelButton> MakeIconLabelButton(
 CefRefPtr<CefImage> RasterizeIconSvg(std::string_view svg_data,
                                      int logical_size,
                                      float scale_factor,
-                                     float r, float g, float b);
+                                     float r,
+                                     float g,
+                                     float b);
 
 // Return the device pixel ratio for the primary/main display (e.g. 2.0 on
 // a Retina Mac).  Called once by IconRegistry::Init().

@@ -16,23 +16,26 @@
 
 #include "runtime/crony_bridge.h"
 
+#include "runtime/layout_migrator.h"
+#include "runtime/workspace_id.h"
+
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
 
 #if defined(_WIN32)
-#  include <windows.h>
+#include <windows.h>
 #elif defined(__APPLE__)
-#  include <csignal>
-#  include <sys/wait.h>
-#  include <unistd.h>
-#  include <climits>
-#  include <mach-o/dyld.h>
+#include <mach-o/dyld.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <climits>
+#include <csignal>
 #else
-#  include <csignal>
-#  include <sys/wait.h>
-#  include <unistd.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <csignal>
 #endif
 
 #include <nlohmann/json.hpp>
@@ -71,8 +74,8 @@ bool SpawnProcess(const std::filesystem::path& binary,
   STARTUPINFOA si{};
   si.cb = sizeof(si);
   PROCESS_INFORMATION pi{};
-  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr,
-                      FALSE, 0, nullptr, nullptr, &si, &pi)) {
+  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                      nullptr, &si, &pi)) {
     return false;
   }
   CloseHandle(pi.hThread);
@@ -100,7 +103,8 @@ bool SpawnProcess(const std::filesystem::path& binary,
                   int* out_pid) {
   // Create a pipe: the child reads its RuntimeConfig from the read end.
   int pipe_fds[2];
-  if (::pipe(pipe_fds) != 0) return false;
+  if (::pipe(pipe_fds) != 0)
+    return false;
 
   pid_t pid = fork();
   if (pid < 0) {
@@ -113,7 +117,7 @@ bool SpawnProcess(const std::filesystem::path& binary,
     dup2(pipe_fds[0], STDIN_FILENO);
     close(pipe_fds[0]);
     close(pipe_fds[1]);
-    const char* args[] = { binary.c_str(), nullptr };
+    const char* args[] = {binary.c_str(), nullptr};
     execv(binary.c_str(), const_cast<char* const*>(args));
     _exit(1);  // exec failed
   }
@@ -125,7 +129,8 @@ bool SpawnProcess(const std::filesystem::path& binary,
   ssize_t remaining = static_cast<ssize_t>(config_json.size());
   while (remaining > 0) {
     ssize_t n = write(pipe_fds[1], p, static_cast<size_t>(remaining));
-    if (n <= 0) break;
+    if (n <= 0)
+      break;
     p += n;
     remaining -= n;
   }
@@ -142,7 +147,8 @@ void KillProcess(int pid) {
     for (int i = 0; i < 30; ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
       int status = 0;
-      if (waitpid(pid, &status, WNOHANG) == pid) return;
+      if (waitpid(pid, &status, WNOHANG) == pid)
+        return;
     }
     kill(pid, SIGKILL);
     waitpid(pid, nullptr, 0);
@@ -168,8 +174,7 @@ int WaitForProcessExit(int pid) {
 //   4. On macOS:  derived from __FILE__ at compile time (fallback only)
 //   5. Relative to CWD                   — last resort for dev builds
 // ---------------------------------------------------------------------------
-std::filesystem::path FindRuntimeBinary(
-    const std::filesystem::path& hint) {
+std::filesystem::path FindRuntimeBinary(const std::filesystem::path& hint) {
   const char* binary_name =
 #if defined(_WIN32)
       "crony.exe";
@@ -179,9 +184,11 @@ std::filesystem::path FindRuntimeBinary(
 
   if (!hint.empty()) {
     auto candidate = hint / binary_name;
-    if (std::filesystem::exists(candidate)) return candidate;
+    if (std::filesystem::exists(candidate))
+      return candidate;
     // hint might already BE the binary path.
-    if (std::filesystem::exists(hint)) return hint;
+    if (std::filesystem::exists(hint))
+      return hint;
   }
 
 #if defined(__linux__)
@@ -190,18 +197,21 @@ std::filesystem::path FindRuntimeBinary(
     auto self = std::filesystem::read_symlink("/proc/self/exe", ec);
     if (!ec) {
       auto c = self.parent_path() / binary_name;
-      if (std::filesystem::exists(c)) return c;
+      if (std::filesystem::exists(c))
+        return c;
       // ../Frameworks/ for any bundle layout that keeps linux helpers there
       auto c2 = self.parent_path() / ".." / "Frameworks" / binary_name;
       std::error_code ec2;
       auto c2c = std::filesystem::canonical(c2, ec2);
-      if (!ec2 && std::filesystem::exists(c2c)) return c2c;
+      if (!ec2 && std::filesystem::exists(c2c))
+        return c2c;
     }
   }
 #elif defined(__APPLE__)
   // On macOS the executable is Contents/MacOS/<name>; the runtime binary is
   // bundled at Contents/Frameworks/crony.
-  // Use _NSGetExecutablePath to get the real executable path independent of CWD.
+  // Use _NSGetExecutablePath to get the real executable path independent of
+  // CWD.
   {
     char exe_buf[PATH_MAX];
     uint32_t exe_size = sizeof(exe_buf);
@@ -212,10 +222,12 @@ std::filesystem::path FindRuntimeBinary(
         // Contents/MacOS/<exe> → ../Frameworks/<binary_name>
         auto c = exe_path.parent_path() / ".." / "Frameworks" / binary_name;
         auto cc = std::filesystem::weakly_canonical(c, ec);
-        if (!ec && std::filesystem::exists(cc)) return cc;
+        if (!ec && std::filesystem::exists(cc))
+          return cc;
         // Also check same directory as executable (non-bundle dev layout).
         auto c2 = exe_path.parent_path() / binary_name;
-        if (std::filesystem::exists(c2)) return c2;
+        if (std::filesystem::exists(c2))
+          return c2;
       }
     }
   }
@@ -223,7 +235,8 @@ std::filesystem::path FindRuntimeBinary(
 
   // CWD fallback.
   auto cwd_candidate = std::filesystem::current_path() / binary_name;
-  if (std::filesystem::exists(cwd_candidate)) return cwd_candidate;
+  if (std::filesystem::exists(cwd_candidate))
+    return cwd_candidate;
 
   return {};
 }
@@ -236,11 +249,16 @@ std::filesystem::path FindRuntimeBinary(
 
 const char* RuntimeBridgeStatusToString(RuntimeBridgeStatus s) {
   switch (s) {
-    case RuntimeBridgeStatus::kStopped:    return "stopped";
-    case RuntimeBridgeStatus::kStarting:   return "starting";
-    case RuntimeBridgeStatus::kReady:      return "ready";
-    case RuntimeBridgeStatus::kRestarting: return "restarting";
-    case RuntimeBridgeStatus::kFailed:     return "failed";
+    case RuntimeBridgeStatus::kStopped:
+      return "stopped";
+    case RuntimeBridgeStatus::kStarting:
+      return "starting";
+    case RuntimeBridgeStatus::kReady:
+      return "ready";
+    case RuntimeBridgeStatus::kRestarting:
+      return "restarting";
+    case RuntimeBridgeStatus::kFailed:
+      return "failed";
   }
   return "unknown";
 }
@@ -281,6 +299,15 @@ bool RuntimeBridge::Start(const std::filesystem::path& runtime_dir,
   service_name_ = kDefaultServiceName;
   lock.unlock();
 
+  // Run the one-shot layout migration before spawning the runtime.
+  // This moves the legacy flat layout ($appDataDir/runtime-state.json) into
+  // the profile-scoped layout ($appDataDir/profiles/default/) if needed.
+  if (!app_data_dir_.empty()) {
+    LayoutMigrator migrator(app_data_dir_);
+    migrator
+        .Run();  // non-fatal if it fails; runtime will start with empty state
+  }
+
   if (!SpawnAndHandshake()) {
     return false;
   }
@@ -297,10 +324,16 @@ bool RuntimeBridge::Start(const std::filesystem::path& runtime_dir,
 bool RuntimeBridge::SpawnAndHandshake() {
   std::filesystem::path bin;
   std::filesystem::path app_data;
+  std::string profile_id;
+  std::string memory_id;
+  std::filesystem::path workspace_root;
   {
     std::lock_guard lock(mu_);
     bin = runtime_binary_;
     app_data = app_data_dir_;
+    profile_id = profile_id_.empty() ? "default" : profile_id_;
+    memory_id = memory_id_.empty() ? profile_id : memory_id_;
+    workspace_root = workspace_root_;
   }
 
   // Kill any stale runtime from a previous crashed session.  If an old
@@ -331,22 +364,42 @@ bool RuntimeBridge::SpawnAndHandshake() {
 #endif
 
   // Build the RuntimeConfig JSON that is piped to the child's stdin.
-  // workspace_roots is empty here; capability scoping is enforced on the
-  // host side in bridge_handler.cc (task 4.3).
+  // Storage layout:
+  //   $appDataDir/<profile_id>/                     — CEF webview cache
+  //   $appDataDir/cronymax/Profiles/<profile_id>/  — runtime profile data
+  //   $appDataDir/cronymax/Memories/<memory_id>/   — runtime memory caches
+  //   $appDataDir/cronymax/logs/                    — application logs
   std::error_code ec;
-  std::filesystem::create_directories(app_data, ec);
-  std::filesystem::create_directories(app_data / "cache", ec);
-  std::filesystem::create_directories(app_data / "logs", ec);
+  const auto cronymax_dir = app_data / "cronymax";
+  const auto profile_data = cronymax_dir / "Profiles" / profile_id;
+  const auto profile_memory = cronymax_dir / "Memories" / memory_id;
+  const auto webview_profile = app_data / profile_id;
+  const auto logs_dir = cronymax_dir / "logs";
+  const auto ws_id = workspace_root.empty() ? std::string("default")
+                                            : WorkspaceId(workspace_root);
+  const auto ws_cache = profile_data / "workspaces" / ws_id;
+
+  // Ensure all required subdirectories exist before spawning.
+  std::filesystem::create_directories(profile_data, ec);
+  std::filesystem::create_directories(profile_memory, ec);
+  std::filesystem::create_directories(logs_dir, ec);
+  std::filesystem::create_directories(webview_profile, ec);
+  std::filesystem::create_directories(ws_cache / "chats", ec);
+  std::filesystem::create_directories(ws_cache / "pty", ec);
+  std::filesystem::create_directories(profile_data / "cache", ec);
 
   nlohmann::json cfg;
   cfg["storage"]["workspace_roots"] = nlohmann::json::array();
-  cfg["storage"]["app_data_dir"]    = app_data.string();
-  cfg["storage"]["cache_dir"]       = (app_data / "cache").string();
-  cfg["logging"]["log_dir"]         = (app_data / "logs").string();
-  cfg["logging"]["filter"]          = nullptr;
-  cfg["host_protocol"]["major"]     = 0;
-  cfg["host_protocol"]["minor"]     = 1;
-  cfg["host_protocol"]["patch"]     = 0;
+  if (!workspace_root.empty())
+    cfg["storage"]["workspace_roots"].push_back(workspace_root.string());
+  cfg["storage"]["app_data_dir"] = profile_data.string();
+  cfg["storage"]["workspace_cache_dir"] = ws_cache.string();
+  cfg["storage"]["cache_dir"] = (profile_data / "cache").string();
+  cfg["logging"]["log_dir"] = logs_dir.string();
+  cfg["logging"]["filter"] = nullptr;
+  cfg["host_protocol"]["major"] = 0;
+  cfg["host_protocol"]["minor"] = 1;
+  cfg["host_protocol"]["patch"] = 0;
 
   // Inject sandbox config if one has been set via SetSandboxConfig().
   {
@@ -356,7 +409,7 @@ bool RuntimeBridge::SpawnAndHandshake() {
     }
   }
 
-  const std::string config_json     = cfg.dump();
+  const std::string config_json = cfg.dump();
 
   // Spawn with config piped to stdin.
   if (!SpawnChild(bin, config_json)) {
@@ -429,10 +482,8 @@ bool RuntimeBridge::Invoke(const std::string& json_envelope) {
   std::lock_guard send_lock(send_mu_);
   char* err = nullptr;
   int rc = crony_client_send(
-      c,
-      reinterpret_cast<const uint8_t*>(json_envelope.data()),
-      json_envelope.size(),
-      &err);
+      c, reinterpret_cast<const uint8_t*>(json_envelope.data()),
+      json_envelope.size(), &err);
   if (rc != CRONY_OK) {
     std::string msg = err ? err : "(gips send error)";
     crony_string_free(err);
@@ -497,12 +548,14 @@ bool RuntimeBridge::SpawnChild(const std::filesystem::path& binary_path,
     svc = service_name_;
   }
   HANDLE handle = nullptr;
-  if (!SpawnProcess(binary_path, svc, &handle)) return false;
+  if (!SpawnProcess(binary_path, svc, &handle))
+    return false;
   std::lock_guard lock(mu_);
   child_process_ = handle;
 #else
   int pid = -1;
-  if (!SpawnProcess(binary_path, config_json, &pid)) return false;
+  if (!SpawnProcess(binary_path, config_json, &pid))
+    return false;
   std::lock_guard lock(mu_);
   child_pid_ = pid;
 #endif
@@ -517,7 +570,8 @@ void RuntimeBridge::KillChild() {
     h = static_cast<HANDLE>(child_process_);
     child_process_ = nullptr;
   }
-  if (h) KillProcess(h);
+  if (h)
+    KillProcess(h);
 #else
   int pid = -1;
   {
@@ -525,7 +579,8 @@ void RuntimeBridge::KillChild() {
     pid = child_pid_;
     child_pid_ = -1;
   }
-  if (pid > 0) KillProcess(pid);
+  if (pid > 0)
+    KillProcess(pid);
 #endif
 }
 
@@ -545,8 +600,7 @@ bool RuntimeBridge::WaitForHandshake() {
   // executor, and call GipsTransport::bind_default() before the service
   // appears in the Mach bootstrap namespace. Retry for up to
   // kHandshakeTimeout instead of giving up after a single attempt.
-  const auto deadline =
-      std::chrono::steady_clock::now() + kHandshakeTimeout;
+  const auto deadline = std::chrono::steady_clock::now() + kHandshakeTimeout;
   crony_client_t* c = nullptr;
   while (!c && std::chrono::steady_clock::now() < deadline) {
     char* err = nullptr;
@@ -576,11 +630,9 @@ bool RuntimeBridge::WaitForHandshake() {
   std::string hello_str = hello.dump();
 
   char* err = nullptr;
-  int rc = crony_client_send(
-      c,
-      reinterpret_cast<const uint8_t*>(hello_str.data()),
-      hello_str.size(),
-      &err);
+  int rc =
+      crony_client_send(c, reinterpret_cast<const uint8_t*>(hello_str.data()),
+                        hello_str.size(), &err);
   if (rc != CRONY_OK) {
     std::string msg = err ? err : "(send error)";
     crony_string_free(err);
@@ -643,7 +695,8 @@ void RuntimeBridge::PumpLoop() {
       std::lock_guard lock(mu_);
       c = client_;
     }
-    if (!c) break;
+    if (!c)
+      break;
 
     uint8_t* buf = nullptr;
     size_t len = 0;
@@ -716,54 +769,59 @@ void RuntimeBridge::SupervisorLoop() {
       int status = 0;
       pid_t result = waitpid(pid, &status, WNOHANG);
       if (result == pid) {
+        {
+          std::lock_guard lock(mu_);
+          child_pid_ = -1;
+        }
+#endif
+      // Child exited while we're still meant to be running.
+      if (supervisor_stop_.load())
+        break;
+
+      int attempts = 0;
+      {
         std::lock_guard lock(mu_);
-        child_pid_ = -1;
-#endif
-        // Child exited while we're still meant to be running.
-        if (supervisor_stop_.load()) break;
-
-        int attempts = 0;
-        {
-          std::lock_guard lock(mu_);
-          if (status_ == RuntimeBridgeStatus::kStopped) break;
-          attempts = ++restart_count_;
-          if (attempts > kMaxRestartAttempts) {
-            last_error_ = "runtime crashed too many times; giving up";
-            status_ = RuntimeBridgeStatus::kFailed;
-            break;
-          }
-          status_ = RuntimeBridgeStatus::kRestarting;
+        if (status_ == RuntimeBridgeStatus::kStopped)
+          break;
+        attempts = ++restart_count_;
+        if (attempts > kMaxRestartAttempts) {
+          last_error_ = "runtime crashed too many times; giving up";
+          status_ = RuntimeBridgeStatus::kFailed;
+          break;
         }
-
-        // Tear down the old pump and client before respawning.
-        pump_stop_.store(true);
-        {
-          std::lock_guard lock(mu_);
-          if (client_) {
-            crony_client_close(client_);
-            client_ = nullptr;
-          }
-        }
-        if (pump_thread_.joinable()) pump_thread_.join();
-
-        // Notify subscribers (e.g. RuntimeProxy) that the runtime is about to
-        // restart.  RuntimeProxy::HandleBridgeRestarting() drains its pending_
-        // callbacks with errors so renderer Promises reject instead of hanging.
-        DispatchPayload(R"({"tag":"bridge_restarting"})");
-
-        if (!supervisor_stop_.load()) {
-          SpawnAndHandshake();
-        }
-#if defined(_WIN32)
+        status_ = RuntimeBridgeStatus::kRestarting;
       }
+
+      // Tear down the old pump and client before respawning.
+      pump_stop_.store(true);
+      {
+        std::lock_guard lock(mu_);
+        if (client_) {
+          crony_client_close(client_);
+          client_ = nullptr;
+        }
+      }
+      if (pump_thread_.joinable())
+        pump_thread_.join();
+
+      // Notify subscribers (e.g. RuntimeProxy) that the runtime is about to
+      // restart.  RuntimeProxy::HandleBridgeRestarting() drains its pending_
+      // callbacks with errors so renderer Promises reject instead of hanging.
+      DispatchPayload(R"({"tag":"bridge_restarting"})");
+
+      if (!supervisor_stop_.load()) {
+        SpawnAndHandshake();
+      }
+#if defined(_WIN32)
     }
+  }
 #else
-      } // waitpid matched
-    }   // pid > 0
+      }  // waitpid matched
+    }  // pid > 0
 #endif
 
-    std::this_thread::sleep_for(kSupervisorPollMs);
-  }
+  std::this_thread::sleep_for(kSupervisorPollMs);
+}
 }
 
 }  // namespace cronymax

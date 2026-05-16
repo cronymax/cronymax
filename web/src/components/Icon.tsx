@@ -5,28 +5,28 @@
 // assets/icons/README.md (the canonical mapping table) when adding or
 // removing icons.
 
-import type { FunctionComponent, SVGProps } from "react";
+import Add from "@vscode/codicons/src/icons/add.svg?react";
 
 import ArrowLeft from "@vscode/codicons/src/icons/arrow-left.svg?react";
 import ArrowRight from "@vscode/codicons/src/icons/arrow-right.svg?react";
-import Refresh from "@vscode/codicons/src/icons/refresh.svg?react";
-import Close from "@vscode/codicons/src/icons/close.svg?react";
-import Add from "@vscode/codicons/src/icons/add.svg?react";
-import SettingsGear from "@vscode/codicons/src/icons/settings-gear.svg?react";
-import Terminal from "@vscode/codicons/src/icons/terminal.svg?react";
-import CommentDiscussion from "@vscode/codicons/src/icons/comment-discussion.svg?react";
-import TypeHierarchy from "@vscode/codicons/src/icons/type-hierarchy.svg?react";
-import Globe from "@vscode/codicons/src/icons/globe.svg?react";
-import DebugStop from "@vscode/codicons/src/icons/debug-stop.svg?react";
-import Sparkle from "@vscode/codicons/src/icons/sparkle.svg?react";
-import Tools from "@vscode/codicons/src/icons/tools.svg?react";
-import Save from "@vscode/codicons/src/icons/save.svg?react";
-import Trash from "@vscode/codicons/src/icons/trash.svg?react";
-import LinkExternal from "@vscode/codicons/src/icons/link-external.svg?react";
+import ChevronDown from "@vscode/codicons/src/icons/chevron-down.svg?react";
 import ChevronLeft from "@vscode/codicons/src/icons/chevron-left.svg?react";
 import ChevronRight from "@vscode/codicons/src/icons/chevron-right.svg?react";
 import ChevronUp from "@vscode/codicons/src/icons/chevron-up.svg?react";
-import ChevronDown from "@vscode/codicons/src/icons/chevron-down.svg?react";
+import Close from "@vscode/codicons/src/icons/close.svg?react";
+import CommentDiscussion from "@vscode/codicons/src/icons/comment-discussion.svg?react";
+import DebugStop from "@vscode/codicons/src/icons/debug-stop.svg?react";
+import Globe from "@vscode/codicons/src/icons/globe.svg?react";
+import LinkExternal from "@vscode/codicons/src/icons/link-external.svg?react";
+import Refresh from "@vscode/codicons/src/icons/refresh.svg?react";
+import Save from "@vscode/codicons/src/icons/save.svg?react";
+import SettingsGear from "@vscode/codicons/src/icons/settings-gear.svg?react";
+import Sparkle from "@vscode/codicons/src/icons/sparkle.svg?react";
+import Terminal from "@vscode/codicons/src/icons/terminal.svg?react";
+import Tools from "@vscode/codicons/src/icons/tools.svg?react";
+import Trash from "@vscode/codicons/src/icons/trash.svg?react";
+import TypeHierarchy from "@vscode/codicons/src/icons/type-hierarchy.svg?react";
+import type { FunctionComponent, SVGProps } from "react";
 
 export type SvgComponent = FunctionComponent<SVGProps<SVGSVGElement>>;
 
@@ -101,19 +101,7 @@ export const codiconComponents: Record<IconName, SvgComponent> = {
  * decorative icons next to a visible text label, pass `aria-hidden="true"`
  * (or omit the label and the consumer's own label will speak).
  */
-export function Icon({
-  name,
-  size = 16,
-  ...rest
-}: { name: IconName; size?: number } & SVGProps<SVGSVGElement>) {
+export function Icon({ name, size = 16, ...rest }: { name: IconName; size?: number } & SVGProps<SVGSVGElement>) {
   const SvgIcon = codiconComponents[name];
-  return (
-    <SvgIcon
-      width={size}
-      height={size}
-      fill="currentColor"
-      role="img"
-      {...rest}
-    />
-  );
+  return <SvgIcon width={size} height={size} fill="currentColor" role="img" {...rest} />;
 }

@@ -32,10 +32,7 @@ fn unique_service() -> String {
 /// Send a JSON-encoded `ClientToRuntime` and recv one
 /// `RuntimeToClient`. Runs on a blocking thread because gips' Endpoint
 /// API is sync.
-fn round_trip(
-    endpoint: &mut Endpoint,
-    msg: &ClientToRuntime,
-) -> std::io::Result<RuntimeToClient> {
+fn round_trip(endpoint: &mut Endpoint, msg: &ClientToRuntime) -> std::io::Result<RuntimeToClient> {
     let payload = serde_json::to_vec(msg).expect("serialize");
     endpoint.send(&payload, &[])?;
     let resp = endpoint.recv()?;
@@ -45,12 +42,9 @@ fn round_trip(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handshake_and_ping_round_trip_through_gips() {
     let service = unique_service();
-    let transport = GipsTransport::bind(service.as_str())
-        .expect("bind GIPS listener");
+    let transport = GipsTransport::bind(service.as_str()).expect("bind GIPS listener");
 
-    let dispatch_task = tokio::spawn(async move {
-        run(transport, EchoHandler).await
-    });
+    let dispatch_task = tokio::spawn(async move { run(transport, EchoHandler).await });
 
     // Drive the client side from a blocking task so we can use the
     // synchronous gips Endpoint API. Give the listener a beat to be
@@ -59,8 +53,8 @@ async fn handshake_and_ping_round_trip_through_gips() {
     let service_name = service.clone();
     let client_task = tokio::task::spawn_blocking(move || {
         std::thread::sleep(Duration::from_millis(50));
-        let mut endpoint = Endpoint::connect(service_name.as_str())
-            .expect("connect to runtime service");
+        let mut endpoint =
+            Endpoint::connect(service_name.as_str()).expect("connect to runtime service");
 
         // Hello → Welcome.
         let hello = ClientToRuntime::Hello {
@@ -128,11 +122,7 @@ impl Handler for PushOnConnectThenEcho {
             .await;
     }
 
-    async fn handle_control(
-        &self,
-        id: CorrelationId,
-        request: ControlRequest,
-    ) -> ControlResponse {
+    async fn handle_control(&self, id: CorrelationId, request: ControlRequest) -> ControlResponse {
         match request {
             ControlRequest::Ping => ControlResponse::Pong,
             _ => ControlResponse::Err {
@@ -143,12 +133,7 @@ impl Handler for PushOnConnectThenEcho {
         }
     }
 
-    async fn handle_capability_reply(
-        &self,
-        _id: CorrelationId,
-        _response: CapabilityResponse,
-    ) {
-    }
+    async fn handle_capability_reply(&self, _id: CorrelationId, _response: CapabilityResponse) {}
 
     async fn on_disconnected(&self) {}
 }
@@ -178,18 +163,15 @@ impl Handler for PushOnConnectThenEcho {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recv_survives_outbound_cancel() {
     let service = unique_service();
-    let transport =
-        GipsTransport::bind(service.as_str()).expect("bind GIPS listener");
+    let transport = GipsTransport::bind(service.as_str()).expect("bind GIPS listener");
 
-    let dispatch_task =
-        tokio::spawn(async move { run(transport, PushOnConnectThenEcho).await });
+    let dispatch_task = tokio::spawn(async move { run(transport, PushOnConnectThenEcho).await });
 
     let service_name = service.clone();
     let client_task = tokio::task::spawn_blocking(move || {
         // Give the accept loop a moment to register the service.
         std::thread::sleep(Duration::from_millis(50));
-        let mut endpoint =
-            Endpoint::connect(service_name.as_str()).expect("connect to service");
+        let mut endpoint = Endpoint::connect(service_name.as_str()).expect("connect to service");
 
         // ── Step 1: Hello → Welcome ────────────────────────────────────
         let hello = ClientToRuntime::Hello {
@@ -226,8 +208,7 @@ async fn recv_survives_outbound_cancel() {
             id,
             request: ControlRequest::Ping,
         };
-        match round_trip(&mut endpoint, &ping)
-            .expect("Ping after unsolicited push should succeed")
+        match round_trip(&mut endpoint, &ping).expect("Ping after unsolicited push should succeed")
         {
             RuntimeToClient::Control {
                 id: rid,
@@ -241,4 +222,3 @@ async fn recv_survives_outbound_cancel() {
     dispatch_task.abort();
     let _ = dispatch_task.await;
 }
-

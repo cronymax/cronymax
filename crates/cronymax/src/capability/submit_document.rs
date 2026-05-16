@@ -111,6 +111,7 @@ fn acquire_flock(lock_path: &std::path::Path) -> std::io::Result<std::fs::File> 
         .read(true)
         .write(true)
         .create(true)
+        .truncate(true)
         .mode(0o644)
         .open(lock_path)?;
     // Blocking exclusive lock.
@@ -118,7 +119,7 @@ fn acquire_flock(lock_path: &std::path::Path) -> std::io::Result<std::fs::File> 
         std::os::unix::io::AsRawFd::as_raw_fd(&file),
         nix::fcntl::FlockArg::LockExclusive,
     )
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+    .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(file)
 }
 
@@ -204,8 +205,7 @@ pub async fn handle(
             let digest = sha256_hex(&content_bytes);
 
             // Write history first (so the snapshot is never missing).
-            let history_path =
-                history_dir.join(format!("{doc_id_clone}.{rev}.md"));
+            let history_path = history_dir.join(format!("{doc_id_clone}.{rev}.md"));
             atomic_write(&history_path, &content_bytes)?;
 
             // Write (or overwrite) the current revision.
@@ -215,13 +215,11 @@ pub async fn handle(
             Ok((rev, digest, doc_path))
         })
         .await
-        .unwrap_or_else(|e| Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+        .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
 
     let (revision, sha256, _doc_path) = match write_result {
         Ok(r) => r,
-        Err(e) => {
-            return ToolOutcome::Error(format!("submit_document: write failed: {e}"))
-        }
+        Err(e) => return ToolOutcome::Error(format!("submit_document: write failed: {e}")),
     };
 
     // 6. Build the workspace-relative path for the result payload.
@@ -267,5 +265,3 @@ pub async fn handle(
         "sha256": sha256,
     }))
 }
-
-

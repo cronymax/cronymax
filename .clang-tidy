@@ -1,0 +1,24 @@
+# Root .clang-tidy — applies to native modules (everything except app/browser/).
+# BasedOnStyle: standalone (InheritParentConfig intentionally absent).
+#
+# Checks are tuned for the CEF-native layer: no ownership model enforcement,
+# practical modernize/performance/readability subset only.
+Checks: >
+  -*,
+  bugprone-integer-overflow,
+  bugprone-signed-char-misuse,
+  bugprone-use-after-move,
+  modernize-use-override,
+  modernize-use-nullptr,
+  modernize-loop-convert,
+  performance-unnecessary-copy-initialization,
+  performance-move-const-arg,
+  performance-for-range-copy,
+  readability-container-size-empty,
+  -clang-analyzer-*,
+  -modernize-use-trailing-return-type,
+  -readability-magic-numbers
+
+WarningsAsErrors: ""
+HeaderFilterRegex: "app/.*"
+FormatStyle: file

@@ -12,10 +12,7 @@ import { browser, runtime } from "@/shells/bridge";
  * The callback receives the inner event object JSON string:
  *   `{ sequence, emitted_at_ms, payload: { ... } }`
  */
-export function useRuntimeEvent(
-  topic: string,
-  handler: (eventJson: string) => void,
-): void {
+export function useRuntimeEvent(topic: string, handler: (eventJson: string) => void): void {
   const handlerRef = useRef(handler);
   handlerRef.current = handler;
 

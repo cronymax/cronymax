@@ -112,9 +112,7 @@ export type Action =
   | {
       type: "updateEdge";
       index: number;
-      patch: Partial<
-        Pick<GraphEdge, "port" | "requires_human_approval" | "label">
-      >;
+      patch: Partial<Pick<GraphEdge, "port" | "requires_human_approval" | "label">>;
     }
   | { type: "deleteEdge"; index: number }
   | { type: "addEdge"; edge: GraphEdge }
@@ -160,25 +158,34 @@ function migrateFlowSpec(raw: FlowSpec): FlowSpec {
     .filter((n) => n && n.type === "agent")
     .map((n) => {
       const config = { ...(n.config ?? {}) } as Record<string, string>;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let produces: ProducesEntry[] = Array.isArray((n as any).produces)
-        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          [...((n as any).produces as ProducesEntry[])]
-        : [];
-      if (produces.length === 0 && config["produces"]) {
-        produces = [{ doc_type: config["produces"]!, reviewers: "" }];
+      let produces: ProducesEntry[] = Array.isArray(n.produces) ? [...n.produces] : [];
+      if (produces.length === 0 && config.produces) {
+        produces = [{ doc_type: config.produces!, reviewers: "" }];
       }
       // Strip old config keys.
-      delete config["produces"];
-      delete config["reviewers"];
+      delete config.produces;
+      delete config.reviewers;
       return { ...n, config, produces };
     });
 
-  // Step 2: drain edge.reviewers → source node's matching ProducesEntry.
+  // Step 2: rename legacy "Chat" lead-node agent_name to "Crony".
+  // The lead node is the one with the smallest id.
+  if (nodes.length > 0) {
+    const leadIdx = nodes.reduce((minI, n, i) => (n.id < nodes[minI]!.id ? i : minI), 0);
+    const lead = nodes[leadIdx]!;
+    if ((lead.config?.agent_name ?? lead.name) === "Chat") {
+      nodes[leadIdx] = {
+        ...lead,
+        name: "Crony",
+        config: { ...(lead.config ?? {}), agent_name: "Crony" },
+      };
+    }
+  }
+
+  // Step 3: drain edge.reviewers → source node's matching ProducesEntry.
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
   const edges: GraphEdge[] = (raw.edges ?? []).map((e) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const edgeRevs = (e as any).reviewers as string | undefined;
+    const edgeRevs = (e as GraphEdge & { reviewers?: string }).reviewers;
     if (!edgeRevs || !e.port) return e;
     const src = nodeMap.get(e.from_id);
     if (!src) return e;
@@ -193,7 +200,7 @@ function migrateFlowSpec(raw: FlowSpec): FlowSpec {
           .map((s) => s.trim())
           .filter(Boolean),
       );
-      incoming.forEach((r) => existing.add(r));
+      for (const r of incoming) existing.add(r);
       src.produces[entryIdx] = {
         ...src.produces[entryIdx]!,
         reviewers: Array.from(existing).join(","),
@@ -201,8 +208,7 @@ function migrateFlowSpec(raw: FlowSpec): FlowSpec {
     } else {
       src.produces.push({ doc_type: e.port, reviewers: edgeRevs });
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { reviewers: _r, ...rest } = e as any;
+    const { reviewers: _r, ...rest } = e as GraphEdge & { reviewers?: string };
     return rest as GraphEdge;
   });
 
@@ -226,36 +232,37 @@ function sanitizeNodes(nodes: GraphNode[]): GraphNode[] {
 }
 
 function sanitizeEdges(edges: GraphEdge[], nodeIds: Set<number>): GraphEdge[] {
-  return (edges ?? []).filter(
-    (e) => nodeIds.has(e.from_id) && nodeIds.has(e.to_id),
-  );
+  return (edges ?? []).filter((e) => nodeIds.has(e.from_id) && nodeIds.has(e.to_id));
 }
 
 /**
- * Ensure the Chat agent is always node id=1 (the non-deletable lead node).
+ * Ensure the Crony agent is always node id=1 (the non-deletable lead node).
  *
- * If the lead node (smallest id) already has `config.agent_name === "Chat"`,
+ * If the lead node (smallest id) already has `config.agent_name === "Crony"`,
  * the spec is returned unchanged. Otherwise all existing node ids are shifted
- * by +1, their x-positions are shifted right by NODE_X_STEP, and a Chat node
+ * by +1, their x-positions are shifted right by NODE_X_STEP, and a Crony node
  * is prepended at id=1.
+ *
+ * Note: legacy "Chat" lead nodes are already converted to "Crony" by
+ * `migrateFlowSpec` before this function is called.
  */
 const NODE_X_STEP_INTERNAL = 300;
-const NODE_Y_CHAT = 120;
+const NODE_Y_CRONY = 120;
 
-function ensureChatLeadNode(spec: FlowSpec): FlowSpec {
+function ensureCronyLeadNode(spec: FlowSpec): FlowSpec {
   const nodes = spec.nodes ?? [];
   if (nodes.length === 0) {
-    // Empty flow → just the Chat node
+    // Empty flow → just the Crony node
     return {
       nodes: [
         {
           id: 1,
           type: "agent",
-          name: "Chat",
+          name: "Crony",
           x: 80,
-          y: NODE_Y_CHAT,
+          y: NODE_Y_CRONY,
           produces: [],
-          config: { agent_name: "Chat" },
+          config: { agent_name: "Crony" },
         },
       ],
       edges: spec.edges ?? [],
@@ -263,32 +270,30 @@ function ensureChatLeadNode(spec: FlowSpec): FlowSpec {
   }
   const sorted = [...nodes].sort((a, b) => a.id - b.id);
   const lead = sorted[0]!;
-  if ((lead.config?.agent_name ?? lead.name) === "Chat") {
-    // Chat is already the lead node — ensure there's an edge from Chat to the
-    // first non-Chat workflow node (may be missing in flows loaded from
+  if ((lead.config?.agent_name ?? lead.name) === "Crony") {
+    // Crony is already the lead node — ensure there's an edge from Crony to
+    // the first non-Crony workflow node (may be missing in flows loaded from
     // localStorage that were saved before this requirement was added).
     const firstWorkflow = sorted[1];
     if (!firstWorkflow) return spec;
     const edges = spec.edges ?? [];
-    const hasLeadEdge = edges.some(
-      (e) => e.from_id === lead.id && e.to_id === firstWorkflow.id,
-    );
+    const hasLeadEdge = edges.some((e) => e.from_id === lead.id && e.to_id === firstWorkflow.id);
     if (hasLeadEdge) return spec;
     return {
       ...spec,
       edges: [{ from_id: lead.id, to_id: firstWorkflow.id }, ...edges],
     };
   }
-  // Shift every existing node id and x position to make room for Chat at id=1.
+  // Shift every existing node id and x position to make room for Crony at id=1.
   const idShift = lead.id === 1 ? 1 : 0; // only shift when id=1 would collide
-  const chatNode: GraphNode = {
+  const cronyNode: GraphNode = {
     id: 1,
     type: "agent",
-    name: "Chat",
+    name: "Crony",
     x: lead.x === 80 ? 80 : lead.x - NODE_X_STEP_INTERNAL,
-    y: NODE_Y_CHAT,
+    y: NODE_Y_CRONY,
     produces: [],
-    config: { agent_name: "Chat" },
+    config: { agent_name: "Crony" },
   };
   const shiftedNodes: GraphNode[] = nodes.map((n) => ({
     ...n,
@@ -300,19 +305,19 @@ function ensureChatLeadNode(spec: FlowSpec): FlowSpec {
     from_id: e.from_id + idShift,
     to_id: e.to_id + idShift,
   }));
-  // Add edge from Chat (id=1) to the first workflow node.
+  // Add edge from Crony (id=1) to the first workflow node.
   const firstWorkflowId = lead.id + idShift;
-  const chatEdge: GraphEdge = { from_id: 1, to_id: firstWorkflowId };
+  const cronyEdge: GraphEdge = { from_id: 1, to_id: firstWorkflowId };
   return {
-    nodes: [chatNode, ...shiftedNodes],
-    edges: [chatEdge, ...shiftedEdges],
+    nodes: [cronyNode, ...shiftedNodes],
+    edges: [cronyEdge, ...shiftedEdges],
   };
 }
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case "setFlow": {
-      const migrated = ensureChatLeadNode(migrateFlowSpec(action.spec));
+      const migrated = ensureCronyLeadNode(migrateFlowSpec(action.spec));
       const ns = sanitizeNodes(migrated.nodes ?? []);
       const ids = new Set(ns.map((n) => n.id));
       const es = sanitizeEdges(migrated.edges ?? [], ids);
@@ -343,9 +348,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         nodes: state.nodes.filter((n) => n.id !== action.id),
-        edges: state.edges.filter(
-          (e) => e.from_id !== action.id && e.to_id !== action.id,
-        ),
+        edges: state.edges.filter((e) => e.from_id !== action.id && e.to_id !== action.id),
         selectedId: state.selectedId === action.id ? null : state.selectedId,
       };
     }
@@ -356,48 +359,35 @@ function reducer(state: State, action: Action): State {
     case "updateNodeName":
       return {
         ...state,
-        nodes: state.nodes.map((n) =>
-          n.id === action.id ? { ...n, name: action.name } : n,
-        ),
+        nodes: state.nodes.map((n) => (n.id === action.id ? { ...n, name: action.name } : n)),
       };
     case "updateNodeConfig":
       return {
         ...state,
         nodes: state.nodes.map((n) =>
-          n.id === action.id
-            ? { ...n, config: { ...n.config, [action.key]: action.value } }
-            : n,
+          n.id === action.id ? { ...n, config: { ...n.config, [action.key]: action.value } } : n,
         ),
       };
     case "updateNodeProduces":
       return {
         ...state,
-        nodes: state.nodes.map((n) =>
-          n.id === action.id ? { ...n, produces: action.produces } : n,
-        ),
+        nodes: state.nodes.map((n) => (n.id === action.id ? { ...n, produces: action.produces } : n)),
       };
     case "updateNodePosition":
       return {
         ...state,
-        nodes: state.nodes.map((n) =>
-          n.id === action.id ? { ...n, x: action.x, y: action.y } : n,
-        ),
+        nodes: state.nodes.map((n) => (n.id === action.id ? { ...n, x: action.x, y: action.y } : n)),
       };
     case "updateEdge":
       return {
         ...state,
-        edges: state.edges.map((e, i) =>
-          i === action.index ? { ...e, ...action.patch } : e,
-        ),
+        edges: state.edges.map((e, i) => (i === action.index ? { ...e, ...action.patch } : e)),
       };
     case "deleteEdge":
       return {
         ...state,
         edges: state.edges.filter((_, i) => i !== action.index),
-        selectedEdgeIndex:
-          state.selectedEdgeIndex === action.index
-            ? null
-            : state.selectedEdgeIndex,
+        selectedEdgeIndex: state.selectedEdgeIndex === action.index ? null : state.selectedEdgeIndex,
       };
     case "addEdge":
       return { ...state, edges: [...state.edges, action.edge] };
@@ -441,10 +431,7 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-export const { Provider, useStore } = createPanelStore<State, Action>(
-  reducer,
-  initial,
-);
+export const { Provider, useStore } = createPanelStore<State, Action>(reducer, initial);
 
 // ── localStorage helpers ──────────────────────────────────────────────────
 const FLOWS_KEY = "flows";
@@ -477,16 +464,14 @@ export function setActiveFlowName(name: string): void {
   else localStorage.removeItem(ACTIVE_FLOW_KEY);
 }
 
-export function migrateLegacy(
-  flows: Record<string, FlowSpec>,
-): Record<string, FlowSpec> {
+export function migrateLegacy(flows: Record<string, FlowSpec>): Record<string, FlowSpec> {
   try {
     const raw = localStorage.getItem(LEGACY_KEY);
     if (!raw) return flows;
     const obj = JSON.parse(raw) as FlowSpec;
     if (!obj || !Array.isArray(obj.nodes)) return flows;
-    if (!flows["default"]) {
-      flows["default"] = { nodes: obj.nodes, edges: obj.edges || [] };
+    if (!flows.default) {
+      flows.default = { nodes: obj.nodes, edges: obj.edges || [] };
       saveAllFlows(flows);
     }
   } catch {
@@ -506,23 +491,20 @@ export function syncLegacyKey(spec: FlowSpec): void {
 // ── Built-in "Chat" seed flow ─────────────────────────────────────────────
 //
 // This preset is written to localStorage the first time the flow editor
-// opens with an empty flow store. It represents the simplest useful
-// configuration: a single worker agent with no explicit tool restrictions
-// (= the Space defaults, i.e. all registered skills). Users can freely
-// rename, reconfigure, or delete it.
+// opens with an empty flow store. It uses the Crony orchestrator as the
+// single lead node so the user can chat with it and delegate to workspace
+// agents. Users can freely rename, reconfigure, or delete it.
 export const SEED_CHAT_FLOW: FlowSpec = {
   nodes: [
     {
       id: 1,
       type: "agent",
-      name: "Chat",
+      name: "Crony",
       x: 80,
       y: 60,
       produces: [],
-      // agent_name left blank so the user picks from the inspector once
-      // the agent registry is populated. tools defaults to all skills.
       config: {
-        agent_name: "Chat",
+        agent_name: "Crony",
       },
     },
   ],
@@ -534,17 +516,17 @@ export const SEED_CHAT_FLOW: FlowSpec = {
 // absent (including for users who already have other flows). Users can
 // freely edit or delete it.
 export const SEED_SOFTWARE_DEV_CYCLE_FLOW: FlowSpec = {
-  // Chat is always id=1 (the non-deletable lead node).
+  // Crony is always id=1 (the non-deletable lead node).
   // PM/RD/QA are id=2/3/4 respectively.
   nodes: [
     {
       id: 1,
       type: "agent",
-      name: "Chat",
+      name: "Crony",
       x: 80,
       y: 120,
       produces: [],
-      config: { agent_name: "Chat" },
+      config: { agent_name: "Crony" },
     },
     {
       id: 2,
@@ -645,18 +627,18 @@ const NODE_X_STEP = 300;
 const NODE_Y_BASE = 120;
 
 /**
- * The Chat node is always injected as node id=1 (the lead node) so that
- * workspace flows loaded from YAML still expose a chat entry point.
+ * The Crony node is always injected as node id=1 (the lead node) so that
+ * workspace flows loaded from YAML still expose an orchestrator entry point.
  * All YAML-defined nodes are offset to start from id=2.
  */
-const CHAT_LEAD_NODE: GraphNode = {
+const CRONY_LEAD_NODE: GraphNode = {
   id: 1,
   type: "agent",
-  name: "Chat",
+  name: "Crony",
   x: 80,
   y: NODE_Y_BASE,
   produces: [],
-  config: { agent_name: "Chat" },
+  config: { agent_name: "Crony" },
 };
 
 /** Convert a runtime flow definition to a visual `FlowSpec` with auto-layout. */
@@ -702,7 +684,7 @@ export function flowSpecFromDef(def: RuntimeFlowDef): FlowSpec {
       }
     }
     return {
-      nodes: [{ ...CHAT_LEAD_NODE }, ...yamlNodes],
+      nodes: [{ ...CRONY_LEAD_NODE }, ...yamlNodes],
       edges: [{ from_id: 1, to_id: 1 + ID_OFFSET }, ...graphEdges],
     };
   }
@@ -737,7 +719,7 @@ export function flowSpecFromDef(def: RuntimeFlowDef): FlowSpec {
     ];
   });
   return {
-    nodes: [{ ...CHAT_LEAD_NODE }, ...yamlNodes],
+    nodes: [{ ...CRONY_LEAD_NODE }, ...yamlNodes],
     edges: [{ from_id: 1, to_id: 1 + ID_OFFSET }, ...graphEdges],
   };
 }

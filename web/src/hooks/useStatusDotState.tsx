@@ -56,17 +56,16 @@ export function useStatusDotState(): StatusDot {
 
   // Subscribe to event broadcasts.
   useEffect(() => {
-    void browser.send("events.subscribe", {}).catch(() => {});
+    void browser.send("events.subscribe", {}).catch(() => {
+      /* ignore */
+    });
     const off = browser.on("event", (payload) => {
       const e = payload as AppEvent;
       const now = Date.now();
       if (e.kind === "error") setLastErrorAt(now);
       else setLastActivityAt(now);
       // Bump inbox counts heuristically; full refresh on next poll cycle.
-      if (
-        e.kind === "review_event" &&
-        e.payload.verdict === "request_changes"
-      ) {
+      if (e.kind === "review_event" && e.payload.verdict === "request_changes") {
         setNeedsAction((n) => n + 1);
       }
     });
@@ -102,11 +101,7 @@ export function StatusDot({ state, onClick, className }: StatusDotProps) {
       aria-label={`status: ${s}`}
       title={`status: ${s}`}
       onClick={onClick}
-      className={
-        "h-1.5 w-1.5 rounded-full transition-colors " +
-        COLORS[s] +
-        (className ? " " + className : "")
-      }
+      className={`h-1.5 w-1.5 rounded-full transition-colors ${COLORS[s]}${className ? ` ${className}` : ""}`}
     />
   );
 }

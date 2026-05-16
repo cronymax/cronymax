@@ -35,20 +35,19 @@
 //! the rest of the runtime is pure Rust.
 
 pub mod authority;
+pub mod chat_store;
 pub mod handler;
 pub mod persistence;
+pub mod prompt;
+pub mod sessions;
 pub mod state;
 
 pub use authority::{
-    AuthorityError, ReviewHandle, ReviewResolution, RuntimeAuthority,
-    SubscribeOutcome,
+    AuthorityError, ReviewHandle, ReviewResolution, RuntimeAuthority, SubscribeOutcome,
 };
 pub use handler::RuntimeHandler;
-pub use persistence::{
-    InMemoryPersistence, JsonFilePersistence, Persistence, PersistenceError,
-};
+pub use persistence::{InMemoryPersistence, JsonFilePersistence, Persistence, PersistenceError};
 pub use state::{
-    Agent, AgentId, HistoryEntry, MemoryEntry, MemoryNamespace,
-    MemoryNamespaceId, PendingReview, PermissionState, ReviewId, Run, RunId,
-    RunStatus, Snapshot, Space, SpaceId,
+    Agent, AgentId, HistoryEntry, MemoryEntry, MemoryNamespace, MemoryNamespaceId, PendingReview,
+    PermissionState, ReviewId, Run, RunId, RunStatus, Session, SessionId, Snapshot, Space, SpaceId,
 };

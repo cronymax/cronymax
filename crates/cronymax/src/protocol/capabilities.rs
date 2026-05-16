@@ -43,10 +43,7 @@ pub enum CapabilityRequest {
     },
 
     /// Read or write a host-managed secret.
-    Secret {
-        scope: String,
-        op: SecretOp,
-    },
+    Secret { scope: String, op: SecretOp },
 
     /// Surface a notification to the user (system tray, dock badge).
     Notify {
@@ -82,20 +79,14 @@ pub enum CapabilityRequest {
     /// The host reads `<workspace>/.cronymax/agents/<agent_id>.agent.yaml`
     /// and returns the parsed definition. The runtime falls back to
     /// reading the YAML directly when the host is not connected.
-    Agent {
-        space_id: String,
-        op: AgentOp,
-    },
+    Agent { space_id: String, op: AgentOp },
 
     /// Manage a PTY terminal session via the host `PtySession`.
     ///
     /// Terminal sessions are lifecycle-managed by the C++ host so that
     /// output can be streamed to the UI and the session survives runtime
     /// restarts.
-    Terminal {
-        space_id: String,
-        op: TerminalOp,
-    },
+    Terminal { space_id: String, op: TerminalOp },
 }
 
 /// Operations on the host `DocumentStore`.
@@ -141,13 +132,21 @@ pub enum TerminalOp {
     /// Write bytes to an open session.
     Write { session_id: String, data: String },
     /// Resize the pseudo-terminal.
-    Resize { session_id: String, cols: u16, rows: u16 },
+    Resize {
+        session_id: String,
+        cols: u16,
+        rows: u16,
+    },
     /// Close the session and release resources.
     Close { session_id: String },
 }
 
-fn default_cols() -> u16 { 220 }
-fn default_rows() -> u16 { 50 }
+fn default_cols() -> u16 {
+    220
+}
+fn default_rows() -> u16 {
+    50
+}
 
 /// Read/write operations on host-managed secrets.
 #[derive(Clone, Debug, Serialize, Deserialize)]

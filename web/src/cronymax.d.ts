@@ -17,10 +17,6 @@ declare global {
     cronymax?: {
       /** Renderer ↔ browser-process IPC (cefQuery + dispatch). */
       browser?: {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        send: (channel: any, payload?: any) => Promise<any>;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        on: (event: any, handler: (payload: any) => void) => () => void;
         /** Aliased from window.cefQuery by App::OnContextCreated (C++). */
         query?: (opts: {
           request: string;

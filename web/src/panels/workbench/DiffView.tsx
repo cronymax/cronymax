@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
+import { useEffect, useState } from "react";
 
 import { browser } from "@/shells/bridge";
 
@@ -53,10 +53,7 @@ export function DiffView({ params }: { params: WorkbenchParams }) {
           const latest = entry?.latest_revision ?? 0;
           if (latest < 2) {
             if (cancelled) return;
-            setError(
-              "Diff requires at least two revisions; this document only has " +
-                `${latest}.`,
-            );
+            setError(`Diff requires at least two revisions; this document only has ${latest}.`);
             return;
           }
           from = from || latest - 1;
@@ -102,11 +99,7 @@ export function DiffView({ params }: { params: WorkbenchParams }) {
   }
 
   if (original === null || modified === null) {
-    return (
-      <div className="flex h-full items-center justify-center p-6 text-sm text-gray-500">
-        Loading diff…
-      </div>
-    );
+    return <div className="flex h-full items-center justify-center p-6 text-sm text-gray-500">Loading diff…</div>;
   }
 
   return (

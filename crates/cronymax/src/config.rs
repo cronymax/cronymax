@@ -25,10 +25,15 @@ pub struct StoragePaths {
     /// must scope filesystem capabilities to these paths.
     pub workspace_roots: Vec<PathBuf>,
 
-    /// App-private data directory owned by the runtime. Persistent run
-    /// state, event journals, memory indexes, and permission grants
-    /// live under here.
+    /// Profile-scoped app data directory owned by the runtime. Points to
+    /// `$appDataDir/cronymax/profiles/<profile_id>/`. Persistent run state, event
+    /// journals, memory indexes, and permission grants live under here.
     pub app_data_dir: PathBuf,
+
+    /// Profile+workspace-scoped cache directory for this session.
+    /// Points to `$appDataDir/cronymax/profiles/<profile_id>/workspaces/<ws_id>/`.
+    /// Chat history (`chats/`) and PTY history (`pty/`) live under here.
+    pub workspace_cache_dir: PathBuf,
 
     /// Cache directory the runtime may evict freely.
     pub cache_dir: PathBuf,

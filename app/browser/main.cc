@@ -6,8 +6,7 @@
 
 int main(int argc, char* argv[]) {
   CefMainArgs main_args(argc, argv);
-  CefRefPtr<cronymax::DesktopApp> app(
-      new cronymax::DesktopApp());
+  CefRefPtr<cronymax::App> app(new cronymax::App());
 
   const int exit_code = CefExecuteProcess(main_args, app, nullptr);
   if (exit_code >= 0) {

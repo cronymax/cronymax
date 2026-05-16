@@ -34,9 +34,7 @@ export function readParams(): WorkbenchParams {
   const from = fromStr ? Number(fromStr) : undefined;
   const to = toStr ? Number(toStr) : undefined;
   const hash = window.location.hash;
-  const blockId = hash.startsWith("#block-")
-    ? hash.slice("#block-".length)
-    : undefined;
+  const blockId = hash.startsWith("#block-") ? hash.slice("#block-".length) : undefined;
   return {
     flow,
     doc,
@@ -48,10 +46,7 @@ export function readParams(): WorkbenchParams {
   };
 }
 
-export function setMode(
-  mode: WorkbenchMode,
-  extra?: Record<string, string>,
-): void {
+export function setMode(mode: WorkbenchMode, extra?: Record<string, string>): void {
   const url = new URL(window.location.href);
   url.searchParams.set("mode", mode);
   if (extra) {

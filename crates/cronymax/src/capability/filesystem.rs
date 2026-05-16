@@ -116,7 +116,28 @@ pub struct WriteFileRequest {
     pub create_dirs: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
+
+/// Replace exactly one occurrence of `old_str` with `new_str` in a workspace file.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StrReplaceRequest {
+    /// Path relative to the workspace root.
+    pub path: String,
+    /// The exact text to find. Must appear exactly once.
+    pub old_str: String,
+    /// Replacement text.
+    pub new_str: String,
+}
+
+/// Result of a successful [`StrReplaceRequest`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StrReplaceResult {
+    pub path: String,
+    /// Unified diff of the change (context lines = 3).
+    pub diff: String,
+}
 
 /// Provider-facing interface for workspace-scoped file I/O.
 #[async_trait]
@@ -130,12 +151,8 @@ pub trait FilesystemCapability: Send + Sync + std::fmt::Debug {
     ) -> anyhow::Result<ReadFileResult>;
 
     /// Write a workspace file. The caller has already validated scope.
-    async fn write_file(
-        &self,
-        path: &Path,
-        content: &str,
-        create_dirs: bool,
-    ) -> anyhow::Result<()>;
+    async fn write_file(&self, path: &Path, content: &str, create_dirs: bool)
+        -> anyhow::Result<()>;
 
     /// List directory contents. The caller has already validated scope.
     async fn list_dir(&self, path: &Path) -> anyhow::Result<Vec<String>>;
@@ -143,6 +160,22 @@ pub trait FilesystemCapability: Send + Sync + std::fmt::Debug {
     /// Read a named secret from the host's keychain or secrets store.
     /// Returns `Err` if the secret doesn't exist or access is denied.
     async fn read_secret(&self, name: &str) -> anyhow::Result<String>;
+
+    /// Replace exactly one occurrence of `old_str` with `new_str`.
+    ///
+    /// Returns:
+    /// * `Ok(StrReplaceResult)` — exactly one match was found and replaced.
+    /// * `Err` if zero matches (`not_found`) or more than one (`ambiguous`).
+    ///
+    /// The write is atomic: content is written to a temp file and then
+    /// renamed over the original so a crash mid-write leaves the original
+    /// intact (on POSIX filesystems).
+    async fn str_replace(
+        &self,
+        path: &Path,
+        old_str: &str,
+        new_str: &str,
+    ) -> anyhow::Result<StrReplaceResult>;
 }
 
 // ── LocalFilesystem ───────────────────────────────────────────────────────────────
@@ -225,9 +258,120 @@ impl FilesystemCapability for LocalFilesystem {
     /// (CI, container, and launchd plists all support them). Replace with a
     /// custom implementation for keychain integration.
     async fn read_secret(&self, name: &str) -> anyhow::Result<String> {
-        std::env::var(name)
-            .map_err(|_| anyhow::anyhow!("secret not found in environment: {name}"))
+        std::env::var(name).map_err(|_| anyhow::anyhow!("secret not found in environment: {name}"))
     }
+
+    async fn str_replace(
+        &self,
+        path: &Path,
+        old_str: &str,
+        new_str: &str,
+    ) -> anyhow::Result<StrReplaceResult> {
+        let content = tokio::fs::read_to_string(path).await?;
+
+        // Count occurrences to enforce exactly-one semantics.
+        let count = content.matches(old_str).count();
+        match count {
+            0 => anyhow::bail!(
+                "str_replace: not_found — '{}' does not appear in {}",
+                truncate_for_error(old_str, 80),
+                path.display()
+            ),
+            1 => {}
+            n => anyhow::bail!(
+                "str_replace: ambiguous — '{}' appears {n} times in {}; use a more specific old_str",
+                truncate_for_error(old_str, 80),
+                path.display()
+            ),
+        }
+
+        let new_content = content.replacen(old_str, new_str, 1);
+
+        // Atomic write: write to a sibling temp file then rename.
+        let tmp_path = path.with_extension("__str_replace_tmp__");
+        tokio::fs::write(&tmp_path, &new_content).await?;
+        tokio::fs::rename(&tmp_path, path).await?;
+
+        let diff = make_context_diff(path, &content, &new_content, old_str, new_str);
+        Ok(StrReplaceResult {
+            path: path.display().to_string(),
+            diff,
+        })
+    }
+}
+
+// ── str_replace helpers ──────────────────────────────────────────────────────
+
+fn truncate_for_error(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_owned()
+    } else {
+        format!(
+            "{}…",
+            &s[..s
+                .char_indices()
+                .nth(max_chars)
+                .map(|(i, _)| i)
+                .unwrap_or(s.len())]
+        )
+    }
+}
+
+/// Produce a minimal unified-style diff showing the changed lines ± 3 context lines.
+///
+/// Because `str_replace` replaces an exact substring we can locate the first
+/// changed line precisely without a full LCS diff.
+fn make_context_diff(
+    path: &Path,
+    old_content: &str,
+    new_content: &str,
+    old_str: &str,
+    new_str: &str,
+) -> String {
+    let old_lines: Vec<&str> = old_content.lines().collect();
+    let new_lines: Vec<&str> = new_content.lines().collect();
+
+    // Find the first line index where old and new diverge.
+    let changed_start = old_lines
+        .iter()
+        .zip(new_lines.iter())
+        .position(|(a, b)| a != b)
+        .unwrap_or(0);
+
+    // Span of lines removed in old / added in new.
+    let old_removed = old_str.lines().count().max(1);
+    let new_added = new_str.lines().count().max(1);
+
+    let ctx = 3usize;
+    let old_start = changed_start.saturating_sub(ctx);
+    let old_end = (changed_start + old_removed + ctx).min(old_lines.len());
+    let new_end = (changed_start + new_added + ctx).min(new_lines.len());
+
+    let file = path.display();
+    let mut out = format!(
+        "--- a/{file}\n+++ b/{file}\n@@ -{},{} +{},{} @@\n",
+        old_start + 1,
+        old_end - old_start,
+        old_start + 1,
+        new_end - old_start,
+    );
+
+    for (i, line) in old_lines[old_start..old_end].iter().enumerate() {
+        let abs = old_start + i;
+        if abs >= changed_start && abs < changed_start + old_removed {
+            out.push_str(&format!("-{line}\n"));
+        } else {
+            out.push_str(&format!(" {line}\n"));
+        }
+    }
+    for (i, line) in new_lines[old_start..new_end].iter().enumerate() {
+        let abs = old_start + i;
+        if abs >= changed_start && abs < changed_start + new_added {
+            out.push_str(&format!("+{line}\n"));
+        }
+    }
+
+    out
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────────

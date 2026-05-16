@@ -43,10 +43,10 @@ use crate::protocol::SubscriptionId;
 
 use super::persistence::{Persistence, PersistenceError};
 use super::state::{
-    Agent, AgentId, MemoryEntry, MemoryNamespace, MemoryNamespaceId,
-    PendingReview, PermissionState, ReviewId, Run, RunId, RunStatus, Snapshot,
-    Space, SpaceId,
+    Agent, AgentId, MemoryEntry, MemoryNamespace, MemoryNamespaceId, PendingReview,
+    PermissionState, ReviewId, Run, RunId, RunStatus, Session, SessionId, Snapshot, Space, SpaceId,
 };
+use crate::llm::ChatMessage;
 
 /// Resolution payload delivered to a [`ReviewHandle::completion`]
 /// receiver once the host calls [`RuntimeAuthority::resolve_review`].
@@ -129,17 +129,30 @@ pub struct RuntimeAuthority {
 
 impl RuntimeAuthority {
     /// Build a fresh authority and rehydrate state from `persistence`.
-    /// Existing paused or awaiting-review runs come back exactly as
-    /// they were on the previous shutdown (task 4.4).
-    pub fn rehydrate(
-        persistence: Arc<dyn Persistence>,
-    ) -> Result<Self, AuthorityError> {
-        let snapshot = persistence.load()?;
+    /// Runs that were `Running` or `Pending` at the time of the previous
+    /// shutdown are transitioned to `Paused` — their agent-loop tasks
+    /// are gone and they would otherwise be stuck indefinitely.
+    /// Paused and `AwaitingReview` runs come back as-is.
+    pub fn rehydrate(persistence: Arc<dyn Persistence>) -> Result<Self, AuthorityError> {
+        let mut snapshot = persistence.load()?;
+        let now = now_ms();
+        let mut abandoned = 0usize;
+        for run in snapshot.runs.values_mut() {
+            if matches!(run.status, RunStatus::Running | RunStatus::Pending) {
+                run.status = RunStatus::Paused;
+                run.updated_at_ms = now;
+                abandoned += 1;
+            }
+        }
+        if abandoned > 0 {
+            persistence.save(&snapshot)?;
+        }
         info!(
             spaces = snapshot.spaces.len(),
             agents = snapshot.agents.len(),
             runs = snapshot.runs.len(),
             reviews = snapshot.reviews.len(),
+            abandoned,
             "runtime authority rehydrated from persistence"
         );
         Ok(Self {
@@ -187,6 +200,95 @@ impl RuntimeAuthority {
         Ok(())
     }
 
+    // -- Session management -------------------------------------------------
+
+    /// Look up an existing session or create a new one for the given
+    /// `(session_id, space_id)` pair. Returns a clone of the session's
+    /// current LLM thread so the caller can initialise a `ReactLoop`.
+    pub fn get_or_create_session(
+        &self,
+        session_id: impl Into<SessionId>,
+        space_id: SpaceId,
+        name: Option<String>,
+    ) -> Result<Vec<ChatMessage>, AuthorityError> {
+        let session_id = session_id.into();
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        if !inner.snapshot.spaces.contains_key(&space_id) {
+            return Err(AuthorityError::UnknownSpace(space_id));
+        }
+        let thread = inner
+            .snapshot
+            .sessions
+            .entry(session_id.clone())
+            .or_insert_with(|| Session {
+                id: session_id,
+                space_id,
+                name,
+                agent_id: None,
+                thread: Vec::new(),
+                run_ids: Vec::new(),
+                read_namespace: None,
+                write_namespace: None,
+                created_at_ms: now,
+                updated_at_ms: now,
+            })
+            .thread
+            .clone();
+        self.persistence.save(&inner.snapshot)?;
+        Ok(thread)
+    }
+
+    /// Append `run_id` to the session's `run_ids` list. Called after
+    /// a run has been created so the session knows which runs belong
+    /// to it.
+    pub fn attach_run_to_session(
+        &self,
+        session_id: &SessionId,
+        run_id: RunId,
+    ) -> Result<(), AuthorityError> {
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        if let Some(session) = inner.snapshot.sessions.get_mut(session_id) {
+            if !session.run_ids.contains(&run_id) {
+                session.run_ids.push(run_id);
+                session.updated_at_ms = now;
+            }
+        }
+        self.persistence.save(&inner.snapshot)?;
+        Ok(())
+    }
+
+    /// Flush the final LLM context window back into `Session.thread`.
+    /// Called by the agent loop after every run (success or failure).
+    /// If the session no longer exists (e.g. was deleted mid-run), the
+    /// flush is silently dropped.
+    pub fn flush_thread(
+        &self,
+        session_id: &SessionId,
+        thread: Vec<ChatMessage>,
+    ) -> Result<(), AuthorityError> {
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        if let Some(session) = inner.snapshot.sessions.get_mut(session_id) {
+            session.thread = thread;
+            session.updated_at_ms = now;
+            self.persistence.save(&inner.snapshot)?;
+        }
+        Ok(())
+    }
+
+    /// Return a clone of the session's current thread (for inspection /
+    /// compaction logic). Returns `None` if the session doesn't exist.
+    pub fn session_thread(&self, session_id: &SessionId) -> Option<Vec<ChatMessage>> {
+        let inner = self.inner.lock();
+        inner
+            .snapshot
+            .sessions
+            .get(session_id)
+            .map(|s| s.thread.clone())
+    }
+
     // -- Subscriptions ------------------------------------------------------
 
     /// Open a new event subscription for `topic`. Returns the id and
@@ -229,6 +331,17 @@ impl RuntimeAuthority {
         agent_id: Option<AgentId>,
         spec: serde_json::Value,
     ) -> Result<RunId, AuthorityError> {
+        self.start_run_with_session(space_id, agent_id, spec, None)
+    }
+
+    /// Like `start_run` but associates the run with an existing session.
+    pub fn start_run_with_session(
+        &self,
+        space_id: SpaceId,
+        agent_id: Option<AgentId>,
+        spec: serde_json::Value,
+        session_id: Option<SessionId>,
+    ) -> Result<RunId, AuthorityError> {
         let now = now_ms();
         let mut inner = self.inner.lock();
         if !inner.snapshot.spaces.contains_key(&space_id) {
@@ -250,6 +363,7 @@ impl RuntimeAuthority {
             id: RunId::new(),
             space_id,
             agent_id,
+            session_id: session_id.clone(),
             status: RunStatus::Pending,
             spec,
             history: Vec::new(),
@@ -257,6 +371,16 @@ impl RuntimeAuthority {
             updated_at_ms: now,
         };
         let id = run.id;
+        // Append run_id to the session (if any) while still holding the lock
+        // so the session and run are written atomically.
+        if let Some(ref sid) = session_id {
+            if let Some(session) = inner.snapshot.sessions.get_mut(sid) {
+                if !session.run_ids.contains(&id) {
+                    session.run_ids.push(id);
+                    session.updated_at_ms = now;
+                }
+            }
+        }
         inner.snapshot.runs.insert(id, run);
         self.persistence.save(&inner.snapshot)?;
         Self::emit_locked(
@@ -273,9 +397,7 @@ impl RuntimeAuthority {
 
     pub fn cancel_run(&self, run_id: RunId) -> Result<(), AuthorityError> {
         self.transition_run(run_id, "cancel", |status| match status {
-            RunStatus::Succeeded
-            | RunStatus::Failed { .. }
-            | RunStatus::Cancelled => None,
+            RunStatus::Succeeded | RunStatus::Failed { .. } | RunStatus::Cancelled => None,
             _ => Some(RunStatus::Cancelled),
         })
     }
@@ -530,9 +652,7 @@ impl RuntimeAuthority {
             return Ok(());
         }
         let message = message.into();
-        self.transition_run(run_id, "fail", move |_| {
-            Some(RunStatus::Failed { message })
-        })
+        self.transition_run(run_id, "fail", move |_| Some(RunStatus::Failed { message }))
     }
 
     /// Emit an arbitrary [`RuntimeEventPayload`] keyed at this run's
@@ -601,16 +721,44 @@ impl RuntimeAuthority {
         entry: MemoryEntry,
     ) -> Result<(), AuthorityError> {
         let mut inner = self.inner.lock();
-        let ns =
-            inner.snapshot.memory.entry(namespace.clone()).or_insert_with(|| {
-                MemoryNamespace {
-                    id: namespace.clone(),
-                    entries: Default::default(),
-                }
+        let ns = inner
+            .snapshot
+            .memory
+            .entry(namespace.clone())
+            .or_insert_with(|| MemoryNamespace {
+                id: namespace.clone(),
+                entries: Default::default(),
             });
         ns.entries.insert(entry.key.clone(), entry);
         self.persistence.save(&inner.snapshot)?;
         Ok(())
+    }
+
+    /// Update `read_namespace`, `write_namespace`, or both fields on
+    /// the named session. `target` must be `"read"`, `"write"`, or
+    /// `"both"`. Returns `false` if the session does not exist.
+    pub fn update_session_namespaces(
+        &self,
+        session_id: &SessionId,
+        target: &str,
+        namespace_id: MemoryNamespaceId,
+    ) -> bool {
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        let Some(session) = inner.snapshot.sessions.get_mut(session_id) else {
+            return false;
+        };
+        match target {
+            "read" => session.read_namespace = Some(namespace_id),
+            "write" => session.write_namespace = Some(namespace_id),
+            _ => {
+                session.read_namespace = Some(namespace_id.clone());
+                session.write_namespace = Some(namespace_id);
+            }
+        }
+        session.updated_at_ms = now;
+        let _ = self.persistence.save(&inner.snapshot);
+        true
     }
 
     // -- Diagnostic logging -------------------------------------------------
@@ -649,12 +797,10 @@ impl RuntimeAuthority {
             .runs
             .get_mut(&run_id)
             .ok_or(AuthorityError::UnknownRun(run_id))?;
-        let next = decide(&run.status).ok_or_else(|| {
-            AuthorityError::InvalidTransition {
-                run: run_id,
-                state: run.status.clone(),
-                action,
-            }
+        let next = decide(&run.status).ok_or_else(|| AuthorityError::InvalidTransition {
+            run: run_id,
+            state: run.status.clone(),
+            action,
         })?;
         let label = status_label(&next);
         // Surface the failure reason in the event payload so UI surfaces
@@ -683,11 +829,7 @@ impl RuntimeAuthority {
     /// Walk subscriptions, deliver to topic-matched subs, drop subs
     /// whose receivers are gone. Held under the inner lock so sequence
     /// numbers stay strictly monotonic per subscription.
-    fn emit_locked(
-        inner: &mut AuthorityInner,
-        topic: String,
-        payload: RuntimeEventPayload,
-    ) {
+    fn emit_locked(inner: &mut AuthorityInner, topic: String, payload: RuntimeEventPayload) {
         let emitted_at_ms = now_ms();
         let mut dead = Vec::new();
         for (id, sub) in inner.subscriptions.iter_mut() {
@@ -729,7 +871,7 @@ fn run_topic(id: RunId) -> String {
     format!("run:{id}")
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -745,7 +887,12 @@ mod tests {
 
     fn auth() -> (RuntimeAuthority, SpaceId) {
         let auth = RuntimeAuthority::in_memory();
-        let space = Space { id: SpaceId::new(), name: "scratch".into() };
+        let space = Space {
+            id: SpaceId::new(),
+            name: "scratch".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
         let space_id = space.id;
         auth.upsert_space(space).unwrap();
         (auth, space_id)
@@ -754,12 +901,21 @@ mod tests {
     #[tokio::test]
     async fn start_run_emits_status_event_with_seq_zero() {
         let (auth, space_id) = auth();
-        let SubscribeOutcome { id: _, mut receiver } = auth.subscribe("*");
-        let run_id = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let SubscribeOutcome {
+            id: _,
+            mut receiver,
+        } = auth.subscribe("*");
+        let run_id = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         let event = receiver.recv().await.unwrap();
         assert_eq!(event.sequence, 0);
         match event.payload {
-            RuntimeEventPayload::RunStatus { run_id: rid, status, .. } => {
+            RuntimeEventPayload::RunStatus {
+                run_id: rid,
+                status,
+                ..
+            } => {
                 assert_eq!(rid, run_id.to_string());
                 assert_eq!(status, "pending");
             }
@@ -770,8 +926,13 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_transitions_emit_increasing_sequences() {
         let (auth, space_id) = auth();
-        let SubscribeOutcome { id: _, mut receiver } = auth.subscribe("*");
-        let run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let SubscribeOutcome {
+            id: _,
+            mut receiver,
+        } = auth.subscribe("*");
+        let run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         auth.pause_run(run).unwrap();
         auth.resume_run(run).unwrap();
         auth.cancel_run(run).unwrap();
@@ -791,21 +952,37 @@ mod tests {
     #[tokio::test]
     async fn pause_after_terminal_is_rejected() {
         let (auth, space_id) = auth();
-        let run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         auth.cancel_run(run).unwrap();
         let err = auth.pause_run(run).unwrap_err();
-        assert!(matches!(err, AuthorityError::InvalidTransition { action: "pause", .. }));
+        assert!(matches!(
+            err,
+            AuthorityError::InvalidTransition {
+                action: "pause",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
     async fn topic_filter_isolates_subscriptions() {
         let (auth, space_id) = auth();
-        let run_a = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
-        let run_b = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
-        let SubscribeOutcome { id: _, receiver: mut a_recv } =
-            auth.subscribe(format!("run:{run_a}"));
-        let SubscribeOutcome { id: _, receiver: mut b_recv } =
-            auth.subscribe(format!("run:{run_b}"));
+        let run_a = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
+        let run_b = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
+        let SubscribeOutcome {
+            id: _,
+            receiver: mut a_recv,
+        } = auth.subscribe(format!("run:{run_a}"));
+        let SubscribeOutcome {
+            id: _,
+            receiver: mut b_recv,
+        } = auth.subscribe(format!("run:{run_b}"));
         auth.pause_run(run_a).unwrap();
         auth.pause_run(run_b).unwrap();
         let a_evt = a_recv.recv().await.unwrap();
@@ -820,8 +997,13 @@ mod tests {
     #[tokio::test]
     async fn review_open_resolve_round_trip() {
         let (auth, space_id) = auth();
-        let SubscribeOutcome { id: _, mut receiver } = auth.subscribe("*");
-        let run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let SubscribeOutcome {
+            id: _,
+            mut receiver,
+        } = auth.subscribe("*");
+        let run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         let _ = receiver.recv().await; // pending event
 
         let review = auth
@@ -831,7 +1013,10 @@ mod tests {
         let e1 = receiver.recv().await.unwrap();
         let e2 = receiver.recv().await.unwrap();
         assert!(matches!(e1.payload, RuntimeEventPayload::RunStatus { .. }));
-        assert!(matches!(e2.payload, RuntimeEventPayload::PermissionRequest { .. }));
+        assert!(matches!(
+            e2.payload,
+            RuntimeEventPayload::PermissionRequest { .. }
+        ));
 
         auth.resolve_review(run, review, PermissionState::Approved, Some("ok".into()))
             .unwrap();
@@ -848,10 +1033,17 @@ mod tests {
         // First boot: create a run, pause it.
         let store = Arc::new(InMemoryPersistence::default());
         let auth = RuntimeAuthority::rehydrate(store.clone()).unwrap();
-        let space = Space { id: SpaceId::new(), name: "s".into() };
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
         let space_id = space.id;
         auth.upsert_space(space).unwrap();
-        let run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         auth.pause_run(run).unwrap();
         drop(auth);
 
@@ -863,12 +1055,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rehydrate_pauses_running_and_pending_runs() {
+        // First boot: create two runs — one left Running, one left Pending.
+        let store = Arc::new(InMemoryPersistence::default());
+        let auth = RuntimeAuthority::rehydrate(store.clone()).unwrap();
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
+        let space_id = space.id;
+        auth.upsert_space(space).unwrap();
+        // Pending run (never marked running)
+        let pending_run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
+        // Running run
+        let running_run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
+        auth.mark_run_running(running_run).unwrap();
+        drop(auth);
+
+        // Second boot: both should be Paused, not stuck in Running/Pending.
+        let auth2 = RuntimeAuthority::rehydrate(store).unwrap();
+        let snap = auth2.snapshot();
+        assert_eq!(
+            snap.runs[&pending_run].status,
+            RunStatus::Paused,
+            "Pending run must become Paused on rehydrate"
+        );
+        assert_eq!(
+            snap.runs[&running_run].status,
+            RunStatus::Paused,
+            "Running run must become Paused on rehydrate"
+        );
+    }
+
+    #[tokio::test]
     async fn dropped_subscriber_is_reaped_on_next_emit() {
         let (auth, space_id) = auth();
         let outcome = auth.subscribe("*");
         let id = outcome.id;
         drop(outcome.receiver); // close the channel
-        let _run = auth.start_run(space_id, None, serde_json::json!({})).unwrap();
+        let _run = auth
+            .start_run(space_id, None, serde_json::json!({}))
+            .unwrap();
         // Subscription should now be gone.
         assert!(!auth.unsubscribe(id), "expected subscription to be reaped");
     }

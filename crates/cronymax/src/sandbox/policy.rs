@@ -34,12 +34,24 @@ impl SandboxPolicy {
 
     // ── Accessors ─────────────────────────────────────────────────────────
 
-    pub fn workspace_root(&self) -> &Path { &self.workspace_root }
-    pub fn read_paths(&self) -> &[PathBuf] { &self.read_paths }
-    pub fn write_paths(&self) -> &[PathBuf] { &self.write_paths }
-    pub fn deny_paths(&self) -> &[PathBuf] { &self.deny_paths }
-    pub fn allow_network(&self) -> bool { self.allow_network }
-    pub fn set_allow_network(&mut self, v: bool) { self.allow_network = v; }
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+    pub fn read_paths(&self) -> &[PathBuf] {
+        &self.read_paths
+    }
+    pub fn write_paths(&self) -> &[PathBuf] {
+        &self.write_paths
+    }
+    pub fn deny_paths(&self) -> &[PathBuf] {
+        &self.deny_paths
+    }
+    pub fn allow_network(&self) -> bool {
+        self.allow_network
+    }
+    pub fn set_allow_network(&mut self, v: bool) {
+        self.allow_network = v;
+    }
 
     // ── Mutators ──────────────────────────────────────────────────────────
 

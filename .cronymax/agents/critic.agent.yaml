@@ -1,4 +1,5 @@
 name: critic
+description: "Technical reviewer — produces structured JSON critique of any draft document."
 display_name: Critic
 kind: reviewer
 llm:

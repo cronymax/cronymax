@@ -49,11 +49,7 @@ impl PermissionDecision {
         }
     }
 
-    fn confirm(
-        risk: RiskLevel,
-        reason: impl Into<String>,
-        risk_reasons: Vec<String>,
-    ) -> Self {
+    fn confirm(risk: RiskLevel, reason: impl Into<String>, risk_reasons: Vec<String>) -> Self {
         Self {
             allowed: true,
             requires_confirmation: true,
@@ -103,9 +99,7 @@ impl PermissionBroker {
         let mut reasons: Vec<String> = Vec::new();
 
         if !policy.allow_network() && is_network_command(command) {
-            reasons.push(
-                "network access is disabled by the active sandbox policy".into(),
-            );
+            reasons.push("network access is disabled by the active sandbox policy".into());
         }
 
         match risk {
@@ -121,11 +115,7 @@ impl PermissionBroker {
                 PermissionDecision::confirm(risk, "elevated-risk command", reasons)
             }
             _ if !reasons.is_empty() => {
-                PermissionDecision::confirm(
-                    RiskLevel::Medium,
-                    "policy constraint",
-                    reasons,
-                )
+                PermissionDecision::confirm(RiskLevel::Medium, "policy constraint", reasons)
             }
             _ => PermissionDecision::allow(),
         }
@@ -230,22 +220,14 @@ mod tests {
     #[test]
     fn read_in_scope_allowed() {
         let b = PermissionBroker::new();
-        let d = b.check_read(
-            Actor::Agent,
-            Path::new("/ws/src/lib.rs"),
-            &default_policy(),
-        );
+        let d = b.check_read(Actor::Agent, Path::new("/ws/src/lib.rs"), &default_policy());
         assert!(d.allowed);
     }
 
     #[test]
     fn read_outside_scope_denied() {
         let b = PermissionBroker::new();
-        let d = b.check_read(
-            Actor::Agent,
-            Path::new("/etc/passwd"),
-            &default_policy(),
-        );
+        let d = b.check_read(Actor::Agent, Path::new("/etc/passwd"), &default_policy());
         assert!(!d.allowed);
     }
 

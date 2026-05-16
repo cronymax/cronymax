@@ -28,6 +28,8 @@ export interface AgentEntry {
   name: string;
   kind: string;
   llm: string;
+  builtin?: boolean;
+  prompt_sealed?: boolean;
 }
 
 export interface AgentDetail extends AgentEntry {
@@ -44,6 +46,12 @@ export interface AgentRunOptions {
   reasoning_effort?: string;
   /** Override the active provider's default model. */
   model?: string;
+  /** Continue an existing chat session by id. */
+  session_id?: string;
+  /** Name for a newly-created session. */
+  session_name?: string;
+  /** Authored agent id (chat agent selector). */
+  agent_id?: string;
 }
 
 export interface AgentSaveFields {
@@ -134,11 +142,7 @@ export const docType = {
     const raw = await runtime.send({ kind: "doc_type_load", name });
     return JSON.parse(raw);
   },
-  async save(
-    name: string,
-    display_name: string,
-    description: string,
-  ): Promise<{ ok: boolean }> {
+  async save(name: string, display_name: string, description: string): Promise<{ ok: boolean }> {
     const raw = await runtime.send({
       kind: "doc_type_save",
       name,
@@ -158,10 +162,7 @@ export const docType = {
 // ---------------------------------------------------------------------------
 
 export const flowRun = {
-  async start(
-    flow_id: string,
-    initial_input?: string,
-  ): Promise<{ run_id: string; subscription?: string }> {
+  async start(flow_id: string, initial_input?: string): Promise<{ run_id: string; subscription?: string }> {
     const pl: Record<string, unknown> = { flow_id };
     if (initial_input !== undefined) pl.initial_input = initial_input;
     const raw = await runtime.send({ kind: "start_run", payload: pl });
@@ -196,17 +197,25 @@ export const flowRun = {
  * `payload.llm.*` and merged with the active provider record on the C++
  * side — caller-supplied values win.
  * Returns the run_id assigned by the Rust runtime.
+ *
+ * Pass `session_id` (e.g. the chat tab id) to enable session continuity:
+ * the runtime will seed the new run from the prior thread and flush the
+ * updated thread back to the session on completion.
+ *
+ * Pass `agent_id` to route to a specific agent definition (e.g. `"crony"`).
+ * Pass `model` to override the provider's default model for this run.
  */
-export async function agentRun(
-  task: string,
-  opts: AgentRunOptions = {},
-): Promise<string> {
+export async function agentRun(task: string, opts: AgentRunOptions = {}): Promise<string> {
   const payload: Record<string, unknown> = { task };
   const llm: Record<string, unknown> = {};
   if (opts.reasoning_effort) llm.reasoning_effort = opts.reasoning_effort;
   if (opts.model) llm.model = opts.model;
   if (Object.keys(llm).length > 0) payload.llm = llm;
-  const raw = await runtime.send({ kind: "start_run", payload });
+  const req: Record<string, unknown> = { kind: "start_run", payload };
+  if (opts.session_id) req.session_id = opts.session_id;
+  if (opts.session_name) req.session_name = opts.session_name;
+  if (opts.agent_id) req.agent_id = opts.agent_id;
+  const raw = await runtime.send(req);
   const res = JSON.parse(raw) as { run_id?: string };
   if (!res.run_id) throw new Error("runtime did not return run_id");
   return res.run_id;
@@ -229,9 +238,9 @@ export const terminal = {
 
   /** Write raw bytes to the PTY. Fire-and-forget; errors are swallowed. */
   input(tid: string, data: string): void {
-    runtime
-      .send({ kind: "terminal_input", terminal_id: tid, data })
-      .catch(() => {});
+    runtime.send({ kind: "terminal_input", terminal_id: tid, data }).catch(() => {
+      /* ignore */
+    });
   },
 
   /** Write a command line (appends newline). Fire-and-forget. */
@@ -239,7 +248,7 @@ export const terminal = {
     return runtime.send({
       kind: "terminal_input",
       terminal_id: tid,
-      data: command + "\n",
+      data: `${command}\n`,
     });
   },
 
@@ -252,7 +261,9 @@ export const terminal = {
         cols,
         rows,
       })
-      .catch(() => {});
+      .catch(() => {
+        /* ignore */
+      });
   },
 
   /** Kill the running process in the PTY. */
@@ -265,10 +276,7 @@ export const terminal = {
    * `onData` receives decoded UTF-8 terminal output chunks.
    * Returns an unsubscribe function, or null if the runtime is unavailable.
    */
-  subscribeOutput(
-    tid: string,
-    onData: (data: string) => void,
-  ): (() => void) | null {
+  subscribeOutput(tid: string, onData: (data: string) => void): (() => void) | null {
     return runtime.subscribe(`terminal:${tid}`, (eventJson: string) => {
       try {
         const ev = JSON.parse(eventJson) as Record<string, unknown>;

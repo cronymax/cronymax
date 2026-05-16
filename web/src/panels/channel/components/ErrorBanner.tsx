@@ -26,9 +26,7 @@ interface Props {
 }
 
 export function ErrorBanners({ errors }: Props) {
-  const [dismissed, setDismissed] = useState<Set<string>>(() =>
-    loadDismissed(),
-  );
+  const [dismissed, setDismissed] = useState<Set<string>>(() => loadDismissed());
 
   useEffect(() => {
     saveDismissed(dismissed);

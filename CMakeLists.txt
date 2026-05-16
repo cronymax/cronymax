@@ -104,31 +104,13 @@ else()
   target_sources(cronymax_common PRIVATE app/platform/macos/notifications_stub.cc)
 endif()
 
-# workspace: space store + layout utilities.
-# (Phase 2) file_broker.cc removed — file I/O now in Rust crate.
-add_library(cronymax_workspace STATIC
-  app/workspace/flow_yaml.cc
-  app/workspace/space_store.cc
-  app/workspace/workspace_layout.cc
-)
-target_link_libraries(cronymax_workspace
-  PUBLIC cronymax_common SQLite3::SQLite3
-  PRIVATE yaml-cpp
-)
-if(APPLE)
-  # fs_watcher removed — Phase 3 watches happen in Rust runtime.
-else()
-  # nothing
-endif()
-
-# event_bus: typed event store (SQLite + JSONL) + inbox triage. Sits on top
-# of cronymax_workspace because it borrows the SpaceStore's sqlite3 handle.
+# event_bus: typed event store (SQLite + JSONL) + inbox triage. 
 add_library(cronymax_event_bus STATIC
   app/event_bus/app_event.cc
   app/event_bus/event_bus.cc
 )
 target_link_libraries(cronymax_event_bus
-  PUBLIC cronymax_common cronymax_workspace SQLite3::SQLite3 nlohmann_json
+  PUBLIC cronymax_common SQLite3::SQLite3 nlohmann_json
 )
 target_include_directories(cronymax_event_bus PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
@@ -141,44 +123,35 @@ target_link_libraries(cronymax_terminal INTERFACE cronymax_common Threads::Threa
 # Depends on Cronymax::Crony (static lib + crony.h header) for the C ABI.
 # Only available when CRONYMAX_BUILD_RUST is ON (the default).
 if(CRONYMAX_BUILD_RUST)
-  add_library(cronymax_runtime_bridge STATIC
+  add_library(cronymax_runtime STATIC
     app/runtime/crony_bridge.cc
     app/runtime/crony_proxy.cc
     app/runtime/legacy_importer.cc
+    app/runtime/layout_migrator.cc
+    app/runtime/profile_store.cc
+    app/runtime/space_store.cc
+    app/runtime/space_manager.cc
+    app/runtime/workspace_id.cc
   )
-  target_link_libraries(cronymax_runtime_bridge
-    PUBLIC cronymax_common Cronymax::Crony nlohmann_json
+  target_link_libraries(cronymax_runtime
+    PUBLIC cronymax_common Cronymax::Crony nlohmann_json z iconv yaml-cpp
   )
-  target_include_directories(cronymax_runtime_bridge
+  target_include_directories(cronymax_runtime
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app
   )
 else()
   # Stub so the build doesn't fail when Rust is disabled.
-  add_library(cronymax_runtime_bridge INTERFACE)
+  add_library(cronymax_runtime INTERFACE)
 endif()
 
 # Convenience aggregate library that pulls in every native module.
 add_library(cronymax_native INTERFACE)
 target_link_libraries(cronymax_native INTERFACE
   cronymax_common
-  cronymax_workspace
   cronymax_terminal
   cronymax_event_bus
-  cronymax_runtime_bridge
+  cronymax_runtime
 )
-
-# space_manager: CEF-free Space lifecycle library so native_probe can
-# exercise the same SpaceManager/SpaceStore code paths the CEF app uses,
-# without dragging in CEF or the rest of app/browser/.
-add_library(cronymax_space STATIC
-  app/browser/space_manager.cc
-  app/browser/profile_store.cc
-)
-target_link_libraries(cronymax_space
-  PUBLIC cronymax_workspace cronymax_terminal cronymax_event_bus
-  PRIVATE yaml-cpp
-)
-target_include_directories(cronymax_space PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app)
 
 # ---------------------------------------------------------------------------
 # Tools and CEF desktop shell.
@@ -186,11 +159,11 @@ target_include_directories(cronymax_space PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/app
 
 if(CRONYMAX_BUILD_TOOLS)
   add_executable(native_probe tools/native_probe.cc)
-  target_link_libraries(native_probe PRIVATE cronymax_native cronymax_space)
+  target_link_libraries(native_probe PRIVATE cronymax_native)
 
   # rebuild_trace --- admin CLI to regenerate trace.jsonl from SQLite.
   add_executable(rebuild_trace tools/rebuild_trace.cc)
-  target_link_libraries(rebuild_trace PRIVATE cronymax_event_bus cronymax_workspace)
+  target_link_libraries(rebuild_trace PRIVATE cronymax_event_bus)
 
   # assign_block_ids --- one-shot migration CLI for the WYSIWYG workbench.
   # Walks every <workspace>/.cronymax/flows/*/docs/*.md and prepends a

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { browser } from "@/shells/bridge";
 
@@ -82,9 +82,7 @@ export function SourceEditor({ params }: { params: WorkbenchParams }) {
       setRevision(res.revision);
       setStatus({ state: "saved", message: `Saved · rev ${res.revision}` });
       window.setTimeout(() => {
-        setStatus((cur) =>
-          cur.state === "saved" ? { state: "idle", message: "" } : cur,
-        );
+        setStatus((cur) => (cur.state === "saved" ? { state: "idle", message: "" } : cur));
       }, 2500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -95,10 +93,7 @@ export function SourceEditor({ params }: { params: WorkbenchParams }) {
   // Cmd/Ctrl+S to save.
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      const isSave =
-        (ev.metaKey || ev.ctrlKey) &&
-        !ev.shiftKey &&
-        ev.key.toLowerCase() === "s";
+      const isSave = (ev.metaKey || ev.ctrlKey) && !ev.shiftKey && ev.key.toLowerCase() === "s";
       if (!isSave) return;
       ev.preventDefault();
       void handleSave();
@@ -142,11 +137,7 @@ export function SourceEditor({ params }: { params: WorkbenchParams }) {
   }
 
   if (content === null) {
-    return (
-      <div className="flex h-full items-center justify-center p-6 text-sm text-gray-500">
-        Loading…
-      </div>
-    );
+    return <div className="flex h-full items-center justify-center p-6 text-sm text-gray-500">Loading…</div>;
   }
 
   return (
@@ -170,11 +161,7 @@ export function SourceEditor({ params }: { params: WorkbenchParams }) {
         <div>rev {revision} · raw markdown</div>
         <div
           className={
-            status.state === "error"
-              ? "text-red-600"
-              : status.state === "saved"
-                ? "text-emerald-600"
-                : "text-gray-500"
+            status.state === "error" ? "text-red-600" : status.state === "saved" ? "text-emerald-600" : "text-gray-500"
           }
         >
           {status.message}

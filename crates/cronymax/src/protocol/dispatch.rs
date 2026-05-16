@@ -22,9 +22,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use super::envelope::{
-    ClientToRuntime, CorrelationId, GoodbyeReason, RuntimeToClient,
-};
+use super::envelope::{ClientToRuntime, CorrelationId, GoodbyeReason, RuntimeToClient};
 use super::transport::{Transport, TransportError};
 use super::version::{ProtocolVersion, PROTOCOL_VERSION};
 use super::{
@@ -45,9 +43,7 @@ pub struct ResponseSink {
 
 impl ResponseSink {
     pub async fn send(&self, msg: RuntimeToClient) -> Result<(), TransportError> {
-        self.tx
-            .send(msg)
-            .map_err(|_| TransportError::Closed)
+        self.tx.send(msg).map_err(|_| TransportError::Closed)
     }
 
     /// Non-async send for use from synchronous closures. Succeeds as long
@@ -68,19 +64,11 @@ pub trait Handler: Send + Sync + 'static {
     /// Service a control request. The dispatch loop forwards the
     /// returned response back to the client with the original
     /// correlation id.
-    async fn handle_control(
-        &self,
-        id: CorrelationId,
-        request: ControlRequest,
-    ) -> ControlResponse;
+    async fn handle_control(&self, id: CorrelationId, request: ControlRequest) -> ControlResponse;
 
     /// Notify the handler that the host has produced a reply to a
     /// runtime-issued capability request.
-    async fn handle_capability_reply(
-        &self,
-        id: CorrelationId,
-        response: CapabilityResponse,
-    );
+    async fn handle_capability_reply(&self, id: CorrelationId, response: CapabilityResponse);
 
     /// Called when the connection is being torn down.
     async fn on_disconnected(&self);
@@ -96,29 +84,18 @@ pub struct EchoHandler;
 impl Handler for EchoHandler {
     async fn on_connected(&self, _sink: ResponseSink) {}
 
-    async fn handle_control(
-        &self,
-        _id: CorrelationId,
-        request: ControlRequest,
-    ) -> ControlResponse {
+    async fn handle_control(&self, _id: CorrelationId, request: ControlRequest) -> ControlResponse {
         match request {
             ControlRequest::Ping => ControlResponse::Pong,
             other => ControlResponse::Err {
                 error: ControlError::Internal {
-                    message: format!(
-                        "no handler bound for control request: {other:?}"
-                    ),
+                    message: format!("no handler bound for control request: {other:?}"),
                 },
             },
         }
     }
 
-    async fn handle_capability_reply(
-        &self,
-        _id: CorrelationId,
-        _response: CapabilityResponse,
-    ) {
-    }
+    async fn handle_capability_reply(&self, _id: CorrelationId, _response: CapabilityResponse) {}
 
     async fn on_disconnected(&self) {}
 }
@@ -311,9 +288,7 @@ mod tests {
     #[tokio::test]
     async fn happy_path_handshake_and_ping() {
         let (server, client) = memory::pair();
-        let server_task = tokio::spawn(async move {
-            run(server, EchoHandler).await
-        });
+        let server_task = tokio::spawn(async move { run(server, EchoHandler).await });
 
         client
             .send(ClientToRuntime::Hello {
@@ -354,15 +329,9 @@ mod tests {
     #[tokio::test]
     async fn version_mismatch_closes_with_goodbye() {
         let (server, client) = memory::pair();
-        let server_task = tokio::spawn(async move {
-            run(server, EchoHandler).await
-        });
+        let server_task = tokio::spawn(async move { run(server, EchoHandler).await });
 
-        let bad = ProtocolVersion::new(
-            PROTOCOL_VERSION.major.wrapping_add(1),
-            0,
-            0,
-        );
+        let bad = ProtocolVersion::new(PROTOCOL_VERSION.major.wrapping_add(1), 0, 0);
         client
             .send(ClientToRuntime::Hello {
                 protocol: bad,
@@ -387,9 +356,7 @@ mod tests {
     #[tokio::test]
     async fn control_before_hello_is_rejected() {
         let (server, client) = memory::pair();
-        let server_task = tokio::spawn(async move {
-            run(server, EchoHandler).await
-        });
+        let server_task = tokio::spawn(async move { run(server, EchoHandler).await });
 
         client
             .send(ClientToRuntime::Control {

@@ -6,11 +6,12 @@
  *   xterm.onData                  →  terminal.input
  *   ResizeObserver                →  fitAddon.fit() + terminal.resize
  */
-import { useEffect, useRef } from "react";
-import { Terminal } from "@xterm/xterm";
+
 import { FitAddon } from "@xterm/addon-fit";
-import { terminal } from "@/shells/runtime";
+import { Terminal } from "@xterm/xterm";
+import { useEffect, useRef } from "react";
 import { useTerminalOutput } from "@/hooks/useTerminalOutput";
+import { terminal } from "@/shells/runtime";
 
 interface Props {
   tid: string;
@@ -34,7 +35,7 @@ export function XtermPane({ tid, onCwdChange }: Props) {
       fontFamily: "Menlo, Monaco, 'Courier New', monospace",
       fontSize: 12,
       theme: {
-        background: "#111317",
+        background: "#292929",
         foreground: "#e8edf2",
         cursor: "#e8edf2",
         selectionBackground: "#264f78",
@@ -108,6 +109,7 @@ export function XtermPane({ tid, onCwdChange }: Props) {
     let m: RegExpExecArray | null;
     // OSC 7: ESC ] 7 ; <uri> BEL-or-ST
     const osc7 = /\x1b]7;([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+    // biome-ignore lint/suspicious/noAssignInExpressions: standard regex exec loop
     while ((m = osc7.exec(text)) !== null) {
       const raw = m[1]!;
       try {
@@ -120,17 +122,12 @@ export function XtermPane({ tid, onCwdChange }: Props) {
 
     // OSC 1337 CurrentDir= (iTerm2 / many prompts)
     const osc1337 = /\x1b]1337;CurrentDir=([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+    // biome-ignore lint/suspicious/noAssignInExpressions: standard regex exec loop
     while ((m = osc1337.exec(text)) !== null) {
       const path = m[1]!;
       if (path) onCwdChange?.(path);
     }
   });
 
-  return (
-    <div
-      ref={containerRef}
-      className="h-full w-full overflow-hidden"
-      onClick={() => termRef.current?.focus()}
-    />
-  );
+  return <div ref={containerRef} className="h-full w-full overflow-hidden" onClick={() => termRef.current?.focus()} />;
 }

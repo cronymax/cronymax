@@ -1,6 +1,6 @@
-#include "renderer/app.h"
 #include "include/cef_app.h"
 #include "include/wrapper/cef_library_loader.h"
+#include "renderer/app.h"
 
 #if defined(CEF_USE_SANDBOX)
 #include "include/cef_sandbox_mac.h"
@@ -20,7 +20,6 @@ int main(int argc, char* argv[]) {
   }
 
   CefMainArgs main_args(argc, argv);
-  CefRefPtr<cronymax::App> app(
-      new cronymax::App());
+  CefRefPtr<cronymax::App> app(new cronymax::App());
   return CefExecuteProcess(main_args, app.get(), nullptr);
 }

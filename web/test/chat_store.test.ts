@@ -3,7 +3,7 @@
  *   - OSC 133 parser (applyShellOutput via appendShellOutput action)
  *   - clearPinnedComments reducer action
  */
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { stripAnsi } from "../src/panels/chat/store";
 
 // ── OSC 133 tests ──────────────────────────────────────────────────────

@@ -16,11 +16,7 @@
 //!   provider, and delete the `api_key` field from `config.json` (leaving
 //!   `base_url` for reference, removing the secret).
 
-use std::{
-    fs,
-    io::Write,
-    path::Path,
-};
+use std::{fs, io::Write, path::Path};
 
 use serde_json::Value;
 
@@ -107,7 +103,9 @@ pub enum MigrationOutcome {
 // ── Atomic write helper ──────────────────────────────────────────────────────
 
 fn atomic_write(path: &Path, data: &[u8]) -> anyhow::Result<()> {
-    let dir = path.parent().ok_or_else(|| anyhow::anyhow!("path has no parent"))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("path has no parent"))?;
     let unique = uuid::Uuid::new_v4().to_string();
     let tmp_path = dir.join(format!(".tmp-{unique}"));
     let mut file = fs::OpenOptions::new()
@@ -153,7 +151,10 @@ mod tests {
         let registry = LlmProviderRegistry::load_from(&providers_path).unwrap();
         let entry = registry.get("default");
         // Registry entry must exist regardless of keychain.
-        assert!(entry.is_some(), "default provider should exist after migration");
+        assert!(
+            entry.is_some(),
+            "default provider should exist after migration"
+        );
         assert_eq!(entry.unwrap().base_url, "https://api.openai.com/v1");
         assert_eq!(registry.default_provider_id(), Some("default"));
     }
@@ -200,7 +201,8 @@ mod tests {
     #[test]
     fn migration_scrubs_api_key_from_legacy_file() {
         let dir = TempDir::new().unwrap();
-        let legacy_json = r#"{"base_url":"https://api.openai.com/v1","api_key":"sk-secret","model":"gpt-4o"}"#;
+        let legacy_json =
+            r#"{"base_url":"https://api.openai.com/v1","api_key":"sk-secret","model":"gpt-4o"}"#;
         let (providers_path, legacy_path) = setup(dir.path(), legacy_json);
 
         // Run migration; ignore keychain errors (non-macOS CI).

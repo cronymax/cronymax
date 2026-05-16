@@ -59,6 +59,16 @@ pub enum RuntimeEventPayload {
         delta: String,
     },
 
+    /// Streaming thinking/reasoning token delta from a model turn.
+    /// Emitted before `Token` events for the same turn when the model
+    /// supports extended thinking. Thinking content is ephemeral — it is
+    /// never stored in conversation history.
+    ThinkingToken {
+        run_id: String,
+        turn_id: String,
+        delta: String,
+    },
+
     /// Permission/review prompt the runtime is waiting on.
     PermissionRequest {
         run_id: String,
@@ -76,6 +86,33 @@ pub enum RuntimeEventPayload {
     /// Generic raw payload — used for terminal output and other
     /// non-structured events that carry opaque JSON data.
     Raw { data: serde_json::Value },
+
+    /// A file was modified by the agent via `str_replace` or `write_file`.
+    FileEdited {
+        run_id: String,
+        session_id: Option<String>,
+        path: String,
+        /// Unified diff of the change (empty for write_file).
+        diff: String,
+    },
+
+    /// A git commit was created by the agent.
+    GitCommitCreated {
+        run_id: String,
+        session_id: Option<String>,
+        hash: String,
+        message: String,
+        files_changed: Vec<String>,
+    },
+
+    /// A git push was completed by the agent.
+    GitPushed {
+        run_id: String,
+        session_id: Option<String>,
+        remote: String,
+        branch: String,
+        commits_pushed: usize,
+    },
 }
 
 /// Severity for `RuntimeEventPayload::Log`.

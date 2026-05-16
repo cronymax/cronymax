@@ -35,8 +35,7 @@ pub fn parse_mentions(text: &str) -> Vec<ParsedMention> {
     let fenced = fenced_lines(text);
 
     // Match @<slug> where <slug> = [a-zA-Z_][a-zA-Z0-9_-]*
-    let re =
-        Regex::new(r"@([a-zA-Z_][a-zA-Z0-9_-]*)").expect("mention regex is valid");
+    let re = Regex::new(r"@([a-zA-Z_][a-zA-Z0-9_-]*)").expect("mention regex is valid");
 
     let mut mentions = Vec::new();
     let bytes = text.as_bytes();
@@ -64,7 +63,12 @@ pub fn parse_mentions(text: &str) -> Vec<ParsedMention> {
         }
 
         let name = m.as_str()[1..].to_owned(); // strip '@'
-        mentions.push(ParsedMention { name, byte_offset, line, column });
+        mentions.push(ParsedMention {
+            name,
+            byte_offset,
+            line,
+            column,
+        });
     }
 
     mentions
@@ -149,4 +153,3 @@ mod tests {
         assert_eq!(mentions[0].column, 1);
     }
 }
-

@@ -11,17 +11,11 @@ export function TextBubble({ event }: Props) {
     <div
       className={
         "max-w-[80%] rounded-lg px-3 py-2 text-sm " +
-        (isMe
-          ? "self-end bg-cronymax-primary text-white"
-          : "self-start bg-cronymax-float text-cronymax-title")
+        (isMe ? "self-end bg-cronymax-primary text-white" : "self-start bg-cronymax-float text-cronymax-title")
       }
     >
-      <div className="text-[10px] uppercase tracking-wide opacity-60">
-        {author}
-      </div>
-      <div className="whitespace-pre-wrap">
-        {renderBody(event.payload.body)}
-      </div>
+      <div className="text-[10px] uppercase tracking-wide opacity-60">{author}</div>
+      <div className="whitespace-pre-wrap">{renderBody(event.payload.body)}</div>
     </div>
   );
 }

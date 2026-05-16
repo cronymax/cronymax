@@ -40,13 +40,12 @@ impl FsWatcher {
 
         // Build the notify watcher. Events are forwarded to the channel.
         let tx = event_tx.clone();
-        let mut watcher = notify::recommended_watcher(
-            move |res: notify::Result<notify::Event>| {
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
                 if res.is_ok() {
                     let _ = tx.send(());
                 }
-            },
-        )?;
+            })?;
 
         for path in &paths {
             watcher.watch(path, RecursiveMode::Recursive)?;
@@ -62,16 +61,10 @@ impl FsWatcher {
                 }
 
                 // Drain any events that arrive before the debounce window.
-                let deadline =
-                    tokio::time::Instant::now() + debounce;
+                let deadline = tokio::time::Instant::now() + debounce;
                 loop {
-                    match tokio::time::timeout_at(
-                        deadline,
-                        event_rx.recv(),
-                    )
-                    .await
-                    {
-                        Ok(Some(())) => {} // more events — reset deadline
+                    match tokio::time::timeout_at(deadline, event_rx.recv()).await {
+                        Ok(Some(())) => {}  // more events — reset deadline
                         Ok(None) => return, // channel closed
                         Err(_) => break,    // debounce window expired
                     }

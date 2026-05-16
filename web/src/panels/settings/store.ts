@@ -8,12 +8,7 @@ import { createPanelStore } from "@/hooks/usePanelStore";
 import type { Space } from "@/types";
 
 export type Status = "idle" | "running" | "done" | "failed";
-export type ConfigTab =
-  | "flows"
-  | "agents"
-  | "workspace"
-  | "providers"
-  | "runner";
+export type ConfigTab = "flows" | "agents" | "workspace" | "providers" | "runner";
 
 export interface PermissionRequest {
   prompt: string;
@@ -83,9 +78,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         spaces: action.spaces,
-        activeSpaceId:
-          state.activeSpaceId ??
-          (action.spaces.length > 0 ? action.spaces[0]!.id : null),
+        activeSpaceId: state.activeSpaceId ?? (action.spaces.length > 0 ? action.spaces[0]!.id : null),
       };
     case "setActiveSpace":
       return { ...state, activeSpaceId: action.id };
@@ -97,10 +90,8 @@ function reducer(state: State, action: Action): State {
         llmModel: action.model,
       };
     case "updateLlmField":
-      if (action.field === "baseUrl")
-        return { ...state, llmBaseUrl: action.value };
-      if (action.field === "apiKey")
-        return { ...state, llmApiKey: action.value };
+      if (action.field === "baseUrl") return { ...state, llmBaseUrl: action.value };
+      if (action.field === "apiKey") return { ...state, llmApiKey: action.value };
       return { ...state, llmModel: action.value };
     case "requestPermission":
       return { ...state, permission: action.req };
@@ -111,7 +102,4 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-export const { Provider, useStore } = createPanelStore<State, Action>(
-  reducer,
-  initial,
-);
+export const { Provider, useStore } = createPanelStore<State, Action>(reducer, initial);

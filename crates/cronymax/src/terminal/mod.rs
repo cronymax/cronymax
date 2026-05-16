@@ -19,8 +19,8 @@
 //! `PtySession` is `Send`. The underlying master PTY writer is guarded by a
 //! `Mutex`; all public methods are safe to call from any thread or task.
 
-pub mod session_manager;
-pub use session_manager::{SessionManager, SharedSessionManager, new_shared};
+pub mod pty;
+pub use pty::{PtySessionManager, SharedPtySessionManager};
 
 use std::io::Write as _;
 use std::path::Path;
@@ -96,13 +96,21 @@ impl PtySession {
     ) -> anyhow::Result<Self> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .context("failed to open PTY pair")?;
 
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(&cwd);
 
-        let mut child = pair.slave.spawn_command(cmd).context("failed to spawn shell")?;
+        let mut child = pair
+            .slave
+            .spawn_command(cmd)
+            .context("failed to spawn shell")?;
         // Drop the slave end in this process — the child now owns it.
         drop(pair.slave);
 
@@ -173,7 +181,12 @@ impl PtySession {
     pub fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
         self.master
             .lock()
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .context("PTY resize failed")
     }
 

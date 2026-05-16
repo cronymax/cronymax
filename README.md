@@ -25,40 +25,35 @@ demo:
 
 ## Getting Started
 
-### Prerequisites
+**Prerequisites:** macOS 13+ (arm64), Xcode CLT (`xcode-select --install`), bun 1.1+ (`brew install bun`). CMake is installed automatically via `pixi install` (Tier 2).
 
-| Tool      | Version            | Notes                                                                |
-| --------- | ------------------ | -------------------------------------------------------------------- |
-| macOS     | 13+ (arm64 tested) | Linux/Windows not yet wired up                                       |
-| Xcode CLT | latest             | `xcode-select --install`                                             |
-| CMake     | 3.21+              | `brew install cmake`                                                 |
-| Ninja     | optional           | `brew install ninja` (faster builds)                                 |
-| bun       | 1.1+               | `brew install bun` — required when `CRONYMAX_BUILD_WEB=ON` (default) |
-
-### Clone
-
-```sh
+```
 git clone --recurse-submodules <repo-url> cronymax
-cd cronymax
-# if you forgot --recurse-submodules:
-git submodule update --init
 ```
 
-### Install Frontend Dependencies
-
-The CMake build will run `bun install --frozen-lockfile` automatically as part
-of the `cronymax_web` target, but you can prime the cache up-front:
+### Tier 1 — Web only
 
 ```sh
-bun install
+# macOS / Linux
+curl -fsSL https://bun.sh/install | bash
+# Windows
+powershell -c "irm bun.sh/install.ps1 | iex"
+
+bun install        # wires git hooks (Biome, cargo fmt, clang-format)
 ```
 
-### Configure & Build the Full App
+### Tier 2 — Full C++ build + tidy
 
-CEF is downloaded automatically on first configure (cached in `.cef-cache/`,
-gitignored). No manual download or env vars required.
+Install [pixi](https://pixi.sh) once (no sudo), then:
 
 ```sh
+# macOS / Linux
+curl -fsSL https://pixi.sh/install.sh | sh
+# Windows:
+winget install prefix-dev.pixi
+
+bun run setup      # pixi install — pins LLVM 20 toolchain (clang-format, clang-tidy)
+
 cmake -S . -B build \
   -DCRONYMAX_BUILD_APP=ON \
   -DCRONYMAX_BUILD_WEB=ON \
@@ -66,24 +61,24 @@ cmake -S . -B build \
 cmake --build build --target cronymax_app -j8
 ```
 
-The `cronymax_app` target depends on `cronymax_web`, which runs
-`bun install --frozen-lockfile && bun run build` in `web/` and produces
-`web/dist/<panel>/index.html` for every React panel. A separate
-`cronymax_web_sync` target re-copies `web/dist/` into the bundle on every
-build, so frontend-only edits don't require a C++ relink:
+CEF is downloaded automatically on first configure (cached in `.cef-cache/`, gitignored).
 
-```sh
-cmake --build build --target cronymax_web_sync -j8
-```
+> **CI:** Set `LEFTHOOK=0` in any `bun install` step to skip hook installation.
 
 ### Run
 
 ```sh
 open build/cronymax.app
-# or
-./build/cronymax.app/Contents/MacOS/cronymax
-# Add `--use-mock-keychain` to avoid keychain password prompt on mac
+# or with flags:
 ./build/cronymax.app/Contents/MacOS/cronymax --use-mock-keychain
+```
+
+### Incremental builds
+
+Frontend-only changes don't require a C++ relink:
+
+```sh
+cmake --build build --target cronymax_web_sync -j8
 ```
 
 ### Build Native Runtime Only (no CEF)
@@ -202,11 +197,54 @@ web/                 Frontend monorepo (bun + Vite)
   <panel>/index.html   Vite entry per panel (Shape A multi-entry)
   shell/, terminal/, …   Legacy vanilla panels (being migrated)
 cmake/               CronymaxApp.cmake (CEF + app + web targets)
-openspec/            Active spec-driven changes (see openspec/changes/)
+openspace/           Active spec-driven changes (see openspec/changes/)
 cef/         Upstream CEF source (git submodule, chromiumembedded/cef)
 .cef-cache/  Cached CEF binary archive download (gitignored)
 tools/               native_probe and other CLI utilities
 ```
+
+## Data Storage Layout
+
+All persisted app data lives under `~/Library/Application Support/app.cronymax/`
+(referred to as `$userDataDir` below).
+
+- CEF profile cache/cookies live at direct children of `$userDataDir/`.
+- Runtime-owned data lives under `$userDataDir/cronymax/`.
+
+```
+$userDataDir/
+  <profile_id>/              CefRequestContext cookie/cache storage per profile
+  cronymax/                  All runtime-owned persistent data
+    Profiles/
+      <profile_id>/          One directory per sandbox profile (default: "default")
+        runtime-state.json   Session snapshot (Rust Snapshot, schema v3+)
+        workspaces/
+          <ws_id>/           16-char hex SHA-256 of canonical workspace path
+            chats/
+              <session_id>/
+                meta.json    Lightweight session metadata
+                history.jsonl  Append-only LLM chat turns
+            pty/             PTY history files per session
+      migrations/            One-shot migration marker files
+    Memories/
+      <memory_id>/          Runtime memory cache directory per profile
+    logs/                    Runtime process logs
+  <other CEF dirs>           Chromium cache files (not managed by the app)
+```
+
+`<ws_id>` is derived as `lowercase_hex(sha256(canonical_workspace_path_utf8)[0..8])` — 16 characters.
+
+**Migration from pre-v4 layouts:** On first launch the `LayoutMigrator` runs
+automatically and moves data forward through each layout version in order
+(V0 → V1 → V2 → V3 → V4). Existing data is never deleted until after a successful
+move. Sentinels at `$userDataDir/runtimes/migrations/layout-v2.done` and
+`$userDataDir/cronymax/runtimes/migrations/layout-v3.done` and
+`$userDataDir/cronymax/profiles/migrations/layout-v4.done` prevent re-running.
+
+**Workspace-local prompts:** Place `*.prompt.md` files under
+`<workspace>/.cronymax/prompts/` to make them available as named prompt
+templates. Optional YAML frontmatter (`name`, `description`, `tags`) is parsed
+on load.
 
 ## Prototype Boundaries
 

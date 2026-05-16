@@ -83,7 +83,11 @@ impl TraceEvent {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        Self { kind: Some(kind), ts_ms, ..Default::default() }
+        Self {
+            kind: Some(kind),
+            ts_ms,
+            ..Default::default()
+        }
     }
 
     /// Serialise to a single JSON line (includes trailing `\n`).
@@ -117,7 +121,9 @@ pub struct TraceWriter {
 
 impl std::fmt::Debug for TraceWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TraceWriter").field("path", &self.path).finish()
+        f.debug_struct("TraceWriter")
+            .field("path", &self.path)
+            .finish()
     }
 }
 

@@ -11,38 +11,40 @@
 
 use std::sync::Arc;
 
-use cronymax::{
-    JsonFilePersistence, MemoryEntry, MemoryNamespaceId, PermissionState, Run,
-    RuntimeAuthority, RuntimeError, Snapshot, Space,
-};
-use cronymax::runtime::SubscribeOutcome;
 use cronymax::protocol::events::RuntimeEventPayload;
+use cronymax::runtime::SubscribeOutcome;
+use cronymax::{
+    JsonFilePersistence, MemoryEntry, MemoryNamespaceId, PermissionState, Run, RuntimeAuthority,
+    RuntimeError, Snapshot, Space,
+};
 use tempfile::tempdir;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_run_lifecycle_round_trips_through_persistence() {
     let dir = tempdir().expect("tempdir");
-    let persistence =
-        Arc::new(JsonFilePersistence::under_app_data_dir(dir.path()));
+    let persistence = Arc::new(JsonFilePersistence::under_app_data_dir(dir.path()));
 
     // ── First runtime instance: drive a complete lifecycle. ──────────
     let space_id;
     let run_id;
     let review_id;
     {
-        let auth = RuntimeAuthority::rehydrate(persistence.clone())
-            .expect("rehydrate fresh");
+        let auth = RuntimeAuthority::rehydrate(persistence.clone()).expect("rehydrate fresh");
 
         let space = Space {
             id: cronymax::SpaceId::new(),
             name: "e2e".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
         };
         space_id = space.id;
         auth.upsert_space(space).expect("upsert space");
 
         // Subscribe before start so we observe the status event.
-        let SubscribeOutcome { id: sub_id, mut receiver } =
-            auth.subscribe("*");
+        let SubscribeOutcome {
+            id: sub_id,
+            mut receiver,
+        } = auth.subscribe("*");
 
         run_id = auth
             .start_run(space_id, None, serde_json::json!({"input": "hi"}))
@@ -52,17 +54,10 @@ async fn full_run_lifecycle_round_trips_through_persistence() {
         // the Subscribe call itself may have queued internal frames.
         let mut saw_status = false;
         for _ in 0..4 {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                receiver.recv(),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_millis(100), receiver.recv()).await
             {
                 Ok(Some(evt)) => {
-                    if matches!(
-                        evt.payload,
-                        RuntimeEventPayload::RunStatus { .. }
-                    ) {
+                    if matches!(evt.payload, RuntimeEventPayload::RunStatus { .. }) {
                         saw_status = true;
                         break;
                     }
@@ -82,11 +77,12 @@ async fn full_run_lifecycle_round_trips_through_persistence() {
         )
         .expect("append history");
 
-        let handle = auth.open_review_with_completion(
-            run_id,
-            serde_json::json!({"tool": "shell.exec", "cmd": "ls"}),
-        )
-        .expect("open review");
+        let handle = auth
+            .open_review_with_completion(
+                run_id,
+                serde_json::json!({"tool": "shell.exec", "cmd": "ls"}),
+            )
+            .expect("open review");
         review_id = handle.id;
 
         // Capability is still pending — resolve as Approved on behalf
@@ -111,8 +107,7 @@ async fn full_run_lifecycle_round_trips_through_persistence() {
     }
 
     // ── Second runtime instance: rehydrate, verify state. ────────────
-    let auth = RuntimeAuthority::rehydrate(persistence.clone())
-        .expect("rehydrate restart");
+    let auth = RuntimeAuthority::rehydrate(persistence.clone()).expect("rehydrate restart");
     let snap = auth.snapshot();
     assert!(
         snap.spaces.contains_key(&space_id),
@@ -155,8 +150,8 @@ fn corrupted_snapshot_file_surfaces_load_error() {
     let path = dir.path().join("runtime-state.json");
     std::fs::write(&path, b"{ this is not valid json").expect("write");
     let persistence = Arc::new(JsonFilePersistence::new(&path));
-    let err = RuntimeAuthority::rehydrate(persistence)
-        .expect_err("corrupt snapshot must fail rehydrate");
+    let err =
+        RuntimeAuthority::rehydrate(persistence).expect_err("corrupt snapshot must fail rehydrate");
     // We don't assert on the exact variant — only that startup
     // refuses to swallow corruption silently. Boot must fail cleanly.
     let msg = format!("{err}");
@@ -179,8 +174,8 @@ fn future_schema_version_refuses_to_boot() {
     });
     std::fs::write(&path, serde_json::to_vec(&future).unwrap()).expect("write");
     let persistence = Arc::new(JsonFilePersistence::new(&path));
-    let err = RuntimeAuthority::rehydrate(persistence)
-        .expect_err("future schema must refuse to boot");
+    let err =
+        RuntimeAuthority::rehydrate(persistence).expect_err("future schema must refuse to boot");
     let msg = format!("{err}");
     assert!(
         msg.contains("schema") || msg.contains("understands"),

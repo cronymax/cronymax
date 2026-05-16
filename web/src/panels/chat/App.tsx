@@ -1,47 +1,42 @@
 import {
-  useEffect,
-  useRef,
-  useCallback,
-  useState,
-  useMemo,
-  useLayoutEffect,
-  type FormEvent,
-  type KeyboardEvent,
   type ChangeEvent,
   type ClipboardEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
 } from "react";
-import { Streamdown } from "streamdown";
+import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { browser } from "@/shells/bridge";
+import { agentRegistry, agentRun, b64ToUtf8, terminal as rt_terminal } from "@/shells/runtime";
+import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
+import { ContentStreamView } from "./ContentStreamView";
+import { PromptPopover } from "./PromptPopover";
 import {
-  useStore,
-  loadChatData,
-  persistChatData,
-  ensureChat,
-  chatNameFor,
-  loadFlowsList,
-  loadSavedGraph,
-  persistSelectedFlow,
-  loadSelectedModel,
-  persistSelectedModel,
-  loadReasoningEffort,
-  persistReasoningEffort,
-  type ReasoningEffort,
+  type Attachment,
   type Block,
   type ConversationBlock,
+  chatNameFor,
+  ensureChat,
+  loadChatData,
+  loadFlowsList,
+  loadReasoningEffort,
+  loadSavedGraph,
+  loadSelectedModel,
+  persistChatData,
+  persistReasoningEffort,
+  persistSelectedFlow,
+  persistSelectedModel,
+  type ReasoningEffort,
   type ShellBlock,
-  type Attachment,
   type Thread,
+  useStore,
 } from "./store";
-import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
 import { TraceViewer } from "./TraceViewer";
 import { useSelectionTooltip } from "./useSelectionTooltip";
-import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
-import {
-  agentRegistry,
-  agentRun,
-  terminal as rt_terminal,
-  b64ToUtf8,
-} from "@/shells/runtime";
 
 // ── picker types ────────────────────────────────────────────────────────
 
@@ -63,6 +58,54 @@ interface PickerState {
   query: string;
   /** Caret offset at which the trigger started, so we can splice the replacement */
   triggerStart: number;
+}
+
+/**
+ * Strip YAML front-matter from a .prompt.md file and return the
+ * human-readable description (from the `description:` field) plus the
+ * cleaned body to use as prompt content.
+ */
+function parseFrontmatter(raw: string): {
+  description?: string;
+  content: string;
+} {
+  if (!raw.startsWith("---\n") && !raw.startsWith("---\r\n")) return { content: raw };
+  const end = raw.indexOf("\n---", 4);
+  if (end === -1) return { content: raw };
+  const fm = raw.slice(4, end);
+  // raw[end]='\n', raw[end+1..end+3]='---'; slice past them and strip leading blank lines.
+  const afterClose = raw.slice(end + 4).replace(/^[\r\n]+/, "");
+  const descMatch = fm.match(/^description:\s*(.+)$/m);
+  return { description: descMatch?.[1]?.trim(), content: afterClose };
+}
+
+/**
+ * Render a user message string, wrapping `/slug` tokens (prompt pill
+ * references) as visually distinct inline badges.
+ */
+function UserMessageContent({ text, onPillClick }: { text: string; onPillClick?: (label: string) => void }) {
+  const pillRe = /^\/[a-z0-9_][a-z0-9_-]*$/i;
+  // Split preserving whitespace separators so we can re-render them as-is.
+  const words = text.split(/([ \t]+)/);
+  return (
+    <>
+      {words.map((word, i) =>
+        pillRe.test(word) ? (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onPillClick?.(word.slice(1))}
+            className="inline-flex items-center rounded-md bg-cronymax-primary/15 border border-cronymax-primary/30 px-1.5 py-0 text-[11px] font-mono text-cronymax-primary align-middle mr-0.5 cursor-pointer hover:bg-cronymax-primary/25 transition-colors"
+          >
+            <span className="opacity-60">/</span>
+            {word.slice(1)}
+          </button>
+        ) : (
+          <span key={i}>{word}</span>
+        ),
+      )}
+    </>
+  );
 }
 
 /** Reads custom slash-command prompts stored in localStorage. */
@@ -108,18 +151,13 @@ const BUILTIN_COMMANDS: PickerItem[] = [
 
 function leadAgentOfFlow(flowName: string): string {
   const spec = loadSavedGraph(flowName);
-  if (!spec || !spec.nodes.length) return "";
-  const lead = spec.nodes
-    .slice()
-    .sort((a, b) => Number(a.id) - Number(b.id))[0];
+  if (!spec?.nodes.length) return "";
+  const lead = spec.nodes.slice().sort((a, b) => Number(a.id) - Number(b.id))[0];
   const cfg = (lead?.config ?? {}) as Record<string, unknown>;
   return (cfg.agent_name as string) || lead?.type || "";
 }
 
-function parseMention(
-  text: string,
-  agents: string[],
-): { agent: string | null; body: string } {
+function parseMention(text: string, agents: string[]): { agent: string | null; body: string } {
   const m = text.match(/^@([A-Za-z0-9_.-]+)\s*(.*)$/s);
   if (!m) return { agent: null, body: text };
   const want = m[1]!.toLowerCase();
@@ -134,32 +172,18 @@ function fmtDuration(ms: number): string {
 
 // ── Block components ────────────────────────────────────────────────────
 
-function ThreadSummary({
-  thread,
-  onExpand,
-}: {
-  thread: Thread;
-  onExpand: () => void;
-}) {
+function ThreadSummary({ thread, onExpand }: { thread: Thread; onExpand: () => void }) {
   const lastMsg = thread.messages.at(-1);
   return (
     <div className="mt-2 rounded border border-cronymax-border bg-cronymax-float px-3 py-2 text-xs">
       <div className="flex items-center gap-2">
-        <span className="font-semibold capitalize text-cronymax-primary">
-          {thread.action}
-        </span>
+        <span className="font-semibold capitalize text-cronymax-primary">{thread.action}</span>
         <span className="text-cronymax-caption">
           {thread.messages.length} message
           {thread.messages.length !== 1 ? "s" : ""}
         </span>
-        {thread.running && (
-          <span className="text-cronymax-caption italic">running…</span>
-        )}
-        <button
-          type="button"
-          onClick={onExpand}
-          className="ml-auto text-cronymax-primary hover:underline"
-        >
+        {thread.running && <span className="text-cronymax-caption italic">running…</span>}
+        <button type="button" onClick={onExpand} className="ml-auto text-cronymax-primary hover:underline">
           View thread ⇄
         </button>
       </div>
@@ -176,12 +200,16 @@ function ConversationBlockView({
   block,
   isStreaming,
   isHighlighted,
+  workspacePrompts = [],
 }: {
   block: ConversationBlock;
   isStreaming: boolean;
   isHighlighted?: boolean;
+  workspacePrompts?: PickerItem[];
 }) {
   const pinnedComments = block.comments.filter((c) => c.pinnedToPrompt);
+  const [activePillLabel, setActivePillLabel] = useState<string | null>(null);
+  const activePillPrompt = activePillLabel ? workspacePrompts.find((p) => p.label === activePillLabel) : null;
   return (
     <div
       className={`py-4 space-y-2 transition-all duration-500${
@@ -191,9 +219,7 @@ function ConversationBlockView({
     >
       {/* User message */}
       <div className="rounded-md bg-cronymax-primary/10 px-3 py-2">
-        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cronymax-primary">
-          You
-        </div>
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cronymax-primary">You</div>
         {block.attachments.length > 0 && (
           <div className="mb-1 flex flex-wrap gap-1">
             {block.attachments.map((a) => (
@@ -201,42 +227,51 @@ function ConversationBlockView({
                 key={a.id}
                 className="rounded-full bg-cronymax-border px-2 py-0.5 text-[10px] text-cronymax-caption"
               >
-                {a.kind === "comment"
-                  ? "💬 "
-                  : a.kind === "image"
-                    ? "🖼 "
-                    : "📎 "}
+                {a.kind === "comment" ? "💬 " : a.kind === "image" ? "🖼 " : "📎 "}
                 {a.label}
               </span>
             ))}
           </div>
         )}
         <div className="whitespace-pre-wrap break-words text-sm text-cronymax-title">
-          {block.userContent}
+          <UserMessageContent
+            text={block.userContent}
+            onPillClick={(label) => setActivePillLabel((prev) => (prev === label ? null : label))}
+          />
         </div>
       </div>
 
-      {/* Trace */}
-      <TraceViewer entries={block.traceEntries} startExpanded={isStreaming} />
+      {/* Prompt pill popover (read-only) — shown when a /slug pill is clicked */}
+      {activePillPrompt && (
+        <div className="relative">
+          <PromptPopover
+            prompt={{
+              id: activePillPrompt.id,
+              label: activePillPrompt.label,
+              content: activePillPrompt.content ?? "",
+            }}
+            onClose={() => setActivePillLabel(null)}
+          />
+        </div>
+      )}
 
-      {/* Assistant response */}
-      {(block.assistantContent || block.status === "running") && (
+      {/* Content stream — renders text, tool cards, and thinking in order */}
+      {(block.contentStream.length > 0 || block.status === "running") && (
         <div className="px-1">
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cronymax-caption">
             {block.agentName || "Assistant"}
           </div>
-          <div className="text-sm text-cronymax-title">
-            <Streamdown animated isAnimating={isStreaming}>
-              {block.assistantContent}
-            </Streamdown>
-          </div>
+          <ContentStreamView segments={block.contentStream} isStreaming={isStreaming} />
         </div>
       )}
 
       {/* Status error */}
-      {block.status === "fail" && !block.assistantContent && (
+      {block.status === "fail" && block.contentStream.length === 0 && (
         <div className="text-xs italic text-red-400">(run failed)</div>
       )}
+
+      {/* Trace — shown below the content stream (position unchanged) */}
+      <TraceViewer entries={block.traceEntries} startExpanded={isStreaming} />
 
       {/* Comment annotations */}
       {pinnedComments.map((c) => (
@@ -251,7 +286,12 @@ function ConversationBlockView({
 
       {/* Thread */}
       {block.thread && (
-        <ThreadSummary thread={block.thread} onExpand={() => {}} />
+        <ThreadSummary
+          thread={block.thread}
+          onExpand={() => {
+            /* noop */
+          }}
+        />
       )}
     </div>
   );
@@ -267,18 +307,10 @@ function ShellBlockView({
   isHighlighted?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(false);
-  const duration =
-    block.endedAt && block.startedAt
-      ? fmtDuration(block.endedAt - block.startedAt)
-      : null;
+  const duration = block.endedAt && block.startedAt ? fmtDuration(block.endedAt - block.startedAt) : null;
   const statusColor =
-    block.status === "ok"
-      ? "text-green-400"
-      : block.status === "fail"
-        ? "text-red-400"
-        : "text-amber-400";
-  const statusGlyph =
-    block.status === "ok" ? "✓" : block.status === "fail" ? "✗" : "●";
+    block.status === "ok" ? "text-green-400" : block.status === "fail" ? "text-red-400" : "text-amber-400";
+  const statusGlyph = block.status === "ok" ? "✓" : block.status === "fail" ? "✗" : "●";
 
   return (
     <div
@@ -289,20 +321,12 @@ function ShellBlockView({
     >
       {/* Header — highlighted command prompt */}
       <div className="flex items-center gap-2 rounded-md bg-cronymax-primary/10 px-3 py-1.5">
-        <span className={`font-mono text-sm font-bold ${statusColor}`}>
-          {statusGlyph}
-        </span>
-        <span className="flex-1 font-mono text-sm text-cronymax-title">
-          $ {block.command}
-        </span>
+        <span className={`font-mono text-sm font-bold ${statusColor}`}>{statusGlyph}</span>
+        <span className="flex-1 font-mono text-sm text-cronymax-title">$ {block.command}</span>
         {block.exitCode !== null && block.exitCode !== 0 && (
-          <span className="text-[10px] text-red-400">
-            exit {block.exitCode}
-          </span>
+          <span className="text-[10px] text-red-400">exit {block.exitCode}</span>
         )}
-        {duration && (
-          <span className="text-[10px] text-cronymax-caption">{duration}</span>
-        )}
+        {duration && <span className="text-[10px] text-cronymax-caption">{duration}</span>}
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
@@ -350,7 +374,12 @@ function ShellBlockView({
 
       {/* Thread */}
       {block.thread && (
-        <ThreadSummary thread={block.thread} onExpand={() => {}} />
+        <ThreadSummary
+          thread={block.thread}
+          onExpand={() => {
+            /* noop */
+          }}
+        />
       )}
     </div>
   );
@@ -361,11 +390,13 @@ function BlockView({
   isStreaming,
   onShellAction,
   isHighlighted,
+  workspacePrompts,
 }: {
   block: Block;
   isStreaming: boolean;
   onShellAction: (action: string, b: ShellBlock) => void;
   isHighlighted?: boolean;
+  workspacePrompts?: PickerItem[];
 }) {
   if (block.kind === "conversation") {
     return (
@@ -373,16 +404,11 @@ function BlockView({
         block={block}
         isStreaming={isStreaming}
         isHighlighted={isHighlighted}
+        workspacePrompts={workspacePrompts}
       />
     );
   }
-  return (
-    <ShellBlockView
-      block={block}
-      onAction={onShellAction}
-      isHighlighted={isHighlighted}
-    />
-  );
+  return <ShellBlockView block={block} onAction={onShellAction} isHighlighted={isHighlighted} />;
 }
 
 // ── Attachment tray ─────────────────────────────────────────────────────
@@ -406,23 +432,13 @@ function AttachmentTray({
       {a.kind === "comment" ? "💬" : a.kind === "image" ? "🖼" : "📎"}
       <span
         className={`max-w-[100px] truncate${
-          a.kind === "comment" && onCommentClick
-            ? " cursor-pointer hover:text-cronymax-title"
-            : ""
+          a.kind === "comment" && onCommentClick ? " cursor-pointer hover:text-cronymax-title" : ""
         }`}
-        onClick={
-          a.kind === "comment" && onCommentClick
-            ? () => onCommentClick(a)
-            : undefined
-        }
+        onClick={a.kind === "comment" && onCommentClick ? () => onCommentClick(a) : undefined}
       >
         {a.label}
       </span>
-      <button
-        type="button"
-        onClick={() => onRemove(a.id)}
-        className="ml-0.5 text-cronymax-caption hover:text-red-400"
-      >
+      <button type="button" onClick={() => onRemove(a.id)} className="ml-0.5 text-cronymax-caption hover:text-red-400">
         ×
       </button>
     </span>
@@ -463,14 +479,10 @@ export function App() {
   const timelineRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [agentLoadError, setAgentLoadError] = useState<string | null>(null);
-  const [inputMode, setInputMode] = useState<"chat" | "shell" | "command">(
-    "chat",
-  );
+  const [inputMode, setInputMode] = useState<"chat" | "shell" | "command">("chat");
   const [commentDraft, setCommentDraft] = useState("");
   /** Per-chat reasoning_effort override. "" = use agent/provider default. */
-  const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(
-    () => loadReasoningEffort(),
-  );
+  const [reasoningEffort, setReasoningEffortState] = useState<ReasoningEffort>(() => loadReasoningEffort());
   const reasoningEffortRef = useRef(reasoningEffort);
   reasoningEffortRef.current = reasoningEffort;
 
@@ -480,13 +492,11 @@ export function App() {
   const [workspacePrompts, setWorkspacePrompts] = useState<PickerItem[]>([]);
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   /** Model options grouped by provider name, loaded from llm.providers.get */
-  const [modelGroups, setModelGroups] = useState<
-    { label: string; models: string[] }[]
-  >([]);
+  const [modelGroups, setModelGroups] = useState<{ label: string; models: string[] }[]>([]);
   /** Prompt pills attached to the current message (like VS Code slash commands). */
-  const [attachedPrompts, setAttachedPrompts] = useState<
-    { id: string; label: string; content: string }[]
-  >([]);
+  const [attachedPrompts, setAttachedPrompts] = useState<{ id: string; label: string; content: string }[]>([]);
+  /** ID of the pill whose PromptPopover is currently open (null = none). */
+  const [activePillId, setActivePillId] = useState<string | null>(null);
 
   // Load workspace prompts + root + provider models on mount.
   useEffect(() => {
@@ -494,18 +504,24 @@ export function App() {
       .send("workspace.prompts.list")
       .then((res) => {
         setWorkspacePrompts(
-          res.prompts.map((p) => ({
-            id: `ws-${p.name}`,
-            label: p.name,
-            description: p.content.slice(0, 70).replace(/\n/g, " ").trim(),
-            content: p.content,
-          })),
+          res.prompts.map((p) => {
+            const { description, content } = parseFrontmatter(p.content);
+            return {
+              id: `ws-${p.name}`,
+              label: p.name,
+              description: description ?? content.slice(0, 70).replace(/\n/g, " ").trim(),
+              content,
+            };
+          }),
         );
       })
       .catch(() => undefined);
     browser
-      .send("space.profile.get")
-      .then((res) => setWorkspaceRoot(res.workspace_root))
+      .send("space.list")
+      .then((spaces) => {
+        const active = spaces.find((s) => s.active);
+        if (active) setWorkspaceRoot(active.root_path);
+      })
       .catch(() => undefined);
     // Load model list from configured providers
     browser
@@ -520,12 +536,7 @@ export function App() {
           api_key: string;
           default_model: string;
         }
-        const COPILOT_FALLBACK = [
-          "gpt-4o",
-          "gpt-4o-mini",
-          "claude-3.5-sonnet",
-          "o3-mini",
-        ];
+        const COPILOT_FALLBACK = ["gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet", "o3-mini"];
         const providers: StoredProvider[] = JSON.parse(raw);
         const groups: { label: string; models: string[] }[] = [];
         for (const p of providers) {
@@ -533,12 +544,7 @@ export function App() {
           let models: string[] = [];
           try {
             if (p.kind === "anthropic") {
-              models = [
-                "claude-opus-4-5",
-                "claude-sonnet-4-5",
-                "claude-3-5-sonnet-latest",
-                "claude-3-5-haiku-latest",
-              ];
+              models = ["claude-opus-4-5", "claude-sonnet-4-5", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"];
             } else if (p.kind === "ollama") {
               const base = p.base_url.replace(/\/v1\/?$/, "");
               const r = await fetch(`${base}/api/tags`, {
@@ -553,8 +559,8 @@ export function App() {
               const headers: Record<string, string> = {
                 Accept: "application/json",
               };
-              if (p.api_key) headers["Authorization"] = `Bearer ${p.api_key}`;
-              const url = p.base_url.replace(/\/?$/, "") + "/models";
+              if (p.api_key) headers.Authorization = `Bearer ${p.api_key}`;
+              const url = `${p.base_url.replace(/\/?$/, "")}/models`;
               const r = await fetch(url, {
                 headers,
                 signal: AbortSignal.timeout(5000),
@@ -570,10 +576,8 @@ export function App() {
           } catch {
             if (p.kind === "github_copilot") models = COPILOT_FALLBACK;
           }
-          if (models.length === 0 && p.default_model)
-            models = [p.default_model];
-          if (models.length > 0)
-            groups.push({ label: p.name || p.kind, models });
+          if (models.length === 0 && p.default_model) models = [p.default_model];
+          if (models.length > 0) groups.push({ label: p.name || p.kind, models });
         }
         setModelGroups(groups);
       })
@@ -583,15 +587,11 @@ export function App() {
   // Selection tooltip — freeze when comment input is focused so it doesn't
   // disappear when the browser clears the selection on input focus.
   const selectionInfo = useSelectionTooltip(timelineRef);
-  const [frozenSelection, setFrozenSelection] = useState<
-    import("./useSelectionTooltip").SelectionInfo | null
-  >(null);
+  const [frozenSelection, setFrozenSelection] = useState<import("./useSelectionTooltip").SelectionInfo | null>(null);
   const activeSelection = frozenSelection ?? selectionInfo;
 
   // ── comment attachment → scroll & highlight ────────────────────────────
-  const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(
-    null,
-  );
+  const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null);
   const onCommentAttachmentClick = useCallback(
     (a: Attachment) => {
       if (!a.commentId) return;
@@ -606,9 +606,8 @@ export function App() {
       if (!blockId) return;
       // Scroll to the comment annotation, or the block if annotation not rendered yet
       const target =
-        timelineRef.current?.querySelector(
-          `[data-comment-id="${a.commentId}"]`,
-        ) ?? timelineRef.current?.querySelector(`[data-block-id="${blockId}"]`);
+        timelineRef.current?.querySelector(`[data-comment-id="${a.commentId}"]`) ??
+        timelineRef.current?.querySelector(`[data-block-id="${blockId}"]`);
       target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
       setHighlightedBlockId(blockId);
       setTimeout(() => setHighlightedBlockId(null), 1600);
@@ -619,19 +618,7 @@ export function App() {
   // ── agent catalog ─────────────────────────────────────────────────────
   const refreshAgents = useCallback(async () => {
     try {
-      let res = await agentRegistry.list();
-      const names = (res.agents ?? []).map((a) => a.name);
-      if (names.length === 0) {
-        await agentRegistry.save({
-          name: "Chat",
-          llm: "",
-          system_prompt: "You are a helpful assistant.",
-          memory_namespace: "",
-          tools_csv: "",
-        });
-        res = await agentRegistry.list();
-        names.splice(0, names.length, ...(res.agents ?? []).map((a) => a.name));
-      }
+      const res = await agentRegistry.list();
       dispatch({ type: "setAgents", agents: res.agents ?? [] });
       setAgentLoadError(null);
     } catch (err) {
@@ -654,8 +641,7 @@ export function App() {
       }
       try {
         const newTid = await browser.send("terminal.new");
-        const tid =
-          typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
+        const tid = typeof newTid === "string" ? newTid : (newTid as { id: string }).id;
         await rt_terminal.start(tid);
         dispatch({ type: "setTerminalTid", tid });
         // Persist immediately
@@ -688,9 +674,9 @@ export function App() {
 
       // Register this tab's chatId with the native shell so it survives
       // the next app restart (no-op if already registered with same value).
-      void browser
-        .send("shell.tab_set_meta", { key: "chat_id", value: id })
-        .catch(() => {});
+      void browser.send("shell.tab_set_meta", { key: "chat_id", value: id }).catch(() => {
+        /* ignore */
+      });
 
       const { data, migrationNotice } = loadChatData(id);
       const model = data.model || loadSelectedModel();
@@ -701,6 +687,7 @@ export function App() {
         blocks: data.blocks,
         terminalTid: data.terminalTid,
         model,
+        agentId: data.agentId,
         migrationNotice,
       });
       const { flows, selected } = loadFlowsList();
@@ -722,9 +709,7 @@ export function App() {
       }
       if (e.key === "chats") {
         if (state.activeChatId) {
-          const { data: d, migrationNotice: mn } = loadChatData(
-            state.activeChatId,
-          );
+          const { data: d, migrationNotice: mn } = loadChatData(state.activeChatId);
           dispatch({
             type: "loadChat",
             id: state.activeChatId,
@@ -732,6 +717,7 @@ export function App() {
             blocks: d.blocks,
             terminalTid: d.terminalTid,
             model: d.model || loadSelectedModel(),
+            agentId: d.agentId,
             migrationNotice: mn,
           });
         }
@@ -748,82 +734,92 @@ export function App() {
 
   // ── terminal output → ShellBlock accumulation ──────────────────────────
   // Topic-scoped to the active terminal; auto-resubscribes on space switch.
-  useRuntimeEvent(
-    state.terminalTid ? `terminal:${state.terminalTid}` : "",
-    (eventJson: string) => {
-      const blockId = runningBlockIdRef.current;
-      if (!blockId) return;
+  useRuntimeEvent(state.terminalTid ? `terminal:${state.terminalTid}` : "", (eventJson: string) => {
+    const blockId = runningBlockIdRef.current;
+    if (!blockId) return;
 
-      const info = shellSentinelRef.current.get(blockId);
-      if (!info) return;
+    const info = shellSentinelRef.current.get(blockId);
+    if (!info) return;
 
-      let data: string;
-      try {
-        const ev = JSON.parse(eventJson) as Record<string, unknown>;
-        const pl = ev?.payload as Record<string, unknown> | undefined;
-        if (pl?.kind !== "raw") return;
-        const dataObj = pl?.data as Record<string, unknown> | undefined;
-        const b64 = dataObj?.data as string | undefined;
-        if (!b64) return;
-        data = b64ToUtf8(b64);
-      } catch {
-        return;
-      }
+    let data: string;
+    try {
+      const ev = JSON.parse(eventJson) as Record<string, unknown>;
+      const pl = ev?.payload as Record<string, unknown> | undefined;
+      if (pl?.kind !== "raw") return;
+      const dataObj = pl?.data as Record<string, unknown> | undefined;
+      const b64 = dataObj?.data as string | undefined;
+      if (!b64) return;
+      data = b64ToUtf8(b64);
+    } catch {
+      return;
+    }
 
-      // Phase 1: waiting for start marker — discard all preamble
-      // (shell prompts, echoed command line, etc.)
-      if (!info.capturing) {
-        const startIdx = data.indexOf(info.start);
-        if (startIdx === -1) return; // still preamble — discard chunk
-        // Skip to the line after the start marker line
-        const nl = data.indexOf("\n", startIdx);
-        data = nl !== -1 ? data.slice(nl + 1) : "";
-        info.capturing = true;
-        if (!data) return;
-      }
+    // Phase 1: waiting for start marker — discard all preamble
+    // (shell prompts, echoed command line, etc.)
+    if (!info.capturing) {
+      const startIdx = data.indexOf(info.start);
+      if (startIdx === -1) return; // still preamble — discard chunk
+      // Skip to the line after the start marker line
+      const nl = data.indexOf("\n", startIdx);
+      data = nl !== -1 ? data.slice(nl + 1) : "";
+      info.capturing = true;
+      if (!data) return;
+    }
 
-      // Phase 2: capturing — look for end marker
-      const endRe = new RegExp(`${info.end}:(\\d+)`);
-      const match = endRe.exec(data);
-      if (match) {
-        const exitCode = parseInt(match[1]!, 10);
-        // Deliver output before the end-marker line (strip trailing partial line)
-        const cleanData = data.slice(0, match.index).replace(/[^\n]*$/, "");
-        if (cleanData) {
-          dispatch({
-            type: "appendShellOutput",
-            id: blockId,
-            chunk: cleanData,
-            now: Date.now(),
-          });
-        }
+    // Phase 2: capturing — look for end marker
+    const endRe = new RegExp(`${info.end}:(\\d+)`);
+    const match = endRe.exec(data);
+    if (match) {
+      const exitCode = parseInt(match[1]!, 10);
+      // Deliver output before the end-marker line (strip trailing partial line)
+      const cleanData = data.slice(0, match.index).replace(/[^\n]*$/, "");
+      if (cleanData) {
         dispatch({
-          type: "finalizeShellBlock",
+          type: "appendShellOutput",
           id: blockId,
-          exitCode,
+          chunk: cleanData,
           now: Date.now(),
         });
-        dispatch({ type: "setRunning", running: false });
-        dispatch({ type: "setRunningBlockId", id: null });
-        runningBlockIdRef.current = null;
-        shellSentinelRef.current.delete(blockId);
-        return;
       }
-
       dispatch({
-        type: "appendShellOutput",
+        type: "finalizeShellBlock",
         id: blockId,
-        chunk: data,
+        exitCode,
         now: Date.now(),
       });
-    },
-  );
+      dispatch({ type: "setRunning", running: false });
+      dispatch({ type: "setRunningBlockId", id: null });
+      runningBlockIdRef.current = null;
+      shellSentinelRef.current.delete(blockId);
+      return;
+    }
+
+    dispatch({
+      type: "appendShellOutput",
+      id: blockId,
+      chunk: data,
+      now: Date.now(),
+    });
+  });
 
   // ── auto scroll ──────────────────────────────────────────────────────
-  useLayoutEffect(() => {
-    const el = timelineRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [state.blocks]);
+  // Use useEffect (async, after paint) instead of useLayoutEffect so we never
+  // force a synchronous layout read (el.scrollHeight) while Blink is still in
+  // its layout phase — that triggers the DisplayLock DCHECK crash with large
+  // histories.  Also only scroll when the user is already near the bottom so
+  // we don't hijack the scroll position when reviewing older messages.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const el = timelineRef.current;
+      if (!el) return;
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // Treat within 120 px of the bottom (or actively streaming) as "at bottom".
+      if (distanceFromBottom <= 120 || state.running) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [state.blocks, state.running]);
 
   // ── input mode detection + prefix auto-strip ─────────────────────────
   const onInputChange = useCallback(
@@ -938,9 +934,7 @@ export function App() {
 
   // Per-block sentinel info: start marker, end marker, and whether the start
   // marker has already been seen (so preamble / echo lines are discarded).
-  const shellSentinelRef = useRef<
-    Map<string, { start: string; end: string; capturing: boolean }>
-  >(new Map());
+  const shellSentinelRef = useRef<Map<string, { start: string; end: string; capturing: boolean }>>(new Map());
 
   // ── send / run ─────────────────────────────────────────────────────────
   const onRun = useCallback(
@@ -949,8 +943,7 @@ export function App() {
       const chatId = state.activeChatId;
 
       // Detect shell mode: rawText starts with "$" OR inputMode is "shell"
-      const isShellCmd =
-        rawText.trimStart().startsWith("$") || inputMode === "shell";
+      const isShellCmd = rawText.trimStart().startsWith("$") || inputMode === "shell";
       if (isShellCmd) {
         // Strip leading "$ " or "$" if present (user may have typed it or mode stripped it)
         const command = rawText.replace(/^\s*\$\s*/, "").trim();
@@ -1044,12 +1037,17 @@ export function App() {
         id: blockId,
         userContent: displayText ?? rawText,
         attachments: state.attachments.slice(),
+        contentStream: [],
         assistantContent: "",
         agentName: speaker || undefined,
         traceEntries: [],
         status: "running",
         comments: [],
         createdAt: Date.now(),
+        thinkingText: "",
+        thinkingSealed: false,
+        thinkingStartedAt: null,
+        thinkingElapsedMs: 0,
       };
       dispatch({ type: "createBlock", block });
       dispatch({ type: "setRunningBlockId", id: blockId });
@@ -1057,8 +1055,13 @@ export function App() {
       dispatch({ type: "clearAttachments" });
       dispatch({ type: "clearPinnedComments" });
 
-      let assistantText = "";
-      const seenSeqs = new Set<number>();
+      let hasContent = false;
+      let thinkingStartedAt: number | null = null;
+      let thinkingSealed = false;
+      // Dedup key = "<subscription_id>:<sequence>" so that concurrent
+      // conversations whose Rust subscriptions independently start at seq=0
+      // never cross-contaminate each other's dedup sets.
+      const seenSeqs = new Set<string>();
       let runId = "";
       // Last error surfaced via a "trace.error" event from the runtime
       // (e.g. LLM HTTP failure). Used as the assistantText fallback when
@@ -1075,59 +1078,81 @@ export function App() {
 
         if (ev.tag === "event") {
           const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
+          const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
+          const pRunId =
+            (pl.run_id as string | undefined) ?? ((inner as Record<string, unknown>).run_id as string | undefined);
+          // Filter by run_id BEFORE deduplicating so that a different run's
+          // seq=0 does not consume our seq=0 from the dedup set.
+          if (pRunId && runId && pRunId !== runId) return;
+          const subId = (ev.subscription as string | undefined) ?? "";
           const seq = inner.sequence as number | undefined;
           if (typeof seq === "number") {
-            if (seenSeqs.has(seq)) return;
-            seenSeqs.add(seq);
+            const dedupKey = `${subId}:${seq}`;
+            if (seenSeqs.has(dedupKey)) return;
+            seenSeqs.add(dedupKey);
           }
-          const pl =
-            (inner.payload as Record<string, unknown> | undefined) ?? {};
-          const pRunId =
-            (pl.run_id as string | undefined) ??
-            ((inner as Record<string, unknown>).run_id as string | undefined);
-          if (pRunId && runId && pRunId !== runId) return;
           const kind = pl.kind as string | undefined;
 
-          if (kind === "token") {
+          if (kind === "thinking_token") {
+            const delta = pl.delta as string | undefined;
+            if (delta) {
+              if (thinkingStartedAt === null) {
+                thinkingStartedAt = Date.now();
+              }
+              dispatch({
+                type: "appendThinkingSegment",
+                id: blockId,
+                delta,
+              });
+            }
+          } else if (kind === "token") {
+            // First text token seals the thinking segment if thinking is in progress.
+            if (thinkingStartedAt !== null && !thinkingSealed) {
+              thinkingSealed = true;
+              const elapsedMs = Date.now() - thinkingStartedAt;
+              dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
+            }
             const content = (pl.delta ?? pl.content) as string | undefined;
             if (content) {
-              assistantText += content;
+              hasContent = true;
               dispatch({
-                type: "setAssistantContent",
+                type: "appendContentText",
                 id: blockId,
-                content: assistantText,
+                delta: content,
               });
             }
           } else if (kind === "run_status") {
             const status = pl.status as string | undefined;
-            if (
-              status === "succeeded" ||
-              status === "failed" ||
-              status === "cancelled"
-            ) {
+            if (status === "succeeded" || status === "failed" || status === "cancelled") {
               dispatch({ type: "clearAwaitingApproval" });
-              if (!assistantText) {
-                // Prefer a concrete failure reason if the runtime
-                // surfaced one (RunStatus.detail.message or a prior
-                // trace.error). Fall back to the generic placeholder.
-                const detail =
-                  (pl.detail as Record<string, unknown> | undefined) ?? {};
-                const detailMsg =
-                  typeof detail.message === "string" ? detail.message : "";
+              // Seal any pending thinking segment before finalizing.
+              if (thinkingStartedAt !== null && !thinkingSealed) {
+                thinkingSealed = true;
+                const elapsedMs = Date.now() - thinkingStartedAt;
+                dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
+              }
+              if (!hasContent) {
+                // Prefer a concrete failure reason if the runtime surfaced
+                // one (RunStatus.detail.message or a prior trace.error).
+                // Fall back to the generic placeholder.
+                const detail = (pl.detail as Record<string, unknown> | undefined) ?? {};
+                const detailMsg = typeof detail.message === "string" ? detail.message : "";
+                let fallback: string;
                 if (status === "succeeded") {
-                  assistantText = "(completed)";
+                  fallback = "(completed)";
                 } else if (detailMsg) {
-                  assistantText = `(${status}) ${detailMsg}`;
+                  fallback = `(${status}) ${detailMsg}`;
                 } else if (lastErrorMessage) {
-                  assistantText = `(${status}) ${lastErrorMessage}`;
+                  fallback = `(${status}) ${lastErrorMessage}`;
                 } else {
-                  assistantText = "(no output)";
+                  fallback = "(no output)";
                 }
                 dispatch({
-                  type: "setAssistantContent",
+                  type: "appendContentText",
                   id: blockId,
-                  content: assistantText,
+                  delta: fallback,
                 });
+                hasContent = true;
               }
               dispatch({
                 type: "finalizeBlock",
@@ -1155,14 +1180,9 @@ export function App() {
             }
           } else if (kind === "permission_request") {
             // Tool approval request: read trust and decide automatically or ask user
-            const reviewId =
-              (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
-            const req =
-              (pl.request as Record<string, unknown> | undefined) ?? {};
-            const toolName =
-              (req.tool_name as string | undefined) ??
-              (pl.tool_name as string | undefined) ??
-              "";
+            const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
+            const req = (pl.request as Record<string, unknown> | undefined) ?? {};
+            const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
             const args = req.args ?? pl.args ?? {};
             const category = toolName.split("_")[0] ?? toolName;
 
@@ -1171,13 +1191,9 @@ export function App() {
             const trust = trustMap[category] ?? "ask";
 
             if (trust === "autopilot") {
-              browser
-                .send("review.approve", { review_id: reviewId })
-                .catch(() => undefined);
+              browser.send("review.approve", { review_id: reviewId }).catch(() => undefined);
             } else if (trust === "bypass") {
-              browser
-                .send("review.request_changes", { review_id: reviewId })
-                .catch(() => undefined);
+              browser.send("review.request_changes", { review_id: reviewId }).catch(() => undefined);
             } else {
               // "ask" — show the approval card
               dispatch({
@@ -1201,52 +1217,96 @@ export function App() {
             }
           } else if (kind === "trace") {
             // Structured trace events from the runtime
-            const trace =
-              (pl.trace as Record<string, unknown> | undefined) ?? pl;
+            const trace = (pl.trace as Record<string, unknown> | undefined) ?? pl;
             const traceKind = trace.kind as string | undefined;
 
-            if (traceKind === "assistant_turn") {
+            if (traceKind === "run_start") {
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "run_start",
+                  model: (trace.model as string | undefined) ?? "",
+                  systemPrompt: (trace.system_prompt as string | undefined) ?? "",
+                  userInput: (trace.user_input as string | undefined) ?? "",
+                  tools: (trace.tools as string[] | undefined) ?? [],
+                  turnsLimit: (trace.turns_limit as number | undefined) ?? 0,
+                  ts: Date.now(),
+                },
+              });
+            } else if (traceKind === "assistant_turn") {
+              // Extract optional usage and duration emitted by agent-run-middleware
+              const usageRaw = trace.usage as Record<string, number> | undefined;
+              const usage = usageRaw
+                ? {
+                    inputTokens: (usageRaw.input_tokens as number) ?? 0,
+                    outputTokens: (usageRaw.output_tokens as number) ?? 0,
+                  }
+                : undefined;
+              const turnDurationMs = trace.duration_ms as number | undefined;
               dispatch({
                 type: "appendTraceEntry",
                 id: blockId,
                 entry: {
                   kind: "assistant_turn",
                   // Rust emits "turn" (not "turn_id")
-                  turnId:
-                    (trace.turn as number | undefined) ??
-                    (trace.turn_id as number | undefined) ??
-                    0,
+                  turnId: (trace.turn as number | undefined) ?? (trace.turn_id as number | undefined) ?? 0,
                   text: (trace.text as string | undefined) ?? "",
-                  finishReason:
-                    (trace.finish_reason as string | undefined) ?? "",
+                  finishReason: (trace.finish_reason as string | undefined) ?? "",
                   ts: Date.now(),
+                  ...(usage ? { usage } : {}),
+                  ...(turnDurationMs != null ? { durationMs: turnDurationMs } : {}),
                 },
               });
             } else if (traceKind === "tool_start") {
+              const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+              const tool = (trace.tool as string | undefined) ?? "";
+              const args = trace.arguments ?? trace.args ?? {};
               dispatch({
                 type: "appendTraceEntry",
                 id: blockId,
                 entry: {
                   kind: "tool_start",
-                  toolCallId: (trace.tool_call_id as string | undefined) ?? "",
-                  tool: (trace.tool as string | undefined) ?? "",
-                  // Rust emits "arguments" (not "args")
-                  args: trace.arguments ?? trace.args ?? {},
+                  toolCallId,
+                  tool,
+                  args,
                   ts: Date.now(),
                 },
               });
+              // Also add a running tool_call segment to the content stream
+              dispatch({
+                type: "appendToolCallSegment",
+                id: blockId,
+                toolCallId,
+                tool,
+                args,
+              });
             } else if (traceKind === "tool_done") {
+              const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+              const tool = (trace.tool as string | undefined) ?? "";
+              const result = trace.result ?? {};
+              const isError = (trace.is_error as boolean | undefined) ?? false;
+              const durationMs = trace.duration_ms as number | undefined;
               dispatch({
                 type: "appendTraceEntry",
                 id: blockId,
                 entry: {
                   kind: "tool_done",
-                  toolCallId: (trace.tool_call_id as string | undefined) ?? "",
-                  tool: (trace.tool as string | undefined) ?? "",
-                  result: trace.result ?? {},
+                  toolCallId,
+                  tool,
+                  result,
                   terminal: (trace.terminal as boolean | undefined) ?? false,
                   ts: Date.now(),
                 },
+              });
+              // Update the tool_call segment in the content stream
+              dispatch({
+                type: "updateToolCallSegment",
+                id: blockId,
+                toolCallId,
+                status: isError ? "error" : "done",
+                result,
+                ...(durationMs != null ? { durationMs } : {}),
               });
             } else if (traceKind === "error") {
               // Emitted by the agent loop when the LLM stream itself
@@ -1271,10 +1331,7 @@ export function App() {
               });
             } else if (traceKind === "review_resolved") {
               const resolvedId = (trace.review_id as string | undefined) ?? "";
-              const decision =
-                (trace.decision as string | undefined) === "approve"
-                  ? "approve"
-                  : "reject";
+              const decision = (trace.decision as string | undefined) === "approve" ? "approve" : "reject";
               dispatch({
                 type: "appendTraceEntry",
                 id: blockId,
@@ -1282,6 +1339,29 @@ export function App() {
                   kind: "approval_resolved",
                   reviewId: resolvedId,
                   decision,
+                  ts: Date.now(),
+                },
+              });
+            } else if (traceKind === "reflection") {
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "reflection",
+                  turn: (trace.turn as number | undefined) ?? 0,
+                  text: (trace.text as string | undefined) ?? "",
+                  ts: Date.now(),
+                },
+              });
+            } else if (traceKind === "memory_write") {
+              dispatch({
+                type: "appendTraceEntry",
+                id: blockId,
+                entry: {
+                  kind: "memory_write",
+                  namespace: (trace.namespace as string | undefined) ?? "",
+                  key: (trace.key as string | undefined) ?? "",
+                  source: (trace.source as string | undefined) ?? "",
                   ts: Date.now(),
                 },
               });
@@ -1325,16 +1405,12 @@ export function App() {
 
       try {
         // Inject pinned selection comments into the task body
-        const commentAtts = block.attachments.filter(
-          (a) => a.kind === "comment",
-        );
+        const commentAtts = block.attachments.filter((a) => a.kind === "comment");
         if (commentAtts.length > 0) {
           const selContext = commentAtts
             .map((a) => {
               const txt = a.selectedText ?? a.label;
-              return a.commentText
-                ? `> ${txt}\n[Comment]: ${a.commentText}`
-                : `> ${txt}`;
+              return a.commentText ? `> ${txt}\n[Comment]: ${a.commentText}` : `> ${txt}`;
             })
             .join("\n\n");
           body = `[Referenced selections]\n${selContext}\n\n${body}`;
@@ -1345,15 +1421,17 @@ export function App() {
         }
         // Per-message overrides from the chat toolbar; `""` is dropped so
         // the agent/provider default kicks in.
-        const runOpts: { reasoning_effort?: string; model?: string } = {};
-        if (reasoningEffortRef.current)
-          runOpts.reasoning_effort = reasoningEffortRef.current;
+        const runOpts: Parameters<typeof agentRun>[1] = {
+          session_id: chatId,
+          agent_id: state.agentId || undefined,
+        };
+        if (reasoningEffortRef.current) runOpts.reasoning_effort = reasoningEffortRef.current;
         if (state.model) runOpts.model = state.model;
         runId = await agentRun(body, runOpts);
         if (!runId) throw new Error("runtime did not return run_id");
-        await browser
-          .send("events.subscribe", { run_id: runId })
-          .catch(() => {});
+        await browser.send("events.subscribe", { run_id: runId }).catch(() => {
+          /* ignore */
+        });
       } catch (err) {
         off();
         dispatch({
@@ -1371,11 +1449,7 @@ export function App() {
             args: {
               message:
                 "Failed to start: " +
-                (err instanceof Error
-                  ? err.message
-                  : typeof err === "string"
-                    ? err
-                    : String(err)),
+                (err instanceof Error ? err.message : typeof err === "string" ? err : String(err)),
             },
             ts: Date.now(),
           },
@@ -1433,6 +1507,7 @@ export function App() {
         blocks: state.blocks,
         terminalTid: state.terminalTid,
         model: state.model,
+        agentId: state.agentId || undefined,
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1456,16 +1531,32 @@ export function App() {
       if (!typed && attachedPrompts.length === 0) return;
       if (inputRef.current) inputRef.current.value = "";
       setInputMode("chat");
-      // Prepend any attached prompt contents, then the user's typed text.
+      // Collect content from explicitly-attached picker pills.
       const parts = attachedPrompts.map((p) => p.content);
-      if (typed) parts.push(typed);
+      const attachedIds = new Set(attachedPrompts.map((p) => p.id));
+      // Auto-resolve any /slug tokens typed directly in the textarea.
+      // This lets the user type "/opsx-explore <question>" without opening
+      // the picker — the content is injected exactly as if picked.
+      const pillRe = /^\/([a-z0-9_][a-z0-9_-]*)$/i;
+      let remaining = typed;
+      for (const word of typed.split(/\s+/)) {
+        const m = word.match(pillRe);
+        if (!m) continue;
+        const hit = workspacePrompts.find((p) => p.label === m[1]);
+        if (hit?.content && !attachedIds.has(hit.id)) {
+          parts.unshift(hit.content);
+          attachedIds.add(hit.id);
+          remaining = remaining.replace(word, "").trim();
+        }
+      }
+      if (remaining) parts.push(remaining);
       // Build a concise display label (pill names + typed text, no content dump).
       const displayParts = attachedPrompts.map((p) => `/${p.label}`);
       if (typed) displayParts.push(typed);
       setAttachedPrompts([]);
       void onRun(parts.join("\n\n"), displayParts.join(" ") || typed);
     },
-    [onRun, picker, attachedPrompts],
+    [onRun, picker, attachedPrompts, workspacePrompts],
   );
 
   // ── picker items ────────────────────────────────────────────────────────
@@ -1475,9 +1566,7 @@ export function App() {
     if (picker.type === "slash") {
       const custom = loadCustomPrompts();
       const all = [...BUILTIN_COMMANDS, ...custom, ...workspacePrompts];
-      return all
-        .filter((x) => !q || x.label.toLowerCase().startsWith(q))
-        .slice(0, 8);
+      return all.filter((x) => !q || x.label.toLowerCase().startsWith(q)).slice(0, 8);
     } else {
       // "at" type: filter agents
       return state.agents
@@ -1499,11 +1588,9 @@ export function App() {
 
       if (picker.type === "slash") {
         // Replace the "/query" token with nothing (the action handles the rest)
-        el.value =
-          el.value.slice(0, picker.triggerStart) +
-          el.value.slice(el.selectionStart ?? el.value.length);
+        el.value = el.value.slice(0, picker.triggerStart) + el.value.slice(el.selectionStart ?? el.value.length);
         el.style.height = "auto";
-        el.style.height = Math.min(el.scrollHeight, 200) + "px";
+        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
         setPicker(null);
         setInputMode("chat");
         el.focus();
@@ -1523,14 +1610,12 @@ export function App() {
           el.value = "";
           el.style.height = "auto";
         } else if (item.content) {
-          // Attach as a pill — don't dump the full content into the textarea.
+          // Always attach as a pill so the user can type additional context
+          // before submitting. The pill content is prepended to their message
+          // in onSubmit. Focus the textarea so they can start typing immediately.
           setAttachedPrompts((prev) => {
-            // Deduplicate by id.
             if (prev.some((p) => p.id === item.id)) return prev;
-            return [
-              ...prev,
-              { id: item.id, label: item.label, content: item.content! },
-            ];
+            return [...prev, { id: item.id, label: item.label, content: item.content! }];
           });
         }
       } else {
@@ -1543,7 +1628,7 @@ export function App() {
         const newCaret = picker.triggerStart + replacement.length;
         el.setSelectionRange(newCaret, newCaret);
         el.style.height = "auto";
-        el.style.height = Math.min(el.scrollHeight, 200) + "px";
+        el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
         setPicker(null);
         el.focus();
       }
@@ -1606,14 +1691,11 @@ export function App() {
   const runningBlockId = state.runningBlockId;
 
   // Copilot-like textarea auto-height
-  const onTextareaInput = useCallback(
-    (e: React.FormEvent<HTMLTextAreaElement>) => {
-      const el = e.currentTarget;
-      el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 200) + "px";
-    },
-    [],
-  );
+  const onTextareaInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, []);
 
   return (
     <main className="flex h-screen flex-col bg-cronymax-base text-cronymax-title">
@@ -1643,7 +1725,7 @@ export function App() {
         <button
           type="button"
           onClick={onClear}
-          className="rounded border border-cronymax-border bg-cronymax-base px-2 py-0.5 text-xs text-cronymax-title hover:bg-cronymax-float"
+          className="rounded border border-cronymax-border bg-cronymax-base px-2 py-0.5 text-xs text-cronymax-title hover:bg-cronymax-hover"
         >
           Clear
         </button>
@@ -1671,10 +1753,7 @@ export function App() {
       )}
 
       {/* Block timeline */}
-      <div
-        ref={timelineRef}
-        className="flex-1 overflow-y-auto divide-y divide-cronymax-border px-4 py-2"
-      >
+      <div ref={timelineRef} className="flex-1 overflow-y-auto divide-y divide-cronymax-border px-4 py-2">
         {state.blocks.map((b) => (
           <BlockView
             key={b.id}
@@ -1682,6 +1761,7 @@ export function App() {
             isStreaming={b.id === runningBlockId && b.kind === "conversation"}
             onShellAction={onShellAction}
             isHighlighted={b.id === highlightedBlockId}
+            workspacePrompts={workspacePrompts}
           />
         ))}
       </div>
@@ -1689,12 +1769,10 @@ export function App() {
       {/* ── Floating selection tooltip ─────────────────────────────── */}
       {activeSelection && (
         <div
-          className="fixed z-50 rounded-lg border border-cronymax-border bg-cronymax-float shadow-xl"
+          className="fixed z-50 rounded-lg border border-cronymax-border bg-cronymax-body shadow-xl"
           style={{
             top: activeSelection.anchorRect.top - 8,
-            left:
-              activeSelection.anchorRect.left +
-              activeSelection.anchorRect.width / 2,
+            left: activeSelection.anchorRect.left + activeSelection.anchorRect.width / 2,
             transform: "translateX(-50%) translateY(-100%)",
           }}
           onMouseDown={(e) => {
@@ -1710,10 +1788,8 @@ export function App() {
           <div className="flex items-center gap-0.5 px-1.5 pt-1.5">
             <button
               type="button"
-              className="rounded px-2 py-0.5 text-[11px] text-cronymax-caption hover:text-cronymax-title hover:bg-cronymax-border transition"
-              onClick={() =>
-                navigator.clipboard.writeText(activeSelection.selectedText)
-              }
+              className="rounded px-2 py-0.5 text-[11px] text-cronymax-caption hover:text-cronymax-title hover:bg-cronymax-hover transition"
+              onClick={() => navigator.clipboard.writeText(activeSelection.selectedText)}
             >
               Copy
             </button>
@@ -1748,9 +1824,7 @@ export function App() {
               onChange={(e) => setCommentDraft(e.target.value)}
               placeholder="Add a comment… (Enter to pin)"
               className="w-52 rounded border border-cronymax-border bg-cronymax-base px-2 py-1 text-[11px] text-cronymax-title placeholder:text-cronymax-caption outline-none focus:border-cronymax-primary"
-              onFocus={() =>
-                setFrozenSelection(selectionInfo ?? frozenSelection)
-              }
+              onFocus={() => setFrozenSelection(selectionInfo ?? frozenSelection)}
               onBlur={() => setFrozenSelection(null)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
@@ -1818,7 +1892,7 @@ export function App() {
                     "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition " +
                     (idx === pickerIdx
                       ? "bg-cronymax-primary/20 text-cronymax-title"
-                      : "text-cronymax-caption hover:bg-cronymax-border/40 hover:text-cronymax-title")
+                      : "text-cronymax-caption hover:bg-cronymax-hover hover:text-cronymax-title")
                   }
                   onMouseEnter={() => setPickerIdx(idx)}
                   onMouseDown={(e) => {
@@ -1832,9 +1906,7 @@ export function App() {
                   </span>
                   <span className="font-semibold">{item.label}</span>
                   {item.description && (
-                    <span className="truncate text-cronymax-caption ml-1">
-                      — {item.description}
-                    </span>
+                    <span className="truncate text-cronymax-caption ml-1">— {item.description}</span>
                   )}
                 </button>
               ))}
@@ -1844,7 +1916,7 @@ export function App() {
           {/* Editor card */}
           <div
             className={
-              "flex flex-col rounded-xl border bg-cronymax-float transition-colors " +
+              "flex flex-col rounded-xl border bg-cronymax-base transition-colors " +
               (inputMode === "shell"
                 ? "border-amber-500/70 bg-amber-500/5"
                 : "border-cronymax-border focus-within:border-cronymax-primary/60")
@@ -1852,22 +1924,49 @@ export function App() {
           >
             {/* Attached prompt pills (VS-Code-style slash command references) */}
             {attachedPrompts.length > 0 && (
-              <div className="flex flex-wrap gap-1 px-2.5 pt-2 pb-0">
+              <div className="relative flex flex-wrap gap-1 px-2.5 pt-2 pb-0">
+                {/* PromptPopover rendered above the pill row */}
+                {activePillId !== null &&
+                  (() => {
+                    const activePill = attachedPrompts.find((p) => p.id === activePillId);
+                    if (!activePill) return null;
+                    return (
+                      <PromptPopover
+                        key={activePillId}
+                        prompt={activePill}
+                        onClose={() => setActivePillId(null)}
+                        onSave={async (label, content) => {
+                          const res = await browser.send("workspace.prompt.save", { name: label, content });
+                          if (!res.ok) throw new Error(res.error ?? "Save failed");
+                          setAttachedPrompts((prev) =>
+                            prev.map((p) => (p.id === activePillId ? { ...p, content } : p)),
+                          );
+                          setActivePillId(null);
+                        }}
+                      />
+                    );
+                  })()}
                 {attachedPrompts.map((p) => (
                   <span
                     key={p.id}
-                    className="inline-flex items-center gap-1 rounded-md bg-cronymax-primary/15 border border-cronymax-primary/30 px-1.5 py-0.5 text-[11px] font-mono text-cronymax-primary"
+                    className={
+                      "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-mono cursor-pointer transition " +
+                      (activePillId === p.id
+                        ? "bg-cronymax-primary/25 border-cronymax-primary/60 text-cronymax-primary"
+                        : "bg-cronymax-primary/15 border-cronymax-primary/30 text-cronymax-primary hover:bg-cronymax-primary/25")
+                    }
+                    onClick={() => setActivePillId((prev) => (prev === p.id ? null : p.id))}
                   >
                     <span className="opacity-70">/</span>
                     {p.label}
                     <button
                       type="button"
                       className="ml-0.5 opacity-50 hover:opacity-100 leading-none"
-                      onClick={() =>
-                        setAttachedPrompts((prev) =>
-                          prev.filter((x) => x.id !== p.id),
-                        )
-                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActivePillId((prev) => (prev === p.id ? null : prev));
+                        setAttachedPrompts((prev) => prev.filter((x) => x.id !== p.id));
+                      }}
                     >
                       ×
                     </button>
@@ -1908,7 +2007,6 @@ export function App() {
             <textarea
               ref={inputRef}
               rows={1}
-              autoFocus
               disabled={!!state.awaitingApproval}
               placeholder={
                 state.awaitingApproval
@@ -1938,13 +2036,7 @@ export function App() {
                 <span className="text-sm leading-none">+</span>
                 <span>Add</span>
               </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                className="hidden"
-                multiple
-                onChange={onFileChange}
-              />
+              <input ref={fileInputRef} type="file" className="hidden" multiple onChange={onFileChange} />
 
               {/* Model dropdown */}
               <select

@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { type FormEvent, type KeyboardEvent, useState } from "react";
 import { browser } from "@/shells/bridge";
 
 interface Props {
@@ -14,9 +14,7 @@ interface MentionToken {
 
 function tokenize(body: string, known: Set<string>): MentionToken[] {
   const out: MentionToken[] = [];
-  const re = /@([\w./-]+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(body)) !== null) {
+  for (const m of body.matchAll(/@([\w./-]+)/g)) {
     const tok = m[1] ?? "";
     if (!tok) continue;
     out.push({ text: tok, known: known.size === 0 || known.has(tok) });
@@ -66,10 +64,7 @@ export function Composer({ flowId, runId, knownAgents = [] }: Props) {
   }
 
   return (
-    <form
-      onSubmit={onSubmit}
-      className="border-t border-cronymax-border bg-cronymax-base p-2"
-    >
+    <form onSubmit={onSubmit} className="border-t border-cronymax-border bg-cronymax-base p-2">
       {mentions.length > 0 && (
         <div className="mb-1 flex flex-wrap gap-1">
           {mentions.map((m, i) => (
@@ -98,9 +93,7 @@ export function Composer({ flowId, runId, knownAgents = [] }: Props) {
       />
       <div className="mt-1 flex items-center justify-between">
         <div className="text-[11px] text-cronymax-title/60">
-          {unknown.length > 0
-            ? `Unknown: ${unknown.map((u) => "@" + u).join(", ")}`
-            : error || ""}
+          {unknown.length > 0 ? `Unknown: ${unknown.map((u) => `@${u}`).join(", ")}` : error || ""}
         </div>
         <button
           type="submit"

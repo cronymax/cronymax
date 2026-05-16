@@ -3,11 +3,19 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "browser/client_handler.h"
-#include "browser/space_manager.h"
-#include "browser/tab_manager.h"
+#include "browser/models/profile_context_manager.h"
+#include "browser/models/view_context.h"
+#include "browser/models/view_dispatcher.h"
+#include "browser/models/view_model.h"
+#include "browser/views/content_view.h"
+#include "browser/views/popover.h"
+#include "browser/views/profile_picker_overlay.h"
+#include "browser/views/sidebar_view.h"
+#include "browser/views/titlebar_view.h"
 #include "include/views/cef_box_layout.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_label_button.h"
@@ -23,7 +31,13 @@ namespace cronymax {
 
 class MainWindow : public CefWindowDelegate,
                    public CefButtonDelegate,
-                   public CefTextfieldDelegate {
+                   public CefTextfieldDelegate,
+                   public ThemeContext,
+                   public SpaceContext,
+                   public TabsContext,
+                   public WindowActionContext,
+                   public OverlayActionContext,
+                   public ResourceContext {
  public:
   static void Create();
 
@@ -49,46 +63,26 @@ class MainWindow : public CefWindowDelegate,
   void OnSystemAppearanceChanged();
 
  private:
-  std::string ResourceUrl(const std::string& relative_path) const;
   void BuildChrome(CefRefPtr<CefWindow> window);
+  // Pre-allocate fixed overlay slots (Phase 6). Called at end of BuildChrome.
+  void BuildOverlaySlots();
 
-  // refine-ui-theme-layout: chrome color descriptor pushed to every
-  // native surface. This mirrors the shell-relevant semantic token
-  // subset from theme.css rather than the full renderer palette.
-  struct ThemeChrome {
-    cef_color_t bg_body;       // titlebar, sidebar, window background
-    cef_color_t bg_base;       // content frame base surface
-    cef_color_t bg_float;      // floating surfaces (mirrored to renderer)
-    cef_color_t bg_mask;       // scrims/overlays (mirrored to renderer)
-    cef_color_t border;        // 1 px content frame outline
-    cef_color_t text_title;    // primary text on shell surfaces
-    cef_color_t text_caption;  // secondary text on shell surfaces
-  };
-  // Compute the canonical chrome for a resolved appearance.
-  static ThemeChrome ChromeFor(const std::string& resolved /*"light"|"dark"*/);
+  // native-views-mvc: ThemeChrome is now the global struct from
+  // shell_observer.h. This alias preserves all existing references to
+  // MainWindow::ThemeChrome.
+  using ThemeChrome = ::ThemeChrome;
   // Push current_chrome_ to every native surface and broadcast
   // theme.changed to renderers.
   void ApplyThemeChrome(const ThemeChrome& chrome);
-  // Returns "light"|"dark" — collapses theme_mode_ via system follow.
-  std::string ResolveAppearance() const;
   // Invoked by HandleTheme via callback. Persists, recomputes, broadcasts.
   void HandleThemeModeChange(const std::string& mode);
-  // Compose JSON used by both `theme.get` and `theme.changed`.
-  std::string ThemeStateJson(bool include_chrome) const;
 
-  // Open a new web tab navigating to `url`. Returns the new tab id (empty
-  // on failure). Mounts/activates the tab in the content host.
-  std::string OpenWebTab(const std::string& url);
+  // Open a new web tab: implements TabsContext::OpenWebTab. Also called
+  // internally. Returns the new tab id (empty on failure).
+  // (declaration via context override below)
 
-  // Mount the active tab's card into the content host (no-op if already
-  // mounted), hide every other tab card, and show the active one.
-  void ShowActiveTab();
-
-  // Open/close the popover overlay. `owner_browser_id` pairs the popover
-  // with that tab; when the user switches to a different web tab, the
-  // popover hides.
-  void OpenPopover(const std::string& url, int owner_browser_id = 0);
-  void ClosePopover();
+  // Open/close the popover overlay: implements OverlayActionContext.
+  // (declarations via context overrides below)
   void UpdatePopoverVisibility();
 
   void PushToSidebar(const std::string& event_name,
@@ -100,7 +94,17 @@ class MainWindow : public CefWindowDelegate,
                             const std::string& json_payload);
   static std::string JsEsc(const std::string& s);
 
-  SpaceManager space_manager_;
+  // native-views-mvc Phase 4: shared state (TabManager, SpaceManager, theme,
+  // observer lists) lives in ShellModel. Declared before client_handler_ so
+  // the member initializer list can pass &shell_model_.space_manager_ to
+  // ClientHandler's constructor.
+  ViewModel shell_model_;
+  // native-views-mvc Phase 5: ShellDispatcher — owns the ShellCallbacks wiring
+  // block. Declared before client_handler_ so it is destroyed AFTER
+  // client_handler_ (C++ destroys in reverse-declaration order), ensuring the
+  // callbacks stored in ClientHandler are already released before the
+  // dispatcher's captured pointers become invalid.
+  std::unique_ptr<ViewDispatcher> dispatcher_;
   CefRefPtr<ClientHandler> client_handler_;
 
   // (task 4.2) Runtime bridge and proxy — owned at MainWindow scope since
@@ -108,45 +112,41 @@ class MainWindow : public CefWindowDelegate,
   // all Spaces). Initialized in BuildChrome; nullptr until the runtime
   // binary is located and the handshake succeeds.
   std::unique_ptr<RuntimeBridge> runtime_bridge_;
-  std::unique_ptr<RuntimeProxy>  runtime_proxy_;
-  // arc-style-tab-cards (Phase 4+): TabManager owns the entire tab
-  // universe. BrowserManager has been removed; per-kind *_view_ members
-  // and SwitchToPanel have been removed (Phase 9).
-  std::unique_ptr<TabManager> tabs_;
+  std::unique_ptr<RuntimeProxy> runtime_proxy_;
+
+  // Per-profile CefRequestContext manager.  Initialized in BuildChrome once
+  // app_data_dir is known.  Used to wire profile-scoped webview storage into
+  // tab browser views and overlay browser views.
+  std::unique_ptr<ProfileContextManager> profile_ctx_manager_;
+  // arc-style-tab-cards: TabManager lives in shell_model_.tabs_.
 
   // Layout views.
-  CefRefPtr<CefBrowserView> sidebar_view_;   // web/public/sidebar.html
-  CefRefPtr<CefPanel>       content_panel_;  // FillLayout, hosts active card
-  // refine-ui-theme-layout: outer wrapper that paints the rounded 12 px
-  // border around content_panel_. Inset by 8 px from body_panel_.
-  CefRefPtr<CefPanel>       content_frame_;
-  // Outer box with inside_border_insets providing the floating-card gap.
-  // Needs window_bg color so the gap strips are visually visible.
-  CefRefPtr<CefPanel>       content_outer_;
+  // native-views-mvc Phase 10: sidebar owned by SidebarView.
+  std::unique_ptr<SidebarView> sidebar_view_obj_;
+  // Convenience accessor — returns browser_view_ from sidebar_view_obj_.
+  // Code using sidebar_view_ directly is migrated in Phase 10.
+  CefRefPtr<CefBrowserView> sidebar_view() const {
+    return sidebar_view_obj_ ? sidebar_view_obj_->browser_view() : nullptr;
+  }
+  // native-views-mvc Phase 8: content panels + card management owned by
+  // ContentView.
+  std::unique_ptr<ContentView> content_view_;
+  // native-views-mvc Phase 9: title bar owned by TitleBarView.
+  std::unique_ptr<TitleBarView> titlebar_view_;
   // native-title-bar: root layout flipped from H to V; the body box hosts
-  // the existing `[sidebar | content_outer]` row directly under the title
-  // bar.
-  CefRefPtr<CefPanel>        titlebar_panel_;
-  CefRefPtr<CefPanel>        body_panel_;
-  CefRefPtr<CefPanel>        lights_pad_;
-  CefRefPtr<CefPanel>        spacer_;
-  CefRefPtr<CefPanel>        win_pad_;
-  CefRefPtr<CefMenuButton>   btn_space_;           // workspace selector dropdown
-  CefRefPtr<CefLabelButton>  btn_sidebar_toggle_;  // hides/shows sidebar
-  CefRefPtr<CefLabelButton>  btn_web_;
-  CefRefPtr<CefLabelButton>  btn_term_;
-  CefRefPtr<CefLabelButton>  btn_chat_;
-  CefRefPtr<CefLabelButton>  btn_settings_;
+  // the existing `[sidebar | content_outer]` row directly under the title bar.
+  CefRefPtr<CefPanel>
+      titlebar_panel_;  // root panel returned by TitleBarView::Build()
+  CefRefPtr<CefPanel> body_panel_;
   bool sidebar_visible_ = true;  // tracks current sidebar visibility
-  // Toggle sidebar visibility (called by btn_sidebar_toggle_ press).
-  void ToggleSidebar();
+  // ToggleSidebar: implements WindowActionContext::ToggleSidebar.
+  // (declaration via context override below)
 
   // Native folder-picker delegate — set once in BuildChrome when ShellCallbacks
   // are wired, then called from the titlebar "Open Folder…" command.
   std::function<void(std::function<void(const std::string&)>)> run_file_dialog_;
-  // Track which tab cards are mounted in `content_panel_` so we never
-  // re-add the same CefView (which CEF rejects).
-  std::map<std::string, bool> mounted_cards_;
+  // (mounted_cards_ moved to ContentView in Phase 8)
+  // (titlebar buttons moved to TitleBarView in Phase 9)
 
   // 4.5: tab → SpaceStore row id, so we can update title and delete on
   // close. Keyed by TabId (string). Only web tabs are persisted today.
@@ -171,51 +171,66 @@ class MainWindow : public CefWindowDelegate,
   void PersistSidebarTabs();
   bool RestoreSidebarTabs();
 
-  // Popover (overlay inside the main window — Arc "Little Arc" style).
-  CefRefPtr<CefBrowserView>      popover_view_;
-  // Native chrome strip (URL toolbar + action buttons) as a CefPanel overlay.
-  CefRefPtr<CefPanel>            popover_chrome_panel_;
-  CefRefPtr<CefLabelButton>      popover_url_label_;  // read-only URL display inside panel
-  CefRefPtr<CefLabelButton>      popover_btn_reload_;
-  CefRefPtr<CefLabelButton>      popover_btn_open_tab_;
-  CefRefPtr<CefLabelButton>      popover_btn_close_;
-  std::string                    popover_current_url_; // last navigated URL for open-as-tab
-  CefRefPtr<CefPanel>            popover_root_;
-  CefRefPtr<CefOverlayController> popover_overlay_;
-  CefRefPtr<CefOverlayController> popover_chrome_overlay_;
-  CefRefPtr<CefWindow>           main_window_;
-  int popover_owner_browser_id_ = 0;
-  int popover_content_browser_id_ = 0;
-  // True when the current popover is one of the bundled `panels/*` pages
-  // (e.g. Settings). Those panels provide their own title bar, so the
-  // native URL-bar chrome strip is suppressed.
-  bool popover_is_builtin_ = false;
-  void LayoutPopover();
-  // Build the native popover chrome strip CefPanel (URL field + buttons).
-  CefRefPtr<CefPanel> BuildPopoverChromePanel();
+  // unified-toolbar: merged popover lifecycle + overlay management.
+  // Constructed by BuildOverlaySlots().
+  std::unique_ptr<Popover> popover_;
+  // workspace-with-profile D9: native profile picker dialog.
+  // Constructed by BuildOverlaySlots().
+  std::unique_ptr<ProfilePickerOverlay> profile_picker_overlay_;
+
+  CefRefPtr<CefWindow> main_window_;
 
   // native-title-bar: build the top title-bar panel
-  // (lights pad | spacer | btn_web | btn_term | btn_chat | win pad).
-  CefRefPtr<CefPanel> BuildTitleBar();
   // native-title-bar: open a new tab of `kind` ("web"|"terminal"|"chat")
   // and broadcast shell.tab_created. Mirrors the sh.new_tab_kind bridge
   // path for the title-bar buttons.
   void OpenNewTabKind(const std::string& kind);
-  // native-title-bar: (re)install the macOS AppKit drag overlay above the
-  // title-bar spacer so dragging from that strip moves the window.
+  // Phase 9: RefreshTitleBarDragRegion() → TitleBarView::RefreshDragRegion().
   void RefreshTitleBarDragRegion();
-  // Arc-style: change the top and bottom insets of content_outer_ and force
-  // re-layout. Used to vertically center the content card when a popover is open.
+  // Delegates to content_view_->SetVInsets(). Used by UpdatePopoverVisibility
+  // and PopoverCtrl::Host to create breathing room around the content card.
   void SetContentOuterVInsets(int top, int bottom);
 
-  // refine-ui-theme-layout: persisted theme mode (`system|light|dark`)
-  // and the most recently applied chrome (so subsequent paints can
-  // short-circuit and the broadcast can include accurate hex colors).
-  std::string theme_mode_ = "system";
-  ThemeChrome current_chrome_{};
   // Opaque NSDistributedNotificationCenter observer token (macOS only).
   // Released by RemoveSystemAppearanceObserver in the destructor.
   void* appearance_observer_ = nullptr;
+  // native-views-mvc Phase 4: theme_mode_, current_chrome_, tabs_,
+  // space_manager_, and all four ShellObserverLists live in shell_model_.
+
+  // native-views-mvc Phase 3: ThemeContext implementation.
+  ThemeChrome GetCurrentChrome() const override;
+  void AddThemeObserver(ViewObserver<ThemeChanged>* obs) override;
+  void RemoveThemeObserver(ViewObserver<ThemeChanged>* obs) override;
+
+  // native-views-mvc Phase 3: SpaceContext implementation.
+  std::string GetCurrentSpaceId() const override;
+  std::string GetCurrentSpaceName() const override;
+  std::vector<std::pair<std::string, std::string>> GetSpaces() const override;
+  void SwitchSpace(const std::string& space_id) override;
+  void AddSpaceObserver(ViewObserver<SpaceChanged>* obs) override;
+  void RemoveSpaceObserver(ViewObserver<SpaceChanged>* obs) override;
+
+  // native-views-mvc Phase 3: TabsContext implementation.
+  std::string GetActiveTabUrl() const override;
+  std::string OpenWebTab(const std::string& url) override;
+  void AddTabsObserver(ViewObserver<TabsChanged>* obs) override;
+  void RemoveTabsObserver(ViewObserver<TabsChanged>* obs) override;
+  void AddActiveTabObserver(ViewObserver<ActiveTabChanged>* obs) override;
+  void RemoveActiveTabObserver(ViewObserver<ActiveTabChanged>* obs) override;
+
+  // native-views-mvc Phase 3: WindowActionContext implementation.
+  void ToggleSidebar() override;
+  void SetTitleBarDragRegion(const CefRect& rect) override;
+
+  // native-views-mvc Phase 3: OverlayActionContext implementation.
+  // Default owner_browser_id = 0 preserved for internal single-arg call sites.
+  void OpenPopover(const std::string& url, int owner_browser_id = 0) override;
+  void ClosePopover() override;
+  void ShowFloat(const std::string& url) override;
+  void DismissFloat() override;
+
+  // native-views-mvc Phase 3: ResourceContext implementation.
+  std::string ResourceUrl(const std::string& relative) const override;
 
   IMPLEMENT_REFCOUNTING(MainWindow);
   DISALLOW_COPY_AND_ASSIGN(MainWindow);

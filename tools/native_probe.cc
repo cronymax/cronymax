@@ -4,8 +4,7 @@
 #include <string>
 
 #include "browser/space_manager.h"
-#include "workspace/file_broker.h"
-#include "workspace/space_store.h"
+#include "runtime/space_store.h"
 
 namespace {
 
@@ -21,13 +20,12 @@ std::string JoinArgs(int argc, char** argv, int start) {
 }
 
 void Usage() {
-  std::cerr
-      << "Usage:\n"
-      << "  native_probe read <workspace> <relative-path>\n"
-      << "  native_probe agent <workspace> <task...>\n"
-      << "  native_probe space-store <db-path>\n"
-      << "  native_probe space-manager <db-path> <workspace>\n"
-      << "  native_probe file-boundary <workspace>\n";
+  std::cerr << "Usage:\n"
+            << "  native_probe read <workspace> <relative-path>\n"
+            << "  native_probe agent <workspace> <task...>\n"
+            << "  native_probe space-store <db-path>\n"
+            << "  native_probe space-manager <db-path> <workspace>\n"
+            << "  native_probe file-boundary <workspace>\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -58,9 +56,15 @@ int RunSpaceStore(const std::filesystem::path& db_path) {
 
   bool found = false;
   for (const auto& row : store.ListSpaces()) {
-    if (row.id == s.id) { found = true; break; }
+    if (row.id == s.id) {
+      found = true;
+      break;
+    }
   }
-  if (!found) { std::cerr << "FAIL: ListSpaces missing probe row\n"; return 1; }
+  if (!found) {
+    std::cerr << "FAIL: ListSpaces missing probe row\n";
+    return 1;
+  }
   std::cout << "PASS: ListSpaces\n";
 
   cronymax::BrowserTabRow t;
@@ -68,12 +72,18 @@ int RunSpaceStore(const std::filesystem::path& db_path) {
   t.url = "https://example.com";
   t.title = "Example";
   const int64_t tab_id = store.CreateTab(t);
-  if (tab_id <= 0) { std::cerr << "FAIL: CreateTab\n"; return 1; }
+  if (tab_id <= 0) {
+    std::cerr << "FAIL: CreateTab\n";
+    return 1;
+  }
   std::cout << "PASS: CreateTab id=" << tab_id << "\n";
 
   t.id = tab_id;
   t.title = "Example (updated)";
-  if (!store.UpdateTab(t)) { std::cerr << "FAIL: UpdateTab\n"; return 1; }
+  if (!store.UpdateTab(t)) {
+    std::cerr << "FAIL: UpdateTab\n";
+    return 1;
+  }
   std::cout << "PASS: UpdateTab\n";
 
   if (store.ListTabsForSpace(s.id).empty()) {
@@ -85,7 +95,10 @@ int RunSpaceStore(const std::filesystem::path& db_path) {
   cronymax::LlmConfig cfg;
   cfg.base_url = "http://localhost:11434/v1";
   cfg.api_key = "probe-key";
-  if (!store.SetLlmConfig(cfg)) { std::cerr << "FAIL: SetLlmConfig\n"; return 1; }
+  if (!store.SetLlmConfig(cfg)) {
+    std::cerr << "FAIL: SetLlmConfig\n";
+    return 1;
+  }
   const auto got = store.GetLlmConfig();
   if (got.base_url != cfg.base_url || got.api_key != cfg.api_key) {
     std::cerr << "FAIL: GetLlmConfig roundtrip\n";
@@ -130,10 +143,13 @@ int RunSpaceManager(const std::filesystem::path& db_path,
   }
   std::cout << "PASS: CreateSpace x2\n";
 
-  if (!mgr.SwitchTo(a)) { std::cerr << "FAIL: SwitchTo(a)\n"; return 1; }
+  if (!mgr.SwitchTo(a)) {
+    std::cerr << "FAIL: SwitchTo(a)\n";
+    return 1;
+  }
   if (switched_to != a) {
-    std::cerr << "FAIL: switch callback expected " << a
-              << " got " << switched_to << "\n";
+    std::cerr << "FAIL: switch callback expected " << a << " got "
+              << switched_to << "\n";
     return 1;
   }
   if (!mgr.ActiveSpace() || mgr.ActiveSpace()->id != a) {
@@ -142,8 +158,14 @@ int RunSpaceManager(const std::filesystem::path& db_path,
   }
   std::cout << "PASS: SwitchTo + ActiveSpace + callback\n";
 
-  if (!mgr.DeleteSpace(a)) { std::cerr << "FAIL: DeleteSpace(a)\n"; return 1; }
-  if (!mgr.DeleteSpace(b)) { std::cerr << "FAIL: DeleteSpace(b)\n"; return 1; }
+  if (!mgr.DeleteSpace(a)) {
+    std::cerr << "FAIL: DeleteSpace(a)\n";
+    return 1;
+  }
+  if (!mgr.DeleteSpace(b)) {
+    std::cerr << "FAIL: DeleteSpace(b)\n";
+    return 1;
+  }
   std::cout << "PASS: DeleteSpace x2\n";
   return 0;
 }
@@ -168,14 +190,18 @@ int main(int argc, char** argv) {
   }
 
   if (mode == "space-manager") {
-    if (argc < 4) { Usage(); return 2; }
+    if (argc < 4) {
+      Usage();
+      return 2;
+    }
     return RunSpaceManager(argv[2], argv[3]);
   }
 
   const std::filesystem::path workspace = argv[2];
 
   if (mode == "file-boundary") {
-    std::cerr << "file-boundary mode removed (AgentRuntime deleted in Phase 1 migration)\n";
+    std::cerr << "file-boundary mode removed (AgentRuntime deleted in Phase 1 "
+                 "migration)\n";
     return 1;
   }
 
@@ -185,8 +211,8 @@ int main(int argc, char** argv) {
       return 2;
     }
     cronymax::FileBroker broker(workspace);
-    const auto result = broker.ReadText(cronymax::Actor::kAgent,
-                                        workspace / argv[3]);
+    const auto result =
+        broker.ReadText(cronymax::Actor::kAgent, workspace / argv[3]);
     if (!result.ok) {
       std::cerr << result.error << "\n";
       return 1;
@@ -196,11 +222,11 @@ int main(int argc, char** argv) {
   }
 
   if (mode == "agent") {
-    std::cerr << "agent mode removed (AgentRuntime deleted in Phase 1 migration)\n";
+    std::cerr
+        << "agent mode removed (AgentRuntime deleted in Phase 1 migration)\n";
     return 1;
   }
 
   Usage();
   return 2;
 }
-

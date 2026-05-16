@@ -46,11 +46,11 @@ namespace cronymax {
 // ---------------------------------------------------------------------------
 
 enum class RuntimeBridgeStatus {
-  kStopped,       // initial / after Stop()
-  kStarting,      // binary found, child spawned, handshake in progress
-  kReady,         // handshake complete, Invoke() accepted
-  kRestarting,    // child exited unexpectedly; respawn in progress
-  kFailed,        // unrecoverable: binary not found, or repeated crash
+  kStopped,     // initial / after Stop()
+  kStarting,    // binary found, child spawned, handshake in progress
+  kReady,       // handshake complete, Invoke() accepted
+  kRestarting,  // child exited unexpectedly; respawn in progress
+  kFailed,      // unrecoverable: binary not found, or repeated crash
 };
 
 const char* RuntimeBridgeStatusToString(RuntimeBridgeStatus s);
@@ -114,9 +114,23 @@ class RuntimeBridge {
   // Remove a subscription by token. Thread safe.
   void Unsubscribe(int64_t token);
 
+  // Set the active profile context. Combined with workspace_root_, this
+  // determines profile-scoped runtime/memory/cache paths in RuntimeConfig.
+  // Thread safe; must be called before Start() or Stop()+Start() to take
+  // effect.
+  void SetProfileContext(std::string profile_id,
+                         std::string memory_id,
+                         std::filesystem::path workspace_root) {
+    std::lock_guard<std::mutex> lock(mu_);
+    profile_id_ = std::move(profile_id);
+    memory_id_ = std::move(memory_id);
+    workspace_root_ = std::move(workspace_root);
+  }
+
   // Set the sandbox configuration that will be included in the next
   // RuntimeConfig JSON handed to the child process via stdin.
-  // Thread safe; must be called before Start() or Stop()+Start() to take effect.
+  // Thread safe; must be called before Start() or Stop()+Start() to take
+  // effect.
   void SetSandboxConfig(nlohmann::json config) {
     std::lock_guard<std::mutex> lock(mu_);
     sandbox_config_ = std::move(config);
@@ -135,16 +149,17 @@ class RuntimeBridge {
   // ---------- process management ----------
   bool SpawnChild(const std::filesystem::path& binary_path,
                   const std::string& config_json);
-  bool SpawnAndHandshake();  // spawn + handshake + start pump; called from Start() and supervisor
+  bool SpawnAndHandshake();  // spawn + handshake + start pump; called from
+                             // Start() and supervisor
   void KillChild();
   bool WaitForHandshake();
 
   // ---------- recv pump ----------
-  void PumpLoop();         // runs on pump_thread_
+  void PumpLoop();  // runs on pump_thread_
   void DispatchPayload(const std::string& payload);
 
   // ---------- supervisor ----------
-  void SupervisorLoop();   // runs on supervisor_thread_
+  void SupervisorLoop();  // runs on supervisor_thread_
 
   // ---------- state ----------
   mutable std::mutex mu_;
@@ -185,6 +200,12 @@ class RuntimeBridge {
 
   // App-private data directory handed to the runtime as its persistence root.
   std::filesystem::path app_data_dir_;
+
+  // Active profile context — used to derive profile/memory/workspace paths
+  // for RuntimeConfig.
+  std::string profile_id_ = "default";
+  std::string memory_id_ = "default";
+  std::filesystem::path workspace_root_;
 
   // Sandbox policy for the active workspace; serialized into the RuntimeConfig
   // JSON on each Start() / SpawnAndHandshake(). null_json = no sandbox section.

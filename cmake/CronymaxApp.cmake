@@ -17,52 +17,86 @@ add_subdirectory("${CEF_LIBCEF_DLL_WRAPPER_PATH}"
 # ---------------------------------------------------------------------------
 
 set(CRONYMAX_APP_SRCS
+  app/browser/app.cc
+  app/browser/app.h
   app/browser/app_delegate.cc
   app/browser/app_delegate.h
   app/browser/bridge_handler.cc
   app/browser/bridge_handler.h
   app/browser/client_handler.cc
   app/browser/client_handler.h
-  app/browser/desktop_app.cc
-  app/browser/desktop_app.h
   app/browser/main_window.cc
   app/browser/main_window.h
-  app/browser/profile_store.cc
-  app/browser/profile_store.h
-  app/browser/space_manager.cc
-  app/browser/space_manager.h
+  # Refactor 2: generic ObserverList (header-only)
+  app/common/observer_list.h
+  # native-views-mvc models/ (view-semantic renames of shell_*)
+  app/browser/models/view_observer.h
+  app/browser/models/view_context.h
+  app/browser/models/view_model.h
+  app/browser/models/view_model.cc
+  app/browser/models/view_dispatcher.h
+  app/browser/models/view_dispatcher.cc
+  # optimize-storage-layout: per-profile CefRequestContext manager
+  app/browser/models/profile_context_manager.h
+  app/browser/models/profile_context_manager.cc
+  # unified-toolbar: merged Popover (replaces PopoverOverlay + PopoverCtrl)
+  app/browser/views/popover.h
+  app/browser/views/popover.cc
+  # native-views-mvc Phase 8: ContentView (card management + observer)
+  app/browser/views/content_view.h
+  app/browser/views/content_view.cc
+  # native-views-mvc Phase 9: TitleBarView (title bar + drag region)
+  app/browser/views/view_helpers.h
+  app/browser/views/titlebar_view.h
+  app/browser/views/titlebar_view.cc
+  app/browser/views/sidebar_view.h
+  app/browser/views/sidebar_view.cc
+  app/browser/views/profile_picker_overlay.cc
+  app/browser/views/profile_picker_overlay.h
   # unified-icons: semantic icon registry + native button factories.
   app/browser/icon_data.h
   app/browser/icon_registry.h
   app/browser/icon_registry.cc
-  # arc-style-tab-cards (Phase 1 skeleton)
-  app/browser/tab.cc
-  app/browser/tab.h
-  app/browser/tab_behavior.h
-  app/browser/tab_toolbar.cc
-  app/browser/tab_toolbar.h
-  app/browser/tab_manager.cc
-  app/browser/tab_manager.h
-  # arc-style-tab-cards (Phase 3+ behaviors)
-  app/browser/tab_behaviors/simple_tab_behavior.cc
-  app/browser/tab_behaviors/simple_tab_behavior.h
-  app/browser/tab_behaviors/web_tab_behavior.cc
-  app/browser/tab_behaviors/web_tab_behavior.h
+  # toolbar module
+  app/browser/toolbar/toolbar_base.cc
+  app/browser/toolbar/toolbar_base.h
+  app/browser/toolbar/tab_toolbar.cc
+  app/browser/toolbar/tab_toolbar.h
+  app/browser/toolbar/popover_toolbar.cc
+  app/browser/toolbar/popover_toolbar.h
+  # tab module
+  app/browser/tab/tab.cc
+  app/browser/tab/tab.h
+  app/browser/tab/tab_behavior.h
+  app/browser/tab/tab_manager.cc
+  app/browser/tab/tab_manager.h
+  app/browser/tab/simple_tab_behavior.cc
+  app/browser/tab/simple_tab_behavior.h
+  app/browser/tab/web_tab_behavior.cc
+  app/browser/tab/web_tab_behavior.h
 )
 
 if(APPLE)
   list(APPEND CRONYMAX_APP_SRCS
     app/browser/main_mac.mm
-    app/browser/mac_view_style.h
-    app/browser/mac_view_style.mm
+    app/browser/platform/view_style.h
+    app/browser/platform/view_style_mac.mm
+    app/browser/platform/clipboard.h
+    app/browser/platform/clipboard_mac.mm
+    app/browser/platform/open_url_mac.h
+    app/browser/platform/open_url_mac.mm
     # workspace-with-profile: native NSOpenPanel folder picker.
-    app/browser/mac_folder_picker.h
-    app/browser/mac_folder_picker.mm
+    app/browser/platform/mac_folder_picker.h
+    app/browser/platform/mac_folder_picker.mm
+    # OAuth helper: open a URL in the system browser without navigating the app.
     # unified-icons: macOS implementation — NSImage rasterisation of embedded SVGs.
     app/browser/icon_registry_mac.mm
   )
 else()
-  list(APPEND CRONYMAX_APP_SRCS app/browser/main.cc)
+  list(APPEND CRONYMAX_APP_SRCS
+    app/browser/main.cc
+    app/browser/platform/view_style_win.cc
+  )
 endif()
 
 # ---------------------------------------------------------------------------
@@ -93,7 +127,7 @@ add_executable(cronymax_app MACOSX_BUNDLE ${CRONYMAX_APP_SRCS})
 # profile_store.cc uses yaml-cpp which requires exceptions. Override the
 # target-wide -fno-exceptions flag for this single translation unit.
 set_source_files_properties(
-  app/browser/profile_store.cc
+  app/browser/models/profile_store.cc
   PROPERTIES COMPILE_FLAGS "-fexceptions"
 )
 
@@ -120,7 +154,7 @@ endif()
 
 set_target_properties(cronymax_app PROPERTIES
   OUTPUT_NAME "cronymax"
-  MACOSX_BUNDLE_GUI_IDENTIFIER  "dev.prototype.cronymax"
+  MACOSX_BUNDLE_GUI_IDENTIFIER  "app.cronymax"
   MACOSX_BUNDLE_BUNDLE_NAME     "cronymax"
   MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
 )

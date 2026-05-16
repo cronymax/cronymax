@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-
-import { browser } from "@/shells/bridge";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
+import { browser } from "@/shells/bridge";
 
 import { parseBlockComments } from "./blockIds";
 import type { WorkbenchParams } from "./url";
@@ -62,11 +61,7 @@ interface RailProps {
   onJumpToBlock: (blockId: string) => void;
 }
 
-export function CommentRail({
-  params,
-  currentMarkdown,
-  onJumpToBlock,
-}: RailProps) {
+export function CommentRail({ params, currentMarkdown, onJumpToBlock }: RailProps) {
   const [docState, setDocState] = useState<DocReviewState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [composer, setComposer] = useState<{
@@ -119,8 +114,7 @@ export function CommentRail({
       <aside className="flex w-80 shrink-0 flex-col border-l border-gray-200 bg-gray-50 p-3 text-xs text-gray-500">
         <div className="font-medium text-gray-700">Comments</div>
         <div className="mt-2">
-          Pass a <code>run_id</code> in the URL to load reviews for this
-          document.
+          Pass a <code>run_id</code> in the URL to load reviews for this document.
         </div>
       </aside>
     );
@@ -155,11 +149,7 @@ export function CommentRail({
         </button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-2 text-xs">
-        {error && (
-          <div className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-red-700">
-            {error}
-          </div>
-        )}
+        {error && <div className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-red-700">{error}</div>}
         {anchored.length === 0 && orphan.length === 0 && !error && (
           <div className="p-2 text-gray-500">No open comments.</div>
         )}
@@ -179,12 +169,7 @@ export function CommentRail({
               Orphaned ({orphan.length})
             </div>
             {orphan.map((c) => (
-              <CommentCard
-                key={c.id}
-                comment={c}
-                params={params}
-                onChanged={refresh}
-              />
+              <CommentCard key={c.id} comment={c} params={params} onChanged={refresh} />
             ))}
           </section>
         )}
@@ -224,23 +209,14 @@ function BlockGroup(props: {
       </button>
       <div className="mt-1 space-y-2">
         {comments.map((c) => (
-          <CommentCard
-            key={c.id}
-            comment={c}
-            params={params}
-            onChanged={onChanged}
-          />
+          <CommentCard key={c.id} comment={c} params={params} onChanged={onChanged} />
         ))}
       </div>
     </section>
   );
 }
 
-function CommentCard(props: {
-  comment: DocCommentDto;
-  params: WorkbenchParams;
-  onChanged: () => void;
-}) {
+function CommentCard(props: { comment: DocCommentDto; params: WorkbenchParams; onChanged: () => void }) {
   const { comment, params, onChanged } = props;
   const [busy, setBusy] = useState<"" | "accept" | "dismiss">("");
   const [error, setError] = useState<string | null>(null);
@@ -297,9 +273,7 @@ function CommentCard(props: {
         <span>{comment.author}</span>
         <span>{comment.kind}</span>
       </div>
-      <div className="mt-1 whitespace-pre-wrap text-xs text-gray-800">
-        {comment.body}
-      </div>
+      <div className="mt-1 whitespace-pre-wrap text-xs text-gray-800">{comment.body}</div>
       {hasSuggestion && (
         <div className="mt-1 rounded border border-emerald-200 bg-emerald-50 p-1 font-mono text-[10px] text-emerald-900 whitespace-pre-wrap">
           {comment.suggestion}
@@ -382,9 +356,7 @@ function ComposerModal(props: {
       <div className="w-96 rounded bg-white p-4 shadow-lg">
         <div className="mb-2 text-sm font-medium">New comment</div>
         {blockId && (
-          <div className="mb-2 font-mono text-[10px] text-gray-500">
-            anchored to block {blockId.slice(0, 8)}…
-          </div>
+          <div className="mb-2 font-mono text-[10px] text-gray-500">anchored to block {blockId.slice(0, 8)}…</div>
         )}
         <textarea
           value={body}
@@ -403,11 +375,7 @@ function ComposerModal(props: {
           disabled={!blockId}
           className="mb-2 h-32 w-full rounded border border-gray-300 p-2 font-mono text-xs disabled:bg-gray-100"
         />
-        {error && (
-          <div className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
-            {error}
-          </div>
-        )}
+        {error && <div className="mb-2 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">{error}</div>}
         <div className="flex justify-end gap-2">
           <button
             type="button"

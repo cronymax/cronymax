@@ -22,7 +22,7 @@
 
 #include "event_bus/app_event.h"
 #include "event_bus/event_bus.h"
-#include "workspace/space_store.h"
+#include "runtime/space_store.h"
 
 int main(int argc, char** argv) {
   if (argc != 4) {
@@ -49,14 +49,15 @@ int main(int argc, char** argv) {
   std::vector<cronymax::event_bus::AppEvent> all;
   while (true) {
     auto res = bus.List(q);
-    for (auto& e : res.events) all.push_back(std::move(e));
-    if (res.cursor.empty()) break;
+    for (auto& e : res.events)
+      all.push_back(std::move(e));
+    if (res.cursor.empty())
+      break;
     q.before_id = res.cursor;
   }
   std::reverse(all.begin(), all.end());
 
-  const auto out_dir =
-      root / ".cronymax" / "flows" / flow_id / "runs" / run_id;
+  const auto out_dir = root / ".cronymax" / "flows" / flow_id / "runs" / run_id;
   std::error_code ec;
   std::filesystem::create_directories(out_dir, ec);
   if (ec) {
@@ -72,7 +73,8 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "rebuild_trace: open tmp failed\n");
       return 1;
     }
-    for (const auto& e : all) out << e.ToJson() << "\n";
+    for (const auto& e : all)
+      out << e.ToJson() << "\n";
   }
   std::filesystem::rename(tmp_path, out_path, ec);
   if (ec) {

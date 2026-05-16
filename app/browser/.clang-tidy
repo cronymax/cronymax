@@ -1,0 +1,18 @@
+# app/browser/.clang-tidy — standalone config for the CEF browser-process layer.
+# InheritParentConfig intentionally absent — this layer uses RefPtr ownership;
+# smart-pointer and ownership checks produce too many false positives.
+#
+# Only a minimal set of checks appropriate for CEF callback code.
+Checks: >
+  -*,
+  modernize-use-override,
+  bugprone-use-after-move,
+  readability-container-size-empty,
+  -clang-analyzer-*,
+  -modernize-use-smart-pointers,
+  -cppcoreguidelines-owning-memory,
+  -performance-*
+
+WarningsAsErrors: ""
+HeaderFilterRegex: "app/browser/.*"
+FormatStyle: file

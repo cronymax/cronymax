@@ -16,7 +16,11 @@ pub struct ProtocolVersion {
 
 impl ProtocolVersion {
     pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     /// Same-major versions are considered compatible. Pre-1.0 the major

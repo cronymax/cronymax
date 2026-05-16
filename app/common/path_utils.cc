@@ -93,4 +93,3 @@ std::string ShellQuote(const std::string& value) {
 }
 
 }  // namespace cronymax
-

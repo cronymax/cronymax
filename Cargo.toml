@@ -43,6 +43,10 @@ regex = "1"
 serde_yml = "0.0"
 sha2 = "0.10"
 security-framework = { version = "3", optional = false }
+walkdir = "2"
+globset = "0.4"
+ignore = "0.4"
+git2 = { version = "0.20", default-features = false, features = ["vendored-openssl"] }
 
 [profile.release]
 lto = "thin"

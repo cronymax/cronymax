@@ -30,11 +30,16 @@ int64_t NowMs() {
 std::string MapLegacyStatus(const std::string& legacy) {
   // Per design Decision 7: RUNNING rehydrates as "paused" so the user
   // must explicitly resume.
-  if (legacy == "RUNNING") return "paused";
-  if (legacy == "PAUSED")     return "paused";
-  if (legacy == "COMPLETED")  return "succeeded";
-  if (legacy == "CANCELLED")  return "cancelled";
-  if (legacy == "FAILED")     return "failed";
+  if (legacy == "RUNNING")
+    return "paused";
+  if (legacy == "PAUSED")
+    return "paused";
+  if (legacy == "COMPLETED")
+    return "succeeded";
+  if (legacy == "CANCELLED")
+    return "cancelled";
+  if (legacy == "FAILED")
+    return "failed";
   return "pending";
 }
 
@@ -42,10 +47,11 @@ std::string MapLegacyStatus(const std::string& legacy) {
 
 // ---------------------------------------------------------------------------
 
-LegacyImporter::LegacyImporter(std::filesystem::path app_data_dir)
-    : app_data_dir_(std::move(app_data_dir)),
+LegacyImporter::LegacyImporter(std::filesystem::path user_data_dir)
+    : app_data_dir_(user_data_dir / "cronymax" / "profiles" / "default"),
       snapshot_path_(app_data_dir_ / "runtime-state.json"),
-      marker_path_(app_data_dir_ / "migrations" / "rust-runtime-v1.done") {}
+      marker_path_(user_data_dir / "cronymax" / "profiles" / "migrations" /
+                   "rust-runtime-v1.done") {}
 
 bool LegacyImporter::AlreadyDone() const {
   std::error_code ec;
@@ -68,7 +74,8 @@ ImportResult LegacyImporter::Run(const std::vector<ImportSpaceInfo>& spaces) {
   nlohmann::json snapshot = LoadSnapshot();
 
   // Ensure top-level schema fields exist.
-  if (!snapshot.is_object()) snapshot = nlohmann::json::object();
+  if (!snapshot.is_object())
+    snapshot = nlohmann::json::object();
   if (!snapshot.contains("schema_version")) {
     snapshot["schema_version"] = kSchemaVersion;
   }
@@ -92,7 +99,8 @@ ImportResult LegacyImporter::Run(const std::vector<ImportSpaceInfo>& spaces) {
 
   // --- Seed spaces (upsert) -----------------------------------------------
   for (const auto& sp : spaces) {
-    if (sp.space_id.empty()) continue;
+    if (sp.space_id.empty())
+      continue;
     if (!snapshot["spaces"].contains(sp.space_id)) {
       snapshot["spaces"][sp.space_id] = {
           {"id", sp.space_id},
@@ -105,19 +113,25 @@ ImportResult LegacyImporter::Run(const std::vector<ImportSpaceInfo>& spaces) {
   // --- Scan legacy run state files ----------------------------------------
   namespace fs = std::filesystem;
   for (const auto& sp : spaces) {
-    if (sp.space_id.empty() || sp.workspace_root.empty()) continue;
+    if (sp.space_id.empty() || sp.workspace_root.empty())
+      continue;
     const fs::path flows_root = sp.workspace_root / ".cronymax" / "flows";
     std::error_code ec;
-    if (!fs::exists(flows_root, ec)) continue;
+    if (!fs::exists(flows_root, ec))
+      continue;
 
     for (const auto& flow_entry : fs::directory_iterator(flows_root, ec)) {
-      if (!flow_entry.is_directory()) continue;
+      if (!flow_entry.is_directory())
+        continue;
       const fs::path runs_root = flow_entry.path() / "runs";
-      if (!fs::exists(runs_root, ec)) continue;
+      if (!fs::exists(runs_root, ec))
+        continue;
       for (const auto& run_entry : fs::directory_iterator(runs_root, ec)) {
-        if (!run_entry.is_directory()) continue;
+        if (!run_entry.is_directory())
+          continue;
         const fs::path state_path = run_entry.path() / "state.json";
-        if (!fs::exists(state_path, ec)) continue;
+        if (!fs::exists(state_path, ec))
+          continue;
 
         // Derive a stable run id: namespace UUID v5 over the legacy
         // path would be ideal; for now we use a deterministic key equal
@@ -133,12 +147,14 @@ ImportResult LegacyImporter::Run(const std::vector<ImportSpaceInfo>& spaces) {
         // UUID by hashing it into the right shape.  The Rust parser will
         // accept any syntactically valid UUID.
         const std::string flow_id = flow_entry.path().filename().string();
-        const std::string run_dir  = run_entry.path().filename().string();
+        const std::string run_dir = run_entry.path().filename().string();
         // Build a pseudo-UUID from flow_id + run_dir using a simple
         // djb2-inspired hash so the result is deterministic and unique.
         uint64_t h1 = 5381, h2 = 5381;
-        for (char c : flow_id) h1 = ((h1 << 5) + h1) ^ static_cast<uint8_t>(c);
-        for (char c : run_dir)  h2 = ((h2 << 5) + h2) ^ static_cast<uint8_t>(c);
+        for (char c : flow_id)
+          h1 = ((h1 << 5) + h1) ^ static_cast<uint8_t>(c);
+        for (char c : run_dir)
+          h2 = ((h2 << 5) + h2) ^ static_cast<uint8_t>(c);
         char uuid_buf[37];
         std::snprintf(uuid_buf, sizeof(uuid_buf),
                       "%08x-%04x-4%03x-%04x-%012llx",
@@ -164,8 +180,10 @@ ImportResult LegacyImporter::Run(const std::vector<ImportSpaceInfo>& spaces) {
 
         // Fill in our synthetic UUID and timestamps.
         run_json["id"] = run_uuid;
-        if (!run_json.contains("created_at_ms")) run_json["created_at_ms"] = now;
-        if (!run_json.contains("updated_at_ms")) run_json["updated_at_ms"] = now;
+        if (!run_json.contains("created_at_ms"))
+          run_json["created_at_ms"] = now;
+        if (!run_json.contains("updated_at_ms"))
+          run_json["updated_at_ms"] = now;
 
         snapshot["runs"][run_uuid] = std::move(run_json);
         result.runs_imported++;
@@ -199,22 +217,27 @@ nlohmann::json LegacyImporter::LoadSnapshot() const {
     return nlohmann::json::object();
   }
   std::ifstream in(snapshot_path_, std::ios::binary);
-  if (!in) return nlohmann::json::object();
+  if (!in)
+    return nlohmann::json::object();
   std::stringstream ss;
   ss << in.rdbuf();
   auto parsed = nlohmann::json::parse(ss.str(), nullptr, /*throw=*/false);
-  if (parsed.is_discarded()) return nlohmann::json::object();
+  if (parsed.is_discarded())
+    return nlohmann::json::object();
   return parsed;
 }
 
 void LegacyImporter::SaveSnapshot(const nlohmann::json& snapshot) const {
-  const std::filesystem::path tmp = snapshot_path_.parent_path()
-      / (snapshot_path_.filename().string() + ".tmp");
+  const std::filesystem::path tmp =
+      snapshot_path_.parent_path() /
+      (snapshot_path_.filename().string() + ".tmp");
   {
     std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-    if (!out) return;
+    if (!out)
+      return;
     out << snapshot.dump(2);
-    if (!out.good()) return;
+    if (!out.good())
+      return;
     out.flush();
   }
   std::error_code ec;
@@ -226,7 +249,8 @@ nlohmann::json LegacyImporter::ParseLegacyRun(
     const std::string& space_id,
     const std::filesystem::path& state_path) {
   std::ifstream in(state_path, std::ios::binary);
-  if (!in) return nlohmann::json(nlohmann::json::value_t::discarded);
+  if (!in)
+    return nlohmann::json(nlohmann::json::value_t::discarded);
 
   std::stringstream ss;
   ss << in.rdbuf();
@@ -236,33 +260,34 @@ nlohmann::json LegacyImporter::ParseLegacyRun(
   }
 
   auto str = [&](const char* key) -> std::string {
-    return (v.contains(key) && v[key].is_string()) ? v[key].get<std::string>() : "";
+    return (v.contains(key) && v[key].is_string()) ? v[key].get<std::string>()
+                                                   : "";
   };
 
   const std::string legacy_status = str("status");
-  const std::string rust_status   = MapLegacyStatus(legacy_status);
+  const std::string rust_status = MapLegacyStatus(legacy_status);
 
   // Build a minimal Rust Run JSON compatible with the Snapshot schema.
   // The id field is filled in by the caller.
   nlohmann::json run = {
-      {"id",         ""},   // placeholder; replaced by caller
-      {"space_id",   space_id},
-      {"agent_id",   nullptr},
-      {"spec",       {
-          {"kind",          "legacy_import"},
-          {"flow_id",       str("flow_id")},
-          {"legacy_run_id", str("run_id")},
-          {"initial_input", str("initial_input")},
-      }},
-      {"history",    nlohmann::json::array()},
+      {"id", ""},  // placeholder; replaced by caller
+      {"space_id", space_id},
+      {"agent_id", nullptr},
+      {"spec",
+       {
+           {"kind", "legacy_import"},
+           {"flow_id", str("flow_id")},
+           {"legacy_run_id", str("run_id")},
+           {"initial_input", str("initial_input")},
+       }},
+      {"history", nlohmann::json::array()},
   };
 
   // Encode RunStatus as {status: "<variant>"} — the Rust enum is
   // #[serde(tag = "status", rename_all = "snake_case")] so terminal states
   // need extra fields for Failed.
   if (rust_status == "failed") {
-    run["status"] = {{"status", "failed"},
-                     {"message", str("failure_reason")}};
+    run["status"] = {{"status", "failed"}, {"message", str("failure_reason")}};
   } else {
     run["status"] = {{"status", rust_status}};
   }

@@ -1,12 +1,12 @@
 import {
-  createContext,
-  useContext,
-  useReducer,
   type Context,
+  createContext,
   type Dispatch,
   type ReactNode,
   type Reducer,
-} from 'react';
+  useContext,
+  useReducer,
+} from "react";
 
 /**
  * Build a small typed `useReducer` + Context store. Returns:
@@ -24,7 +24,7 @@ import {
  */
 export function createPanelStore<S, A>(reducer: Reducer<S, A>, initial: S) {
   const Ctx = createContext<[S, Dispatch<A>] | null>(null);
-  Ctx.displayName = 'PanelStore';
+  Ctx.displayName = "PanelStore";
 
   function Provider({ children }: { children: ReactNode }) {
     const value = useReducer(reducer, initial);
@@ -33,7 +33,7 @@ export function createPanelStore<S, A>(reducer: Reducer<S, A>, initial: S) {
 
   function useStore(): [S, Dispatch<A>] {
     const v = useContext(Ctx);
-    if (!v) throw new Error('useStore must be used inside Provider');
+    if (!v) throw new Error("useStore must be used inside Provider");
     return v;
   }
   function useState(): S {

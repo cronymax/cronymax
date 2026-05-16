@@ -30,7 +30,9 @@ pub struct PageInspectRequest {
     pub include_dom: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// Snapshot of a browser page's content.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,8 +66,5 @@ impl PageContent {
 pub trait BrowserCapability: Send + Sync + std::fmt::Debug {
     /// Capture a snapshot of the active tab for `request.space_id`.
     /// Returns `Ok(PageContent::empty())` when no tab is active.
-    async fn inspect_page(
-        &self,
-        request: PageInspectRequest,
-    ) -> anyhow::Result<PageContent>;
+    async fn inspect_page(&self, request: PageInspectRequest) -> anyhow::Result<PageContent>;
 }

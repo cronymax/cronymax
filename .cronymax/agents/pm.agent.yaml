@@ -3,6 +3,7 @@
 # (full product requirements). FlowRuntime re-invokes this agent via
 # on_approved_reschedule after the prototype is approved.
 name: pm
+description: "Project manager — entry point for the dev-cycle flow; produces prototype and PRD in sequence."
 kind: producer
 llm:
   provider: copilot

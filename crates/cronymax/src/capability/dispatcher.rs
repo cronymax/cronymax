@@ -24,6 +24,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -36,7 +37,7 @@ use crate::llm::{ToolCall, ToolDef};
 
 use super::browser::{BrowserCapability, PageInspectRequest};
 use super::filesystem::{FilesystemCapability, WorkspaceScope};
-use super::notify::{NotifyCapability, NotifyRequest, ApprovalRequest, ApprovalResponse};
+use super::notify::{ApprovalRequest, ApprovalResponse, NotifyCapability, NotifyRequest};
 use super::shell::{ShellCapability, ShellRequest};
 use super::submit_document::DocumentSubmitted;
 
@@ -123,34 +124,48 @@ impl std::fmt::Debug for RegisteredTool {
 /// Fluent builder for [`HostCapabilityDispatcher`].
 pub struct DispatcherBuilder {
     tools: HashMap<String, RegisteredTool>,
+    /// When non-empty, only tools whose names appear here are included in
+    /// the built dispatcher. Empty = allow all registered tools.
+    allowed_tools: HashSet<String>,
 }
 
 impl DispatcherBuilder {
     pub fn new() -> Self {
-        Self { tools: HashMap::new() }
+        Self {
+            tools: HashMap::new(),
+            allowed_tools: HashSet::new(),
+        }
+    }
+
+    /// Restrict the built dispatcher to only the named tools.
+    /// If `names` is empty this is a no-op (all tools remain available).
+    /// Call before `build()`.
+    pub fn set_allowed_tools(&mut self, names: Vec<String>) -> &mut Self {
+        if !names.is_empty() {
+            self.allowed_tools = names.into_iter().collect();
+        }
+        self
     }
 
     // ── Low-level registration ────────────────────────────────────────────
 
     /// Register a custom tool with a handler function. `needs_approval`
     /// gates the first dispatch behind a [`ToolOutcome::NeedsApproval`].
-    pub fn register<F, Fut>(
-        &mut self,
-        def: ToolDef,
-        needs_approval: bool,
-        handler: F,
-    ) -> &mut Self
+    pub fn register<F, Fut>(&mut self, def: ToolDef, needs_approval: bool, handler: F) -> &mut Self
     where
         F: Fn(String) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ToolOutcome> + Send + 'static,
     {
-        let handler = Arc::new(move |args: String| -> BoxFuture<ToolOutcome> {
-            Box::pin(handler(args))
-        });
+        let handler =
+            Arc::new(move |args: String| -> BoxFuture<ToolOutcome> { Box::pin(handler(args)) });
         let name = def.name.clone();
         self.tools.insert(
             name,
-            RegisteredTool { def, handler, needs_approval },
+            RegisteredTool {
+                def,
+                handler,
+                needs_approval,
+            },
         );
         self
     }
@@ -166,10 +181,9 @@ impl DispatcherBuilder {
     ) -> &mut Self {
         let def = ToolDef {
             name: "run_shell".into(),
-            description:
-                "Execute a shell command in the workspace sandbox. \
+            description: "Execute a shell command in the workspace sandbox. \
                  Returns stdout, stderr, and exit code."
-                    .into(),
+                .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -194,9 +208,7 @@ impl DispatcherBuilder {
             async move {
                 let req: ShellRequest = match serde_json::from_str(&args) {
                     Ok(r) => r,
-                    Err(e) => {
-                        return ToolOutcome::Error(format!("invalid run_shell args: {e}"))
-                    }
+                    Err(e) => return ToolOutcome::Error(format!("invalid run_shell args: {e}")),
                 };
                 match provider.run(req).await {
                     Ok(result) => ToolOutcome::Output(serde_json::json!({
@@ -222,10 +234,9 @@ impl DispatcherBuilder {
     ) -> &mut Self {
         let def = ToolDef {
             name: "inspect_page".into(),
-            description:
-                "Return the title, URL, and visible text of the active browser tab \
+            description: "Return the title, URL, and visible text of the active browser tab \
                  in the current space."
-                    .into(),
+                .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -252,7 +263,9 @@ impl DispatcherBuilder {
                     #[serde(default)]
                     include_dom: bool,
                 }
-                fn default_true() -> bool { true }
+                fn default_true() -> bool {
+                    true
+                }
                 let a: Args = serde_json::from_str(&args).unwrap_or_default();
                 let req = PageInspectRequest {
                     space_id,
@@ -260,8 +273,9 @@ impl DispatcherBuilder {
                     include_dom: a.include_dom,
                 };
                 match provider.inspect_page(req).await {
-                    Ok(page) => ToolOutcome::Output(serde_json::to_value(page)
-                        .unwrap_or_else(|_| Value::Null)),
+                    Ok(page) => {
+                        ToolOutcome::Output(serde_json::to_value(page).unwrap_or(Value::Null))
+                    }
                     Err(e) => ToolOutcome::Error(format!("inspect_page failed: {e}")),
                 }
             }
@@ -280,10 +294,9 @@ impl DispatcherBuilder {
         let read_scope = scope.clone();
         let read_def = ToolDef {
             name: "read_file".into(),
-            description:
-                "Read a file's content from the workspace. \
+            description: "Read a file's content from the workspace. \
                  Path must be relative to the workspace root."
-                    .into(),
+                .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -301,15 +314,16 @@ impl DispatcherBuilder {
                 let req: crate::capability::filesystem::ReadFileRequest =
                     match serde_json::from_str(&args) {
                         Ok(r) => r,
-                        Err(e) => return ToolOutcome::Error(format!("invalid read_file args: {e}")),
+                        Err(e) => {
+                            return ToolOutcome::Error(format!("invalid read_file args: {e}"))
+                        }
                     };
                 let resolved = match s.resolve(&req.path) {
                     Ok(r) => r,
                     Err(e) => return ToolOutcome::Error(format!("scope violation: {e}")),
                 };
                 match p.read_file(&resolved, req.offset, req.max_bytes).await {
-                    Ok(r) => ToolOutcome::Output(serde_json::to_value(r)
-                        .unwrap_or_else(|_| Value::Null)),
+                    Ok(r) => ToolOutcome::Output(serde_json::to_value(r).unwrap_or(Value::Null)),
                     Err(e) => ToolOutcome::Error(format!("read_file failed: {e}")),
                 }
             }
@@ -320,10 +334,9 @@ impl DispatcherBuilder {
         let write_scope = scope.clone();
         let write_def = ToolDef {
             name: "write_file".into(),
-            description:
-                "Write content to a workspace file. \
+            description: "Write content to a workspace file. \
                  Path must be relative to the workspace root."
-                    .into(),
+                .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -341,7 +354,9 @@ impl DispatcherBuilder {
                 let req: crate::capability::filesystem::WriteFileRequest =
                     match serde_json::from_str(&args) {
                         Ok(r) => r,
-                        Err(e) => return ToolOutcome::Error(format!("invalid write_file args: {e}")),
+                        Err(e) => {
+                            return ToolOutcome::Error(format!("invalid write_file args: {e}"))
+                        }
                     };
                 let resolved = match s.resolve(&req.path) {
                     Ok(r) => r,
@@ -350,6 +365,51 @@ impl DispatcherBuilder {
                 match p.write_file(&resolved, &req.content, req.create_dirs).await {
                     Ok(()) => ToolOutcome::Output(serde_json::json!({ "written": true })),
                     Err(e) => ToolOutcome::Error(format!("write_file failed: {e}")),
+                }
+            }
+        });
+
+        // str_replace
+        let sr_provider = provider.clone();
+        let sr_scope = scope.clone();
+        let sr_def = ToolDef {
+            name: "str_replace".into(),
+            description:
+                "Replace exactly one occurrence of `old_str` with `new_str` in a workspace file. \
+                 Fails with an error if `old_str` matches zero or more than one location. \
+                 Returns a unified diff of the change."
+                    .into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path relative to workspace root" },
+                    "old_str": { "type": "string", "description": "Exact text to replace (must appear exactly once)" },
+                    "new_str": { "type": "string", "description": "Replacement text" }
+                },
+                "required": ["path", "old_str", "new_str"]
+            }),
+        };
+        self.register(sr_def, false, move |args| {
+            let p = sr_provider.clone();
+            let s = sr_scope.clone();
+            async move {
+                let req: crate::capability::filesystem::StrReplaceRequest =
+                    match serde_json::from_str(&args) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return ToolOutcome::Error(format!("invalid str_replace args: {e}"))
+                        }
+                    };
+                let resolved = match s.resolve(&req.path) {
+                    Ok(r) => r,
+                    Err(e) => return ToolOutcome::Error(format!("scope violation: {e}")),
+                };
+                match p.str_replace(&resolved, &req.old_str, &req.new_str).await {
+                    Ok(result) => ToolOutcome::Output(serde_json::json!({
+                        "path": result.path,
+                        "diff": result.diff,
+                    })),
+                    Err(e) => ToolOutcome::Error(format!("str_replace failed: {e}")),
                 }
             }
         });
@@ -373,7 +433,9 @@ impl DispatcherBuilder {
             let s = ls_scope.clone();
             async move {
                 #[derive(serde::Deserialize)]
-                struct Args { path: String }
+                struct Args {
+                    path: String,
+                }
                 let a: Args = match serde_json::from_str(&args) {
                     Ok(r) => r,
                     Err(e) => return ToolOutcome::Error(format!("invalid list_dir args: {e}")),
@@ -393,10 +455,7 @@ impl DispatcherBuilder {
     }
 
     /// Register a `notify` tool backed by `provider`.
-    pub fn register_notify(
-        &mut self,
-        provider: Arc<dyn NotifyCapability>,
-    ) -> &mut Self {
+    pub fn register_notify(&mut self, provider: Arc<dyn NotifyCapability>) -> &mut Self {
         let notify_provider = provider.clone();
         let notify_def = ToolDef {
             name: "notify".into(),
@@ -429,10 +488,9 @@ impl DispatcherBuilder {
         let approval_provider = provider.clone();
         let approval_def = ToolDef {
             name: "request_approval".into(),
-            description:
-                "Show the user a lightweight approval prompt. \
+            description: "Show the user a lightweight approval prompt. \
                  Returns 'approved', 'denied', or 'dismissed'."
-                    .into(),
+                .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -447,7 +505,9 @@ impl DispatcherBuilder {
             async move {
                 let req: ApprovalRequest = match serde_json::from_str(&args) {
                     Ok(r) => r,
-                    Err(e) => return ToolOutcome::Error(format!("invalid request_approval args: {e}")),
+                    Err(e) => {
+                        return ToolOutcome::Error(format!("invalid request_approval args: {e}"))
+                    }
                 };
                 match p.request_approval(req).await {
                     Ok(resp) => ToolOutcome::Output(serde_json::json!({
@@ -570,11 +630,10 @@ impl DispatcherBuilder {
 
         let def = ToolDef {
             name: "submit_document".into(),
-            description:
-                "Submit a document produced during this run. \
+            description: "Submit a document produced during this run. \
                  The document is written to the workspace and queued for routing \
                  to downstream agents. Use this to deliver your output."
-                    .into(),
+                .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -618,10 +677,7 @@ impl DispatcherBuilder {
     /// **Session lifecycle**: the session is opened, the command is written,
     /// output is collected until the shell exits (or `timeout_secs`), then
     /// the session is closed.  State is not persisted across tool calls.
-    pub fn register_terminal(
-        &mut self,
-        workspace_root: std::path::PathBuf,
-    ) -> &mut Self {
+    pub fn register_terminal(&mut self, workspace_root: std::path::PathBuf) -> &mut Self {
         use crate::llm::ToolDef;
 
         let def = ToolDef {
@@ -673,7 +729,9 @@ impl DispatcherBuilder {
                     Err(e) => return ToolOutcome::Error(format!("run_terminal: bad args: {e}")),
                 };
 
-                let cwd_str = args.cwd.unwrap_or_else(|| wr.to_str().unwrap_or(".").to_owned());
+                let cwd_str = args
+                    .cwd
+                    .unwrap_or_else(|| wr.to_str().unwrap_or(".").to_owned());
                 let cwd = std::path::PathBuf::from(&cwd_str);
                 let shell = "/bin/zsh";
                 let secs = args.timeout_secs.unwrap_or(60);
@@ -683,11 +741,13 @@ impl DispatcherBuilder {
                 let (output_tx, mut output_rx) = mpsc::unbounded_channel::<Vec<u8>>();
                 let (exit_tx, exit_rx) = oneshot::channel::<i32>();
 
-                let session = match PtySession::start(
-                    &cwd, shell, 220, 50, output_tx, exit_tx,
-                ).await {
+                let session = match PtySession::start(&cwd, shell, 220, 50, output_tx, exit_tx)
+                    .await
+                {
                     Ok(s) => s,
-                    Err(e) => return ToolOutcome::Error(format!("run_terminal: pty start failed: {e}")),
+                    Err(e) => {
+                        return ToolOutcome::Error(format!("run_terminal: pty start failed: {e}"))
+                    }
                 };
 
                 // Write the command followed by an explicit `exit` so the
@@ -738,7 +798,31 @@ impl DispatcherBuilder {
     }
 
     pub fn build(self) -> HostCapabilityDispatcher {
-        HostCapabilityDispatcher { tools: self.tools }
+        let tools = if self.allowed_tools.is_empty() {
+            self.tools
+        } else {
+            self.tools
+                .into_iter()
+                .filter(|(name, _)| self.allowed_tools.contains(name))
+                .collect()
+        };
+        HostCapabilityDispatcher { tools }
+    }
+
+    /// Register `search_workspace`, `grep_workspace`, and `glob_files` tools.
+    pub fn register_search(&mut self, workspace_root: std::path::PathBuf) {
+        use super::code_search::{
+            register_glob_files, register_grep_workspace, register_search_workspace,
+        };
+        register_search_workspace(self, workspace_root.clone());
+        register_grep_workspace(self, workspace_root.clone());
+        register_glob_files(self, workspace_root);
+    }
+
+    /// Register all git tools.
+    pub fn register_git(&mut self, workspace_root: std::path::PathBuf) {
+        use super::git::register_git_tools;
+        register_git_tools(self, workspace_root);
     }
 }
 
@@ -834,6 +918,49 @@ mod tests {
             id: "c3".into(),
             name: "no_such_tool".into(),
             arguments: "{}".into(),
+        };
+        assert!(matches!(
+            dispatcher.dispatch(&call).await,
+            ToolOutcome::Error(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn empty_allow_list_returns_all_tools() {
+        let mut builder = DispatcherBuilder::new();
+        builder.register_shell(Arc::new(OkShell), false);
+        // set_allowed_tools with empty vec → no-op, all tools pass through
+        builder.set_allowed_tools(vec![]);
+        let dispatcher = builder.build();
+        let defs = dispatcher.definitions();
+        assert!(
+            defs.iter().any(|d| d.name == "run_shell"),
+            "run_shell should be present"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_empty_allow_list_restricts_tools() {
+        let mut builder = DispatcherBuilder::new();
+        builder.register_shell(Arc::new(OkShell), false);
+        builder.set_allowed_tools(vec!["run_shell".into()]);
+        let dispatcher = builder.build();
+        let defs = dispatcher.definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "run_shell");
+    }
+
+    #[tokio::test]
+    async fn dispatch_on_unlisted_tool_returns_error() {
+        let mut builder = DispatcherBuilder::new();
+        builder.register_shell(Arc::new(OkShell), false);
+        // only allow "read_file" which was never registered
+        builder.set_allowed_tools(vec!["read_file".into()]);
+        let dispatcher = builder.build();
+        let call = ToolCall {
+            id: "c4".into(),
+            name: "run_shell".into(),
+            arguments: r#"{"command":"echo hi"}"#.into(),
         };
         assert!(matches!(
             dispatcher.dispatch(&call).await,

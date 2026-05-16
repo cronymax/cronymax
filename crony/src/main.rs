@@ -33,8 +33,8 @@ async fn main() -> Result<()> {
     // pages). Keeping a separate service avoids contention on the single
     // ReturnPath slot inside GipsTransport when both the browser process and
     // renderer process are connected simultaneously.
-    let renderer_transport = GipsTransport::bind(RENDERER_SERVICE_NAME)
-        .context("binding renderer GIPS transport")?;
+    let renderer_transport =
+        GipsTransport::bind(RENDERER_SERVICE_NAME).context("binding renderer GIPS transport")?;
 
     // Attach both transports to the shared RuntimeAuthority.  Each call
     // to attach_transport spawns an independent dispatch session; they share

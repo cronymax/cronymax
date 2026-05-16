@@ -19,6 +19,9 @@ enum class AppEventKind {
   kHandoff,
   kError,
   kSystem,
+  kFileEdited,
+  kGitCommitCreated,
+  kGitPushed,
 };
 
 const char* AppEventKindToString(AppEventKind k);
@@ -30,12 +33,13 @@ bool AppEventKindFromString(const std::string& s, AppEventKind* out);
 // `kind`; the schema is enforced at the renderer with Zod. The C++ side
 // trusts well-formedness because every emitter is in-tree.
 struct AppEvent {
-  std::string id;          // UUIDv7 (sortable)
-  long long ts_ms = 0;     // unix milliseconds
+  std::string id;       // UUIDv7 (sortable)
+  long long ts_ms = 0;  // unix milliseconds
   std::string space_id;
   std::string flow_id;     // empty when not scoped
   std::string run_id;      // empty when not scoped
   std::string agent_id;    // empty when not scoped
+  std::string session_id;  // empty when not in a session
   AppEventKind kind = AppEventKind::kSystem;
   nlohmann::json payload = nlohmann::json::object();  // object
 
@@ -45,7 +49,8 @@ struct AppEvent {
   // Parse from compact JSON. Returns true on success; *err populated on
   // failure if non-null. The function is permissive about missing optional
   // fields but requires `id`, `ts_ms`, `kind`, `payload`.
-  static bool ParseJson(const std::string& text, AppEvent* out,
+  static bool ParseJson(const std::string& text,
+                        AppEvent* out,
                         std::string* err);
 };
 

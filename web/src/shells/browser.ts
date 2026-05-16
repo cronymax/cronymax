@@ -16,55 +16,55 @@
 
 import { z } from "zod";
 import {
-  SpaceSchema,
-  TerminalRowSchema,
-  TerminalIdPayloadSchema,
-  TerminalExitPayloadSchema,
-  TerminalListResponseSchema,
-  TerminalBlockSchema,
-  TerminalBlockSavePayloadSchema,
-  TerminalBlocksLoadPayloadSchema,
-  AgentTaskFromCommandPayloadSchema,
-  ToolExecPayloadSchema,
-  ToolExecResultSchema,
-  PermissionRespondPayloadSchema,
-  LlmConfigSchema,
-  LlmConfigSetPayloadSchema,
-  BrowserTabSchema,
-  TabIdPayloadSchema,
-  TabCreatedSchema,
-  TabClosedSchema,
-  TabTitleChangedSchema,
-  TabUrlChangedSchema,
   ActiveTabChangedSchema,
-  SpaceChangedSchema,
-  ShellNavigatePayloadSchema,
-  ShellPopoverOpenPayloadSchema,
-  ShellTabOpenSingletonPayloadSchema,
-  ShellTabOpenSingletonResponseSchema,
-  ShellNewTabKindPayloadSchema,
-  ShellNewTabKindResponseSchema,
-  ShellSettingsPopoverOpenPayloadSchema,
-  ShellSettingsPopoverOpenResponseSchema,
-  ThemeGetResponseSchema,
-  ThemeSetPayloadSchema,
-  ThemeChangedPayloadSchema,
-  TabSetToolbarStatePayloadSchema,
-  TabSetChromeThemePayloadSchema,
-  TabsListSnapshotSchema,
-  TabActivatedEventSchema,
-  EmptySchema,
+  AgentTaskFromCommandPayloadSchema,
   AppEventSchema,
+  BrowserTabSchema,
+  EmptySchema,
+  EventsAppendReq,
+  EventsAppendRes,
   EventsListReq,
   EventsListRes,
   EventsSubscribeReq,
   EventsSubscribeRes,
-  EventsAppendReq,
-  EventsAppendRes,
   InboxListReq,
   InboxListRes,
-  InboxStateChangeReq,
   InboxSnoozeReq,
+  InboxStateChangeReq,
+  LlmConfigSchema,
+  LlmConfigSetPayloadSchema,
+  PermissionRespondPayloadSchema,
+  ShellNavigatePayloadSchema,
+  ShellNewTabKindPayloadSchema,
+  ShellNewTabKindResponseSchema,
+  ShellPopoverOpenPayloadSchema,
+  ShellSettingsPopoverOpenPayloadSchema,
+  ShellSettingsPopoverOpenResponseSchema,
+  ShellTabOpenSingletonPayloadSchema,
+  ShellTabOpenSingletonResponseSchema,
+  SpaceChangedSchema,
+  SpaceSchema,
+  TabActivatedEventSchema,
+  TabClosedSchema,
+  TabCreatedSchema,
+  TabIdPayloadSchema,
+  TabSetChromeThemePayloadSchema,
+  TabSetToolbarStatePayloadSchema,
+  TabsListSnapshotSchema,
+  TabTitleChangedSchema,
+  TabUrlChangedSchema,
+  TerminalBlockSavePayloadSchema,
+  TerminalBlockSchema,
+  TerminalBlocksLoadPayloadSchema,
+  TerminalExitPayloadSchema,
+  TerminalIdPayloadSchema,
+  TerminalListResponseSchema,
+  TerminalRowSchema,
+  ThemeChangedPayloadSchema,
+  ThemeGetResponseSchema,
+  ThemeSetPayloadSchema,
+  ToolExecPayloadSchema,
+  ToolExecResultSchema,
 } from "../types";
 
 interface ChannelDef<Req extends z.ZodTypeAny, Res extends z.ZodTypeAny> {
@@ -73,9 +73,7 @@ interface ChannelDef<Req extends z.ZodTypeAny, Res extends z.ZodTypeAny> {
   fastPath?: boolean;
 }
 
-function chan<Req extends z.ZodTypeAny, Res extends z.ZodTypeAny>(
-  def: ChannelDef<Req, Res>,
-): ChannelDef<Req, Res> {
+function chan<Req extends z.ZodTypeAny, Res extends z.ZodTypeAny>(def: ChannelDef<Req, Res>): ChannelDef<Req, Res> {
   return def;
 }
 
@@ -93,6 +91,10 @@ export const Channels = {
   "shell.popover_refresh": chan({ req: EmptySchema, res: EmptySchema }),
   "shell.popover_open_as_tab": chan({ req: EmptySchema, res: EmptySchema }),
   "shell.popover_navigate": chan({
+    req: z.object({ url: z.string() }),
+    res: EmptySchema,
+  }),
+  "shell.open_external": chan({
     req: z.object({ url: z.string() }),
     res: EmptySchema,
   }),
@@ -371,33 +373,6 @@ export const Channels = {
   // ── flow run control ────────────────────────────────────────────────
   // flow.run.cancel is handled via the direct runtime IPC path (flowRun.cancel()).
 
-  // ── workspace profile (per-Space sandbox-rule overrides) ──────────
-  // Persisted at <workspace>/.cronymax/space.profile.yaml. Stored as
-  // user intent today; FileBroker enforcement plumbing wires up
-  // separately. Path lists are newline-delimited strings to keep the
-  // bridge codec simple — empty entries are stripped server-side.
-  "space.profile.get": chan({
-    req: EmptySchema,
-    res: z.object({
-      space_id: z.string(),
-      space_name: z.string(),
-      workspace_root: z.string(),
-      allow_network: z.boolean(),
-      extra_read_paths: z.array(z.string()),
-      extra_write_paths: z.array(z.string()),
-      extra_deny_paths: z.array(z.string()),
-    }),
-  }),
-  "space.profile.set": chan({
-    req: z.object({
-      allow_network: z.boolean(),
-      extra_read_paths_nl: z.string(),
-      extra_write_paths_nl: z.string(),
-      extra_deny_paths_nl: z.string(),
-    }),
-    res: z.object({ ok: z.boolean() }),
-  }),
-
   // ── workspace custom prompts ───────────────────────────────────────
   // Lists *.prompt.md files from <workspace>/.cronymax/prompts/.
   "workspace.prompts.list": chan({
@@ -405,6 +380,12 @@ export const Channels = {
     res: z.object({
       prompts: z.array(z.object({ name: z.string(), content: z.string() })),
     }),
+  }),
+
+  // Saves a single prompt file to <workspace>/.cronymax/prompts/<name>.prompt.md.
+  "workspace.prompt.save": chan({
+    req: z.object({ name: z.string(), content: z.string() }),
+    res: z.object({ ok: z.boolean(), error: z.string().optional() }),
   }),
 
   // ── LLM providers (managed list, persisted in kv_config) ──────────
@@ -515,6 +496,7 @@ export const Channels = {
       z.object({
         id: z.string(),
         name: z.string(),
+        memory_id: z.string(),
         allow_network: z.boolean(),
         extra_read_paths: z.array(z.string()),
         extra_write_paths: z.array(z.string()),
@@ -525,6 +507,7 @@ export const Channels = {
   "profiles.create": chan({
     req: z.object({
       name: z.string(),
+      memory_id: z.string().optional(),
       allow_network: z.boolean(),
       extra_read_paths: z.array(z.string()),
       extra_write_paths: z.array(z.string()),
@@ -536,6 +519,7 @@ export const Channels = {
     req: z.object({
       id: z.string(),
       name: z.string(),
+      memory_id: z.string().optional(),
       allow_network: z.boolean(),
       extra_read_paths: z.array(z.string()),
       extra_write_paths: z.array(z.string()),
@@ -546,6 +530,10 @@ export const Channels = {
   "profiles.delete": chan({
     req: z.object({ id: z.string() }),
     res: z.object({ ok: z.boolean() }),
+  }),
+  "profiles.check_paths": chan({
+    req: z.object({ paths: z.array(z.string()) }),
+    res: z.object({ missing: z.array(z.string()) }),
   }),
 
   // ── flow read — handled via direct runtime IPC (flow.list(), flow.load()) ─
@@ -573,7 +561,6 @@ export const Events = {
   "agent.task_from_command": AgentTaskFromCommandPayloadSchema,
   "space.created": SpaceSchema,
   "space.deleted": z.object({ space_id: z.string() }),
-  "space.folder_picked": z.object({ path: z.string() }),
   "space.switch_loading": z.object({ loading: z.boolean() }),
   // refine-ui-theme-layout: theme broadcast for all panels
   "theme.changed": ThemeChangedPayloadSchema,
@@ -593,10 +580,6 @@ export const FastPathEvents = new Set<keyof typeof Events>(["event"]);
 
 export type ChannelName = keyof typeof Channels;
 export type EventName = keyof typeof Events;
-export type RequestOf<C extends ChannelName> = z.input<
-  (typeof Channels)[C]["req"]
->;
-export type ResponseOf<C extends ChannelName> = z.infer<
-  (typeof Channels)[C]["res"]
->;
+export type RequestOf<C extends ChannelName> = z.input<(typeof Channels)[C]["req"]>;
+export type ResponseOf<C extends ChannelName> = z.infer<(typeof Channels)[C]["res"]>;
 export type EventPayloadOf<E extends EventName> = z.infer<(typeof Events)[E]>;

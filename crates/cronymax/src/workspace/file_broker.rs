@@ -17,7 +17,9 @@ pub struct FileBroker {
 
 impl FileBroker {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
-        Self { workspace_root: workspace_root.as_ref().to_path_buf() }
+        Self {
+            workspace_root: workspace_root.as_ref().to_path_buf(),
+        }
     }
 
     /// Read `path` as UTF-8 text. The path must be within `workspace_root`.

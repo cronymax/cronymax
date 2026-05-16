@@ -24,7 +24,10 @@ use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::agent_loop::{LoopConfig, ReactLoop};
+use crate::agent_loop::tools::ToolDispatcher;
+use crate::agent_loop::{
+    maybe_compact, LoopConfig, ReactLoop, DEFAULT_RECENCY_TURNS, DEFAULT_THRESHOLD_PCT,
+};
 use crate::capability::agent_loader;
 use crate::capability::dispatcher::HostCapabilityDispatcher;
 use crate::capability::filesystem::{LocalFilesystem, WorkspaceScope};
@@ -33,19 +36,22 @@ use crate::capability::shell::LocalShell;
 use crate::capability::submit_document::DocumentSubmitted;
 use crate::flow::definition::FlowDefinition;
 use crate::flow::runtime::{FlowRuntime, InvocationContext};
-use crate::llm::{copilot_auth, OpenAiConfig, OpenAiProvider};
+use crate::llm::{
+    copilot_auth, AnthropicConfig, AnthropicProvider, CapabilityResolver, OpenAiConfig,
+    OpenAiProvider,
+};
 use crate::protocol::capabilities::CapabilityResponse;
 use crate::protocol::control::{ControlError, ControlRequest, ControlResponse, ReviewDecision};
 use crate::protocol::dispatch::{Handler, ResponseSink};
 use crate::protocol::envelope::{CorrelationId, RuntimeToClient, SubscriptionId};
 use crate::sandbox::broker::PermissionBroker;
-use crate::sandbox::policy::SandboxPolicy;
 use crate::sandbox::fs_gate::PolicyFilesystem;
+use crate::sandbox::policy::SandboxPolicy;
 use crate::sandbox::shell_gate::PolicyShell;
 use uuid::Uuid;
 
 use super::authority::{AuthorityError, RuntimeAuthority, SubscribeOutcome};
-use super::state::{PermissionState, RunId, ReviewId, Space, SpaceId};
+use super::state::{PermissionState, ReviewId, RunId, SessionId, Space, SpaceId};
 
 // ── Shared context for one flow run ──────────────────────────────────────────
 
@@ -80,6 +86,24 @@ impl std::fmt::Debug for FlowRunContext {
     }
 }
 
+/// Build the workspace context block appended to an agent's system prompt
+/// when `inject_workspace = true`. Minimal: just workspace path + tool names.
+fn build_workspace_injection_block(
+    workspace_path: &std::path::Path,
+    tool_names: &[&str],
+) -> String {
+    let tools_line = if tool_names.is_empty() {
+        "(none)".to_owned()
+    } else {
+        tool_names.join(", ")
+    };
+    format!(
+        "\n---\nWorkspace: `{}`\nTools available: {}\nUse these tools to verify facts about the codebase. Never guess at structure.",
+        workspace_path.display(),
+        tools_line,
+    )
+}
+
 /// Spawn a `ReactLoop` for one agent invocation within a flow run.
 /// Creates its own `authority_run_id` so the authority's lifecycle
 /// tracking does not interfere with the parent flow run.
@@ -89,7 +113,10 @@ impl std::fmt::Debug for FlowRunContext {
 /// the LLM receives the agent's authored `system_prompt`, the appropriate
 /// model override, and a correctly-scoped tool allow-list.
 fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationContext) {
-    let run_id = match ctx.authority.start_run(ctx.space_id, None, serde_json::json!({})) {
+    let run_id = match ctx
+        .authority
+        .start_run(ctx.space_id, None, serde_json::json!({}))
+    {
         Ok(id) => id,
         Err(e) => {
             warn!(agent_id, error = %e, "spawn_agent_loop: authority.start_run failed");
@@ -103,7 +130,7 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
 
         // Build the effective system prompt: agent's persona first, then the
         // flow-context message (task info, port state, etc.).
-        let system_message = if agent_def.system_prompt.is_empty() {
+        let agent_system_prompt_raw = if agent_def.system_prompt.is_empty() {
             inv_ctx.system_message.clone()
         } else {
             format!(
@@ -111,6 +138,13 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
                 agent_def.system_prompt, inv_ctx.system_message
             )
         };
+        // Render prompt variables (task 5.6).
+        let prompt_ctx = super::prompt::VarContext::builder()
+            .workspace_root(ctx.workspace_root.clone())
+            .agent_name(agent_id.clone())
+            .user_vars(agent_def.vars.clone())
+            .build();
+        let system_message = super::prompt::render(&agent_system_prompt_raw, &prompt_ctx);
 
         // Use agent's declared model when available, falling back to the
         // flow-run default model.
@@ -162,12 +196,32 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
             agent_id.clone(),
             ctx.doc_tx.clone(),
         );
+        cap_builder.register_search(ctx.workspace_root.clone());
+        cap_builder.register_git(ctx.workspace_root.clone());
+
+        // Apply tool allow-list from agent YAML (empty = all tools).
+        if !agent_def.tools.is_empty() {
+            cap_builder.set_allowed_tools(agent_def.tools.clone());
+        }
+
         let tools = Arc::new(cap_builder.build());
+
+        // Append workspace injection block if the agent opts in.
+        let system_message = if agent_def.inject_workspace {
+            let defs = tools.definitions();
+            let mut tool_names_sorted: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+            tool_names_sorted.sort_unstable();
+            let block = build_workspace_injection_block(&ctx.workspace_root, &tool_names_sorted);
+            format!("{system_message}{block}")
+        } else {
+            system_message
+        };
 
         let authority = ctx.authority.clone();
         let base_url = ctx.base_url.clone();
         let raw_api_key = ctx.api_key.clone();
         let is_copilot = ctx.provider_kind == "github_copilot";
+        let is_anthropic = ctx.provider_kind == "anthropic";
 
         // For GitHub Copilot, exchange the stored GitHub OAuth token for the
         // short-lived Copilot API token required by api.githubcopilot.com.
@@ -180,7 +234,10 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
                         .unwrap_or_default();
                     match copilot_auth::exchange_for_copilot_token(&http, github_token).await {
                         Ok(ct) => {
-                            info!(agent_id, "spawn_agent_loop: copilot token exchanged successfully");
+                            info!(
+                                agent_id,
+                                "spawn_agent_loop: copilot token exchanged successfully"
+                            );
                             (Some(ct.token), true)
                         }
                         Err(e) => {
@@ -195,19 +252,46 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
             (raw_api_key, false)
         };
 
-        let llm_cfg = OpenAiConfig {
-            base_url: base_url.clone(),
-            api_key,
-            default_model: model.clone(),
-            copilot_mode,
-            ..Default::default()
+        // Probe model capabilities for thinking support.
+        // Only probe when using the native Anthropic provider — other providers
+        // don't accept the Anthropic-style `thinking` field.
+        let thinking_config = if is_anthropic {
+            let caps = CapabilityResolver::resolve(&model, &base_url, api_key.as_deref()).await;
+            caps.thinking_config()
+        } else {
+            None
         };
-        let llm = match OpenAiProvider::new(llm_cfg) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(agent_id, error = %e, "spawn_agent_loop: OpenAiProvider::new failed");
-                let _ = authority.fail_run(run_id, e.to_string());
-                return;
+
+        let llm: Arc<dyn crate::llm::LlmProvider> = if is_anthropic {
+            let cfg = AnthropicConfig {
+                base_url: base_url.clone(),
+                api_key,
+                default_model: model.clone(),
+                ..Default::default()
+            };
+            match AnthropicProvider::new(cfg) {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    warn!(agent_id, error = %e, "spawn_agent_loop: AnthropicProvider::new failed");
+                    let _ = authority.fail_run(run_id, e.to_string());
+                    return;
+                }
+            }
+        } else {
+            let llm_cfg = OpenAiConfig {
+                base_url: base_url.clone(),
+                api_key,
+                default_model: model.clone(),
+                copilot_mode,
+                ..Default::default()
+            };
+            match OpenAiProvider::new(llm_cfg) {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    warn!(agent_id, error = %e, "spawn_agent_loop: OpenAiProvider::new failed");
+                    let _ = authority.fail_run(run_id, e.to_string());
+                    return;
+                }
             }
         };
         // Per-agent yaml takes precedence over the flow-run default
@@ -221,11 +305,17 @@ fn spawn_agent_loop(ctx: FlowRunContext, agent_id: String, inv_ctx: InvocationCo
             model: model.clone(),
             system_prompt: Some(system_message.clone()),
             user_input: "Continue with your assigned task as described above.".to_owned(),
-            max_turns: 20,
+            max_turns: 99999,
             temperature: None,
             reasoning_effort: effective_effort,
-            llm: Arc::new(llm),
+            llm,
             tools,
+            thinking: thinking_config,
+            initial_thread: None,
+            session_id: None,
+            reflection: None,
+            write_namespace: None,
+            memory_manager: None,
         };
         let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
         info!(agent_id, %run_id, ok = result.is_ok(), "spawn_agent_loop: agent loop finished");
@@ -242,6 +332,9 @@ pub struct RuntimeHandler {
     authority: RuntimeAuthority,
     /// Workspace roots passed at construction time (from `StoragePaths`).
     workspace_roots: Vec<PathBuf>,
+    /// Profile+workspace-scoped cache dir (`workspace_cache_dir` from `StoragePaths`).
+    /// Used to construct the `ChatStore`.
+    workspace_cache_dir: Option<PathBuf>,
     /// Sandbox policy derived from `RuntimeConfig.sandbox`; `None` = permissive.
     sandbox_policy: Option<Arc<SandboxPolicy>>,
     /// Kept once `on_connected` runs so subscribe-spawned fan-out tasks
@@ -261,8 +354,10 @@ pub struct RuntimeHandler {
     /// Keyed by workspace_root string so each workspace gets its own manager.
     /// Wrapped in Arc so the map can be shared across multiple RuntimeHandler
     /// instances that serve different transports (browser vs renderer).
-    terminal_managers:
-        Arc<Mutex<HashMap<String, crate::terminal::SharedSessionManager>>>,
+    terminal_managers: Arc<Mutex<HashMap<String, crate::terminal::SharedPtySessionManager>>>,
+    /// Standalone memory manager. Present after `MemoryManager::new()` is
+    /// called during runtime initialisation (task 3.8).
+    memory_manager: Option<Arc<crate::memory::MemoryManager>>,
 }
 
 impl RuntimeHandler {
@@ -286,11 +381,33 @@ impl RuntimeHandler {
         authority: RuntimeAuthority,
         workspace_roots: Vec<PathBuf>,
         sandbox_policy: Option<SandboxPolicy>,
-        terminal_managers: Option<Arc<Mutex<HashMap<String, crate::terminal::SharedSessionManager>>>>,
+        terminal_managers: Option<
+            Arc<Mutex<HashMap<String, crate::terminal::SharedPtySessionManager>>>,
+        >,
+    ) -> Self {
+        Self::with_all(
+            authority,
+            workspace_roots,
+            sandbox_policy,
+            terminal_managers,
+            None,
+        )
+    }
+
+    /// Full constructor — includes an optional `MemoryManager` (task 3.8).
+    pub fn with_all(
+        authority: RuntimeAuthority,
+        workspace_roots: Vec<PathBuf>,
+        sandbox_policy: Option<SandboxPolicy>,
+        terminal_managers: Option<
+            Arc<Mutex<HashMap<String, crate::terminal::SharedPtySessionManager>>>,
+        >,
+        memory_manager: Option<Arc<crate::memory::MemoryManager>>,
     ) -> Self {
         Self {
             authority,
             workspace_roots,
+            workspace_cache_dir: None,
             sandbox_policy: sandbox_policy.map(Arc::new),
             sink: Mutex::new(None),
             fanout: Mutex::new(HashMap::new()),
@@ -298,7 +415,14 @@ impl RuntimeHandler {
             pending_capabilities: Mutex::new(HashMap::new()),
             terminal_managers: terminal_managers
                 .unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new()))),
+            memory_manager,
         }
+    }
+
+    /// Configure the workspace cache directory (from `StoragePaths.workspace_cache_dir`).
+    /// Call this before the handler is used for `start_run`.
+    pub fn set_workspace_cache_dir(&mut self, dir: PathBuf) {
+        self.workspace_cache_dir = Some(dir);
     }
 
     pub fn authority(&self) -> &RuntimeAuthority {
@@ -318,15 +442,17 @@ impl RuntimeHandler {
         let (tx, rx) = tokio::sync::oneshot::channel::<CapabilityResponse>();
         self.pending_capabilities.lock().insert(id, tx);
 
-        let sink = self.sink.lock().clone().ok_or_else(|| {
-            anyhow::anyhow!("call_capability: no active transport sink")
-        })?;
+        let sink = self
+            .sink
+            .lock()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("call_capability: no active transport sink"))?;
         sink.send(RuntimeToClient::CapabilityCall { id, request })
             .await
             .map_err(|_| anyhow::anyhow!("call_capability: transport sink closed"))?;
 
-        rx.await.map_err(|_| anyhow::anyhow!("call_capability: sender dropped (disconnected?)")
-        )
+        rx.await
+            .map_err(|_| anyhow::anyhow!("call_capability: sender dropped (disconnected?)"))
     }
 }
 
@@ -336,11 +462,7 @@ impl Handler for RuntimeHandler {
         *self.sink.lock() = Some(sink);
     }
 
-    async fn handle_control(
-        &self,
-        _id: CorrelationId,
-        request: ControlRequest,
-    ) -> ControlResponse {
+    async fn handle_control(&self, _id: CorrelationId, request: ControlRequest) -> ControlResponse {
         match request {
             ControlRequest::Ping => ControlResponse::Pong,
 
@@ -355,8 +477,7 @@ impl Handler for RuntimeHandler {
                         }
                     }
                 };
-                let SubscribeOutcome { id, mut receiver } =
-                    self.authority.subscribe(topic);
+                let SubscribeOutcome { id, mut receiver } = self.authority.subscribe(topic);
                 let task = tokio::spawn(async move {
                     while let Some(event) = receiver.recv().await {
                         if let Err(e) = sink
@@ -390,7 +511,13 @@ impl Handler for RuntimeHandler {
                 }
             }
 
-            ControlRequest::StartRun { space_id, payload } => {
+            ControlRequest::StartRun {
+                space_id,
+                payload,
+                session_id,
+                session_name,
+                agent_id,
+            } => {
                 let space = match parse_space(&space_id) {
                     Ok(s) => s,
                     Err(resp) => return resp,
@@ -427,7 +554,9 @@ impl Handler for RuntimeHandler {
                     .and_then(|l| l.get("reasoning_effort"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.trim().to_ascii_lowercase())
-                    .filter(|s| matches!(s.as_str(), "minimal" | "low" | "medium" | "high" | "xhigh"));
+                    .filter(|s| {
+                        matches!(s.as_str(), "minimal" | "low" | "medium" | "high" | "xhigh")
+                    });
                 let user_input = payload
                     .get("task")
                     .and_then(|v| v.as_str())
@@ -446,7 +575,7 @@ impl Handler for RuntimeHandler {
                     .filter(|s| !s.is_empty())
                     .map(PathBuf::from)
                     .or_else(|| self.workspace_roots.first().cloned())
-                    .unwrap_or_else(|| std::env::temp_dir());
+                    .unwrap_or_else(std::env::temp_dir);
 
                 // Optionally wire a FlowRuntime when the payload carries a
                 // `flow_id` field (i.e. this is a flow-run invocation).
@@ -462,19 +591,81 @@ impl Handler for RuntimeHandler {
                     .to_string();
 
                 info!(%base_url, %model, has_key = api_key.is_some(), "start_run: LLM config");
+
+                // Pre-load agent definition for direct-chat runs (no flow_id).
+                // Uses load_agent_with_builtin so the Crony builtin is always
+                // available without a YAML file on disk.
+                // Done before `start_run_with_session` so no yield-points exist
+                // between run creation (RunStatus:pending) and RunStarted reply.
+                let resolved_agent_id = agent_id
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(crate::crony::CronyBuiltin::ID);
+                let preloaded_chat_agent_def: Option<crate::capability::agent_loader::AgentDef> =
+                    if flow_id_opt.is_none() {
+                        Some(
+                            agent_loader::load_agent_with_builtin(
+                                &workspace_root,
+                                resolved_agent_id,
+                            )
+                            .await,
+                        )
+                    } else {
+                        None
+                    };
+
+                // Resolve session: if session_id present, upsert the session
+                // and retrieve the prior conversation thread from the ChatStore
+                // (or fall back to the snapshot if ChatStore is not configured).
+                let (maybe_session_id, prior_thread) = if let Some(ref sid) = session_id {
+                    let s_id = SessionId::from(sid.as_str());
+                    // Always upsert so run_ids tracking still works.
+                    let _ = self.authority.get_or_create_session(
+                        s_id.clone(),
+                        space,
+                        session_name.clone(),
+                    );
+                    // Load history from ChatStore if available, else fall back
+                    // to the snapshot thread (legacy / no workspace_cache_dir).
+                    let thread = if let Some(ref cache_dir) = self.workspace_cache_dir {
+                        let store = crate::runtime::chat_store::ChatStore::new(cache_dir);
+                        store.load_history(&s_id)
+                    } else {
+                        match self.authority.get_or_create_session(
+                            s_id.clone(),
+                            space,
+                            session_name.clone(),
+                        ) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warn!(%e, session_id = %s_id, "start_run: get_or_create_session failed");
+                                Vec::new()
+                            }
+                        }
+                    };
+                    (Some(s_id), thread)
+                } else {
+                    (None, Vec::new())
+                };
+
                 // Auto-register the space if not already known to the authority.
                 // The C++ host injects space_id from SpaceManager; the authority
                 // requires an explicit upsert before it can track runs.
                 let _ = self.authority.upsert_space(Space {
                     id: space,
                     name: space.to_string(),
+                    compaction_threshold_pct: crate::agent_loop::DEFAULT_THRESHOLD_PCT,
+                    compaction_recency_turns: crate::agent_loop::DEFAULT_RECENCY_TURNS,
                 });
-                match self.authority.start_run(space, None, payload) {
+                match self.authority.start_run_with_session(
+                    space,
+                    None,
+                    payload,
+                    maybe_session_id.clone(),
+                ) {
                     Ok(run_id) => {
                         info!(%run_id, "start_run: created run, setting up fan-out");
-                        let sub_outcome = self
-                            .authority
-                            .subscribe(format!("run:{run_id}"));
+                        let sub_outcome = self.authority.subscribe(format!("run:{run_id}"));
                         let sub_id = sub_outcome.id;
                         let mut receiver = sub_outcome.receiver;
                         if let Some(sink) = self.sink.lock().clone() {
@@ -483,6 +674,7 @@ impl Handler for RuntimeHandler {
                                     let kind = match &event.payload {
                                         crate::protocol::events::RuntimeEventPayload::RunStatus { status, .. } => format!("run_status:{status}"),
                                         crate::protocol::events::RuntimeEventPayload::Token { .. } => "token".into(),
+                                        crate::protocol::events::RuntimeEventPayload::ThinkingToken { .. } => "thinking_token".into(),
                                         crate::protocol::events::RuntimeEventPayload::Trace { .. } => "trace".into(),
                                         crate::protocol::events::RuntimeEventPayload::Log { .. } => "log".into(),
                                         _ => "other".into(),
@@ -513,7 +705,9 @@ impl Handler for RuntimeHandler {
 
                         // Optionally create a FlowRuntime + initial context
                         // when the request carries a `flow_id`.
-                        let (entry_system_prompt, maybe_flow_ctx) = if let Some(ref fid) = flow_id_opt {
+                        let (entry_system_prompt, maybe_flow_ctx) = if let Some(ref fid) =
+                            flow_id_opt
+                        {
                             // Load the flow definition first (required by start_run).
                             let flow_def_path = workspace_root
                                 .join(".cronymax")
@@ -521,7 +715,8 @@ impl Handler for RuntimeHandler {
                                 .join(fid)
                                 .join("flow.yaml");
 
-                            let flow_def_opt = match tokio::fs::read_to_string(&flow_def_path).await {
+                            let flow_def_opt = match tokio::fs::read_to_string(&flow_def_path).await
+                            {
                                 Ok(yaml) => {
                                     match FlowDefinition::load_from_str(&yaml, &flow_def_path) {
                                         Ok(d) => Some(d),
@@ -550,7 +745,9 @@ impl Handler for RuntimeHandler {
                                             warn!(flow_id = %fid, error = %e, "start_run: FlowRuntime::start_run failed");
                                             let _ = self.authority.fail_run(run_id, e.to_string());
                                             return ControlResponse::Err {
-                                                error: ControlError::Internal { message: e.to_string() },
+                                                error: ControlError::Internal {
+                                                    message: e.to_string(),
+                                                },
                                             };
                                         }
                                     }
@@ -562,7 +759,8 @@ impl Handler for RuntimeHandler {
                             };
 
                             // The first entry context becomes the entry agent's system prompt.
-                            let entry_sys = entry_contexts.first().map(|c| c.system_message.clone());
+                            let entry_sys =
+                                entry_contexts.first().map(|c| c.system_message.clone());
 
                             let flow_ctx = FlowRunContext {
                                 authority: self.authority.clone(),
@@ -579,7 +777,9 @@ impl Handler for RuntimeHandler {
                                 reasoning_effort: reasoning_effort.clone(),
                                 sandbox_policy: self.sandbox_policy.clone(),
                             };
-                            self.flow_contexts.lock().insert(flow_run_id, flow_ctx.clone());
+                            self.flow_contexts
+                                .lock()
+                                .insert(flow_run_id, flow_ctx.clone());
 
                             // Spawn ReactLoops for additional entry nodes (if any).
                             for ctx in entry_contexts.into_iter().skip(1) {
@@ -613,20 +813,25 @@ impl Handler for RuntimeHandler {
                                     );
 
                                     // Load flow definition fresh for routing.
-                                    let flow_def_path = fctx.workspace_root
+                                    let flow_def_path = fctx
+                                        .workspace_root
                                         .join(".cronymax")
                                         .join("flows")
                                         .join(&fctx.flow_id)
                                         .join("flow.yaml");
 
-                                    let yaml = match tokio::fs::read_to_string(&flow_def_path).await {
+                                    let yaml = match tokio::fs::read_to_string(&flow_def_path).await
+                                    {
                                         Ok(y) => y,
                                         Err(e) => {
                                             warn!(error = %e, "supervision: failed to read flow.yaml");
                                             continue;
                                         }
                                     };
-                                    let flow_def = match FlowDefinition::load_from_str(&yaml, &flow_def_path) {
+                                    let flow_def = match FlowDefinition::load_from_str(
+                                        &yaml,
+                                        &flow_def_path,
+                                    ) {
                                         Ok(d) => d,
                                         Err(e) => {
                                             warn!(error = %e, "supervision: failed to parse flow.yaml");
@@ -635,15 +840,19 @@ impl Handler for RuntimeHandler {
                                     };
 
                                     // Process the document submission.
-                                    match fctx.flow_runtime.on_document_submitted(
-                                        &evt.run_id,
-                                        &evt.agent_id,
-                                        &evt.doc_type,
-                                        &evt.body,
-                                        &flow_def,
-                                        &evt.sha256,
-                                        evt.revision,
-                                    ).await {
+                                    match fctx
+                                        .flow_runtime
+                                        .on_document_submitted(
+                                            &evt.run_id,
+                                            &evt.agent_id,
+                                            &evt.doc_type,
+                                            &evt.body,
+                                            &flow_def,
+                                            &evt.sha256,
+                                            evt.revision,
+                                        )
+                                        .await
+                                    {
                                         Ok(contexts) => {
                                             for inv_ctx in contexts {
                                                 let agent_id = inv_ctx.owner.clone();
@@ -660,7 +869,10 @@ impl Handler for RuntimeHandler {
                                             // Cycle limit exceeded or other terminal error — fail the run.
                                             if e.to_string().contains("cycle limit exceeded") {
                                                 let _ = fctx.authority.fail_run(
-                                                    RunId(Uuid::parse_str(&evt.run_id).unwrap_or_default()),
+                                                    RunId(
+                                                        Uuid::parse_str(&evt.run_id)
+                                                            .unwrap_or_default(),
+                                                    ),
                                                     e.to_string(),
                                                 );
                                             }
@@ -690,7 +902,8 @@ impl Handler for RuntimeHandler {
                             .unwrap_or_else(|| "agent".to_owned());
 
                         let mut cap_builder = HostCapabilityDispatcher::builder();
-                        cap_builder.register_shell(Arc::new(LocalShell::new(&workspace_root)), false);
+                        cap_builder
+                            .register_shell(Arc::new(LocalShell::new(&workspace_root)), false);
                         cap_builder.register_filesystem(
                             Arc::new(LocalFilesystem),
                             WorkspaceScope::new(&workspace_root),
@@ -716,10 +929,89 @@ impl Handler for RuntimeHandler {
                                 doc_tx.clone(),
                             );
                         }
+                        cap_builder.register_search(workspace_root.clone());
+                        cap_builder.register_git(workspace_root.clone());
+
+                        // For direct-chat (no flow), use pre-loaded Chat.agent.yaml to get tool
+                        // allow-list and inject_workspace preference. Flow paths handled
+                        // per-agent inside spawn_agent_loop.
+                        let chat_agent_def = preloaded_chat_agent_def;
+
+                        if let Some(ref def) = chat_agent_def {
+                            if !def.tools.is_empty() {
+                                cap_builder.set_allowed_tools(def.tools.clone());
+                            }
+                        }
+
                         let tools = Arc::new(cap_builder.build());
 
+                        // Build effective system prompt for direct-chat: Chat.agent.yaml
+                        // system_prompt + workspace injection block (if opted in).
+                        let effective_system_prompt = if let Some(ref def) = chat_agent_def {
+                            let base = effective_system_prompt.or_else(|| {
+                                if def.system_prompt.is_empty() {
+                                    None
+                                } else {
+                                    Some(def.system_prompt.clone())
+                                }
+                            });
+                            if def.inject_workspace {
+                                let defs = tools.definitions();
+                                let mut tool_names_sorted: Vec<&str> =
+                                    defs.iter().map(|d| d.name.as_str()).collect();
+                                tool_names_sorted.sort_unstable();
+                                let block = build_workspace_injection_block(
+                                    &workspace_root,
+                                    &tool_names_sorted,
+                                );
+                                Some(format!("{}{block}", base.unwrap_or_default()))
+                            } else {
+                                base
+                            }
+                        } else {
+                            effective_system_prompt
+                        };
+                        // Render prompt variables (task 5.6).
+                        let agent_name = chat_agent_def
+                            .as_ref()
+                            .map(|d| d.name.clone())
+                            .unwrap_or_default();
+                        let agent_vars = chat_agent_def
+                            .as_ref()
+                            .map(|d| d.vars.clone())
+                            .unwrap_or_default();
+                        // Load workspace agent names for the ${agents} variable (Crony orchestration).
+                        let workspace_agent_names: Vec<String> = {
+                            use crate::workspace::{AgentRegistry, Workspace};
+                            let layout = Workspace::new(&workspace_root);
+                            let mut reg = AgentRegistry::new(layout.agents_dir());
+                            reg.refresh().await;
+                            reg.entries()
+                                .into_iter()
+                                .map(|(name, desc)| {
+                                    if desc.is_empty() {
+                                        name
+                                    } else {
+                                        format!("- **{name}** — {desc}")
+                                    }
+                                })
+                                .collect()
+                        };
+                        let effective_system_prompt = effective_system_prompt.map(|tmpl| {
+                            let prompt_ctx = super::prompt::VarContext::builder()
+                                .workspace_root(workspace_root.clone())
+                                .agent_name(agent_name.clone())
+                                .user_vars(agent_vars)
+                                .agents(workspace_agent_names)
+                                .build();
+                            super::prompt::render(&tmpl, &prompt_ctx)
+                        });
+
                         let authority = self.authority.clone();
+                        let memory_manager = self.memory_manager.clone();
+                        let workspace_cache_dir_clone = self.workspace_cache_dir.clone();
                         let is_copilot = provider_kind == "github_copilot";
+                        let is_anthropic = provider_kind == "anthropic";
                         let chat_reasoning_effort = reasoning_effort.clone();
                         tokio::spawn(async move {
                             // For GitHub Copilot, exchange the stored GitHub OAuth token for
@@ -731,7 +1023,12 @@ impl Handler for RuntimeHandler {
                                             .timeout(std::time::Duration::from_secs(30))
                                             .build()
                                             .unwrap_or_default();
-                                        match copilot_auth::exchange_for_copilot_token(&http, github_token).await {
+                                        match copilot_auth::exchange_for_copilot_token(
+                                            &http,
+                                            github_token,
+                                        )
+                                        .await
+                                        {
                                             Ok(ct) => {
                                                 info!(%run_id, "react_loop: copilot token exchanged successfully");
                                                 (Some(ct.token), true)
@@ -748,48 +1045,165 @@ impl Handler for RuntimeHandler {
                                 (api_key, false)
                             };
 
-                            let llm_cfg = OpenAiConfig {
-                                base_url: base_url.clone(),
-                                api_key: effective_api_key,
-                                default_model: model.clone(),
-                                copilot_mode,
-                                ..Default::default()
+                            // Probe model capabilities for thinking support.
+                            // Only probe when using the native Anthropic provider — other
+                            // providers (OpenAI-compat, Copilot, …) don't accept the
+                            // Anthropic-style `thinking` field and would reject the request.
+                            let thinking_config = if is_anthropic {
+                                let caps = CapabilityResolver::resolve(
+                                    &model,
+                                    &base_url,
+                                    effective_api_key.as_deref(),
+                                )
+                                .await;
+                                let cfg = caps.thinking_config();
+                                if cfg.is_some() {
+                                    info!(%run_id, %model, "react_loop: thinking config resolved");
+                                }
+                                cfg
+                            } else {
+                                None
                             };
+
                             info!(%run_id, llm_base_url = %base_url, %model, "react_loop: starting");
-                            let llm = match OpenAiProvider::new(llm_cfg) {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    info!(%run_id, error = %e, "react_loop: OpenAiProvider::new failed");
-                                    let _ = authority.fail_run(
-                                        run_id,
-                                        e.to_string(),
-                                    );
-                                    return;
+                            let llm: Arc<dyn crate::llm::LlmProvider> = if is_anthropic {
+                                let cfg = AnthropicConfig {
+                                    base_url: base_url.clone(),
+                                    api_key: effective_api_key,
+                                    default_model: model.clone(),
+                                    ..Default::default()
+                                };
+                                match AnthropicProvider::new(cfg) {
+                                    Ok(p) => Arc::new(p),
+                                    Err(e) => {
+                                        info!(%run_id, error = %e, "react_loop: AnthropicProvider::new failed");
+                                        let _ = authority.fail_run(run_id, e.to_string());
+                                        return;
+                                    }
+                                }
+                            } else {
+                                let llm_cfg = OpenAiConfig {
+                                    base_url: base_url.clone(),
+                                    api_key: effective_api_key,
+                                    default_model: model.clone(),
+                                    copilot_mode,
+                                    ..Default::default()
+                                };
+                                match OpenAiProvider::new(llm_cfg) {
+                                    Ok(p) => Arc::new(p),
+                                    Err(e) => {
+                                        info!(%run_id, error = %e, "react_loop: OpenAiProvider::new failed");
+                                        let _ = authority.fail_run(run_id, e.to_string());
+                                        return;
+                                    }
                                 }
                             };
                             // Chat without a flow / authored system prompt
-                                // gets a small default so the model has a clear
-                                // "you may stop now" condition. Without this,
-                                // gpt-4o-class models often keep calling tools
-                                // until max_turns hits.
-                                let chat_system_prompt = effective_system_prompt
-                                    .or_else(|| Some(default_chat_system_prompt()));
+                            // gets a small default so the model has a clear
+                            // "you may stop now" condition. Without this,
+                            // gpt-4o-class models often keep calling tools
+                            // until max_turns hits.
+                            let chat_system_prompt = effective_system_prompt
+                                .or_else(|| Some(default_chat_system_prompt()));
+
+                            // Compact the session thread before starting the run
+                            // if it is approaching the model's context limit.
+                            let effective_thread = if !prior_thread.is_empty() {
+                                let result = maybe_compact(
+                                    prior_thread,
+                                    llm.clone(),
+                                    &model,
+                                    DEFAULT_THRESHOLD_PCT,
+                                    DEFAULT_RECENCY_TURNS,
+                                )
+                                .await;
+                                if result.compacted {
+                                    // Persist the compacted thread and optionally
+                                    // write the summary to the session memory namespace.
+                                    if let Some(ref sid) = maybe_session_id {
+                                        let _ = authority.flush_thread(sid, result.thread.clone());
+                                        if let Some(ref summary) = result.summary {
+                                            let ns = crate::runtime::state::MemoryNamespaceId::from(
+                                                format!("session:{sid}").as_str(),
+                                            );
+                                            let count = authority
+                                                .session_thread(sid)
+                                                .map(|t| t.len())
+                                                .unwrap_or(0);
+                                            let mem_key = format!("compaction/{count}");
+                                            let _ = authority.put_memory(ns.clone(), crate::runtime::state::MemoryEntry {
+                                                key: mem_key.clone(),
+                                                value: serde_json::json!({ "summary": summary }),
+                                                updated_at_ms: crate::runtime::authority::now_ms(),
+                                            });
+                                            // Emit a trace so the UI can show memory-write events.
+                                            authority.emit_for_run(
+                                                run_id,
+                                                crate::protocol::events::RuntimeEventPayload::Trace {
+                                                    run_id: run_id.to_string(),
+                                                    trace: serde_json::json!({
+                                                        "kind": "memory_write",
+                                                        "namespace": ns.0,
+                                                        "key": mem_key,
+                                                        "source": "compaction",
+                                                    }),
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                                result.thread
+                            } else {
+                                prior_thread
+                            };
+
                             let cfg = LoopConfig {
                                 model,
                                 system_prompt: chat_system_prompt,
                                 user_input,
-                                max_turns: 20,
+                                max_turns: 99999,
                                 temperature: None,
                                 reasoning_effort: chat_reasoning_effort,
-                                llm: Arc::new(llm),
+                                llm,
                                 tools,
+                                thinking: thinking_config,
+                                initial_thread: if effective_thread.is_empty() {
+                                    None
+                                } else {
+                                    Some(effective_thread)
+                                },
+                                session_id: maybe_session_id.clone(),
+                                reflection: chat_agent_def
+                                    .as_ref()
+                                    .and_then(|d| d.reflection.clone()),
+                                write_namespace: chat_agent_def
+                                    .as_ref()
+                                    .filter(|d| !d.memory_namespace.is_empty())
+                                    .map(|d| {
+                                        crate::runtime::state::MemoryNamespaceId::from(
+                                            d.memory_namespace.as_str(),
+                                        )
+                                    }),
+                                memory_manager: memory_manager.clone(),
                             };
-                            let result = ReactLoop::new(authority.clone(), run_id, cfg)
-                                .run()
-                                .await;
+                            let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
                             info!(%run_id, ok = result.is_ok(), "react_loop: finished");
-                            if let Err(e) = result {
+                            if let Err(e) = &result {
                                 info!(%run_id, error = %e, "react_loop: failed with error");
+                            }
+                            // If a ChatStore is configured, append the final session thread
+                            // to history.jsonl. The ReactLoop already flushed to the authority
+                            // snapshot internally; we read it back here to write the JSONL copy.
+                            if let (Some(ref sid), Some(ref cache_dir)) =
+                                (&maybe_session_id, &workspace_cache_dir_clone)
+                            {
+                                if let Some(thread) = authority.session_thread(sid) {
+                                    if !thread.is_empty() {
+                                        let store =
+                                            crate::runtime::chat_store::ChatStore::new(cache_dir);
+                                        let _ = store.append_turns(sid, &thread);
+                                    }
+                                }
                             }
                         });
                         ControlResponse::RunStarted {
@@ -803,14 +1217,46 @@ impl Handler for RuntimeHandler {
                 }
             }
 
-            ControlRequest::CancelRun { run_id } => {
-                self.run_op(&run_id, |a, id| a.cancel_run(id))
-            }
-            ControlRequest::PauseRun { run_id } => {
-                self.run_op(&run_id, |a, id| a.pause_run(id))
-            }
-            ControlRequest::ResumeRun { run_id } => {
-                self.run_op(&run_id, |a, id| a.resume_run(id))
+            ControlRequest::CancelRun { run_id } => self.run_op(&run_id, |a, id| a.cancel_run(id)),
+            ControlRequest::PauseRun { run_id } => self.run_op(&run_id, |a, id| a.pause_run(id)),
+            ControlRequest::ResumeRun { run_id } => self.run_op(&run_id, |a, id| a.resume_run(id)),
+            ControlRequest::SwapMemory {
+                session_id,
+                target,
+                namespace_id,
+            } => {
+                // Validate target field.
+                match target.as_str() {
+                    "read" | "write" | "both" => {}
+                    _ => {
+                        return ControlResponse::Err {
+                            error: ControlError::InvalidRequest {
+                                message: format!(
+                                    "SwapMemory: unknown target '{}', expected read|write|both",
+                                    target
+                                ),
+                            },
+                        };
+                    }
+                }
+                let sid = crate::runtime::state::SessionId::from(session_id.as_str());
+                let ns_id = crate::runtime::state::MemoryNamespaceId::from(namespace_id.as_str());
+                if self
+                    .authority
+                    .update_session_namespaces(&sid, &target, ns_id)
+                {
+                    info!(
+                        session_id,
+                        target, namespace_id, "SwapMemory: namespace updated"
+                    );
+                    ControlResponse::Ack
+                } else {
+                    ControlResponse::Err {
+                        error: ControlError::InvalidRequest {
+                            message: format!("SwapMemory: session '{}' not found", session_id),
+                        },
+                    }
+                }
             }
             ControlRequest::PostInput { run_id, payload } => {
                 self.run_op(&run_id, |a, id| a.post_input(id, payload.clone()))
@@ -850,7 +1296,8 @@ impl Handler for RuntimeHandler {
 
                 if let Some(fctx) = flow_ctx_opt {
                     // Load flow definition for routing decisions.
-                    let flow_def_path = fctx.workspace_root
+                    let flow_def_path = fctx
+                        .workspace_root
                         .join(".cronymax")
                         .join("flows")
                         .join(&fctx.flow_id)
@@ -889,12 +1336,16 @@ impl Handler for RuntimeHandler {
                         let port = parts[1];
 
                         if is_approve {
-                            match fctx.flow_runtime.on_document_approved(
-                                &flow_run_id,
-                                producing_agent,
-                                port,
-                                &flow_def,
-                            ).await {
+                            match fctx
+                                .flow_runtime
+                                .on_document_approved(
+                                    &flow_run_id,
+                                    producing_agent,
+                                    port,
+                                    &flow_def,
+                                )
+                                .await
+                            {
                                 Ok(contexts) => {
                                     for inv_ctx in contexts {
                                         let agent_id = inv_ctx.owner.clone();
@@ -907,19 +1358,21 @@ impl Handler for RuntimeHandler {
                                 }
                             }
                         } else {
-                            match fctx.flow_runtime.on_rejected_requeue(
-                                &flow_run_id,
-                                producing_agent,
-                                port,
-                                &flow_def,
-                            ).await {
+                            match fctx
+                                .flow_runtime
+                                .on_rejected_requeue(&flow_run_id, producing_agent, port, &flow_def)
+                                .await
+                            {
                                 Ok(Some(inv_ctx)) => {
                                     let agent_id = inv_ctx.owner.clone();
                                     info!(agent_id, node_id = %inv_ctx.node_id, "resolve_review: requeueing after rejection");
                                     spawn_agent_loop(fctx.clone(), agent_id, inv_ctx);
                                 }
                                 Ok(None) => {
-                                    info!(producing_agent, port, "resolve_review: rejection, no requeue needed");
+                                    info!(
+                                        producing_agent,
+                                        port, "resolve_review: rejection, no requeue needed"
+                                    );
                                 }
                                 Err(e) => {
                                     warn!(error = %e, "resolve_review: on_rejected_requeue failed");
@@ -931,7 +1384,10 @@ impl Handler for RuntimeHandler {
 
                 // Always also resolve via the RuntimeAuthority (for legacy
                 // non-flow runs and review-gate enforcement in the agent loop).
-                match self.authority.resolve_review(run, review, perm_decision, notes) {
+                match self
+                    .authority
+                    .resolve_review(run, review, perm_decision, notes)
+                {
                     Ok(()) => ControlResponse::Ack,
                     Err(e) => ControlResponse::Err {
                         error: authority_err_to_control(e, None, Some(&run_id)),
@@ -940,10 +1396,9 @@ impl Handler for RuntimeHandler {
             }
 
             // ── Phase 2: Workspace / file / flow handlers ─────────────────
-
             ControlRequest::WorkspaceLayout { workspace_root } => {
-                use crate::workspace::WorkspaceLayout;
-                let layout = WorkspaceLayout::new(&workspace_root);
+                use crate::workspace::Workspace;
+                let layout = Workspace::new(&workspace_root);
                 let version = layout.read_version().await;
                 ControlResponse::Data {
                     payload: serde_json::json!({
@@ -954,12 +1409,15 @@ impl Handler for RuntimeHandler {
                         "doc_types_dir":  layout.doc_types_dir().to_string_lossy(),
                         "conflicts_dir":  layout.conflicts_dir().to_string_lossy(),
                         "version":        version,
-                        "layout_version": crate::workspace::layout::LAYOUT_VERSION,
+                        "layout_version": crate::workspace::Workspace::LAYOUT_VERSION,
                     }),
                 }
             }
 
-            ControlRequest::FileRead { workspace_root, path } => {
+            ControlRequest::FileRead {
+                workspace_root,
+                path,
+            } => {
                 use crate::workspace::FileBroker;
                 let broker = FileBroker::new(&workspace_root);
                 match broker.read_text(std::path::Path::new(&path)).await {
@@ -967,32 +1425,53 @@ impl Handler for RuntimeHandler {
                         payload: serde_json::json!({ "content": content }),
                     },
                     Err(e) => ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     },
                 }
             }
 
-            ControlRequest::FileWrite { workspace_root, path, content } => {
+            ControlRequest::FileWrite {
+                workspace_root,
+                path,
+                content,
+            } => {
                 use crate::workspace::FileBroker;
                 let broker = FileBroker::new(&workspace_root);
-                match broker.write_text(std::path::Path::new(&path), &content).await {
+                match broker
+                    .write_text(std::path::Path::new(&path), &content)
+                    .await
+                {
                     Ok(()) => ControlResponse::Ack,
                     Err(e) => ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     },
                 }
             }
 
-            ControlRequest::FlowList { workspace_root, builtin_flows_dir } => {
-                use crate::workspace::{WorkspaceLayout, load_flow_yaml};
-                let layout = WorkspaceLayout::new(&workspace_root);
+            ControlRequest::FlowList {
+                workspace_root,
+                builtin_flows_dir,
+            } => {
+                use crate::workspace::{load_flow_yaml, Workspace};
+                let layout = Workspace::new(&workspace_root);
                 let mut flows: Vec<serde_json::Value> = Vec::new();
                 let mut local_ids = std::collections::HashSet::new();
 
                 // Helper: build a flow summary entry from a parsed doc.
-                fn flow_summary(doc: &crate::workspace::FlowYamlDoc, builtin: bool) -> serde_json::Value {
+                fn flow_summary(
+                    doc: &crate::workspace::FlowYamlDoc,
+                    builtin: bool,
+                ) -> serde_json::Value {
                     let agents: Vec<&str> = doc.agents.iter().map(|a| a.id.as_str()).collect();
-                    let node_count = if doc.nodes.is_empty() { doc.edges.len() } else { doc.nodes.len() };
+                    let node_count = if doc.nodes.is_empty() {
+                        doc.edges.len()
+                    } else {
+                        doc.nodes.len()
+                    };
                     serde_json::json!({
                         "id": doc.id,
                         "name": doc.name,
@@ -1007,7 +1486,9 @@ impl Handler for RuntimeHandler {
                 // Scan workspace-local flows first.
                 if let Ok(mut rd) = tokio::fs::read_dir(layout.flows_dir()).await {
                     while let Ok(Some(entry)) = rd.next_entry().await {
-                        if !entry.path().is_dir() { continue; }
+                        if !entry.path().is_dir() {
+                            continue;
+                        }
                         let id = entry.file_name().to_string_lossy().to_string();
                         let flow_yaml_path = entry.path().join("flow.yaml");
                         if let Some(doc) = load_flow_yaml(&flow_yaml_path, &id).await {
@@ -1021,9 +1502,13 @@ impl Handler for RuntimeHandler {
                 if let Some(builtin_dir) = builtin_flows_dir {
                     if let Ok(mut rd) = tokio::fs::read_dir(&builtin_dir).await {
                         while let Ok(Some(entry)) = rd.next_entry().await {
-                            if !entry.path().is_dir() { continue; }
+                            if !entry.path().is_dir() {
+                                continue;
+                            }
                             let id = entry.file_name().to_string_lossy().to_string();
-                            if local_ids.contains(&id) { continue; }
+                            if local_ids.contains(&id) {
+                                continue;
+                            }
                             let flow_yaml_path = entry.path().join("flow.yaml");
                             if let Some(doc) = load_flow_yaml(&flow_yaml_path, &id).await {
                                 flows.push(flow_summary(&doc, true));
@@ -1032,44 +1517,61 @@ impl Handler for RuntimeHandler {
                     }
                 }
 
-                ControlResponse::Data { payload: serde_json::json!({ "flows": flows }) }
+                ControlResponse::Data {
+                    payload: serde_json::json!({ "flows": flows }),
+                }
             }
 
-            ControlRequest::FlowLoad { workspace_root, flow_id } => {
-                use crate::workspace::{WorkspaceLayout, load_flow_yaml};
-                let layout = WorkspaceLayout::new(&workspace_root);
+            ControlRequest::FlowLoad {
+                workspace_root,
+                flow_id,
+            } => {
+                use crate::workspace::{load_flow_yaml, Workspace};
+                let layout = Workspace::new(&workspace_root);
                 let path = layout.flow_file(&flow_id);
                 match load_flow_yaml(&path, &flow_id).await {
                     Some(doc) => {
                         let agents: Vec<&str> = doc.agents.iter().map(|a| a.id.as_str()).collect();
-                        let edges: Vec<serde_json::Value> = doc.edges.iter().map(|e| {
-                            serde_json::json!({
-                                "from": e.from,
-                                "to": e.to,
-                                "port": e.port,
-                                "requires_human_approval": e.requires_human_approval,
-                                "on_approved_reschedule": e.on_approved_reschedule,
-                                "reviewer_agents": e.reviewer_agents,
-                                "max_cycles": e.max_cycles,
-                                "on_cycle_exhausted": e.on_cycle_exhausted,
-                            })
-                        }).collect();
-                        let nodes: Vec<serde_json::Value> = doc.nodes.iter().map(|n| {
-                            let outputs: Vec<serde_json::Value> = n.outputs.iter().map(|o| {
+                        let edges: Vec<serde_json::Value> = doc
+                            .edges
+                            .iter()
+                            .map(|e| {
                                 serde_json::json!({
-                                    "port": o.port,
-                                    "routes_to": o.routes_to,
-                                    "reviewers": o.reviewers,
-                                    "max_cycles": o.max_cycles,
-                                    "on_cycle_exhausted": o.on_cycle_exhausted,
+                                    "from": e.from,
+                                    "to": e.to,
+                                    "port": e.port,
+                                    "requires_human_approval": e.requires_human_approval,
+                                    "on_approved_reschedule": e.on_approved_reschedule,
+                                    "reviewer_agents": e.reviewer_agents,
+                                    "max_cycles": e.max_cycles,
+                                    "on_cycle_exhausted": e.on_cycle_exhausted,
                                 })
-                            }).collect();
-                            serde_json::json!({
-                                "id": n.id,
-                                "owner": n.owner,
-                                "outputs": outputs,
                             })
-                        }).collect();
+                            .collect();
+                        let nodes: Vec<serde_json::Value> = doc
+                            .nodes
+                            .iter()
+                            .map(|n| {
+                                let outputs: Vec<serde_json::Value> = n
+                                    .outputs
+                                    .iter()
+                                    .map(|o| {
+                                        serde_json::json!({
+                                            "port": o.port,
+                                            "routes_to": o.routes_to,
+                                            "reviewers": o.reviewers,
+                                            "max_cycles": o.max_cycles,
+                                            "on_cycle_exhausted": o.on_cycle_exhausted,
+                                        })
+                                    })
+                                    .collect();
+                                serde_json::json!({
+                                    "id": n.id,
+                                    "owner": n.owner,
+                                    "outputs": outputs,
+                                })
+                            })
+                            .collect();
                         ControlResponse::Data {
                             payload: serde_json::json!({
                                 "id": doc.id,
@@ -1093,14 +1595,20 @@ impl Handler for RuntimeHandler {
                 }
             }
 
-            ControlRequest::FlowSave { workspace_root, flow_id, graph } => {
-                use crate::workspace::{WorkspaceLayout, FlowYamlDoc, FlowYamlEdge};
-                use crate::workspace::flow_yaml::flow_yaml_to_string;
+            ControlRequest::FlowSave {
+                workspace_root,
+                flow_id,
+                graph,
+            } => {
+                use crate::workspace::flows::flow_yaml_to_string;
+                use crate::workspace::{FlowYamlDoc, FlowYamlEdge, Workspace};
 
                 // Validate flow_id (alphanumeric + _ -)
                 let valid = !flow_id.is_empty()
                     && flow_id.len() <= 64
-                    && flow_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                    && flow_id
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                     && !flow_id.starts_with('-');
                 if !valid {
                     return ControlResponse::Err {
@@ -1116,13 +1624,16 @@ impl Handler for RuntimeHandler {
                 if let Some(nodes) = graph.get("nodes").and_then(|v| v.as_array()) {
                     for node in nodes {
                         let node_id = node.get("id").and_then(|v| v.as_i64()).unwrap_or(-1);
-                        let agent_name = node.get("config")
+                        let agent_name = node
+                            .get("config")
                             .and_then(|c| c.get("agent_name"))
                             .and_then(|v| v.as_str())
                             .or_else(|| node.get("name").and_then(|v| v.as_str()))
                             .unwrap_or("")
                             .to_owned();
-                        if agent_name.is_empty() || node_id < 0 { continue; }
+                        if agent_name.is_empty() || node_id < 0 {
+                            continue;
+                        }
                         agent_names.push(agent_name.clone());
                         id_to_agent.insert(node_id, agent_name);
                     }
@@ -1132,15 +1643,23 @@ impl Handler for RuntimeHandler {
                 if let Some(edge_arr) = graph.get("edges").and_then(|v| v.as_array()) {
                     for e in edge_arr {
                         let from_id = e.get("from_id").and_then(|v| v.as_i64()).unwrap_or(-1);
-                        let to_id   = e.get("to_id").and_then(|v| v.as_i64()).unwrap_or(-1);
-                        let Some(from_agent) = id_to_agent.get(&from_id) else { continue };
+                        let to_id = e.get("to_id").and_then(|v| v.as_i64()).unwrap_or(-1);
+                        let Some(from_agent) = id_to_agent.get(&from_id) else {
+                            continue;
+                        };
                         let to_agent = id_to_agent.get(&to_id).cloned().unwrap_or_default();
                         edges.push(FlowYamlEdge {
                             from: from_agent.clone(),
                             to: to_agent,
-                            port: e.get("port").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-                            requires_human_approval: e.get("requires_human_approval")
-                                .and_then(|v| v.as_bool()).unwrap_or(false),
+                            port: e
+                                .get("port")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned(),
+                            requires_human_approval: e
+                                .get("requires_human_approval")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
                             ..Default::default()
                         });
                     }
@@ -1149,20 +1668,23 @@ impl Handler for RuntimeHandler {
                 let doc = FlowYamlDoc {
                     id: flow_id.clone(),
                     name: flow_id.clone(),
-                    agents: agent_names.into_iter()
-                        .map(|s| crate::workspace::flow_yaml::FlowYamlAgent { id: s })
+                    agents: agent_names
+                        .into_iter()
+                        .map(|s| crate::workspace::flows::FlowYamlAgent { id: s })
                         .collect(),
                     edges,
                     ..Default::default()
                 };
 
                 let yaml = flow_yaml_to_string(&doc);
-                let layout = WorkspaceLayout::new(&workspace_root);
+                let layout = Workspace::new(&workspace_root);
                 let flow_path = layout.flow_file(&flow_id);
                 if let Some(parent) = flow_path.parent() {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
                         return ControlResponse::Err {
-                            error: ControlError::Internal { message: e.to_string() },
+                            error: ControlError::Internal {
+                                message: e.to_string(),
+                            },
                         };
                     }
                 }
@@ -1170,39 +1692,85 @@ impl Handler for RuntimeHandler {
                 let tmp = flow_path.with_extension("yaml.tmp");
                 if let Err(e) = tokio::fs::write(&tmp, &yaml).await {
                     return ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     };
                 }
                 if let Err(e) = tokio::fs::rename(&tmp, &flow_path).await {
                     return ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     };
                 }
                 ControlResponse::Ack
             }
 
             // ── Phase 3: Agent registry ───────────────────────────────────
-
             ControlRequest::AgentRegistryList { workspace_root } => {
-                use crate::workspace::{AgentRegistry, WorkspaceLayout};
-                let layout = WorkspaceLayout::new(&workspace_root);
+                use crate::workspace::{AgentRegistry, Workspace};
+                let layout = Workspace::new(&workspace_root);
                 let mut reg = AgentRegistry::new(layout.agents_dir());
                 reg.refresh().await;
-                let agents: Vec<serde_json::Value> = reg.names().into_iter()
-                    .filter_map(|n| reg.get(&n).map(|d| serde_json::json!({
-                        "name": d.name,
-                        "kind": d.kind,
-                        "llm": d.llm,
-                        "llm_provider": d.llm_provider,
-                        "llm_model": d.llm_model,
-                    })))
-                    .collect();
-                ControlResponse::Data { payload: serde_json::json!({ "agents": agents }) }
+                // Prepend the Crony builtin sentinel so the frontend always
+                // sees it, even when no YAML file exists on disk.
+                let mut agents: Vec<serde_json::Value> = vec![serde_json::json!({
+                    "name": crate::crony::CronyBuiltin::ID,
+                    "kind": "worker",
+                    "llm": "",
+                    "llm_provider": "",
+                    "llm_model": "",
+                    "builtin": true,
+                    "prompt_sealed": true,
+                })];
+                agents.extend(
+                    reg.names()
+                        .into_iter()
+                        .filter(|n| !n.eq_ignore_ascii_case(crate::crony::CronyBuiltin::ID))
+                        .filter_map(|n| {
+                            reg.get(&n).map(|d| {
+                                serde_json::json!({
+                                    "name": d.name,
+                                    "kind": d.kind,
+                                    "llm": d.llm,
+                                    "llm_provider": d.llm_provider,
+                                    "llm_model": d.llm_model,
+                                    "builtin": false,
+                                    "prompt_sealed": false,
+                                })
+                            })
+                        }),
+                );
+                ControlResponse::Data {
+                    payload: serde_json::json!({ "agents": agents }),
+                }
             }
 
-            ControlRequest::AgentRegistryLoad { workspace_root, name } => {
-                use crate::workspace::{AgentRegistry, WorkspaceLayout};
-                let layout = WorkspaceLayout::new(&workspace_root);
+            ControlRequest::AgentRegistryLoad {
+                workspace_root,
+                name,
+            } => {
+                // Intercept the crony builtin: return its sealed definition.
+                if name.eq_ignore_ascii_case(crate::crony::CronyBuiltin::ID) {
+                    let def = crate::crony::CronyBuiltin::def();
+                    return ControlResponse::Data {
+                        payload: serde_json::json!({
+                            "name": def.name,
+                            "kind": def.kind.as_str(),
+                            "llm": "",
+                            "llm_provider": "",
+                            "llm_model": "",
+                            "system_prompt": def.system_prompt,
+                            "memory_namespace": def.memory_namespace,
+                            "tools": def.tools,
+                            "builtin": true,
+                            "prompt_sealed": true,
+                        }),
+                    };
+                }
+                use crate::workspace::{AgentRegistry, Workspace};
+                let layout = Workspace::new(&workspace_root);
                 let mut reg = AgentRegistry::new(layout.agents_dir());
                 reg.refresh().await;
                 match reg.get(&name) {
@@ -1217,6 +1785,8 @@ impl Handler for RuntimeHandler {
                             "memory_namespace": d.memory_namespace,
                             "tools": d.tools,
                             "reasoning_effort": d.reasoning_effort,
+                            "builtin": false,
+                            "prompt_sealed": false,
                         }),
                     },
                     None => ControlResponse::Err {
@@ -1227,56 +1797,136 @@ impl Handler for RuntimeHandler {
                 }
             }
 
-            ControlRequest::AgentRegistrySave { workspace_root, name, yaml } => {
-                use crate::workspace::{AgentRegistry, WorkspaceLayout};
-                let layout = WorkspaceLayout::new(&workspace_root);
+            ControlRequest::AgentRegistrySave {
+                workspace_root,
+                name,
+                agent_kind,
+                llm,
+                system_prompt,
+                memory_namespace,
+                tools_csv,
+            } => {
+                // Guard: the Crony builtin prompt is sealed.
+                if name.eq_ignore_ascii_case(crate::crony::CronyBuiltin::ID) {
+                    return ControlResponse::Err {
+                        error: ControlError::InvalidRequest {
+                            message: "crony is a builtin agent: its system prompt cannot be overwritten. \
+                                     Create crony.agent.yaml to override peripheral fields only (reflection, vars, memory_namespace).".into(),
+                        },
+                    };
+                }
+
+                // Build canonical YAML from the structured fields.
+                let effective_kind = if agent_kind == "reviewer" {
+                    "reviewer"
+                } else {
+                    "worker"
+                };
+                let tools: Vec<&str> = tools_csv
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let tools_yaml = if tools.is_empty() {
+                    "[]".to_string()
+                } else {
+                    let items = tools
+                        .iter()
+                        .map(|t| format!("  - {t}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    format!("\n{items}")
+                };
+                let effective_mem = if memory_namespace.is_empty() {
+                    name.clone()
+                } else {
+                    memory_namespace.clone()
+                };
+                let yaml = format!(
+                    "name: {name}\nkind: {effective_kind}\nllm: {llm}\nsystem_prompt: |\n  {sp}\nmemory_namespace: {effective_mem}\ntools:{tools_yaml}\n",
+                    sp = system_prompt.replace('\n', "\n  "),
+                );
+
+                use crate::workspace::{AgentRegistry, Workspace};
+                let layout = Workspace::new(&workspace_root);
                 let mut reg = AgentRegistry::new(layout.agents_dir());
                 match reg.save(&name, &yaml).await {
                     Ok(()) => ControlResponse::Ack,
                     Err(e) => ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     },
                 }
             }
 
-            ControlRequest::AgentRegistryDelete { workspace_root, name } => {
-                use crate::workspace::{AgentRegistry, WorkspaceLayout};
-                let layout = WorkspaceLayout::new(&workspace_root);
+            ControlRequest::AgentRegistryDelete {
+                workspace_root,
+                name,
+            } => {
+                // Guard: the Crony builtin cannot be deleted.
+                if name.eq_ignore_ascii_case(crate::crony::CronyBuiltin::ID) {
+                    return ControlResponse::Err {
+                        error: ControlError::InvalidRequest {
+                            message: "crony is a builtin agent and cannot be deleted.".into(),
+                        },
+                    };
+                }
+                use crate::workspace::{AgentRegistry, Workspace};
+                let layout = Workspace::new(&workspace_root);
                 let mut reg = AgentRegistry::new(layout.agents_dir());
                 reg.refresh().await;
                 match reg.delete(&name).await {
                     Ok(()) => ControlResponse::Ack,
                     Err(e) => ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     },
                 }
             }
 
             // ── Phase 3: Doc-type registry ────────────────────────────────
-
-            ControlRequest::DocTypeList { workspace_root, builtin_doc_types_dir } => {
-                use crate::workspace::{DocTypeRegistry, WorkspaceLayout};
-                let layout = WorkspaceLayout::new(&workspace_root);
-                let builtin = builtin_doc_types_dir.as_deref()
+            ControlRequest::DocTypeList {
+                workspace_root,
+                builtin_doc_types_dir,
+            } => {
+                use crate::workspace::{DocTypeRegistry, Workspace};
+                let layout = Workspace::new(&workspace_root);
+                let builtin = builtin_doc_types_dir
+                    .as_deref()
                     .map(std::path::Path::new)
                     .unwrap_or(std::path::Path::new(""))
                     .to_owned();
                 let mut reg = DocTypeRegistry::new(builtin, layout.doc_types_dir());
                 reg.refresh().await;
-                let types: Vec<serde_json::Value> = reg.names().into_iter()
-                    .filter_map(|n| reg.get(&n).map(|s| serde_json::json!({
-                        "name": s.name,
-                        "display_name": s.display_name,
-                        "user_defined": s.user_defined,
-                    })))
+                let types: Vec<serde_json::Value> = reg
+                    .names()
+                    .into_iter()
+                    .filter_map(|n| {
+                        reg.get(&n).map(|s| {
+                            serde_json::json!({
+                                "name": s.name,
+                                "display_name": s.display_name,
+                                "user_defined": s.user_defined,
+                            })
+                        })
+                    })
                     .collect();
-                ControlResponse::Data { payload: serde_json::json!({ "doc_types": types }) }
+                ControlResponse::Data {
+                    payload: serde_json::json!({ "doc_types": types }),
+                }
             }
 
-            ControlRequest::DocTypeLoad { workspace_root, builtin_doc_types_dir, name } => {
-                use crate::workspace::{DocTypeRegistry, WorkspaceLayout};
-                let layout = WorkspaceLayout::new(&workspace_root);
-                let builtin = builtin_doc_types_dir.as_deref()
+            ControlRequest::DocTypeLoad {
+                workspace_root,
+                builtin_doc_types_dir,
+                name,
+            } => {
+                use crate::workspace::{DocTypeRegistry, Workspace};
+                let layout = Workspace::new(&workspace_root);
+                let builtin = builtin_doc_types_dir
+                    .as_deref()
                     .map(std::path::Path::new)
                     .unwrap_or(std::path::Path::new(""))
                     .to_owned();
@@ -1299,33 +1949,50 @@ impl Handler for RuntimeHandler {
                 }
             }
 
-            ControlRequest::DocTypeSave { workspace_root, name, display_name, description } => {
-                use crate::workspace::{DocTypeRegistry, WorkspaceLayout};
-                let layout = WorkspaceLayout::new(&workspace_root);
+            ControlRequest::DocTypeSave {
+                workspace_root,
+                name,
+                display_name,
+                description,
+            } => {
+                use crate::workspace::{DocTypeRegistry, Workspace};
+                let layout = Workspace::new(&workspace_root);
                 let mut reg = DocTypeRegistry::new("", layout.doc_types_dir());
                 match reg.save(&name, &display_name, &description).await {
                     Ok(()) => ControlResponse::Ack,
                     Err(e) => ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     },
                 }
             }
 
-            ControlRequest::DocTypeDelete { workspace_root, name } => {
-                use crate::workspace::{DocTypeRegistry, WorkspaceLayout};
-                let layout = WorkspaceLayout::new(&workspace_root);
+            ControlRequest::DocTypeDelete {
+                workspace_root,
+                name,
+            } => {
+                use crate::workspace::{DocTypeRegistry, Workspace};
+                let layout = Workspace::new(&workspace_root);
                 let mut reg = DocTypeRegistry::new("", layout.doc_types_dir());
                 match reg.delete(&name).await {
                     Ok(()) => ControlResponse::Ack,
                     Err(e) => ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     },
                 }
             }
 
             // ── Phase 4: Terminal PTY sessions ────────────────────────────
-
-            ControlRequest::TerminalStart { terminal_id, workspace_root, shell, cols, rows } => {
+            ControlRequest::TerminalStart {
+                terminal_id,
+                workspace_root,
+                shell,
+                cols,
+                rows,
+            } => {
                 let cols = cols.unwrap_or(100);
                 let rows = rows.unwrap_or(30);
                 let shell = shell.unwrap_or_else(|| "/bin/zsh".to_owned());
@@ -1336,7 +2003,7 @@ impl Handler for RuntimeHandler {
                 let mgr = {
                     let mut map = self.terminal_managers.lock();
                     map.entry(workspace_root.clone())
-                        .or_insert_with(crate::terminal::new_shared)
+                        .or_insert_with(crate::terminal::PtySessionManager::new_shared)
                         .clone()
                 };
 
@@ -1347,24 +2014,33 @@ impl Handler for RuntimeHandler {
                 {
                     let tid_out = tid.clone();
                     let mut mgr_guard = mgr.lock().await;
-                    if let Err(e) = mgr_guard.create(
-                        tid.clone(), cwd, &shell, cols, rows,
-                        move |chunk| {
-                            let data_b64 = base64_encode(&chunk);
-                            authority.emit(
-                                format!("terminal:{tid_out}"),
-                                crate::protocol::events::RuntimeEventPayload::Raw {
-                                    data: serde_json::json!({
-                                        "id": tid_out,
-                                        "data": data_b64,
-                                    }),
-                                },
-                            );
-                        },
-                        move |_code| { /* exit handled on renderer side */ },
-                    ).await {
+                    if let Err(e) = mgr_guard
+                        .create(
+                            tid.clone(),
+                            cwd,
+                            &shell,
+                            cols,
+                            rows,
+                            move |chunk| {
+                                let data_b64 = base64_encode(&chunk);
+                                authority.emit(
+                                    format!("terminal:{tid_out}"),
+                                    crate::protocol::events::RuntimeEventPayload::Raw {
+                                        data: serde_json::json!({
+                                            "id": tid_out,
+                                            "data": data_b64,
+                                        }),
+                                    },
+                                );
+                            },
+                            move |_code| { /* exit handled on renderer side */ },
+                        )
+                        .await
+                    {
                         return ControlResponse::Err {
-                            error: ControlError::Internal { message: e.to_string() },
+                            error: ControlError::Internal {
+                                message: e.to_string(),
+                            },
                         };
                     }
                 };
@@ -1388,7 +2064,11 @@ impl Handler for RuntimeHandler {
                 ControlResponse::Ack
             }
 
-            ControlRequest::TerminalResize { terminal_id, cols, rows } => {
+            ControlRequest::TerminalResize {
+                terminal_id,
+                cols,
+                rows,
+            } => {
                 let mgr = {
                     let map = self.terminal_managers.lock();
                     map.values().next().cloned()
@@ -1413,12 +2093,13 @@ impl Handler for RuntimeHandler {
             }
 
             // ── Document store ────────────────────────────────────────────
-
-            ControlRequest::DocumentList { workspace_root, flow_id } => {
-                let flow_dir =
-                    crate::workspace::WorkspaceLayout::new(&workspace_root).flow_dir(&flow_id);
+            ControlRequest::DocumentList {
+                workspace_root,
+                flow_id,
+            } => {
+                let flow_dir = crate::workspace::Workspace::new(&workspace_root).flow_dir(&flow_id);
                 let result = tokio::task::spawn_blocking(move || {
-                    crate::document::DocumentStore::new(flow_dir).list()
+                    crate::flow::document::DocumentStore::new(flow_dir).list()
                 })
                 .await
                 .unwrap_or_default();
@@ -1438,11 +2119,15 @@ impl Handler for RuntimeHandler {
                 }
             }
 
-            ControlRequest::DocumentRead { workspace_root, flow_id, name, revision } => {
-                let flow_dir =
-                    crate::workspace::WorkspaceLayout::new(&workspace_root).flow_dir(&flow_id);
+            ControlRequest::DocumentRead {
+                workspace_root,
+                flow_id,
+                name,
+                revision,
+            } => {
+                let flow_dir = crate::workspace::Workspace::new(&workspace_root).flow_dir(&flow_id);
                 let result = tokio::task::spawn_blocking(move || {
-                    let store = crate::document::DocumentStore::new(flow_dir);
+                    let store = crate::flow::document::DocumentStore::new(flow_dir);
                     if let Some(rev) = revision {
                         let content = store.read_revision(&name, rev)?;
                         Ok::<_, anyhow::Error>((rev, content))
@@ -1465,16 +2150,22 @@ impl Handler for RuntimeHandler {
                         },
                     },
                     Err(e) => ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     },
                 }
             }
 
-            ControlRequest::DocumentSubmit { workspace_root, flow_id, name, content } => {
-                let flow_dir =
-                    crate::workspace::WorkspaceLayout::new(&workspace_root).flow_dir(&flow_id);
+            ControlRequest::DocumentSubmit {
+                workspace_root,
+                flow_id,
+                name,
+                content,
+            } => {
+                let flow_dir = crate::workspace::Workspace::new(&workspace_root).flow_dir(&flow_id);
                 let result = tokio::task::spawn_blocking(move || {
-                    crate::document::DocumentStore::new(flow_dir)
+                    crate::flow::document::DocumentStore::new(flow_dir)
                         .submit(&name, &content, 5000)
                 })
                 .await
@@ -1488,7 +2179,9 @@ impl Handler for RuntimeHandler {
                         }),
                     },
                     Err(e) => ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     },
                 }
             }
@@ -1501,11 +2194,14 @@ impl Handler for RuntimeHandler {
                 block_id,
                 suggestion,
             } => {
-                let flow_dir =
-                    crate::workspace::WorkspaceLayout::new(&workspace_root).flow_dir(&flow_id);
+                let flow_dir = crate::workspace::Workspace::new(&workspace_root).flow_dir(&flow_id);
                 let result = tokio::task::spawn_blocking(move || {
-                    crate::document::DocumentStore::new(flow_dir)
-                        .suggestion_apply(&name, &block_id, &suggestion, 5000)
+                    crate::flow::document::DocumentStore::new(flow_dir).suggestion_apply(
+                        &name,
+                        &block_id,
+                        &suggestion,
+                        5000,
+                    )
                 })
                 .await
                 .unwrap_or_else(|e| Err(anyhow::anyhow!("spawn_blocking: {}", e)));
@@ -1518,18 +2214,65 @@ impl Handler for RuntimeHandler {
                         }),
                     },
                     Err(e) => ControlResponse::Err {
-                        error: ControlError::Internal { message: e.to_string() },
+                        error: ControlError::Internal {
+                            message: e.to_string(),
+                        },
                     },
+                }
+            }
+
+            ControlRequest::MentionParse {
+                workspace_root,
+                flow_id,
+                text,
+            } => {
+                use crate::workspace::{load_flow_agents, Workspace};
+                let path = Workspace::new(&workspace_root).flow_file(&flow_id);
+                let known: std::collections::HashSet<String> =
+                    load_flow_agents(&path).await.into_iter().collect();
+
+                // @mention parser: @[a-zA-Z_][a-zA-Z0-9_-]*
+                let chars: Vec<char> = text.chars().collect();
+                let mut mentions: Vec<serde_json::Value> = Vec::new();
+                let mut unknown: Vec<serde_json::Value> = Vec::new();
+                let mut i = 0usize;
+                while i < chars.len() {
+                    if chars[i] != '@' {
+                        i += 1;
+                        continue;
+                    }
+                    // Skip if preceded by alphanumeric / '_'
+                    if i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
+                        i += 1;
+                        continue;
+                    }
+                    let mut j = i + 1;
+                    if j >= chars.len() || (!chars[j].is_alphabetic() && chars[j] != '_') {
+                        i += 1;
+                        continue;
+                    }
+                    while j < chars.len()
+                        && (chars[j].is_alphanumeric() || chars[j] == '_' || chars[j] == '-')
+                    {
+                        j += 1;
+                    }
+                    let name: String = chars[i + 1..j].iter().collect();
+                    if known.contains(&name) {
+                        mentions.push(serde_json::Value::String(name));
+                    } else {
+                        unknown.push(serde_json::Value::String(name));
+                    }
+                    i = j;
+                }
+
+                ControlResponse::Data {
+                    payload: serde_json::json!({ "mentions": mentions, "unknown": unknown }),
                 }
             }
         }
     }
 
-    async fn handle_capability_reply(
-        &self,
-        id: CorrelationId,
-        response: CapabilityResponse,
-    ) {
+    async fn handle_capability_reply(&self, id: CorrelationId, response: CapabilityResponse) {
         // Route the reply to whoever is awaiting this correlation id.
         if let Some(tx) = self.pending_capabilities.lock().remove(&id) {
             if tx.send(response).is_err() {
@@ -1587,10 +2330,10 @@ fn default_chat_system_prompt() -> String {
 fn base64_encode(data: &[u8]) -> String {
     // Simple base64 without dependencies — use the alphabet directly.
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = Vec::with_capacity(data.len().div_ceil(3) * 4);
     let mut i = 0;
     while i + 3 <= data.len() {
-        let n = (data[i] as u32) << 16 | (data[i+1] as u32) << 8 | data[i+2] as u32;
+        let n = (data[i] as u32) << 16 | (data[i + 1] as u32) << 8 | data[i + 2] as u32;
         out.push(ALPHABET[(n >> 18) as usize]);
         out.push(ALPHABET[((n >> 12) & 0x3f) as usize]);
         out.push(ALPHABET[((n >> 6) & 0x3f) as usize]);
@@ -1605,7 +2348,7 @@ fn base64_encode(data: &[u8]) -> String {
             out.extend_from_slice(b"==");
         }
         2 => {
-            let n = (data[i] as u32) << 16 | (data[i+1] as u32) << 8;
+            let n = (data[i] as u32) << 16 | (data[i + 1] as u32) << 8;
             out.push(ALPHABET[(n >> 18) as usize]);
             out.push(ALPHABET[((n >> 12) & 0x3f) as usize]);
             out.push(ALPHABET[((n >> 6) & 0x3f) as usize]);
@@ -1653,7 +2396,9 @@ fn authority_err_to_control(
 ) -> ControlError {
     match e {
         AuthorityError::UnknownSpace(id) => ControlError::UnknownSpace {
-            space_id: space_id.map(str::to_owned).unwrap_or_else(|| id.to_string()),
+            space_id: space_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| id.to_string()),
         },
         AuthorityError::UnknownRun(id) => ControlError::UnknownRun {
             run_id: run_id.map(str::to_owned).unwrap_or_else(|| id.to_string()),
@@ -1661,11 +2406,9 @@ fn authority_err_to_control(
         AuthorityError::UnknownReview(_) => ControlError::InvalidRequest {
             message: "unknown review".into(),
         },
-        AuthorityError::InvalidTransition { state, action, .. } => {
-            ControlError::InvalidState {
-                message: format!("cannot {action} from {state:?}"),
-            }
-        }
+        AuthorityError::InvalidTransition { state, action, .. } => ControlError::InvalidState {
+            message: format!("cannot {action} from {state:?}"),
+        },
         AuthorityError::ReviewAlreadyResolved => ControlError::InvalidState {
             message: "review already resolved".into(),
         },
@@ -1704,7 +2447,12 @@ mod tests {
     #[tokio::test]
     async fn start_run_then_subscribe_streams_status_event() {
         let auth = RuntimeAuthority::in_memory();
-        let space = Space { id: SpaceId::new(), name: "s".into() };
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
         let space_id = space.id;
         auth.upsert_space(space).unwrap();
 
@@ -1742,6 +2490,9 @@ mod tests {
                 request: ControlRequest::StartRun {
                     space_id: space_id.to_string(),
                     payload: serde_json::json!({}),
+                    session_id: None,
+                    session_name: None,
+                    agent_id: None,
                 },
             })
             .await
@@ -1756,7 +2507,10 @@ mod tests {
 
         // Expect the resulting Event message on the subscription.
         match client.recv().await.unwrap() {
-            RuntimeToClient::Event { subscription: s, event } => {
+            RuntimeToClient::Event {
+                subscription: s,
+                event,
+            } => {
                 assert_eq!(s, subscription);
                 assert_eq!(event.sequence, 0);
             }
@@ -1784,11 +2538,7 @@ mod tests {
         ) -> ControlResponse {
             self.0.handle_control(id, request).await
         }
-        async fn handle_capability_reply(
-            &self,
-            id: CorrelationId,
-            response: CapabilityResponse,
-        ) {
+        async fn handle_capability_reply(&self, id: CorrelationId, response: CapabilityResponse) {
             self.0.handle_capability_reply(id, response).await
         }
         async fn on_disconnected(&self) {

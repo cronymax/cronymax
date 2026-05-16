@@ -6,11 +6,11 @@
 #include <vector>
 
 #include "browser/bridge_handler.h"
-#include "browser/space_manager.h"
 #include "include/cef_client.h"
 #include "include/cef_drag_handler.h"
 #include "include/cef_keyboard_handler.h"
 #include "include/wrapper/cef_message_router.h"
+#include "runtime/space_manager.h"
 
 namespace cronymax {
 
@@ -113,7 +113,7 @@ class ClientHandler : public CefClient,
 
   // Callbacks set by MainWindow to receive browser events.
   std::function<void(int browser_id, const std::string& title)> on_title_change;
-  std::function<void(int browser_id, const std::string& url)>   on_address_change;
+  std::function<void(int browser_id, const std::string& url)> on_address_change;
   // Called on UI thread when a popup/new-window is requested. The handler may
   // open it in an in-app popover and return true to block native popup.
   // |browser_id| is the originating browser's identifier (0 if unknown), used
@@ -135,9 +135,8 @@ class ClientHandler : public CefClient,
   struct BrowserListener {
     std::function<void(const std::string& url)> on_address_change;
     std::function<void(const std::string& title)> on_title_change;
-    std::function<void(bool is_loading,
-                       bool can_go_back,
-                       bool can_go_forward)> on_loading_state_change;
+    std::function<void(bool is_loading, bool can_go_back, bool can_go_forward)>
+        on_loading_state_change;
     // Fired when the main frame finishes loading (http_status_code >= 0).
     std::function<void(const std::string& url)> on_load_end;
   };
@@ -155,4 +154,3 @@ class ClientHandler : public CefClient,
 };
 
 }  // namespace cronymax
-

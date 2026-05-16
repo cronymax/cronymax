@@ -1,0 +1,116 @@
+# Lefthook configuration — polyglot git hook runner.
+# Installed automatically via `bun install` (postinstall: lefthook install).
+# Run hooks manually: lefthook run <group>
+# Skip hooks for a single command: LEFTHOOK=0 git commit
+# CI: set LEFTHOOK=0 in the bun install step to suppress hook installation.
+
+# ---------------------------------------------------------------------------
+# PRE-COMMIT — fast, staged files only (parallel). Target: < 3s.
+# ---------------------------------------------------------------------------
+pre-commit:
+  parallel: true
+  jobs:
+    - name: biome-check
+      glob: "**/*.{ts,tsx,json}"
+      run: bun biome check --write {staged_files}
+      stage_fixed: true
+
+    - name: clang-format-check
+      glob: "**/*.{cc,h,mm}"
+      run: |
+        if ! command -v pixi >/dev/null 2>&1; then
+          echo "⚠ clang-format skipped: pixi not installed. Run: curl -fsSL https://pixi.sh/install.sh | sh && pixi install"
+          exit 0
+        fi
+        pixi run clang-format --dry-run --Werror {staged_files}
+      fail_text: "C++ formatting violations found. Run `bun run fmt` to fix."
+
+    - name: cargo-fmt-check
+      glob: "**/*.rs"
+      run: cargo fmt --check
+      fail_text: "Rust formatting violations found. Run `cargo fmt` to fix."
+
+# ---------------------------------------------------------------------------
+# PRE-PUSH — slower, full project (sequential). Target: < 60s.
+# ---------------------------------------------------------------------------
+pre-push:
+  parallel: false
+  jobs:
+    - name: tsc
+      run: bun run --cwd web typecheck
+
+    - name: clang-tidy
+      run: |
+        if [ ! -f build/compile_commands.json ]; then
+          echo "⚠ clang-tidy skipped: build/compile_commands.json not found. Run: cmake -B build -DCRONYMAX_BUILD_APP=ON"
+          exit 0
+        fi
+        if ! command -v pixi >/dev/null 2>&1; then
+          echo "⚠ clang-tidy skipped: pixi not installed. Run: curl -fsSL https://pixi.sh/install.sh | sh && pixi install"
+          exit 0
+        fi
+        # Exclude .mm files: they require Apple's Objective-C runtime headers
+        # which are incompatible with the conda-forge LLVM clang frontend.
+        CHANGED=$(git diff --name-only HEAD @{push} 2>/dev/null | grep -E '\.(cc|h)$' || true)
+        if [ -z "$CHANGED" ]; then
+          echo "No C++ files changed — skipping clang-tidy."
+          exit 0
+        fi
+        # Pass the clang resource dir so the LLVM frontend finds its own
+        # built-in headers (stdarg.h etc.), and the macOS SDK sysroot so it
+        # resolves platform types (__uint32_t etc.) from the Xcode headers.
+        # NOTE: -isysroot takes a space-separated argument, not KEY=VALUE,
+        # so it must be two separate -extra-arg tokens.
+        EXTRA_ARGS=()
+        RESOURCE_DIR=$(pixi run clang -print-resource-dir 2>/dev/null || true)
+        if [ -n "$RESOURCE_DIR" ]; then
+          EXTRA_ARGS+=("-extra-arg=-resource-dir=$RESOURCE_DIR")
+        fi
+        SDK_PATH=$(xcrun --show-sdk-path 2>/dev/null || true)
+        if [ -n "$SDK_PATH" ]; then
+          EXTRA_ARGS+=("-extra-arg=-isysroot" "-extra-arg=$SDK_PATH")
+        fi
+        # Apple's C++ stdlib headers live in the toolchain, not the SDK.
+        CLANG_BIN=$(xcrun -f clang 2>/dev/null || true)
+        if [ -n "$CLANG_BIN" ]; then
+          CXX_INC="$(dirname "$(dirname "$CLANG_BIN")")/include/c++/v1"
+          if [ -d "$CXX_INC" ]; then
+            EXTRA_ARGS+=("-extra-arg=-isystem" "-extra-arg=$CXX_INC")
+          fi
+        fi
+        pixi run run-clang-tidy -p build "${EXTRA_ARGS[@]}" $CHANGED
+
+    - name: clippy
+      run: cargo clippy -- --no-deps -D warnings
+
+# ---------------------------------------------------------------------------
+# FMT — manual full-project format (bun run fmt → lefthook run fmt).
+# ---------------------------------------------------------------------------
+fmt:
+  parallel: true
+  jobs:
+    - name: biome-fmt
+      run: bun biome format --write web/src
+
+    - name: clang-format-fix
+      run: |
+        if ! command -v pixi >/dev/null 2>&1; then
+          echo "⚠ clang-format skipped: pixi not installed. Run: curl -fsSL https://pixi.sh/install.sh | sh && pixi install"
+          exit 0
+        fi
+        find app -name "*.cc" -o -name "*.h" -o -name "*.mm" | xargs pixi run clang-format -i
+
+    - name: cargo-fmt
+      run: cargo fmt
+
+# ---------------------------------------------------------------------------
+# LINT — manual lint-only check (bun run lint → lefthook run lint).
+# ---------------------------------------------------------------------------
+lint:
+  parallel: true
+  jobs:
+    - name: biome-lint
+      run: bun biome check web/src
+
+    - name: clippy-check
+      run: cargo clippy --workspace -D warnings

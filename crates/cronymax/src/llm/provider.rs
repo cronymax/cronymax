@@ -19,6 +19,12 @@ pub enum LlmEvent {
     /// A chunk of assistant text. Concatenate all `Delta.content` to
     /// reconstruct the assistant's message.
     Delta { content: String },
+    /// A chunk of thinking/reasoning content emitted by a model that
+    /// supports extended thinking (Anthropic claude-*, OpenAI o-series
+    /// via `reasoning_content`). Thinking chunks precede `Delta` chunks
+    /// within a turn. They are accumulated and emitted as
+    /// `RuntimeEventPayload::ThinkingToken` but never stored in history.
+    ThinkingDelta { content: String },
     /// A streaming chunk of a tool-call. `index` keys per-call
     /// accumulators; provider may emit `id`/`name` only on the first
     /// chunk and stream `arguments_chunk` thereafter.

@@ -2,6 +2,7 @@
 # describing the planned change. Demonstrates @mention backward routing in
 # `bug-fix-loop` (coder pings @product when requirements are unclear).
 name: coder
+description: "Senior engineer — reads a tech-spec and produces a code-patch document."
 kind: worker
 llm: gpt-4o-mini
 system_prompt: |

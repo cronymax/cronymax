@@ -5,8 +5,9 @@ import "streamdown/styles.css";
 import { installThemeMirror } from "@/styles/installThemeMirror";
 
 installThemeMirror();
-import { startThemeSampler } from "@/theme_sampler";
+
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { startThemeSampler } from "@/theme_sampler";
 import { App } from "./App";
 import { Provider } from "./store";
 

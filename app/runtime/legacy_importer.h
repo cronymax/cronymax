@@ -10,39 +10,42 @@
 //   <workspace_root>/.cronymax/flows/<flow_id>/runs/<run_id>/state.json
 //
 // Target layout (Rust JsonFilePersistence):
-//   <app_data_dir>/runtime-state.json  (Snapshot JSON)
+//   <userDataDir>/runtimes/default/runtime-state.json  (Snapshot JSON)
 //
 // Marker file written when import is done (task 5.2):
-//   <app_data_dir>/migrations/rust-runtime-v1.done
+//   <userDataDir>/runtimes/migrations/rust-runtime-v1.done
 //
 // Thread safety: not thread-safe; call from a single background thread
 // before the runtime starts.
 
 #include <filesystem>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
-#include <nlohmann/json.hpp>
 
 namespace cronymax {
 
 // A single space descriptor handed to the importer.
 struct ImportSpaceInfo {
-  std::string space_id;          // UUID string matching Space::id
-  std::string space_name;        // human-readable name
+  std::string space_id;                  // UUID string matching Space::id
+  std::string space_name;                // human-readable name
   std::filesystem::path workspace_root;  // absolute path to workspace
 };
 
 // Counts returned by Run().
 struct ImportResult {
-  int spaces_seeded  = 0;  // spaces written to snapshot
-  int runs_imported  = 0;  // legacy run entries merged in
-  int runs_skipped   = 0;  // already present in snapshot
-  int parse_errors   = 0;  // state.json files that failed to parse
+  int spaces_seeded = 0;  // spaces written to snapshot
+  int runs_imported = 0;  // legacy run entries merged in
+  int runs_skipped = 0;   // already present in snapshot
+  int parse_errors = 0;   // state.json files that failed to parse
 };
 
 class LegacyImporter {
  public:
-  explicit LegacyImporter(std::filesystem::path app_data_dir);
+  // `user_data_dir` is PK_USER_DATA (~/Library/Application Support/<bundleId>).
+  // Snapshot is written to user_data_dir/runtimes/default/runtime-state.json;
+  // marker is user_data_dir/runtimes/migrations/rust-runtime-v1.done.
+  explicit LegacyImporter(std::filesystem::path user_data_dir);
 
   // Returns true if the migration marker exists — i.e. import has already
   // run and should not repeat.

@@ -18,12 +18,11 @@
  * These tests run in Node (no browser) and validate only schemas/types.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { z } from "zod";
-
+import { EventsSubscribeReq, EventsSubscribeRes } from "../src/types/events";
 // ── import schema definitions directly ────────────────────────────────────
 import { AgentRunPayloadSchema } from "../src/types/index";
-import { EventsSubscribeReq, EventsSubscribeRes } from "../src/types/events";
 
 // ── runtime event payload shapes ──────────────────────────────────────────
 // These mirror what the Rust runtime sends over the bridge "event" channel.

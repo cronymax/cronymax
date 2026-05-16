@@ -2,6 +2,9 @@
 
 Named, reusable sandbox policies decoupled from workspace directories.
 
+For the current implementation-level design (including updated native overlay flow
+and architecture graphs), see [workspace_with_profile_design.md](workspace_with_profile_design.md).
+
 ## Background
 
 Before this change, sandbox policies were stored per-workspace in `.cronymax/space.profile.yaml`. This had three problems:

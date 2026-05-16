@@ -26,9 +26,7 @@ use crate::sandbox::policy::SandboxPolicy;
 /// Errors surfaced from runtime lifecycle operations.
 #[derive(Debug, Error)]
 pub enum RuntimeError {
-    #[error(
-        "protocol version mismatch: host={host}, runtime={runtime}"
-    )]
+    #[error("protocol version mismatch: host={host}, runtime={runtime}")]
     ProtocolMismatch {
         host: ProtocolVersion,
         runtime: ProtocolVersion,
@@ -40,7 +38,7 @@ pub enum RuntimeError {
     #[error("runtime is not running")]
     NotRunning,
 
-    #[error("runtime initialisation failed: {0}")]
+    #[error("runtime initialization failed: {0}")]
     Init(String),
 }
 
@@ -58,10 +56,11 @@ pub struct Runtime {
     /// Shared PTY session managers, passed to every RuntimeHandler so that
     /// sessions created via the browser transport are visible to the renderer
     /// transport (and vice-versa).
-    terminal_managers: Arc<parking_lot::Mutex<std::collections::HashMap<
-        String,
-        crate::terminal::SharedSessionManager,
-    >>>,
+    terminal_managers: Arc<
+        parking_lot::Mutex<
+            std::collections::HashMap<String, crate::terminal::SharedPtySessionManager>,
+        >,
+    >,
 }
 
 /// Handle returned from `Runtime::start`. Today it carries no resources
@@ -84,17 +83,16 @@ impl Runtime {
         // Build the persistence backend from the configured app data
         // dir and rehydrate the authority. Failure here is fatal: the
         // runtime cannot honour its authority contract without state.
-        let persistence: Arc<dyn crate::runtime::Persistence> =
-            Arc::new(JsonFilePersistence::under_app_data_dir(&config.storage.app_data_dir));
+        let persistence: Arc<dyn crate::runtime::Persistence> = Arc::new(
+            JsonFilePersistence::under_app_data_dir(&config.storage.app_data_dir),
+        );
         let authority = RuntimeAuthority::rehydrate(persistence)
             .map_err(|e| RuntimeError::Init(e.to_string()))?;
         Ok(Self {
             config,
             state: Arc::new(Mutex::new(RuntimeState::default())),
             authority,
-            terminal_managers: Arc::new(parking_lot::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
+            terminal_managers: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -113,7 +111,9 @@ impl Runtime {
             app_data_dir = ?self.config.storage.app_data_dir,
             "cronymax runtime started"
         );
-        Ok(RuntimeHandle { state: Arc::clone(&self.state) })
+        Ok(RuntimeHandle {
+            state: Arc::clone(&self.state),
+        })
     }
 
     /// Cleanly stop the runtime. Safe to call multiple times.
@@ -147,28 +147,30 @@ impl Runtime {
     ) -> JoinHandle<Result<(), DispatchError>> {
         // Build sandbox policy from the optional `sandbox` section of
         // the RuntimeConfig (task 6.1).
-        let sandbox_policy: Option<SandboxPolicy> =
-            self.config.sandbox.as_ref().map(|sc| {
-                let mut policy = SandboxPolicy::default_for_workspace(&sc.workspace_root);
-                policy.set_allow_network(sc.allow_network);
-                for p in &sc.extra_read_paths {
-                    policy.add_read_path(p);
-                }
-                for p in &sc.extra_write_paths {
-                    policy.add_write_path(p);
-                }
-                for p in &sc.extra_deny_paths {
-                    policy.add_deny_path(p);
-                }
-                policy
-            });
+        let sandbox_policy: Option<SandboxPolicy> = self.config.sandbox.as_ref().map(|sc| {
+            let mut policy = SandboxPolicy::default_for_workspace(&sc.workspace_root);
+            policy.set_allow_network(sc.allow_network);
+            for p in &sc.extra_read_paths {
+                policy.add_read_path(p);
+            }
+            for p in &sc.extra_write_paths {
+                policy.add_write_path(p);
+            }
+            for p in &sc.extra_deny_paths {
+                policy.add_deny_path(p);
+            }
+            policy
+        });
 
-        let handler = Arc::new(RuntimeHandler::with_policy_and_managers(
+        let mut handler = RuntimeHandler::with_policy_and_managers(
             self.authority.clone(),
             self.config.storage.workspace_roots.clone(),
             sandbox_policy,
             Some(Arc::clone(&self.terminal_managers)),
-        ));
+        );
+        // Wire in workspace_cache_dir so ChatStore is used for session history.
+        handler.set_workspace_cache_dir(self.config.storage.workspace_cache_dir.clone());
+        let handler = Arc::new(handler);
         session::spawn_session(transport, handler)
     }
 
@@ -197,6 +199,7 @@ mod tests {
             storage: StoragePaths {
                 workspace_roots: vec![PathBuf::from("/tmp/ws")],
                 app_data_dir: PathBuf::from("/tmp/app"),
+                workspace_cache_dir: PathBuf::from("/tmp/app/workspaces/default"),
                 cache_dir: PathBuf::from("/tmp/cache"),
             },
             logging: LogConfig {
@@ -210,11 +213,7 @@ mod tests {
 
     #[test]
     fn protocol_mismatch_is_detected() {
-        let bad = ProtocolVersion::new(
-            PROTOCOL_VERSION.major.wrapping_add(1),
-            0,
-            0,
-        );
+        let bad = ProtocolVersion::new(PROTOCOL_VERSION.major.wrapping_add(1), 0, 0);
         let err = Runtime::new(cfg(bad)).unwrap_err();
         assert!(matches!(err, RuntimeError::ProtocolMismatch { .. }));
     }
@@ -224,7 +223,10 @@ mod tests {
         let rt = Runtime::new(cfg(PROTOCOL_VERSION)).unwrap();
         let _h = rt.start().unwrap();
         assert!(rt.is_running());
-        assert!(matches!(rt.start().unwrap_err(), RuntimeError::AlreadyStarted));
+        assert!(matches!(
+            rt.start().unwrap_err(),
+            RuntimeError::AlreadyStarted
+        ));
         rt.shutdown();
         assert!(!rt.is_running());
         let _h2 = rt.start().unwrap();
