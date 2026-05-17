@@ -64,7 +64,8 @@
             "noSvgWithoutTitle": "off",
             "useAltText": "off",
             "useButtonType": "off",
-            "useKeyWithClickEvents": "off"
+            "useKeyWithClickEvents": "off",
+            "useSemanticElements": "off"
           },
           "complexity": {
             "noBannedTypes": "error",

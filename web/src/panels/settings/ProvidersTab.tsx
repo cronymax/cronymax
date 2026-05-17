@@ -1,7 +1,11 @@
+import { Copy, LogIn, Plus, Power, Save, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Caption, ErrorText, Heading } from "@/components/ui/typography";
+import { cn } from "@/lib/utils";
 import { type LlmProvider, ModelSelect } from "../../components/ModelSelect";
 import { shells } from "../../shells/bridge";
 import { Field } from "./App";
@@ -119,7 +123,7 @@ function CopilotOauthBlock({
 }) {
   const isActive = oauth.phase === "starting" || oauth.phase === "awaiting_user" || oauth.phase === "polling";
   return (
-    <div className="mt-2 rounded border border-border bg-card p-2 text-xs">
+    <div className="mt-2 rounded-md border border-border bg-card p-3 text-xs">
       <div className="flex items-center justify-between gap-2">
         <span className="text-muted-foreground">
           {hasKey
@@ -127,19 +131,21 @@ function CopilotOauthBlock({
             : "Sign in with your GitHub account to fetch a Copilot token."}
         </span>
         {!isActive ? (
-          <Button type="button" size="sm" className="text-xs" onClick={onSignIn}>
+          <Button type="button" onClick={onSignIn}>
+            <LogIn />
             Sign in with GitHub
           </Button>
         ) : (
-          <Button type="button" size="sm" variant="outline" className="text-xs" onClick={onCancel}>
+          <Button type="button" variant="outline" onClick={onCancel}>
+            <X />
             Cancel
           </Button>
         )}
       </div>
-      {oauth.phase === "starting" && <p className="mt-1 text-muted-foreground">Requesting device code…</p>}
+      {oauth.phase === "starting" && <Caption className="mt-1">Requesting device code…</Caption>}
       {(oauth.phase === "awaiting_user" || oauth.phase === "polling") && oauth.user_code && (
-        <div className="mt-2 space-y-1">
-          <p className="text-muted-foreground">
+        <div className="mt-2 flex flex-col gap-1">
+          <Caption>
             Enter this code on{" "}
             <a
               href={oauth.verification_uri}
@@ -150,7 +156,7 @@ function CopilotOauthBlock({
               {oauth.verification_uri}
             </a>
             :
-          </p>
+          </Caption>
           <div className="flex items-center gap-2">
             <code className="select-all rounded bg-background px-2 py-1 font-mono text-sm tracking-widest">
               {oauth.user_code}
@@ -158,20 +164,19 @@ function CopilotOauthBlock({
             <Button
               type="button"
               variant="outline"
-              size="sm"
-              className="text-xs px-2 h-7"
               onClick={() => void navigator.clipboard.writeText(oauth.user_code ?? "").catch(() => undefined)}
             >
+              <Copy />
               Copy
             </Button>
-            <span className="text-xs text-muted-foreground">
-              {oauth.phase === "polling" ? "Waiting for authorization…" : ""}
-            </span>
+            <Caption>{oauth.phase === "polling" ? "Waiting for authorization…" : ""}</Caption>
           </div>
         </div>
       )}
-      {oauth.phase === "success" && <p className="mt-1 text-emerald-500">Signed in. Click Save to store.</p>}
-      {oauth.phase === "error" && <p className="mt-1 text-red-500">Sign-in failed: {oauth.error}</p>}
+      {oauth.phase === "success" && (
+        <p className="mt-1 text-xs text-cronymax-success">Signed in. Click Save to store.</p>
+      )}
+      {oauth.phase === "error" && <ErrorText className="mt-1">Sign-in failed: {oauth.error}</ErrorText>}
     </div>
   );
 }
@@ -417,33 +422,27 @@ export function ProvidersTab() {
   return (
     <div className="flex h-full">
       <aside className="flex w-[220px] flex-col border-r border-border bg-card">
-        <div className="flex items-center justify-between border-b border-border px-2 py-1.5">
+        <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <span className="text-xs font-semibold">Providers</span>
           <div className="flex items-center gap-1">
             <Button
               type="button"
               variant="outline"
-              size="sm"
-              className="h-6 px-1.5 text-xs"
+              size="xs"
               onClick={() => onAdd("github_copilot")}
               title="Quick-add GitHub Copilot"
             >
-              + Copilot
+              <Plus />
+              Copilot
             </Button>
-            <Button
-              type="button"
-              size="sm"
-              className="h-6 px-1.5 text-xs"
-              onClick={() => onAdd("openai")}
-              title="New provider"
-            >
-              +
+            <Button type="button" size="xs" onClick={() => onAdd("openai")} title="New provider">
+              <Plus />
             </Button>
           </div>
         </div>
-        <ul className="flex-1 overflow-auto py-1">
+        <ul className="flex-1 overflow-auto p-2">
           {providers.length === 0 && (
-            <li className="px-2 py-1 text-xs text-muted-foreground">No providers configured.</li>
+            <li className="px-3 py-2 text-xs text-muted-foreground">No providers configured.</li>
           )}
           {providers.map((p) => {
             const isActive = p.id === activeId;
@@ -454,16 +453,14 @@ export function ProvidersTab() {
                   type="button"
                   variant="ghost"
                   onClick={() => onSelect(p.id)}
-                  className={
-                    "flex h-auto w-full flex-col items-start gap-0 px-2 py-1 text-left text-xs font-normal " +
-                    (isSelected
-                      ? "bg-primary/15 text-foreground"
-                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
-                  }
+                  className={cn(
+                    "h-auto w-full flex-col items-start gap-0.5 px-3 py-2 text-left",
+                    isSelected && "bg-primary/15 text-foreground",
+                  )}
                 >
                   <span className="flex w-full items-center gap-1 font-medium">
                     <span className="flex-1 truncate">{p.name}</span>
-                    {isActive && <span className="rounded bg-green-500/20 px-1 text-xs text-green-300">active</span>}
+                    {isActive && <Badge>active</Badge>}
                   </span>
                   <span className="text-xs opacity-70">
                     {p.kind} · {p.default_model || "—"}
@@ -475,35 +472,32 @@ export function ProvidersTab() {
         </ul>
       </aside>
 
-      <section className="flex-1 overflow-auto p-3">
+      <section className="flex-1 overflow-auto p-4">
         {!draft && (
-          <p className="text-xs text-muted-foreground">
+          <Caption>
             Select a provider to edit or activate it. Click <b>+</b> to add a new one. Credentials are stored in the
             workspace SQLite kv store.
-          </p>
+          </Caption>
         )}
         {draft && (
           <div className="max-w-[560px]">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold">
+              <Heading>
                 {providers.some((p) => p.id === draft.id) ? `Edit: ${draft.name || draft.id}` : "New provider"}
-              </h2>
-              {providers.some((p) => p.id === draft.id) && (
-                <Button
-                  type="button"
-                  size="sm"
-                  className="bg-green-600 hover:bg-green-500 text-white text-xs"
-                  onClick={() => void onActivate(draft)}
-                  disabled={busy || draft.id === activeId}
-                >
-                  {draft.id === activeId ? "Active" : "Activate"}
-                </Button>
-              )}
+              </Heading>
+              {providers.some((p) => p.id === draft.id) &&
+                (draft.id === activeId ? (
+                  <Badge>active</Badge>
+                ) : (
+                  <Button type="button" onClick={() => void onActivate(draft)} disabled={busy}>
+                    <Power />
+                    Activate
+                  </Button>
+                ))}
             </div>
 
             <Field label="Display name">
               <Input
-                className="h-7 text-xs"
                 value={draft.name}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                 placeholder="My OpenAI"
@@ -511,31 +505,22 @@ export function ProvidersTab() {
             </Field>
             <Field label="Kind">
               <Select value={draft.kind} onValueChange={(v) => onKindChange(v as ProviderKind)}>
-                <SelectTrigger className="h-7 text-xs">
+                <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="openai" className="text-xs">
-                    OpenAI-compatible
-                  </SelectItem>
-                  <SelectItem value="anthropic" className="text-xs">
-                    Anthropic
-                  </SelectItem>
-                  <SelectItem value="ollama" className="text-xs">
-                    Ollama (local)
-                  </SelectItem>
-                  <SelectItem value="github_copilot" className="text-xs">
-                    GitHub Copilot
-                  </SelectItem>
-                  <SelectItem value="custom" className="text-xs">
-                    Custom
-                  </SelectItem>
+                  <SelectGroup>
+                    <SelectItem value="openai">OpenAI-compatible</SelectItem>
+                    <SelectItem value="anthropic">Anthropic</SelectItem>
+                    <SelectItem value="ollama">Ollama (local)</SelectItem>
+                    <SelectItem value="github_copilot">GitHub Copilot</SelectItem>
+                    <SelectItem value="custom">Custom</SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
             </Field>
             <Field label="Base URL">
               <Input
-                className="h-7 text-xs"
                 value={draft.base_url}
                 onChange={(e) => setDraft({ ...draft, base_url: e.target.value })}
                 placeholder="https://api.openai.com"
@@ -543,7 +528,6 @@ export function ProvidersTab() {
             </Field>
             <Field label="API key">
               <Input
-                className="h-7 text-xs"
                 type="password"
                 value={draft.api_key}
                 onChange={(e) => setDraft({ ...draft, api_key: e.target.value })}
@@ -573,27 +557,19 @@ export function ProvidersTab() {
                   onValueChange={(v) => setDraft({ ...draft, anthropic_effort: v === "none" ? "" : v })}
                 >
                   <SelectTrigger
-                    className="h-7 text-xs"
+                    className="w-full"
                     title="Default adaptive-thinking effort for Anthropic claude-* models. Per-message chat dropdown can override."
                   >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none" className="text-xs">
-                      none (use model default)
-                    </SelectItem>
-                    <SelectItem value="low" className="text-xs">
-                      low
-                    </SelectItem>
-                    <SelectItem value="medium" className="text-xs">
-                      medium
-                    </SelectItem>
-                    <SelectItem value="high" className="text-xs">
-                      high
-                    </SelectItem>
-                    <SelectItem value="max" className="text-xs">
-                      max
-                    </SelectItem>
+                    <SelectGroup>
+                      <SelectItem value="none">none (use model default)</SelectItem>
+                      <SelectItem value="low">low</SelectItem>
+                      <SelectItem value="medium">medium</SelectItem>
+                      <SelectItem value="high">high</SelectItem>
+                      <SelectItem value="max">max</SelectItem>
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </Field>
@@ -604,55 +580,47 @@ export function ProvidersTab() {
                   onValueChange={(v) => setDraft({ ...draft, reasoning_effort: v === "none" ? "" : v })}
                 >
                   <SelectTrigger
-                    className="h-7 text-xs"
+                    className="w-full"
                     title="Default reasoning_effort for OpenAI gpt-5 / o-series. Per-message chat dropdown can override."
                   >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none" className="text-xs">
-                      none (use model default)
-                    </SelectItem>
-                    <SelectItem value="minimal" className="text-xs">
-                      minimal
-                    </SelectItem>
-                    <SelectItem value="low" className="text-xs">
-                      low
-                    </SelectItem>
-                    <SelectItem value="medium" className="text-xs">
-                      medium
-                    </SelectItem>
-                    <SelectItem value="high" className="text-xs">
-                      high
-                    </SelectItem>
-                    <SelectItem value="xhigh" className="text-xs">
-                      xhigh
-                    </SelectItem>
+                    <SelectGroup>
+                      <SelectItem value="none">none (use model default)</SelectItem>
+                      <SelectItem value="minimal">minimal</SelectItem>
+                      <SelectItem value="low">low</SelectItem>
+                      <SelectItem value="medium">medium</SelectItem>
+                      <SelectItem value="high">high</SelectItem>
+                      <SelectItem value="xhigh">xhigh</SelectItem>
+                    </SelectGroup>
                   </SelectContent>
                 </Select>
               </Field>
             )}
 
-            {msg && <p className="mb-3 text-xs text-muted-foreground">{msg}</p>}
+            {msg && <Caption className="mb-3">{msg}</Caption>}
             <div className="flex items-center gap-2">
-              <Button type="button" size="sm" onClick={() => void onSave()} disabled={busy}>
+              <Button type="button" onClick={() => void onSave()} disabled={busy}>
+                <Save />
                 Save
               </Button>
               {providers.some((p) => p.id === draft.id) && (
-                <Button type="button" size="sm" variant="destructive" onClick={() => void onDelete()} disabled={busy}>
+                <Button type="button" variant="destructive" onClick={() => void onDelete()} disabled={busy}>
+                  <Trash2 />
                   Delete
                 </Button>
               )}
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
                 onClick={() => {
                   setSelectedId(null);
                   setDraft(null);
                   setMsg(null);
                 }}
               >
+                <X />
                 Cancel
               </Button>
             </div>

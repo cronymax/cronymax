@@ -9,6 +9,7 @@
  *   Flows      — visual agent-flow editor
  *   Runner     — legacy ReAct runner (terminal Explain/Fix/Retry target)
  */
+import { Check, Palette, Play, Plug, ShieldCheck, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { FieldLabel, Heading } from "@/components/ui/typography";
 import { shells } from "@/shells/bridge";
 import { AppearanceTab } from "./AppearanceTab";
 import { ProfilesTab } from "./ProfilesTab";
@@ -32,21 +34,14 @@ import { type PermissionRequest, useStore } from "./store";
 
 type SettingsTab = "appearance" | "providers" | "agents" | "doc-types" | "profiles" | "flows" | "runner";
 
-// ── ReAct graph builder ───────────────────────────────────────────────────
-
-// ── shared input styles ───────────────────────────────────────────────────
-// Kept for legacy references; new code should import Input from @/components/ui/input.
-export const inputCls =
-  "w-full rounded border border-border bg-background px-2 py-1 text-xs text-foreground outline-none focus:border-primary";
-
 // ── shared Field ──────────────────────────────────────────────────────────
 
 export function Field({ label, children, htmlFor }: { label: string; children: React.ReactNode; htmlFor?: string }) {
   return (
     <div className="mb-3">
-      <label htmlFor={htmlFor} className="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">
+      <FieldLabel htmlFor={htmlFor} className="mb-1">
         {label}
-      </label>
+      </FieldLabel>
       {children}
     </div>
   );
@@ -68,10 +63,12 @@ function PermissionOverlay({ perm, onResolve }: { perm: PermissionRequest; onRes
           <DialogDescription className="whitespace-pre-wrap text-sm">{perm.prompt}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button size="sm" variant="outline" onClick={() => onResolve(false)}>
+          <Button variant="outline" onClick={() => onResolve(false)}>
+            <X />
             Deny
           </Button>
-          <Button size="sm" onClick={() => onResolve(true)}>
+          <Button onClick={() => onResolve(true)}>
+            <Check />
             Allow
           </Button>
         </DialogFooter>
@@ -82,11 +79,11 @@ function PermissionOverlay({ perm, onResolve }: { perm: PermissionRequest; onRes
 
 // ── Tab labels ────────────────────────────────────────────────────────────
 
-const TAB_LABELS: { id: SettingsTab; label: string }[] = [
-  { id: "appearance", label: "Appearance" },
-  { id: "providers", label: "Providers" },
-  { id: "profiles", label: "Profiles" },
-  { id: "runner", label: "Runner" },
+const TAB_LABELS: { id: SettingsTab; label: string; icon: typeof Palette }[] = [
+  { id: "appearance", label: "Appearance", icon: Palette },
+  { id: "providers", label: "Providers", icon: Plug },
+  { id: "profiles", label: "Profiles", icon: ShieldCheck },
+  { id: "runner", label: "Runner", icon: Play },
 ];
 
 // ── App ───────────────────────────────────────────────────────────────────
@@ -154,9 +151,9 @@ export function App() {
   return (
     <main className="relative flex h-screen w-screen flex-col bg-background text-foreground">
       <header className="flex shrink-0 items-center justify-between border-b border-border bg-card px-4 py-2">
-        <h1 className="text-sm font-semibold">Settings</h1>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose} title="Close" aria-label="Close">
-          <Icon name="close" size={12} aria-hidden="true" />
+        <Heading>Settings</Heading>
+        <Button variant="ghost" size="icon" onClick={onClose} title="Close" aria-label="Close">
+          <Icon name="close" size={16} aria-hidden="true" />
         </Button>
       </header>
       <Tabs
@@ -164,27 +161,29 @@ export function App() {
         onValueChange={(v) => setTab(v as SettingsTab)}
         className="flex flex-1 flex-col overflow-hidden"
       >
-        <TabsList className="h-auto shrink-0 justify-start rounded-none border-b border-border bg-card px-1">
-          {TAB_LABELS.map((t) => (
-            <TabsTrigger
-              key={t.id}
-              value={t.id}
-              className="rounded-none border-b-2 border-transparent px-3 py-1.5 text-xs data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
-            >
-              {t.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        <TabsContent value="appearance" className="mt-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
+        <div className="shrink-0 px-4 pt-3">
+          <TabsList>
+            {TAB_LABELS.map((t) => {
+              const TabIcon = t.icon;
+              return (
+                <TabsTrigger key={t.id} value={t.id} className="gap-1.5">
+                  <TabIcon className="size-3.5" aria-hidden="true" />
+                  {t.label}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+        </div>
+        <TabsContent value="appearance" className="flex-1 overflow-y-auto data-[state=inactive]:hidden">
           <AppearanceTab />
         </TabsContent>
-        <TabsContent value="providers" className="mt-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
+        <TabsContent value="providers" className="flex-1 overflow-hidden data-[state=inactive]:hidden">
           <ProvidersTab />
         </TabsContent>
-        <TabsContent value="profiles" className="mt-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
+        <TabsContent value="profiles" className="flex-1 overflow-y-auto data-[state=inactive]:hidden">
           <ProfilesTab />
         </TabsContent>
-        <TabsContent value="runner" className="mt-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
+        <TabsContent value="runner" className="flex-1 overflow-y-auto data-[state=inactive]:hidden">
           <RunnerTab />
         </TabsContent>
       </Tabs>

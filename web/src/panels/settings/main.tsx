@@ -6,6 +6,7 @@ import { installThemeMirror } from "@/styles/installThemeMirror";
 installThemeMirror();
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { Toaster } from "@/components/ui/sonner";
 import { App } from "./App";
 import { Provider } from "./store";
 
@@ -17,6 +18,7 @@ createRoot(rootEl).render(
     <ErrorBoundary>
       <Provider>
         <App />
+        <Toaster />
       </Provider>
     </ErrorBoundary>
   </StrictMode>,

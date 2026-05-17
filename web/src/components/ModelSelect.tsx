@@ -59,14 +59,14 @@ export function ModelSelect({
       <div className="flex gap-1">
         <Popover open={comboOpen} onOpenChange={setComboOpen}>
           <PopoverTrigger asChild>
-            <Button type="button" variant="outline" className="flex-1 h-7 justify-between text-xs font-normal truncate">
+            <Button type="button" variant="outline" size="sm" className="w-full justify-between font-normal">
               <span className="truncate">{value || "Select model…"}</span>
-              <ChevronsUpDown size={12} className="ml-1 shrink-0 opacity-50" />
+              <ChevronsUpDown className="shrink-0 opacity-50" />
             </Button>
           </PopoverTrigger>
           <PopoverContent className="p-0 w-[280px]" align="start">
             <Command>
-              <CommandInput placeholder="Search models…" className="h-8 text-xs" />
+              <CommandInput placeholder="Search models…" />
               <CommandList>
                 <CommandEmpty>No models found.</CommandEmpty>
                 <CommandGroup>
