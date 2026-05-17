@@ -27,5 +27,5 @@ web/.vite/
 # AI
 openspec/
 
-# Local Claude Code state (per-user, not shared)
-.claude/
+# Per-user Claude Code overrides (settings.json is shared, *.local.json is not)
+.claude/*.local.json
