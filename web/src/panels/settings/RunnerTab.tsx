@@ -1,6 +1,8 @@
+import { Play, Plus, Trash2 } from "lucide-react";
 import { type KeyboardEvent, useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { Icon } from "../../components/Icon";
+import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import { useBridgeEvent } from "../../hooks/useBridgeEvent";
 import { browser, shells } from "../../shells/bridge";
 import { agentRun } from "../../shells/runtime";
@@ -22,17 +24,17 @@ function SpaceRow({
   return (
     <li
       onClick={onActivate}
-      className={
-        "group flex h-7 cursor-pointer items-center gap-1.5 rounded px-2 text-xs " +
-        (active ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card hover:text-foreground")
-      }
+      className={cn(
+        "group flex h-7 cursor-pointer items-center gap-2 rounded-md px-3 text-xs",
+        active ? "bg-primary/15 text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+      )}
     >
       <span className="flex-1 truncate">{space.name}</span>
       <Button
         type="button"
         variant="ghost"
-        size="icon"
-        className="h-5 w-5 opacity-0 transition group-hover:opacity-100"
+        size="icon-xs"
+        className="opacity-0 transition group-hover:opacity-100"
         onClick={(e) => {
           e.stopPropagation();
           onDelete();
@@ -40,7 +42,7 @@ function SpaceRow({
         title="Delete space"
         aria-label="Delete space"
       >
-        <Icon name="close" size={12} aria-hidden="true" />
+        <Trash2 />
       </Button>
     </li>
   );
@@ -180,11 +182,11 @@ export function RunnerTab() {
 
   return (
     <div className="flex h-full flex-col">
-      <section className="border-b border-border px-3 py-2">
-        <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
+      <section className="border-b border-border px-4 py-3">
+        <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
           <span>Spaces</span>
-          <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={() => void newSpace()}>
-            +
+          <Button type="button" variant="ghost" size="icon-xs" onClick={() => void newSpace()}>
+            <Plus />
           </Button>
         </div>
         <ul className="flex flex-col gap-px">
@@ -199,23 +201,26 @@ export function RunnerTab() {
           ))}
         </ul>
       </section>
-      <textarea
-        ref={taskRef}
-        value={state.task}
-        onChange={(e) => dispatch({ type: "setTask", task: e.target.value })}
-        onKeyDown={onTaskKeyDown}
-        spellCheck={false}
-        placeholder="Ask the agent…  (⌘/Ctrl+Enter to run)"
-        className="m-3 min-h-[80px] resize-y rounded border border-border bg-card p-2 text-sm text-foreground outline-none focus:border-ring"
-      />
-      <div className="flex justify-end gap-2 px-3">
-        <Button type="button" onClick={() => void runTask()} disabled={state.status === "running"}>
-          Run
-        </Button>
+      <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+        <Textarea
+          ref={taskRef}
+          value={state.task}
+          onChange={(e) => dispatch({ type: "setTask", task: e.target.value })}
+          onKeyDown={onTaskKeyDown}
+          spellCheck={false}
+          placeholder="Ask the agent…  (⌘/Ctrl+Enter to run)"
+          className="min-h-[80px] resize-y bg-card"
+        />
+        <div className="flex justify-end">
+          <Button type="button" onClick={() => void runTask()} disabled={state.status === "running"}>
+            <Play />
+            Run
+          </Button>
+        </div>
+        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-card p-3 text-xs text-foreground">
+          {state.result || <span className="italic text-muted-foreground">Agent output will appear here…</span>}
+        </pre>
       </div>
-      <pre className="m-3 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-card p-2 text-xs text-foreground">
-        {state.result}
-      </pre>
     </div>
   );
 }
