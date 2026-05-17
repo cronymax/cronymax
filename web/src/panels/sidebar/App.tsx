@@ -152,7 +152,7 @@ export function App() {
   return (
     <aside
       ref={dragRef as React.RefObject<HTMLElement>}
-      className="app-drag flex h-full flex-col bg-transparent pt-7 text-foreground"
+      className="app-drag flex h-full flex-col bg-cronymax-body pt-7 text-foreground"
     >
       {/* Items section */}
       <section className="no-drag flex-1 overflow-auto px-2 pb-4 pt-2">

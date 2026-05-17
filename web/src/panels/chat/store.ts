@@ -146,6 +146,15 @@ export type TraceEntry =
       ts: number;
     };
 
+export type FileChangeOperation = "created" | "modified" | "deleted" | "moved";
+
+export interface FileChange {
+  path: string;
+  operation: FileChangeOperation;
+  blockId: string;
+  ts: number;
+}
+
 export interface ConversationBlock {
   kind: "conversation";
   id: string;
@@ -159,6 +168,8 @@ export interface ConversationBlock {
   assistantContent: string;
   agentName?: string;
   traceEntries: TraceEntry[];
+  /** Workspace file mutations recorded during this block's run. */
+  fileChanges: FileChange[];
   /** "running" while streaming, "ok" or "fail" after final run_status */
   status: "running" | "ok" | "fail";
   comments: Comment[];
@@ -206,6 +217,8 @@ export interface State {
   running: boolean;
   /** UUID of the block currently being streamed/run */
   runningBlockId: string | null;
+  /** run_id of the currently active agent run — used by the Stop button */
+  currentRunId: string | null;
   /** Terminal session id allocated for this chat tab */
   terminalTid: string | null;
   /** Pending prompt attachments (cleared on send) */
@@ -299,6 +312,9 @@ export type Action =
   | { type: "appendThinkingDelta"; id: string; delta: string; now: number }
   | { type: "sealThinkingBlock"; id: string; elapsedMs: number }
   | { type: "setReconnecting"; reconnecting: boolean }
+  | { type: "setCurrentRunId"; runId: string | null }
+  | { type: "appendFileChange"; id: string; change: FileChange }
+  | { type: "restoreToBlock"; blockId: string }
   | { type: "_unused"; _placeholder?: never };
 
 // ── Shell output processor ────────────────────────────────────────────
@@ -321,6 +337,7 @@ const initial: State = {
   blocks: [],
   running: false,
   runningBlockId: null,
+  currentRunId: null,
   terminalTid: null,
   attachments: [],
   activeView: { kind: "main" },
@@ -352,14 +369,18 @@ function reducer(state: State, action: Action): State {
                 ...conv,
                 contentStream: conv.assistantContent ? [{ kind: "text" as const, content: conv.assistantContent }] : [],
               };
-          if (withStream.status === "running") {
+          // Ensure fileChanges exists (absent in blocks created before this field was added).
+          const withFileChanges: ConversationBlock = withStream.fileChanges
+            ? withStream
+            : { ...withStream, fileChanges: [] };
+          if (withFileChanges.status === "running") {
             return {
-              ...withStream,
+              ...withFileChanges,
               status: "fail" as const,
-              assistantContent: withStream.assistantContent || "(session was interrupted — runtime restarted)",
+              assistantContent: withFileChanges.assistantContent || "(session was interrupted — runtime restarted)",
             };
           }
-          return withStream;
+          return withFileChanges;
         }
         if (b.kind === "shell" && b.status === "running") {
           return { ...b, status: "fail" as const, endedAt: Date.now() };
@@ -374,6 +395,7 @@ function reducer(state: State, action: Action): State {
         // Reset in-flight run state — any previous run is gone after reload.
         running: false,
         runningBlockId: null,
+        currentRunId: null,
         awaitingApproval: null,
         terminalTid: action.terminalTid,
         model: action.model || state.model,
@@ -674,6 +696,24 @@ function reducer(state: State, action: Action): State {
     case "clearHistory":
       return { ...state, blocks: [], activeView: { kind: "main" } };
 
+    case "setCurrentRunId":
+      return { ...state, currentRunId: action.runId };
+
+    case "appendFileChange": {
+      const idx = state.blocks.findIndex((b) => b.id === action.id);
+      if (idx < 0) return state;
+      const blk = state.blocks[idx] as ConversationBlock;
+      const next = state.blocks.slice();
+      next[idx] = { ...blk, fileChanges: [...(blk.fileChanges ?? []), action.change] };
+      return { ...state, blocks: next };
+    }
+
+    case "restoreToBlock": {
+      const idx = state.blocks.findIndex((b) => b.id === action.blockId);
+      if (idx < 0) return state;
+      return { ...state, blocks: state.blocks.slice(0, idx + 1), activeView: { kind: "main" } };
+    }
+
     default:
       return state;
   }
@@ -930,6 +970,7 @@ export function loadChatData(id: string): {
             assistantContent,
             agentName: m.agentName,
             traceEntries: [],
+            fileChanges: [],
             status: "ok",
             comments: [],
             createdAt: Date.now(),

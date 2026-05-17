@@ -19,10 +19,14 @@ import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { cn } from "@/lib/utils";
 import { browser, shells } from "@/shells/bridge";
 import { listProviderModels } from "@/shells/llm";
-import { agentRegistry, agentRun, b64ToUtf8, terminal as rt_terminal } from "@/shells/runtime";
+import { agentRegistry, agentRun, b64ToUtf8, flowRun, terminal as rt_terminal } from "@/shells/runtime";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
 import { ContentStreamView } from "./ContentStreamView";
+import { resolveContextLimit } from "./contextLimits";
+import { FileChangesView } from "./FileChangesView";
+import { LiveTasksView } from "./LiveTasksView";
 import { PromptPopover } from "./PromptPopover";
+import { ReviewsPanel } from "./ReviewsPanel";
 import {
   type AnthropicEffort,
   type Attachment,
@@ -30,8 +34,10 @@ import {
   type ConversationBlock,
   chatNameFor,
   ensureChat,
+  type FileChange,
   loadAnthropicEffort,
   loadChatData,
+  loadChatsList,
   loadFlowsList,
   loadReasoningEffort,
   loadSelectedModel,
@@ -47,6 +53,35 @@ import {
 } from "./store";
 import { TraceViewer } from "./TraceViewer";
 import { useSelectionTooltip } from "./useSelectionTooltip";
+
+// ── File mutation detection ─────────────────────────────────────────────
+
+/** Tools that write files to the workspace and the field containing the path. */
+const MUTATION_TOOLS: Record<string, { operation: FileChange["operation"]; pathField: string }> = {
+  write_file: { operation: "created", pathField: "path" },
+  edit_file: { operation: "modified", pathField: "path" },
+  patch_file: { operation: "modified", pathField: "path" },
+  create_file: { operation: "created", pathField: "path" },
+  delete_file: { operation: "deleted", pathField: "path" },
+  move_file: { operation: "moved", pathField: "source_path" },
+  rename_file: { operation: "moved", pathField: "path" },
+  create_directory: { operation: "created", pathField: "path" },
+  overwrite_file: { operation: "modified", pathField: "path" },
+  // Agent-level tool names may use snake_case prefixed variants
+  file_write: { operation: "created", pathField: "path" },
+  file_edit: { operation: "modified", pathField: "path" },
+  file_delete: { operation: "deleted", pathField: "path" },
+};
+
+function detectFileChange(tool: string, args: unknown): { path: string; operation: FileChange["operation"] } | null {
+  const def = MUTATION_TOOLS[tool];
+  if (!def) return null;
+  if (!args || typeof args !== "object") return null;
+  const a = args as Record<string, unknown>;
+  const path = typeof a[def.pathField] === "string" ? (a[def.pathField] as string) : null;
+  if (!path) return null;
+  return { path, operation: def.operation };
+}
 
 // ── picker types ────────────────────────────────────────────────────────
 
@@ -203,14 +238,19 @@ function ConversationBlockView({
   isStreaming,
   isHighlighted,
   workspacePrompts = [],
+  onRestore,
+  onFork,
 }: {
   block: ConversationBlock;
   isStreaming: boolean;
   isHighlighted?: boolean;
   workspacePrompts?: PickerItem[];
+  onRestore?: (blockId: string) => void;
+  onFork?: (blockId: string) => void;
 }) {
   const pinnedComments = block.comments.filter((c) => c.pinnedToPrompt);
   const [activePillLabel, setActivePillLabel] = useState<string | null>(null);
+  const [hovered, setHovered] = useState(false);
   const activePillPrompt = activePillLabel ? workspacePrompts.find((p) => p.label === activePillLabel) : null;
   return (
     <div
@@ -218,6 +258,8 @@ function ConversationBlockView({
         isHighlighted ? " rounded-md ring-2 ring-primary/40" : ""
       }`}
       data-block-id={block.id}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       {/* User message */}
       <div className="rounded-md bg-primary/10 px-3 py-2">
@@ -264,6 +306,9 @@ function ConversationBlockView({
         </div>
       )}
 
+      {/* Live tasks — active tool calls while this block is streaming */}
+      <LiveTasksView traceEntries={block.traceEntries} isStreaming={isStreaming} />
+
       {/* Status error */}
       {block.status === "fail" && block.contentStream.length === 0 && (
         <div className="text-xs italic text-red-400">(run failed)</div>
@@ -291,6 +336,32 @@ function ConversationBlockView({
             /* noop */
           }}
         />
+      )}
+
+      {/* Checkpoint controls — appear on hover for completed blocks */}
+      {!isStreaming && hovered && (onRestore || onFork) && (
+        <div className="flex items-center gap-1.5 pt-0.5">
+          {onRestore && (
+            <button
+              type="button"
+              onClick={() => onRestore(block.id)}
+              className="rounded border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground transition"
+              title="Restore chat to this checkpoint (discards subsequent blocks)"
+            >
+              ↩ Restore
+            </button>
+          )}
+          {onFork && (
+            <button
+              type="button"
+              onClick={() => onFork(block.id)}
+              className="rounded border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground transition"
+              title="Fork a new chat from this checkpoint"
+            >
+              ⎇ Fork
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -390,12 +461,16 @@ function BlockView({
   onShellAction,
   isHighlighted,
   workspacePrompts,
+  onRestoreBlock,
+  onForkBlock,
 }: {
   block: Block;
   isStreaming: boolean;
   onShellAction: (action: string, b: ShellBlock) => void;
   isHighlighted?: boolean;
   workspacePrompts?: PickerItem[];
+  onRestoreBlock?: (blockId: string) => void;
+  onForkBlock?: (blockId: string) => void;
 }) {
   if (block.kind === "conversation") {
     return (
@@ -404,6 +479,8 @@ function BlockView({
         isStreaming={isStreaming}
         isHighlighted={isHighlighted}
         workspacePrompts={workspacePrompts}
+        onRestore={onRestoreBlock}
+        onFork={onForkBlock}
       />
     );
   }
@@ -520,7 +597,60 @@ export function App() {
   /** ID of the pill whose PromptPopover is currently open (null = none). */
   const [activePillId, setActivePillId] = useState<string | null>(null);
 
+  /** Session-scoped global approval mode: overrides per-category trust for this browser tab. */
+  const [globalApprovalMode, setGlobalApprovalMode] = useState<"default" | "autopilot" | "bypass">(() => {
+    try {
+      const stored = sessionStorage.getItem("cronymax.global_approval_mode");
+      if (stored === "autopilot" || stored === "bypass") return stored;
+    } catch {
+      /* ignore */
+    }
+    return "default";
+  });
+
+  function persistGlobalApprovalMode(mode: "default" | "autopilot" | "bypass") {
+    try {
+      if (mode === "default") {
+        sessionStorage.removeItem("cronymax.global_approval_mode");
+      } else {
+        sessionStorage.setItem("cronymax.global_approval_mode", mode);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   // Load workspace prompts + root + provider models on mount.
+
+  /** Latest token usage from the most recent assistant_turn across all blocks. */
+  const latestUsage = useMemo(() => {
+    const blocks = state.blocks;
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const blk = blocks[i];
+      if (!blk || blk.kind !== "conversation") continue;
+      const traces = (blk as import("./store").ConversationBlock).traceEntries;
+      for (let j = traces.length - 1; j >= 0; j--) {
+        const t = traces[j];
+        if (t && t.kind === "assistant_turn" && t.usage) return t.usage;
+      }
+    }
+    return null;
+  }, [state.blocks]);
+
+  /** Context limit in tokens for the active model (null = unknown). */
+  const contextLimit = useMemo(() => resolveContextLimit(state.model), [state.model]);
+
+  /** All file changes aggregated across the entire session's conversation blocks. */
+  const sessionFileChanges = useMemo(() => {
+    const changes: FileChange[] = [];
+    for (const blk of state.blocks) {
+      if (blk.kind === "conversation" && blk.fileChanges) {
+        changes.push(...blk.fileChanges);
+      }
+    }
+    return changes;
+  }, [state.blocks]);
+
   useEffect(() => {
     shells.browser.workspace.prompts
       .list()
@@ -1043,6 +1173,7 @@ export function App() {
       assistantContent: "",
       agentName: speaker || undefined,
       traceEntries: [],
+      fileChanges: [],
       status: "running",
       comments: [],
       createdAt: Date.now(),
@@ -1168,6 +1299,7 @@ export function App() {
             persistChatData(chatId, { ...data, blocks: [...data.blocks] });
 
             off();
+            dispatch({ type: "setCurrentRunId", runId: null });
             dispatch({ type: "setRunning", running: false });
             dispatch({ type: "setRunningBlockId", id: null });
             inputRef.current?.focus();
@@ -1181,20 +1313,28 @@ export function App() {
             dispatch({ type: "clearAwaitingApproval" });
           }
         } else if (kind === "permission_request") {
-          // Tool approval request: read trust and decide automatically or ask user
+          // Tool approval request: check global mode first, then per-category trust
           const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
           const req = (pl.request as Record<string, unknown> | undefined) ?? {};
           const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
           const args = req.args ?? pl.args ?? {};
           const category = toolName.split("_")[0] ?? toolName;
 
-          // Read trust level for this category from localStorage
-          const trustMap = loadTrustMap();
-          const trust = trustMap[category] ?? "ask";
+          // Global approval mode takes precedence over per-category trust map
+          let effectiveTrust: "autopilot" | "bypass" | "ask";
+          if (globalApprovalMode === "autopilot") {
+            effectiveTrust = "autopilot";
+          } else if (globalApprovalMode === "bypass") {
+            effectiveTrust = "bypass";
+          } else {
+            // Read per-category trust level from localStorage
+            const trustMap = loadTrustMap();
+            effectiveTrust = (trustMap[category] ?? "ask") as "autopilot" | "bypass" | "ask";
+          }
 
-          if (trust === "autopilot") {
+          if (effectiveTrust === "autopilot") {
             browser.send("review.approve", { review_id: reviewId }).catch(() => undefined);
-          } else if (trust === "bypass") {
+          } else if (effectiveTrust === "bypass") {
             browser.send("review.request_changes", { review_id: reviewId }).catch(() => undefined);
           } else {
             // "ask" — show the approval card
@@ -1310,6 +1450,17 @@ export function App() {
               result,
               ...(durationMs != null ? { durationMs } : {}),
             });
+            // Record file mutations for the File Changes View
+            if (!isError) {
+              const fileChange = detectFileChange(tool, trace.args);
+              if (fileChange) {
+                dispatch({
+                  type: "appendFileChange",
+                  id: blockId,
+                  change: { ...fileChange, blockId, ts: Date.now() },
+                });
+              }
+            }
           } else if (traceKind === "error") {
             // Emitted by the agent loop when the LLM stream itself
             // fails (HTTP error, timeout, etc.). Stash the message so
@@ -1430,12 +1581,17 @@ export function App() {
       };
       if (reasoningEffortRef.current) runOpts.reasoning_effort = reasoningEffortRef.current;
       if (anthropicEffortRef.current) runOpts.anthropic_effort = anthropicEffortRef.current;
-      if (state.model) runOpts.model = state.model;
+      // For flow runs, don't forward the UI session-model: flow agents
+      // declare their own llm: overrides in YAML; if empty they fall back
+      // to the provider's default_model. Sending the UI model here would
+      // cause every agent in the flow to use the chat model picker's value,
+      // which may be invalid for the active provider.
+      if (state.model && !state.selectedFlow) runOpts.model = state.model;
       // If the picked model belongs to a non-active provider group, send
       // that provider's wire config alongside so the request actually
       // routes there instead of being sent to the active provider's
       // endpoint with a model name it doesn't recognise.
-      if (state.model) {
+      if (state.model && !state.selectedFlow) {
         const owner = modelGroups.find((g) => g.models.includes(state.model));
         if (owner && owner.id !== activeProviderId) {
           runOpts.provider_kind = owner.kind;
@@ -1445,6 +1601,7 @@ export function App() {
       }
       runId = await agentRun(body, runOpts);
       if (!runId) throw new Error("runtime did not return run_id");
+      dispatch({ type: "setCurrentRunId", runId });
       await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
         /* ignore */
       });
@@ -1709,6 +1866,54 @@ export function App() {
     }
   };
 
+  const onRestoreBlock = (blockId: string) => {
+    const warned = sessionStorage.getItem("cronymax.restore_warned");
+    if (!warned) {
+      sessionStorage.setItem("cronymax.restore_warned", "1");
+      const ok = window.confirm(
+        "Restore to this checkpoint? All conversation blocks after this point will be permanently removed.",
+      );
+      if (!ok) return;
+    }
+    dispatch({ type: "restoreToBlock", blockId });
+    if (state.activeChatId) {
+      const restored = state.blocks.slice(0, state.blocks.findIndex((b) => b.id === blockId) + 1);
+      persistChatData(state.activeChatId, {
+        blocks: restored,
+        terminalTid: state.terminalTid,
+        model: state.model,
+      });
+    }
+  };
+
+  const onForkBlock = (blockId: string) => {
+    const idx = state.blocks.findIndex((b) => b.id === blockId);
+    if (idx < 0) return;
+    const slice = state.blocks.slice(0, idx + 1);
+
+    // Create a new chat entry in the chats list
+    const newId = `c${Date.now().toString(36)}f`;
+    const newName = `${state.chatName} (fork)`;
+    try {
+      const existing = loadChatsList();
+      localStorage.setItem("chats", JSON.stringify([...existing, { id: newId, name: newName }]));
+      sessionStorage.setItem("cronymax_chat_tab_id", newId);
+    } catch {
+      /* ignore */
+    }
+
+    persistChatData(newId, { blocks: slice, terminalTid: null, model: state.model });
+    dispatch({
+      type: "loadChat",
+      id: newId,
+      name: newName,
+      blocks: slice,
+      terminalTid: null,
+      model: state.model,
+      agentId: state.agentId,
+    });
+  };
+
   const runningBlockId = state.runningBlockId;
 
   // Copilot-like textarea auto-height
@@ -1770,6 +1975,20 @@ export function App() {
         <div className="flex items-center gap-2 border-b border-blue-500/40 bg-blue-500/10 px-3 py-1 text-xs text-blue-300">
           <span className="animate-pulse">⟳</span>
           <span>Reconnecting to runtime…</span>
+          <button
+            className="ml-auto rounded px-1.5 py-0.5 text-blue-300 hover:bg-blue-500/20 hover:text-blue-100"
+            title="Check connection"
+            onClick={() => {
+              void shells.browser.space
+                .list()
+                .then(() => dispatch({ type: "setReconnecting", reconnecting: false }))
+                .catch(() => {
+                  /* still reconnecting — keep banner */
+                });
+            }}
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -1790,6 +2009,8 @@ export function App() {
             onShellAction={onShellAction}
             isHighlighted={b.id === highlightedBlockId}
             workspacePrompts={workspacePrompts}
+            onRestoreBlock={!state.running ? onRestoreBlock : undefined}
+            onForkBlock={!state.running ? onForkBlock : undefined}
           />
         ))}
       </div>
@@ -1886,8 +2107,11 @@ export function App() {
       {/* ── Flow instances bar — visible when session has active flow runs ── */}
       <FlowInstancesBar sessionId={state.activeChatId} />
 
+      {/* ── File changes summary ─────────────────────────────────────────── */}
+      <FileChangesView changes={sessionFileChanges} />
+
       {/* ── Copilot-like composer ──────────────────────────────────── */}
-      <form onSubmit={onSubmit} className="px-3 pb-3 pt-1">
+      <form onSubmit={onSubmit} className="px-3 pb-1 pt-1">
         {/* Approval card — shown when agent awaits tool review */}
         {state.awaitingApproval && (
           <ApprovalCard
@@ -1909,6 +2133,11 @@ export function App() {
 
         {/* Picker + editor wrapper — relative so the picker floats above */}
         <div className="relative">
+          {/* ── Reviews panel — floats above editor when pending approvals exist ── */}
+          <div className="absolute bottom-full left-0 right-0 z-40 mb-1">
+            <ReviewsPanel sessionId={state.activeChatId} />
+          </div>
+
           {/* ── Slash / @ picker ──────────────────────────────────────── */}
           {picker && pickerItems.length > 0 && (
             <div className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-lg border border-border bg-card shadow-lg overflow-hidden">
@@ -2187,16 +2416,29 @@ export function App() {
 
               <div className="flex-1" />
 
-              {/* Send button */}
-              <button
-                type="submit"
-                disabled={state.running || state.isReconnecting}
-                className="flex items-center justify-center rounded-md bg-primary w-7 h-7 text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                title="Send (Enter)"
-              >
-                {state.running ? (
-                  <span className="text-xs">…</span>
-                ) : (
+              {/* Send / Stop button */}
+              {state.running ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (state.currentRunId) {
+                      flowRun.cancel(state.currentRunId).catch(() => undefined);
+                    }
+                  }}
+                  className="flex items-center justify-center rounded-md bg-destructive w-7 h-7 text-white transition hover:opacity-90"
+                  title="Stop run"
+                >
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                    <rect x="0" y="0" width="10" height="10" rx="1" />
+                  </svg>
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={state.isReconnecting}
+                  className="flex items-center justify-center rounded-md bg-primary w-7 h-7 text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Send (Enter)"
+                >
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                     <path
                       d="M7 1L7 13M1 7L7 1L13 7"
@@ -2206,13 +2448,71 @@ export function App() {
                       strokeLinejoin="round"
                     />
                   </svg>
-                )}
-              </button>
+                </button>
+              )}
             </div>
           </div>
         </div>
         {/* end relative picker wrapper */}
       </form>
+
+      {/* ── Below-editor status bar: approval mode + context hint ──────────── */}
+      <div className="flex items-center gap-2 px-3 pb-3 pt-0">
+        {/* Global Approval Mode selector */}
+        <select
+          value={globalApprovalMode}
+          onChange={(e) => {
+            const v = e.target.value as "default" | "autopilot" | "bypass";
+            setGlobalApprovalMode(v);
+            persistGlobalApprovalMode(v);
+          }}
+          className={cn(
+            "rounded-md px-1.5 py-1 text-xs transition",
+            "border-0 bg-transparent text-cronymax-caption hover:text-cronymax-title",
+          )}
+          title="Global approval mode — overrides per-tool trust for this session"
+        >
+          <option value="default">approve: per-tool</option>
+          <option value="autopilot">approve: all</option>
+          <option value="bypass">approve: none</option>
+        </select>
+
+        {/* Context window hint */}
+        {latestUsage &&
+          contextLimit &&
+          (() => {
+            const used = latestUsage.inputTokens + latestUsage.outputTokens;
+            const pct = Math.min(100, Math.round((used / contextLimit) * 100));
+            const warn = pct >= 80;
+            const critical = pct >= 95;
+            return (
+              <div
+                className={cn(
+                  "flex items-center gap-2 rounded-md px-2 py-1 text-[11px]",
+                  critical
+                    ? "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300"
+                    : warn
+                      ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                      : "bg-muted/40 text-muted-foreground",
+                )}
+                title={`Input: ${latestUsage.inputTokens.toLocaleString()} tokens · Output: ${latestUsage.outputTokens.toLocaleString()} tokens`}
+              >
+                <div className="w-16 overflow-hidden rounded-full bg-current/20 h-1">
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-all",
+                      critical ? "bg-red-500" : warn ? "bg-amber-500" : "bg-primary/50",
+                    )}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <span className="shrink-0 tabular-nums">
+                  {pct}% of {(contextLimit / 1_000).toFixed(0)}k ctx
+                </span>
+              </div>
+            );
+          })()}
+      </div>
     </main>
   );
 }
