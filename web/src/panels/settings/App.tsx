@@ -11,7 +11,7 @@
  */
 import { Check, Palette, Play, Plug, ShieldCheck, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Icon } from "@/components/Icon";
+import { PanelWindowHeader } from "@/components/PanelWindowHeader";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -142,20 +142,11 @@ export function App() {
     [state.permission, dispatch],
   );
 
-  const onClose = useCallback(() => {
-    shells.browser.shell.popover_close().catch(() => {
-      /* ignore */
-    });
-  }, []);
-
   return (
     <main className="relative flex h-screen w-screen flex-col bg-background text-foreground">
-      <header className="flex shrink-0 items-center justify-between border-b border-border bg-card px-4 py-2">
+      <PanelWindowHeader className="flex shrink-0 items-center border-b border-border bg-card px-4 py-2">
         <Heading>Settings</Heading>
-        <Button variant="ghost" size="icon" onClick={onClose} title="Close" aria-label="Close">
-          <Icon name="close" size={16} aria-hidden="true" />
-        </Button>
-      </header>
+      </PanelWindowHeader>
       <Tabs
         value={tab}
         onValueChange={(v) => setTab(v as SettingsTab)}

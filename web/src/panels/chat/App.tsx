@@ -1,4 +1,23 @@
-import { Check, ChevronsUpDown } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ChevronsUpDown,
+  Copy,
+  GitFork,
+  Image as ImageIcon,
+  Info,
+  Loader2,
+  MessageSquare,
+  Paperclip,
+  Pin,
+  Plus,
+  Square,
+  TriangleAlert,
+  Undo2,
+  X,
+} from "lucide-react";
 import {
   type ChangeEvent,
   type ClipboardEvent,
@@ -10,11 +29,16 @@ import {
   useState,
 } from "react";
 import { FlowInstancesBar } from "@/components/FlowInstancesBar";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Heading } from "@/components/ui/typography";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { cn } from "@/lib/utils";
 import { browser, shells } from "@/shells/bridge";
@@ -83,6 +107,22 @@ function detectFileChange(tool: string, args: unknown): { path: string; operatio
   return { path, operation: def.operation };
 }
 
+// ── shadcn Tooltip helper ──────────────────────────────────────────────
+// Wraps any element with a shadcn Tooltip so callers can replace
+// `title="..."` (browser-native tooltip — system styled, instant,
+// inconsistent with the rest of the UI) with the same theme-aware
+// tooltip used elsewhere. Pass plain text via `tip`; the child becomes
+// the trigger via `asChild`. A top-level `<TooltipProvider>` wraps
+// `<main>` so all instances share the same delay timer.
+function Tip({ tip, children }: { tip: string; children: React.ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent>{tip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 // ── picker types ────────────────────────────────────────────────────────
 
 interface PickerItem {
@@ -140,7 +180,7 @@ function UserMessageContent({ text, onPillClick }: { text: string; onPillClick?:
             key={i}
             type="button"
             onClick={() => onPillClick?.(word.slice(1))}
-            className="inline-flex items-center rounded-md bg-primary/15 border border-primary/30 px-1.5 py-0 text-xs font-mono text-primary align-middle mr-0.5 cursor-pointer hover:bg-primary/25 transition-colors"
+            className="mr-0.5 inline-flex cursor-pointer items-center rounded-md border border-primary/30 bg-primary/15 px-1.5 py-0 align-middle font-mono text-xs text-primary transition-colors hover:bg-primary/25"
           >
             <span className="opacity-60">/</span>
             {word.slice(1)}
@@ -212,24 +252,26 @@ function fmtDuration(ms: number): string {
 function ThreadSummary({ thread, onExpand }: { thread: Thread; onExpand: () => void }) {
   const lastMsg = thread.messages.at(-1);
   return (
-    <div className="mt-2 rounded border border-border bg-card px-3 py-2 text-xs">
-      <div className="flex items-center gap-2">
-        <span className="font-semibold capitalize text-primary">{thread.action}</span>
-        <span className="text-muted-foreground">
-          {thread.messages.length} message
-          {thread.messages.length !== 1 ? "s" : ""}
-        </span>
-        {thread.running && <span className="text-muted-foreground italic">running…</span>}
-        <button type="button" onClick={onExpand} className="ml-auto text-primary hover:underline">
-          View thread ⇄
-        </button>
-      </div>
-      {lastMsg && (
-        <div className="mt-1 truncate text-muted-foreground">
-          {lastMsg.role === "assistant" ? lastMsg.content.slice(0, 80) : ""}
+    <Card size="sm" className="mt-2 text-xs">
+      <CardContent className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold capitalize text-primary">{thread.action}</span>
+          <span className="text-muted-foreground">
+            {thread.messages.length} message
+            {thread.messages.length !== 1 ? "s" : ""}
+          </span>
+          {thread.running && <span className="italic text-muted-foreground">running…</span>}
+          <Button variant="link" size="sm" onClick={onExpand} className="ml-auto h-auto p-0">
+            View thread
+          </Button>
         </div>
-      )}
-    </div>
+        {lastMsg && (
+          <div className="truncate text-muted-foreground">
+            {lastMsg.role === "assistant" ? lastMsg.content.slice(0, 80) : ""}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -254,23 +296,32 @@ function ConversationBlockView({
   const activePillPrompt = activePillLabel ? workspacePrompts.find((p) => p.label === activePillLabel) : null;
   return (
     <div
-      className={`py-4 space-y-2 transition-all duration-500${
-        isHighlighted ? " rounded-md ring-2 ring-primary/40" : ""
-      }`}
+      className={cn(
+        "flex flex-col gap-2 py-4 transition-all duration-500",
+        isHighlighted && "rounded-md ring-2 ring-primary/40",
+      )}
       data-block-id={block.id}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
       {/* User message */}
-      <div className="rounded-md bg-primary/10 px-3 py-2">
-        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-primary">You</div>
+      <div className="flex flex-col gap-1 rounded-md bg-primary/10 px-3 py-2">
+        <Badge variant="secondary" className="self-start">
+          You
+        </Badge>
         {block.attachments.length > 0 && (
-          <div className="mb-1 flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1">
             {block.attachments.map((a) => (
-              <span key={a.id} className="rounded-full bg-border px-2 py-0.5 text-xs text-muted-foreground">
-                {a.kind === "comment" ? "💬 " : a.kind === "image" ? "🖼 " : "📎 "}
+              <Badge key={a.id} variant="outline" className="gap-1 font-normal text-muted-foreground">
+                {a.kind === "comment" ? (
+                  <MessageSquare className="size-3" />
+                ) : a.kind === "image" ? (
+                  <ImageIcon className="size-3" />
+                ) : (
+                  <Paperclip className="size-3" />
+                )}
                 {a.label}
-              </span>
+              </Badge>
             ))}
           </div>
         )}
@@ -298,10 +349,10 @@ function ConversationBlockView({
 
       {/* Content stream — renders text, tool cards, and thinking in order */}
       {(block.contentStream.length > 0 || block.status === "running") && (
-        <div className="px-1">
-          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="flex flex-col gap-1 px-1">
+          <Badge variant="outline" className="self-start font-normal text-muted-foreground">
             {block.agentName || "Assistant"}
-          </div>
+          </Badge>
           <ContentStreamView segments={block.contentStream} isStreaming={isStreaming} />
         </div>
       )}
@@ -311,7 +362,7 @@ function ConversationBlockView({
 
       {/* Status error */}
       {block.status === "fail" && block.contentStream.length === 0 && (
-        <div className="text-xs italic text-red-400">(run failed)</div>
+        <div className="text-xs italic text-destructive">(run failed)</div>
       )}
 
       {/* Trace — shown below the content stream (position unchanged) */}
@@ -322,9 +373,10 @@ function ConversationBlockView({
         <div
           key={c.id}
           data-comment-id={c.id}
-          className="rounded border-l-2 border-blue-500 bg-blue-500/10 px-2 py-1 text-xs text-blue-300"
+          className="flex items-center gap-1.5 rounded border-l-2 border-primary bg-primary/10 px-2 py-1 text-xs text-primary"
         >
-          💬 "{c.selectedText.slice(0, 80)}"
+          <MessageSquare className="size-3 shrink-0" />
+          <span className="truncate">"{c.selectedText.slice(0, 80)}"</span>
         </div>
       ))}
 
@@ -342,24 +394,20 @@ function ConversationBlockView({
       {!isStreaming && hovered && (onRestore || onFork) && (
         <div className="flex items-center gap-1.5 pt-0.5">
           {onRestore && (
-            <button
-              type="button"
-              onClick={() => onRestore(block.id)}
-              className="rounded border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground transition"
-              title="Restore chat to this checkpoint (discards subsequent blocks)"
-            >
-              ↩ Restore
-            </button>
+            <Tip tip="Restore chat to this checkpoint (discards subsequent blocks)">
+              <Button variant="outline" size="xs" onClick={() => onRestore(block.id)}>
+                <Undo2 data-icon="inline-start" />
+                Restore
+              </Button>
+            </Tip>
           )}
           {onFork && (
-            <button
-              type="button"
-              onClick={() => onFork(block.id)}
-              className="rounded border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground transition"
-              title="Fork a new chat from this checkpoint"
-            >
-              ⎇ Fork
-            </button>
+            <Tip tip="Fork a new chat from this checkpoint">
+              <Button variant="outline" size="xs" onClick={() => onFork(block.id)}>
+                <GitFork data-icon="inline-start" />
+                Fork
+              </Button>
+            </Tip>
           )}
         </div>
       )}
@@ -378,32 +426,39 @@ function ShellBlockView({
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const duration = block.endedAt && block.startedAt ? fmtDuration(block.endedAt - block.startedAt) : null;
-  const statusColor =
-    block.status === "ok" ? "text-green-400" : block.status === "fail" ? "text-red-400" : "text-amber-400";
-  const statusGlyph = block.status === "ok" ? "✓" : block.status === "fail" ? "✗" : "●";
+
+  const StatusIcon = block.status === "ok" ? Check : block.status === "fail" ? X : Loader2;
+  const statusIconClass = cn(
+    "size-3.5 shrink-0",
+    block.status === "ok" && "text-primary",
+    block.status === "fail" && "text-destructive",
+    block.status === "running" && "animate-spin text-amber-500",
+  );
 
   return (
     <div
-      className={`py-4 space-y-1.5 transition-all duration-500${
-        isHighlighted ? " rounded-md ring-2 ring-primary/40" : ""
-      }`}
+      className={cn(
+        "flex flex-col gap-1.5 py-4 transition-all duration-500",
+        isHighlighted && "rounded-md ring-2 ring-primary/40",
+      )}
       data-block-id={block.id}
     >
       {/* Header — highlighted command prompt */}
       <div className="flex items-center gap-2 rounded-md bg-primary/10 px-3 py-1.5">
-        <span className={`font-mono text-sm font-bold ${statusColor}`}>{statusGlyph}</span>
+        <StatusIcon className={statusIconClass} />
         <span className="flex-1 font-mono text-sm text-foreground">$ {block.command}</span>
         {block.exitCode !== null && block.exitCode !== 0 && (
-          <span className="text-xs text-red-400">exit {block.exitCode}</span>
+          <span className="text-xs text-destructive">exit {block.exitCode}</span>
         )}
         {duration && <span className="text-xs text-muted-foreground">{duration}</span>}
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="icon-xs"
           onClick={() => setCollapsed((c) => !c)}
-          className="text-xs text-muted-foreground hover:text-foreground"
+          aria-label={collapsed ? "Expand" : "Collapse"}
         >
-          {collapsed ? "▶" : "▼"}
-        </button>
+          {collapsed ? <ChevronRight /> : <ChevronDown />}
+        </Button>
       </div>
 
       {/* Output */}
@@ -417,14 +472,9 @@ function ShellBlockView({
       {block.status !== "running" && (
         <div className="flex gap-2 pt-0.5">
           {(["Explain", "Fix", "Retry"] as const).map((act) => (
-            <button
-              key={act}
-              type="button"
-              onClick={() => onAction(act.toLowerCase(), block)}
-              className="rounded border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground"
-            >
+            <Button key={act} variant="outline" size="xs" onClick={() => onAction(act.toLowerCase(), block)}>
               {act}
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -436,9 +486,10 @@ function ShellBlockView({
           <div
             key={c.id}
             data-comment-id={c.id}
-            className="rounded border-l-2 border-blue-500 bg-blue-500/10 px-2 py-1 text-xs text-blue-300"
+            className="flex items-center gap-1.5 rounded border-l-2 border-primary bg-primary/10 px-2 py-1 text-xs text-primary"
           >
-            💬 "{c.selectedText.slice(0, 80)}"
+            <MessageSquare className="size-3 shrink-0" />
+            <span className="truncate">"{c.selectedText.slice(0, 80)}"</span>
           </div>
         ))}
 
@@ -503,22 +554,30 @@ function AttachmentTray({
   const files = attachments.filter((a) => a.kind === "file");
   const images = attachments.filter((a) => a.kind === "image");
 
-  const Pill = ({ a }: { a: Attachment }) => (
-    <span className="flex items-center gap-1 rounded-full bg-card border border-border px-2 py-0.5 text-xs text-muted-foreground">
-      {a.kind === "comment" ? "💬" : a.kind === "image" ? "🖼" : "📎"}
-      <span
-        className={`max-w-[100px] truncate${
-          a.kind === "comment" && onCommentClick ? " cursor-pointer hover:text-foreground" : ""
-        }`}
-        onClick={a.kind === "comment" && onCommentClick ? () => onCommentClick(a) : undefined}
-      >
-        {a.label}
-      </span>
-      <button type="button" onClick={() => onRemove(a.id)} className="ml-0.5 text-muted-foreground hover:text-red-400">
-        ×
-      </button>
-    </span>
-  );
+  const Pill = ({ a }: { a: Attachment }) => {
+    const Icon = a.kind === "comment" ? MessageSquare : a.kind === "image" ? ImageIcon : Paperclip;
+    const clickable = a.kind === "comment" && onCommentClick;
+    return (
+      <Badge variant="outline" className="gap-1 font-normal text-muted-foreground">
+        <Icon className="size-3" />
+        <span
+          className={cn("max-w-[100px] truncate", clickable && "cursor-pointer hover:text-foreground")}
+          onClick={clickable ? () => onCommentClick(a) : undefined}
+        >
+          {a.label}
+        </span>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={() => onRemove(a.id)}
+          className="-mr-1 size-4 text-muted-foreground hover:text-destructive"
+          aria-label="Remove attachment"
+        >
+          <X />
+        </Button>
+      </Badge>
+    );
+  };
 
   return (
     <div className="flex flex-wrap gap-1.5 border-t border-border px-2 py-1.5">
@@ -731,6 +790,21 @@ export function App() {
   const selectionInfo = useSelectionTooltip(timelineRef);
   const [frozenSelection, setFrozenSelection] = useState<import("./useSelectionTooltip").SelectionInfo | null>(null);
   const activeSelection = frozenSelection ?? selectionInfo;
+
+  // Reset the comment draft whenever the user starts a *new* selection.
+  // We compare against the last seen (blockId, selectedText) identity rather
+  // than against `activeSelection` because focusing the textarea makes the
+  // browser clear its selection (selectionInfo → null) while we hold the
+  // tooltip open via `frozenSelection`; clearing the draft on that transient
+  // null would wipe what the user is typing.
+  const lastSelectionKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectionInfo) return; // frozen or no selection — keep draft
+    const key = `${selectionInfo.blockId}::${selectionInfo.selectedText}`;
+    if (key === lastSelectionKeyRef.current) return; // same selection — keep draft
+    lastSelectionKeyRef.current = key;
+    setCommentDraft("");
+  }, [selectionInfo]);
 
   // ── comment attachment → scroll & highlight ────────────────────────────
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null);
@@ -1924,595 +1998,651 @@ export function App() {
   };
 
   return (
-    <main className="flex h-screen flex-col bg-background text-foreground">
-      {/* Header */}
-      <header className="flex items-center gap-3 border-b border-border bg-card px-3 py-2 text-sm">
-        <span className="flex-1 truncate font-semibold">{state.chatName}</span>
+    <TooltipProvider>
+      <main className="flex h-screen flex-col bg-background text-foreground">
+        {/* Header */}
+        <header className="flex items-center gap-3 border-b border-border bg-card px-3 py-2">
+          <Heading className="flex-1 truncate">{state.chatName}</Heading>
 
-        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-          Flow:
-          <Select
-            value={state.selectedFlow}
-            onValueChange={(v) => {
-              dispatch({ type: "setSelectedFlow", name: v });
-              persistSelectedFlow(v);
-            }}
-          >
-            <SelectTrigger className="h-6 w-auto max-w-[140px] border-border bg-background text-xs">
-              <SelectValue placeholder="(no flows)" />
-            </SelectTrigger>
-            <SelectContent>
-              {state.flows.map((n) => (
-                <SelectItem key={n} value={n} className="text-xs">
-                  {n}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <Button type="button" variant="outline" size="sm" onClick={onClear} className="h-6 px-2 text-xs">
-          Clear
-        </Button>
-      </header>
-
-      {/* Migration notice */}
-      {state.migrationNotice && (
-        <div className="flex items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-3 py-1 text-xs text-amber-300">
-          <span className="flex-1">{state.migrationNotice}</span>
-          <button
-            type="button"
-            onClick={() => dispatch({ type: "clearMigrationNotice" })}
-            className="text-amber-300 hover:text-amber-100"
-          >
-            ×
-          </button>
-        </div>
-      )}
-
-      {/* Runtime reconnecting banner */}
-      {state.isReconnecting && (
-        <div className="flex items-center gap-2 border-b border-blue-500/40 bg-blue-500/10 px-3 py-1 text-xs text-blue-300">
-          <span className="animate-pulse">⟳</span>
-          <span>Reconnecting to runtime…</span>
-          <button
-            className="ml-auto rounded px-1.5 py-0.5 text-blue-300 hover:bg-blue-500/20 hover:text-blue-100"
-            title="Check connection"
-            onClick={() => {
-              void shells.browser.space
-                .list()
-                .then(() => dispatch({ type: "setReconnecting", reconnecting: false }))
-                .catch(() => {
-                  /* still reconnecting — keep banner */
-                });
-            }}
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {/* Agent load error */}
-      {agentLoadError && (
-        <div className="border-b border-red-500/40 bg-red-500/10 px-3 py-1 text-xs text-red-300">
-          agent.registry.list failed: {agentLoadError}
-        </div>
-      )}
-
-      {/* Block timeline */}
-      <div ref={timelineRef} className="flex-1 overflow-y-auto divide-y divide-border px-4 py-2">
-        {state.blocks.map((b) => (
-          <BlockView
-            key={b.id}
-            block={b}
-            isStreaming={b.id === runningBlockId && b.kind === "conversation"}
-            onShellAction={onShellAction}
-            isHighlighted={b.id === highlightedBlockId}
-            workspacePrompts={workspacePrompts}
-            onRestoreBlock={!state.running ? onRestoreBlock : undefined}
-            onForkBlock={!state.running ? onForkBlock : undefined}
-          />
-        ))}
-      </div>
-
-      {/* ── Floating selection tooltip ─────────────────────────────── */}
-      {activeSelection && (
-        <div
-          className="fixed z-50 rounded-lg border border-border bg-background shadow-xl"
-          style={{
-            top: activeSelection.anchorRect.top - 8,
-            left: activeSelection.anchorRect.left + activeSelection.anchorRect.width / 2,
-            transform: "translateX(-50%) translateY(-100%)",
-          }}
-          onMouseDown={(e) => {
-            // Always prevent default to keep text selection alive.
-            // Manually focus inputs so they still receive keyboard events.
-            e.preventDefault();
-            if (e.target instanceof HTMLInputElement) {
-              (e.target as HTMLInputElement).focus();
-            }
-          }}
-        >
-          {/* Quick actions row */}
-          <div className="flex items-center gap-0.5 px-1.5 pt-1.5">
-            <button
-              type="button"
-              className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition"
-              onClick={() => navigator.clipboard.writeText(activeSelection.selectedText)}
-            >
-              Copy
-            </button>
-            <button
-              type="button"
-              className="rounded px-2 py-0.5 text-xs text-primary hover:bg-primary/20 transition"
-              onClick={() => {
-                const commentId = crypto.randomUUID();
-                dispatch({
-                  type: "pinComment",
-                  comment: {
-                    id: commentId,
-                    blockId: activeSelection.blockId,
-                    selectedText: activeSelection.selectedText,
-                    text: commentDraft.trim() || undefined,
-                    pinnedToPrompt: true,
-                  },
-                });
-                setCommentDraft("");
-                setFrozenSelection(null);
-                window.getSelection()?.removeAllRanges();
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            Flow:
+            <Select
+              value={state.selectedFlow}
+              onValueChange={(v) => {
+                dispatch({ type: "setSelectedFlow", name: v });
+                persistSelectedFlow(v);
               }}
             >
-              Pin ↑
-            </button>
+              <SelectTrigger size="sm" className="max-w-[140px]">
+                <SelectValue placeholder="(no flows)" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {state.flows.map((n) => (
+                    <SelectItem key={n} value={n}>
+                      {n}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           </div>
-          {/* Comment input */}
-          <div className="px-2 pb-2 pt-1">
-            <Input
-              type="text"
-              value={commentDraft}
-              onChange={(e) => setCommentDraft(e.target.value)}
-              placeholder="Add a comment… (Enter to pin)"
-              className="h-7 w-52 text-xs"
-              onFocus={() => setFrozenSelection(selectionInfo ?? frozenSelection)}
-              onBlur={() => setFrozenSelection(null)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  const commentId = crypto.randomUUID();
-                  dispatch({
-                    type: "pinComment",
-                    comment: {
-                      id: commentId,
-                      blockId: activeSelection.blockId,
-                      selectedText: activeSelection.selectedText,
-                      text: commentDraft.trim() || undefined,
-                      pinnedToPrompt: true,
-                    },
-                  });
-                  setCommentDraft("");
-                  setFrozenSelection(null);
-                  window.getSelection()?.removeAllRanges();
-                }
-                if (e.key === "Escape") {
-                  setCommentDraft("");
-                  setFrozenSelection(null);
-                  window.getSelection()?.removeAllRanges();
-                }
-              }}
-            />
-          </div>
-        </div>
-      )}
 
-      {/* ── Flow instances bar — visible when session has active flow runs ── */}
-      <FlowInstancesBar sessionId={state.activeChatId} />
+          <Button type="button" variant="outline" size="sm" onClick={onClear}>
+            Clear
+          </Button>
+        </header>
 
-      {/* ── File changes summary ─────────────────────────────────────────── */}
-      <FileChangesView changes={sessionFileChanges} />
-
-      {/* ── Copilot-like composer ──────────────────────────────────── */}
-      <form onSubmit={onSubmit} className="px-3 pb-1 pt-1">
-        {/* Approval card — shown when agent awaits tool review */}
-        {state.awaitingApproval && (
-          <ApprovalCard
-            runId={state.awaitingApproval.runId}
-            reviewId={state.awaitingApproval.reviewId}
-            toolName={state.awaitingApproval.toolName}
-            args={state.awaitingApproval.args}
-            onAllow={() => dispatch({ type: "clearAwaitingApproval" })}
-            onDeny={() => dispatch({ type: "clearAwaitingApproval" })}
-          />
+        {/* Migration notice */}
+        {state.migrationNotice && (
+          <Alert className="rounded-none border-0 border-b">
+            <Info />
+            <AlertDescription className="flex items-center gap-2">
+              <span className="flex-1">{state.migrationNotice}</span>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => dispatch({ type: "clearMigrationNotice" })}
+                aria-label="Dismiss"
+              >
+                <X />
+              </Button>
+            </AlertDescription>
+          </Alert>
         )}
 
-        {/* Attachment tray sits above the editor box */}
-        <AttachmentTray
-          attachments={state.attachments}
-          onRemove={(id) => dispatch({ type: "removeAttachment", id })}
-          onCommentClick={onCommentAttachmentClick}
-        />
-
-        {/* Picker + editor wrapper — relative so the picker floats above */}
-        <div className="relative">
-          {/* ── Reviews panel — floats above editor when pending approvals exist ── */}
-          <div className="absolute bottom-full left-0 right-0 z-40 mb-1">
-            <ReviewsPanel sessionId={state.activeChatId} />
-          </div>
-
-          {/* ── Slash / @ picker ──────────────────────────────────────── */}
-          {picker && pickerItems.length > 0 && (
-            <div className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-lg border border-border bg-card shadow-lg overflow-hidden">
-              <div className="px-2 pt-1.5 pb-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {picker.type === "slash" ? "Commands" : "Agents"}
-              </div>
-              {pickerItems.map((item, idx) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={
-                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition " +
-                    (idx === pickerIdx
-                      ? "bg-primary/20 text-foreground"
-                      : "text-muted-foreground hover:bg-accent hover:text-foreground")
-                  }
-                  onMouseEnter={() => setPickerIdx(idx)}
-                  onMouseDown={(e) => {
-                    // Use onMouseDown + preventDefault so the textarea doesn't blur
-                    e.preventDefault();
-                    commitPickerItem(item);
+        {/* Runtime reconnecting banner */}
+        {state.isReconnecting && (
+          <Alert className="rounded-none border-0 border-b">
+            <Loader2 className="animate-spin" />
+            <AlertDescription className="flex items-center gap-2">
+              <span className="flex-1">Reconnecting to runtime…</span>
+              <Tip tip="Check connection">
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Check connection"
+                  onClick={() => {
+                    void shells.browser.space
+                      .list()
+                      .then(() => dispatch({ type: "setReconnecting", reconnecting: false }))
+                      .catch(() => {
+                        /* still reconnecting — keep banner */
+                      });
                   }}
                 >
-                  <span className="font-mono font-semibold text-primary w-5 text-center shrink-0">
-                    {picker.type === "slash" ? "/" : "@"}
-                  </span>
-                  <span className="font-semibold">{item.label}</span>
-                  {item.description && (
-                    <span className="truncate text-muted-foreground ml-1">— {item.description}</span>
-                  )}
-                </button>
-              ))}
-            </div>
+                  <X />
+                </Button>
+              </Tip>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Agent load error */}
+        {agentLoadError && (
+          <Alert variant="destructive" className="rounded-none border-0 border-b">
+            <TriangleAlert />
+            <AlertTitle>agent.registry.list failed</AlertTitle>
+            <AlertDescription>{agentLoadError}</AlertDescription>
+          </Alert>
+        )}
+
+        {/* Block timeline */}
+        <div ref={timelineRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-2">
+          {state.blocks.map((b) => (
+            <BlockView
+              key={b.id}
+              block={b}
+              isStreaming={b.id === runningBlockId && b.kind === "conversation"}
+              onShellAction={onShellAction}
+              isHighlighted={b.id === highlightedBlockId}
+              workspacePrompts={workspacePrompts}
+              onRestoreBlock={!state.running ? onRestoreBlock : undefined}
+              onForkBlock={!state.running ? onForkBlock : undefined}
+            />
+          ))}
+        </div>
+
+        {/* ── Floating selection tooltip ──────────────────────────────
+          Anchored to the selection rect via PopoverAnchor (zero-pointer-
+          events div positioned at the rect). Radix's popper handles edge
+          collision, flip, and Portal rendering — so the tooltip never gets
+          clipped by the webview's borders or by any ancestor's overflow. */}
+        {activeSelection && (
+          <Popover open modal={false}>
+            <PopoverAnchor asChild>
+              <div
+                aria-hidden
+                className="pointer-events-none fixed"
+                style={{
+                  top: activeSelection.anchorRect.top,
+                  left: activeSelection.anchorRect.left,
+                  width: activeSelection.anchorRect.width,
+                  height: activeSelection.anchorRect.height,
+                }}
+              />
+            </PopoverAnchor>
+            <PopoverContent
+              side="top"
+              sideOffset={4}
+              align="center"
+              collisionPadding={8}
+              // Keep the user's text selection alive: don't auto-focus when the
+              // popover opens, and don't return focus on close.
+              onOpenAutoFocus={(e) => e.preventDefault()}
+              onCloseAutoFocus={(e) => e.preventDefault()}
+              onMouseDown={(e) => {
+                // Always prevent default to keep text selection alive.
+                // Manually focus inputs so they still receive keyboard events.
+                e.preventDefault();
+                if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+                  e.target.focus();
+                }
+              }}
+              className="flex w-auto flex-col gap-1 p-1.5"
+            >
+              {/* Quick actions row */}
+              <div className="flex items-center gap-0.5">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => navigator.clipboard.writeText(activeSelection.selectedText)}
+                >
+                  <Copy data-icon="inline-start" />
+                  Copy
+                </Button>
+                <Button
+                  size="xs"
+                  onClick={() => {
+                    const commentId = crypto.randomUUID();
+                    dispatch({
+                      type: "pinComment",
+                      comment: {
+                        id: commentId,
+                        blockId: activeSelection.blockId,
+                        selectedText: activeSelection.selectedText,
+                        text: commentDraft.trim() || undefined,
+                        pinnedToPrompt: true,
+                      },
+                    });
+                    setCommentDraft("");
+                    setFrozenSelection(null);
+                    window.getSelection()?.removeAllRanges();
+                  }}
+                >
+                  <Pin data-icon="inline-start" />
+                  Pin
+                </Button>
+              </div>
+              {/* Comment input — base Textarea applies `field-sizing-content`
+                which sizes the box to its content, so the `rows` attr is
+                ignored once the user types. Pin a real CSS floor instead:
+                2 lines of text-xs (line-height 1rem) + py-2 padding +
+                2 × 1px border ≈ 3.25rem. `max-h-32` caps runaway growth
+                with internal scroll. */}
+              <Textarea
+                rows={2}
+                value={commentDraft}
+                onChange={(e) => setCommentDraft(e.target.value)}
+                placeholder="Add a comment… (Enter to pin, Shift+Enter for newline)"
+                className="max-h-32 min-h-[3.25rem] w-64 resize-none text-xs"
+                onFocus={() => setFrozenSelection(selectionInfo ?? frozenSelection)}
+                onBlur={() => setFrozenSelection(null)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    const commentId = crypto.randomUUID();
+                    dispatch({
+                      type: "pinComment",
+                      comment: {
+                        id: commentId,
+                        blockId: activeSelection.blockId,
+                        selectedText: activeSelection.selectedText,
+                        text: commentDraft.trim() || undefined,
+                        pinnedToPrompt: true,
+                      },
+                    });
+                    setCommentDraft("");
+                    setFrozenSelection(null);
+                    window.getSelection()?.removeAllRanges();
+                  }
+                  if (e.key === "Escape") {
+                    setCommentDraft("");
+                    setFrozenSelection(null);
+                    window.getSelection()?.removeAllRanges();
+                  }
+                }}
+              />
+            </PopoverContent>
+          </Popover>
+        )}
+
+        {/* ── Flow instances bar — visible when session has active flow runs ── */}
+        <FlowInstancesBar sessionId={state.activeChatId} />
+
+        {/* ── File changes summary ─────────────────────────────────────────── */}
+        <FileChangesView changes={sessionFileChanges} />
+
+        {/* ── Copilot-like composer ──────────────────────────────────── */}
+        <form onSubmit={onSubmit} className="px-3 pb-1 pt-1">
+          {/* Approval card — shown when agent awaits tool review */}
+          {state.awaitingApproval && (
+            <ApprovalCard
+              runId={state.awaitingApproval.runId}
+              reviewId={state.awaitingApproval.reviewId}
+              toolName={state.awaitingApproval.toolName}
+              args={state.awaitingApproval.args}
+              onAllow={() => dispatch({ type: "clearAwaitingApproval" })}
+              onDeny={() => dispatch({ type: "clearAwaitingApproval" })}
+            />
           )}
 
-          {/* Editor card */}
-          <div
-            className={
-              "flex flex-col rounded-xl border bg-background transition-colors " +
-              (inputMode === "shell"
-                ? "border-amber-500/70 bg-amber-500/5"
-                : "border-border focus-within:border-primary/60")
-            }
-          >
-            {/* Attached prompt pills (VS-Code-style slash command references) */}
-            {attachedPrompts.length > 0 && (
-              <div className="relative flex flex-wrap gap-1 px-2.5 pt-2 pb-0">
-                {/* PromptPopover rendered above the pill row */}
-                {activePillId !== null &&
-                  (() => {
-                    const activePill = attachedPrompts.find((p) => p.id === activePillId);
-                    if (!activePill) return null;
-                    return (
-                      <PromptPopover
-                        key={activePillId}
-                        prompt={activePill}
-                        onClose={() => setActivePillId(null)}
-                        onSave={async (label, content) => {
-                          const res = await shells.browser.workspace.prompt.save({ name: label, content });
-                          if (!res.ok) throw new Error(res.error ?? "Save failed");
-                          setAttachedPrompts((prev) =>
-                            prev.map((p) => (p.id === activePillId ? { ...p, content } : p)),
-                          );
-                          setActivePillId(null);
-                        }}
-                      />
-                    );
-                  })()}
-                {attachedPrompts.map((p) => (
-                  <span
-                    key={p.id}
-                    className={
-                      "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs font-mono cursor-pointer transition " +
-                      (activePillId === p.id
-                        ? "bg-primary/25 border-primary/60 text-primary"
-                        : "bg-primary/15 border-primary/30 text-primary hover:bg-primary/25")
-                    }
-                    onClick={() => setActivePillId((prev) => (prev === p.id ? null : p.id))}
+          {/* Attachment tray sits above the editor box */}
+          <AttachmentTray
+            attachments={state.attachments}
+            onRemove={(id) => dispatch({ type: "removeAttachment", id })}
+            onCommentClick={onCommentAttachmentClick}
+          />
+
+          {/* Picker + editor wrapper — relative so the picker floats above */}
+          <div className="relative">
+            {/* ── Reviews panel — floats above editor when pending approvals exist ── */}
+            <div className="absolute bottom-full left-0 right-0 z-40 mb-1">
+              <ReviewsPanel sessionId={state.activeChatId} />
+            </div>
+
+            {/* ── Slash / @ picker ──────────────────────────────────────── */}
+            {picker && pickerItems.length > 0 && (
+              <div className="absolute inset-x-0 bottom-full z-50 mb-1 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg">
+                <div className="px-2 pb-0.5 pt-1.5 text-xs font-medium text-muted-foreground">
+                  {picker.type === "slash" ? "Commands" : "Agents"}
+                </div>
+                {pickerItems.map((item, idx) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    data-active={idx === pickerIdx}
+                    className={cn(
+                      "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition",
+                      idx === pickerIdx
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                    )}
+                    onMouseEnter={() => setPickerIdx(idx)}
+                    onMouseDown={(e) => {
+                      // Use onMouseDown + preventDefault so the textarea doesn't blur
+                      e.preventDefault();
+                      commitPickerItem(item);
+                    }}
                   >
-                    <span className="opacity-70">/</span>
-                    {p.label}
-                    <button
-                      type="button"
-                      className="ml-0.5 opacity-50 hover:opacity-100 leading-none"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActivePillId((prev) => (prev === p.id ? null : prev));
-                        setAttachedPrompts((prev) => prev.filter((x) => x.id !== p.id));
-                      }}
-                    >
-                      ×
-                    </button>
-                  </span>
+                    <span className="w-5 shrink-0 text-center font-mono font-semibold text-primary">
+                      {picker.type === "slash" ? "/" : "@"}
+                    </span>
+                    <span className="font-semibold">{item.label}</span>
+                    {item.description && (
+                      <span className="ml-1 truncate text-muted-foreground">— {item.description}</span>
+                    )}
+                  </button>
                 ))}
               </div>
             )}
 
-            {/* Prefix badge row (shown when mode ≠ chat) */}
-            {inputMode !== "chat" && (
-              <div className="flex items-center gap-1.5 px-3 pt-2 pb-0">
-                <span
-                  className={
-                    "rounded px-1.5 py-0.5 text-xs font-mono font-semibold " +
-                    (inputMode === "shell" ? "bg-amber-500/20 text-amber-300" : "bg-primary/20 text-primary")
-                  }
-                >
-                  {inputMode === "shell" ? "$ shell" : "/ command"}
-                </span>
-                <button
-                  type="button"
-                  className="text-xs text-muted-foreground hover:text-foreground ml-auto"
-                  onClick={() => {
-                    if (inputRef.current) inputRef.current.value = "";
-                    setInputMode("chat");
-                    setPicker(null);
-                    setAttachedPrompts([]);
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-            )}
-
-            {/* Textarea */}
-            <textarea
-              ref={inputRef}
-              rows={1}
-              disabled={!!state.awaitingApproval}
-              placeholder={
-                state.awaitingApproval
-                  ? "Waiting for tool approval…"
-                  : inputMode === "shell"
-                    ? "shell command…"
-                    : inputMode === "command"
-                      ? "command…"
-                      : "Ask anything… (@AgentName to address one, $ for shell, / for commands)"
-              }
-              onKeyDown={onKeyDown}
-              onChange={onInputChange}
-              onInput={onTextareaInput}
-              onPaste={onPaste}
-              className="w-full resize-none bg-transparent px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground"
-            />
-
-            {/* Bottom toolbar row */}
-            <div className="flex items-center gap-1.5 px-2 pb-2">
-              {/* Add button */}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => fileInputRef.current?.click()}
-                className="h-7 gap-1 px-2 text-xs text-muted-foreground"
-                title="Add file / image"
-              >
-                <span className="text-sm leading-none">+</span>
-                <span>Add</span>
-              </Button>
-              <input ref={fileInputRef} type="file" className="hidden" multiple onChange={onFileChange} />
-
-              {/* Model combobox */}
-              <Popover open={modelComboOpen} onOpenChange={setModelComboOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 max-w-[140px] justify-between gap-1 px-2 text-xs text-muted-foreground font-normal"
-                    title="LLM model"
-                  >
-                    <span className="truncate">{state.model || "provider default"}</span>
-                    <ChevronsUpDown size={10} className="shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="p-0 w-[220px]" align="start" side="top">
-                  <Command>
-                    <CommandInput placeholder="Search models…" className="h-7 text-xs" />
-                    <CommandList>
-                      <CommandEmpty className="text-xs">No models.</CommandEmpty>
-                      <CommandGroup>
-                        <CommandItem
-                          value=""
-                          onSelect={() => {
-                            dispatch({ type: "setModel", model: "" });
-                            persistSelectedModel("");
-                            setModelComboOpen(false);
+            {/* Editor card */}
+            <div
+              className={cn(
+                "flex flex-col rounded-xl border bg-card transition-colors",
+                inputMode === "shell" ? "border-amber-500/70 bg-amber-500/5" : "border-border focus-within:border-ring",
+              )}
+            >
+              {/* Attached prompt pills (VS-Code-style slash command references) */}
+              {attachedPrompts.length > 0 && (
+                <div className="relative flex flex-wrap gap-1 px-2.5 pb-0 pt-2">
+                  {/* PromptPopover rendered above the pill row */}
+                  {activePillId !== null &&
+                    (() => {
+                      const activePill = attachedPrompts.find((p) => p.id === activePillId);
+                      if (!activePill) return null;
+                      return (
+                        <PromptPopover
+                          key={activePillId}
+                          prompt={activePill}
+                          onClose={() => setActivePillId(null)}
+                          onSave={async (label, content) => {
+                            const res = await shells.browser.workspace.prompt.save({ name: label, content });
+                            if (!res.ok) throw new Error(res.error ?? "Save failed");
+                            setAttachedPrompts((prev) =>
+                              prev.map((p) => (p.id === activePillId ? { ...p, content } : p)),
+                            );
+                            setActivePillId(null);
                           }}
-                          className="text-xs"
-                        >
-                          <Check
-                            size={10}
-                            className={cn("mr-2 shrink-0", !state.model ? "opacity-100" : "opacity-0")}
-                          />
-                          <span className="text-muted-foreground italic">provider default</span>
-                        </CommandItem>
-                      </CommandGroup>
-                      {modelGroups.map((g) => (
-                        <CommandGroup key={g.label} heading={g.label}>
-                          {g.models.map((m) => (
-                            <CommandItem
-                              key={m}
-                              value={m}
-                              onSelect={(v) => {
-                                dispatch({ type: "setModel", model: v });
-                                persistSelectedModel(v);
-                                setModelComboOpen(false);
-                              }}
-                              className="text-xs"
-                            >
-                              <Check
-                                size={10}
-                                className={cn("mr-2 shrink-0", m === state.model ? "opacity-100" : "opacity-0")}
-                              />
-                              <span className="font-mono truncate">{m}</span>
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      ))}
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
+                        />
+                      );
+                    })()}
+                  {attachedPrompts.map((p) => (
+                    <button
+                      type="button"
+                      key={p.id}
+                      className={cn(
+                        "inline-flex cursor-pointer items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-xs text-primary transition",
+                        activePillId === p.id
+                          ? "border-primary/60 bg-primary/25"
+                          : "border-primary/30 bg-primary/15 hover:bg-primary/25",
+                      )}
+                      onClick={() => setActivePillId((prev) => (prev === p.id ? null : p.id))}
+                    >
+                      <span className="opacity-70">/</span>
+                      {p.label}
+                      <button
+                        type="button"
+                        className="ml-0.5 leading-none opacity-50 hover:opacity-100"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActivePillId((prev) => (prev === p.id ? null : prev));
+                          setAttachedPrompts((prev) => prev.filter((x) => x.id !== p.id));
+                        }}
+                        aria-label="Detach prompt"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </button>
+                  ))}
+                </div>
+              )}
 
-              {/* Effort selector — provider-kind aware. Anthropic uses its
+              {/* Prefix badge row (shown when mode ≠ chat) */}
+              {inputMode !== "chat" && (
+                <div className="flex items-center gap-1.5 px-3 pb-0 pt-2">
+                  <Badge
+                    variant="secondary"
+                    className={cn(
+                      "font-mono",
+                      inputMode === "shell" && "bg-amber-500/20 text-amber-600 dark:text-amber-300",
+                    )}
+                  >
+                    {inputMode === "shell" ? "$ shell" : "/ command"}
+                  </Badge>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="ml-auto"
+                    onClick={() => {
+                      if (inputRef.current) inputRef.current.value = "";
+                      setInputMode("chat");
+                      setPicker(null);
+                      setAttachedPrompts([]);
+                    }}
+                    aria-label="Reset mode"
+                  >
+                    <X />
+                  </Button>
+                </div>
+              )}
+
+              {/* Textarea */}
+              <Textarea
+                ref={inputRef}
+                rows={1}
+                disabled={!!state.awaitingApproval}
+                placeholder={
+                  state.awaitingApproval
+                    ? "Waiting for tool approval…"
+                    : inputMode === "shell"
+                      ? "shell command…"
+                      : inputMode === "command"
+                        ? "command…"
+                        : "Ask anything… (@AgentName to address one, $ for shell, / for commands)"
+                }
+                onKeyDown={onKeyDown}
+                onChange={onInputChange}
+                onInput={onTextareaInput}
+                onPaste={onPaste}
+                className="min-h-0 resize-none rounded-none border-0 bg-transparent px-3 py-2.5 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
+              />
+
+              {/* Bottom toolbar row */}
+              <div className="flex items-center gap-1.5 px-2 pb-2">
+                {/* Add button */}
+                <Tip tip="Add file / image">
+                  <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+                    <Plus data-icon="inline-start" />
+                    Add
+                  </Button>
+                </Tip>
+                <input ref={fileInputRef} type="file" className="hidden" multiple onChange={onFileChange} />
+
+                {/* Model combobox */}
+                <Popover open={modelComboOpen} onOpenChange={setModelComboOpen}>
+                  <Tip tip="LLM model">
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="max-w-[140px] justify-between font-normal text-muted-foreground"
+                      >
+                        <span className="truncate">{state.model || "provider default"}</span>
+                        <ChevronsUpDown data-icon="inline-end" className="opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                  </Tip>
+                  <PopoverContent className="w-[220px] p-0" align="start" side="top">
+                    <Command>
+                      <CommandInput placeholder="Search models…" className="h-7 text-xs" />
+                      <CommandList>
+                        <CommandEmpty className="text-xs">No models.</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem
+                            value=""
+                            onSelect={() => {
+                              dispatch({ type: "setModel", model: "" });
+                              persistSelectedModel("");
+                              setModelComboOpen(false);
+                            }}
+                            className="text-xs"
+                          >
+                            <Check className={cn("mr-2 size-3 shrink-0", state.model ? "opacity-0" : "opacity-100")} />
+                            <span className="italic text-muted-foreground">provider default</span>
+                          </CommandItem>
+                        </CommandGroup>
+                        {modelGroups.map((g) => (
+                          <CommandGroup key={g.label} heading={g.label}>
+                            {g.models.map((m) => (
+                              <CommandItem
+                                key={m}
+                                value={m}
+                                onSelect={(v) => {
+                                  dispatch({ type: "setModel", model: v });
+                                  persistSelectedModel(v);
+                                  setModelComboOpen(false);
+                                }}
+                                className="text-xs"
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 size-3 shrink-0",
+                                    m === state.model ? "opacity-100" : "opacity-0",
+                                  )}
+                                />
+                                <span className="truncate font-mono">{m}</span>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        ))}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+
+                {/* Effort selector — provider-kind aware. Anthropic uses its
                   own enum (low/medium/high/max), OpenAI uses
                   minimal/low/medium/high/xhigh. Copilot proxies the underlying
                   model and ignores both, so we hide the selector. Unknown
                   providers default to the OpenAI selector. */}
-              {(() => {
-                // Prefer the kind of the group containing the selected model;
-                // fall back to the currently-active provider's kind (covers
-                // empty `state.model` = "provider default" and unrecognised
-                // model strings).
-                const currentKind = modelGroups.find((g) => g.models.includes(state.model))?.kind || activeProviderKind;
-                if (currentKind === "github_copilot") return null;
-                if (currentKind === "anthropic") {
+                {(() => {
+                  // Prefer the kind of the group containing the selected model;
+                  // fall back to the currently-active provider's kind (covers
+                  // empty `state.model` = "provider default" and unrecognised
+                  // model strings).
+                  const currentKind =
+                    modelGroups.find((g) => g.models.includes(state.model))?.kind || activeProviderKind;
+                  if (currentKind === "github_copilot") return null;
+                  // Radix Select disallows empty-string item values, so we
+                  // round-trip `""` (provider default) through a sentinel.
+                  const EFFORT_DEFAULT = "__default__";
+                  if (currentKind === "anthropic") {
+                    return (
+                      <Select
+                        value={anthropicEffort || EFFORT_DEFAULT}
+                        onValueChange={(v) => {
+                          const next = (v === EFFORT_DEFAULT ? "" : v) as AnthropicEffort;
+                          setAnthropicEffortState(next);
+                          persistAnthropicEffort(next);
+                        }}
+                      >
+                        <Tip tip="Anthropic adaptive thinking effort (claude-* models)">
+                          <SelectTrigger size="sm" className="text-xs text-muted-foreground">
+                            <SelectValue />
+                          </SelectTrigger>
+                        </Tip>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value={EFFORT_DEFAULT}>think: default</SelectItem>
+                            <SelectItem value="low">think: low</SelectItem>
+                            <SelectItem value="medium">think: medium</SelectItem>
+                            <SelectItem value="high">think: high</SelectItem>
+                            <SelectItem value="max">think: max</SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    );
+                  }
                   return (
-                    <select
-                      value={anthropicEffort}
-                      onChange={(e) => {
-                        const v = e.target.value as AnthropicEffort;
-                        setAnthropicEffortState(v);
-                        persistAnthropicEffort(v);
+                    <Select
+                      value={reasoningEffort || EFFORT_DEFAULT}
+                      onValueChange={(v) => {
+                        const next = (v === EFFORT_DEFAULT ? "" : v) as ReasoningEffort;
+                        setReasoningEffortState(next);
+                        persistReasoningEffort(next);
                       }}
-                      className="rounded-md border border-cronymax-border bg-cronymax-base px-1.5 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title transition"
-                      title="Anthropic adaptive thinking effort (claude-* models)"
                     >
-                      <option value="">think: default</option>
-                      <option value="low">think: low</option>
-                      <option value="medium">think: medium</option>
-                      <option value="high">think: high</option>
-                      <option value="max">think: max</option>
-                    </select>
+                      <Tip tip="Reasoning effort (OpenAI gpt-5 / o-series)">
+                        <SelectTrigger size="sm" className="text-xs text-muted-foreground">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </Tip>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value={EFFORT_DEFAULT}>think: default</SelectItem>
+                          <SelectItem value="minimal">think: minimal</SelectItem>
+                          <SelectItem value="low">think: low</SelectItem>
+                          <SelectItem value="medium">think: medium</SelectItem>
+                          <SelectItem value="high">think: high</SelectItem>
+                          <SelectItem value="xhigh">think: xhigh</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
                   );
-                }
-                return (
-                  <select
-                    value={reasoningEffort}
-                    onChange={(e) => {
-                      const v = e.target.value as ReasoningEffort;
-                      setReasoningEffortState(v);
-                      persistReasoningEffort(v);
-                    }}
-                    className="rounded-md border border-cronymax-border bg-cronymax-base px-1.5 py-1 text-[11px] text-cronymax-caption hover:text-cronymax-title transition"
-                    title="Reasoning effort (OpenAI gpt-5 / o-series)"
-                  >
-                    <option value="">think: default</option>
-                    <option value="minimal">think: minimal</option>
-                    <option value="low">think: low</option>
-                    <option value="medium">think: medium</option>
-                    <option value="high">think: high</option>
-                    <option value="xhigh">think: xhigh</option>
-                  </select>
-                );
-              })()}
+                })()}
 
-              <div className="flex-1" />
+                <div className="flex-1" />
 
-              {/* Send / Stop button */}
-              {state.running ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (state.currentRunId) {
-                      flowRun.cancel(state.currentRunId).catch(() => undefined);
-                    }
-                  }}
-                  className="flex items-center justify-center rounded-md bg-destructive w-7 h-7 text-white transition hover:opacity-90"
-                  title="Stop run"
-                >
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-                    <rect x="0" y="0" width="10" height="10" rx="1" />
-                  </svg>
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  disabled={state.isReconnecting}
-                  className="flex items-center justify-center rounded-md bg-primary w-7 h-7 text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                  title="Send (Enter)"
-                >
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <path
-                      d="M7 1L7 13M1 7L7 1L13 7"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
-              )}
+                {/* Send / Stop button */}
+                {state.running ? (
+                  <Tip tip="Stop run">
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="destructive"
+                      aria-label="Stop"
+                      onClick={() => {
+                        if (state.currentRunId) {
+                          flowRun.cancel(state.currentRunId).catch(() => undefined);
+                        }
+                      }}
+                    >
+                      <Square />
+                    </Button>
+                  </Tip>
+                ) : (
+                  <Tip tip="Send (Enter)">
+                    <Button type="submit" size="icon-sm" disabled={state.isReconnecting} aria-label="Send">
+                      <ArrowUp />
+                    </Button>
+                  </Tip>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-        {/* end relative picker wrapper */}
-      </form>
+          {/* end relative picker wrapper */}
+        </form>
 
-      {/* ── Below-editor status bar: approval mode + context hint ──────────── */}
-      <div className="flex items-center gap-2 px-3 pb-3 pt-0">
-        {/* Global Approval Mode selector */}
-        <select
-          value={globalApprovalMode}
-          onChange={(e) => {
-            const v = e.target.value as "default" | "autopilot" | "bypass";
-            setGlobalApprovalMode(v);
-            persistGlobalApprovalMode(v);
-          }}
-          className={cn(
-            "rounded-md px-1.5 py-1 text-xs transition",
-            "border-0 bg-transparent text-cronymax-caption hover:text-cronymax-title",
-          )}
-          title="Global approval mode — overrides per-tool trust for this session"
-        >
-          <option value="default">approve: per-tool</option>
-          <option value="autopilot">approve: all</option>
-          <option value="bypass">approve: none</option>
-        </select>
+        {/* ── Below-editor status bar: approval mode + context hint ──────────── */}
+        <div className="flex items-center gap-2 px-3 pb-3 pt-0">
+          {/* Global approval mode — semantic shadcn Select matches the effort
+            selectors above. Triggers in line with the composer toolbar via
+            `size="sm"`. */}
+          <Select
+            value={globalApprovalMode}
+            onValueChange={(v) => {
+              const next = v as "default" | "autopilot" | "bypass";
+              setGlobalApprovalMode(next);
+              persistGlobalApprovalMode(next);
+            }}
+          >
+            <Tip tip="Global approval mode — overrides per-tool trust for this session">
+              <SelectTrigger size="sm" className="border-0 bg-transparent text-xs text-muted-foreground">
+                <SelectValue />
+              </SelectTrigger>
+            </Tip>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="default">approve: per-tool</SelectItem>
+                <SelectItem value="autopilot">approve: all</SelectItem>
+                <SelectItem value="bypass">approve: none</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
 
-        {/* Context window hint */}
-        {latestUsage &&
-          contextLimit &&
-          (() => {
-            const used = latestUsage.inputTokens + latestUsage.outputTokens;
-            const pct = Math.min(100, Math.round((used / contextLimit) * 100));
-            const warn = pct >= 80;
-            const critical = pct >= 95;
-            return (
-              <div
-                className={cn(
-                  "flex items-center gap-2 rounded-md px-2 py-1 text-[11px]",
-                  critical
-                    ? "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300"
-                    : warn
-                      ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
-                      : "bg-muted/40 text-muted-foreground",
-                )}
-                title={`Input: ${latestUsage.inputTokens.toLocaleString()} tokens · Output: ${latestUsage.outputTokens.toLocaleString()} tokens`}
-              >
-                <div className="w-16 overflow-hidden rounded-full bg-current/20 h-1">
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-all",
-                      critical ? "bg-red-500" : warn ? "bg-amber-500" : "bg-primary/50",
-                    )}
-                    style={{ width: `${pct}%` }}
-                  />
+          {/* Context window hint — `warn` (≥80 %) keeps amber as the only
+            intentional non-semantic accent (matches shell-mode composer
+            border); `critical` (≥95 %) uses `text-destructive` /
+            `bg-destructive/10` semantic tokens so it auto-flips with theme. */}
+          {latestUsage &&
+            contextLimit &&
+            (() => {
+              const used = latestUsage.inputTokens + latestUsage.outputTokens;
+              const pct = Math.min(100, Math.round((used / contextLimit) * 100));
+              const warn = pct >= 80;
+              const critical = pct >= 95;
+              return (
+                <div
+                  className={cn(
+                    "flex items-center gap-2 rounded-md px-2 py-1 text-[11px]",
+                    critical
+                      ? "bg-destructive/10 text-destructive"
+                      : warn
+                        ? "bg-amber-500/10 text-amber-600 dark:text-amber-300"
+                        : "bg-muted/40 text-muted-foreground",
+                  )}
+                  title={`Input: ${latestUsage.inputTokens.toLocaleString()} tokens · Output: ${latestUsage.outputTokens.toLocaleString()} tokens`}
+                >
+                  <div className="h-1 w-16 overflow-hidden rounded-full bg-current/20">
+                    <div
+                      className={cn(
+                        "h-full rounded-full transition-all",
+                        critical ? "bg-destructive" : warn ? "bg-amber-500" : "bg-primary/50",
+                      )}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <span className="shrink-0 tabular-nums">
+                    {pct}% of {(contextLimit / 1_000).toFixed(0)}k ctx
+                  </span>
                 </div>
-                <span className="shrink-0 tabular-nums">
-                  {pct}% of {(contextLimit / 1_000).toFixed(0)}k ctx
-                </span>
-              </div>
-            );
-          })()}
-      </div>
-    </main>
+              );
+            })()}
+        </div>
+      </main>
+    </TooltipProvider>
   );
 }

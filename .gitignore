@@ -18,6 +18,7 @@ bun.lock
 node_modules/
 web/dist/
 web/.vite/
+**/tsconfig.tsbuildinfo
 
 # Rust
 /target
@@ -25,3 +26,6 @@ web/.vite/
 
 # AI
 openspec/
+
+# Per-user Claude Code overrides (settings.json is shared, *.local.json is not)
+.claude/*.local.json

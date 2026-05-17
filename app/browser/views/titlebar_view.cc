@@ -182,19 +182,26 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
   panel->AddChildView(spacer_);
   layout->SetFlexForView(spacer_, 1);
 
-  // 3. Popover buttons.
-  auto add_popover_btn = [&](CefRefPtr<CefLabelButton>* slot, IconId icon,
-                             const std::string& label,
-                             const std::string& tooltip,
-                             const std::string& resource) {
+  // 3. Panel-window buttons.
+  //
+  // These open their target page as an independent, movable top-level
+  // window (PanelWindow). Previously routed through `OpenPopover`, which
+  // renders the panel as an in-window overlay with a scrim and a 24-px
+  // content inset; that path is reserved for transient web URL popovers.
+  auto add_panel_btn = [&](CefRefPtr<CefLabelButton>* slot, IconId icon,
+                           const std::string& label,
+                           const std::string& tooltip,
+                           const std::string& resource,
+                           const std::string& window_title) {
     auto btn = MakeIconLabelButton(
-        new FnButtonDelegate([this, resource]() {
-          CefPostTask(TID_UI, base::BindOnce(
-                                  [](TitleBarView* self, std::string r) {
-                                    self->overlay_ctx_->OpenPopover(
-                                        self->resource_ctx_->ResourceUrl(r));
-                                  },
-                                  this, resource));
+        new FnButtonDelegate([this, resource, window_title]() {
+          CefPostTask(TID_UI,
+                      base::BindOnce(
+                          [](TitleBarView* self, std::string r, std::string t) {
+                            self->overlay_ctx_->OpenPanelWindow(
+                                self->resource_ctx_->ResourceUrl(r), t);
+                          },
+                          this, resource, window_title));
         }),
         icon, label, tooltip);
     btn->SetTextColor(CEF_BUTTON_STATE_NORMAL,
@@ -205,12 +212,12 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
     layout->SetFlexForView(btn, 0);
     *slot = btn;
   };
-  add_popover_btn(&btn_activities_, IconId::kActivities, "Activities",
-                  "Open Activities", "panels/activity/index.html");
-  add_popover_btn(&btn_flows_, IconId::kFlows, "Flows", "Open Flows",
-                  "panels/flows/index.html");
-  add_popover_btn(&btn_settings_, IconId::kSettings, "Settings",
-                  "Open Settings", "panels/settings/index.html");
+  add_panel_btn(&btn_activities_, IconId::kActivities, "Activities",
+                "Open Activities", "panels/activity/index.html", "Activities");
+  add_panel_btn(&btn_flows_, IconId::kFlows, "Flows", "Open Flows",
+                "panels/flows/index.html", "Flows");
+  add_panel_btn(&btn_settings_, IconId::kSettings, "Settings",
+                "Open Settings", "panels/settings/index.html", "Settings");
 
   // 4. Windows-controls slot (zero width on macOS).
   win_pad_ =

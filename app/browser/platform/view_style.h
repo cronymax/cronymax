@@ -61,6 +61,17 @@ void StyleMainWindowTranslucent(void* nswindow, cef_color_t argb = 0);
 // MainWindow::ApplyThemeChrome when the theme flips.
 void SetMainWindowBackgroundColor(void* nswindow, cef_color_t argb);
 
+// Style an independent top-level panel window (settings / flows /
+// activities). Hides the title text, makes the titlebar background
+// transparent so the NSWindow.backgroundColor (set to the theme's
+// chrome.bg_body) bleeds through, and keeps standard traffic-light
+// controls + the titlebar height intact so the content view sits
+// *below* the titlebar rather than running underneath it. Apply once
+// after CefWindow::CreateTopLevelWindow returns but BEFORE Show() so
+// the very first paint already has the theme color instead of the
+// system default (avoids a flash of black titlebar in light mode).
+void StylePanelWindow(void* nswindow, cef_color_t argb);
+
 // Set NSApp.appearance to force the NSMenu (and other native controls)
 // to adopt "dark" or "light" mode regardless of the OS preference.
 // Pass `dark=true` for dark theme, `false` for light. Called from
@@ -208,6 +219,7 @@ void SetOverlayWindowBackground(void* nsview, cef_color_t argb);
 inline void StyleOverlayBrowserView(void*, double, int, bool) {}
 inline void StyleMainWindowTranslucent(void*, cef_color_t = 0) {}
 inline void SetMainWindowBackgroundColor(void*, cef_color_t) {}
+inline void StylePanelWindow(void*, cef_color_t) {}
 inline void SetAppAppearance(bool) {}
 inline void InstallRoundedFrame(void*, double, cef_color_t) {}
 inline const char* CurrentSystemAppearance() {

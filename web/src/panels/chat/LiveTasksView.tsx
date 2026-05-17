@@ -1,4 +1,6 @@
+import { Check, Loader2 } from "lucide-react";
 import { useMemo } from "react";
+import { cn } from "@/lib/utils";
 import type { TraceEntry } from "./store";
 
 interface LiveTask {
@@ -44,7 +46,7 @@ export function LiveTasksView({ traceEntries, isStreaming }: { traceEntries: Tra
         }
       }
     }
-    // Sort: running first, then by start time descending
+    // Sort: running first, then by start time descending.
     return [...map.values()].sort((a, b) => {
       const aRunning = a.finishedAt === undefined ? 1 : 0;
       const bRunning = b.finishedAt === undefined ? 1 : 0;
@@ -64,12 +66,17 @@ export function LiveTasksView({ traceEntries, isStreaming }: { traceEntries: Tra
         return (
           <div
             key={task.toolCallId}
-            className={`flex items-center gap-1.5 rounded px-2 py-1 text-[11px] transition ${
-              running ? "bg-primary/10 text-primary" : "bg-muted/30 text-muted-foreground"
-            }`}
+            className={cn(
+              "flex items-center gap-1.5 rounded px-2 py-1 text-[11px] transition",
+              running ? "bg-primary/10 text-primary" : "bg-muted/30 text-muted-foreground",
+            )}
           >
-            {running ? <span className="animate-pulse">⟳</span> : <span className="text-green-500">✓</span>}
-            <span className="font-mono font-medium truncate max-w-[120px]">{task.tool}</span>
+            {running ? (
+              <Loader2 className="size-3 shrink-0 animate-spin" />
+            ) : (
+              <Check className="size-3 shrink-0 text-primary" />
+            )}
+            <span className="max-w-[120px] truncate font-mono font-medium">{task.tool}</span>
             <span className="flex-1 truncate opacity-60">{formatArgs(task.args)}</span>
             {!running && task.finishedAt && (
               <span className="shrink-0 tabular-nums opacity-50">
@@ -86,7 +93,7 @@ export function LiveTasksView({ traceEntries, isStreaming }: { traceEntries: Tra
 function formatArgs(args: unknown): string {
   if (!args || typeof args !== "object") return "";
   const obj = args as Record<string, unknown>;
-  // Show the most meaningful arg: path / command / query / name / url
+  // Show the most meaningful arg: path / command / query / name / url.
   const key = ["path", "command", "query", "name", "url", "file"].find((k) => typeof obj[k] === "string");
   if (key) return String(obj[key]).slice(0, 60);
   const first = Object.values(obj).find((v) => typeof v === "string");

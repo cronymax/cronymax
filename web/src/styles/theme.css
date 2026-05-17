@@ -45,7 +45,7 @@
   --color-cronymax-on-primary: #ffffff;
 
   /* Backgrounds */
-  --color-cronymax-body: #0e1716;
+  --color-cronymax-body: #1a1a1a;
   --color-cronymax-base: #292929;
   --color-cronymax-float: #0a0a0a;
   --color-cronymax-mask: rgba(0, 0, 0, 0.55);
@@ -133,22 +133,37 @@
 /* ── shadcn semantic tokens — dark ───────────────────────────────────
  * Active under either `.dark` class (shadcn convention) or
  * `data-theme="dark"` attribute (cronymax host bridge).
+ *
+ * Surface lightness ladder (dark) — direct sRGB greys for predictable
+ * step sizes (OKLCH L → sRGB is non-linear, small L deltas produce
+ * invisible sRGB deltas in the dark end).
+ *
+ *   sidebar `--color-cronymax-body`  #1a1a1a   — rgb 26  — deep but not pitch-black
+ *   `--background`                   #3a3a3a   — rgb 58  — content / chat
+ *   `--card` / `--popover`           #4a4a4a   — rgb 74  — raised surface
+ *   `--secondary` / `--muted` /
+ *     `--accent`                      #5a5a5a   — rgb 90  — interactive bg
+ *
+ * The sidebar→content jump is ~32 rgb units (luminance ratio ≈ 1.9:1)
+ * which is the threshold for two adjacent dark surfaces to read as
+ * different. Floating surfaces (`--card`) sit one more rgb-step above
+ * for elevation.
  */
 .dark,
 :root[data-theme="dark"] {
-  --background: oklch(0.145 0 0);
+  --background: #3a3a3a;
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  --card: #4a4a4a;
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
+  --popover: #4a4a4a;
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.437 0.078 188.216); /* teal-700 — same brand both modes */
   --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.269 0 0);
+  --secondary: #5a5a5a;
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
+  --muted: #5a5a5a;
   --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
+  --accent: #5a5a5a;
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: oklch(0.985 0 0);
@@ -173,11 +188,11 @@
 /* System-follow: no explicit data-theme / .dark → follow OS preference. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]):not(.dark) {
-    --background: oklch(0.145 0 0);
+    --background: #3a3a3a;
     --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
+    --card: #4a4a4a;
     --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
+    --popover: #4a4a4a;
     --popover-foreground: oklch(0.985 0 0);
     --primary: oklch(0.437 0.078 188.216);
     --primary-foreground: oklch(1 0 0);
@@ -264,6 +279,47 @@
   [role="button"]:not([aria-disabled="true"]) {
     cursor: pointer;
   }
+
+  /* ── Themed scrollbar ────────────────────────────────────────────────
+   * Thin, rounded, transparent track. Thumb color is derived from
+   * `--foreground` via `color-mix`, so it auto-adapts to light/dark mode
+   * without us maintaining a separate palette.  The 2px transparent border
+   * + `background-clip: padding-box` gives the thumb visual breathing room
+   * inside a 10px gutter without changing its hit area.  Hover bumps the
+   * thumb opacity for affordance.  Firefox uses the two `scrollbar-*`
+   * properties; Chromium / WebKit use the `::-webkit-scrollbar-*`
+   * pseudo-elements.  Both are set so the result matches across the CEF
+   * shell and any standalone browser.
+   *
+   * Note: `.no-scrollbar` (from shadcn's tailwind.css) wins via
+   * `display: none` / `scrollbar-width: none`, so opt-out still works.
+   */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--foreground) 22%, transparent) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--foreground) 22%, transparent);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 9999px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklch, var(--foreground) 40%, transparent);
+  }
+  *::-webkit-scrollbar-thumb:active {
+    background-color: color-mix(in oklch, var(--foreground) 55%, transparent);
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }
 
 /* ── Cronymax-prefixed tokens — light ─────────────────────────────────
@@ -326,7 +382,7 @@
   --color-cronymax-secondary: #14b8a6;
   --color-cronymax-on-primary: #ffffff;
 
-  --color-cronymax-body: #0e1716;
+  --color-cronymax-body: #1a1a1a;
   --color-cronymax-base: #292929;
   --color-cronymax-float: #0a0a0a;
   --color-cronymax-mask: rgba(0, 0, 0, 0.55);
@@ -373,7 +429,7 @@
     --color-cronymax-primary: #0f766e;
     --color-cronymax-secondary: #14b8a6;
     --color-cronymax-on-primary: #ffffff;
-    --color-cronymax-body: #0e1716;
+    --color-cronymax-body: #1a1a1a;
     --color-cronymax-base: #292929;
     --color-cronymax-float: #0a0a0a;
     --color-cronymax-mask: rgba(0, 0, 0, 0.55);

@@ -9,12 +9,9 @@
  *   Flows      — visual agent-flow editor
  *   Runner     — legacy ReAct runner (terminal Explain/Fix/Retry target)
  */
-import { useCallback } from "react";
 import { Flows } from "@/components/FlowEditor";
-import { Icon } from "@/components/Icon";
-import { Button } from "@/components/ui/button";
+import { PanelWindowHeader } from "@/components/PanelWindowHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { shells } from "@/shells/bridge";
 import { AgentsTab } from "./AgentsTab";
 import { DocTypesTab } from "./DocTypesTab";
 
@@ -37,20 +34,11 @@ export function Field({ label, children }: { label: string; children: React.Reac
 // ── App ───────────────────────────────────────────────────────────────────
 
 export function App() {
-  const onClose = useCallback(() => {
-    shells.browser.shell.popover_close().catch(() => {
-      /* ignore */
-    });
-  }, []);
-
   return (
     <Tabs defaultValue="flows" className="relative flex h-screen w-screen flex-col bg-background text-foreground">
-      <header className="flex shrink-0 items-center justify-between border-b border-border bg-card px-4 py-2">
+      <PanelWindowHeader className="flex shrink-0 items-center border-b border-border bg-card px-4 py-2">
         <h1 className="text-sm font-semibold">Flows</h1>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose} title="Close" aria-label="Close">
-          <Icon name="close" size={12} aria-hidden="true" />
-        </Button>
-      </header>
+      </PanelWindowHeader>
       <TabsList className="h-auto shrink-0 justify-start rounded-none border-b border-border bg-card px-1">
         <TabsTrigger
           value="flows"

@@ -63,6 +63,10 @@ set(CRONYMAX_APP_SRCS
   app/browser/views/sidebar_view.cc
   app/browser/views/profile_picker_overlay.cc
   app/browser/views/profile_picker_overlay.h
+  # Independent top-level window for panel popups (settings, flows,
+  # activities). Replaces the in-window overlay popover for these.
+  app/browser/views/panel_window.h
+  app/browser/views/panel_window.cc
   # unified-icons: semantic icon registry + native button factories.
   app/browser/icon_data.h
   app/browser/icon_registry.h

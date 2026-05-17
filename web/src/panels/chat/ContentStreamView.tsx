@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { Streamdown } from "streamdown";
 import type { ContentSegment } from "./store";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -10,18 +10,12 @@ interface Props {
   isStreaming: boolean;
 }
 
-/** Animated loading dots while the stream is empty and the block is running. */
+/** Loading indicator while the stream is empty and the block is running. */
 function LoadingDots() {
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setFrame((f) => (f + 1) % 4), 400);
-    return () => clearInterval(id);
-  }, []);
-  const dots = ".".repeat(frame);
   return (
-    <div className="flex items-center gap-1.5 text-xs text-muted-foreground italic select-none">
-      <span>Working</span>
-      <span className="inline-block w-4 text-left">{dots}</span>
+    <div className="flex items-center gap-1.5 text-xs italic text-muted-foreground select-none">
+      <Loader2 className="size-3 animate-spin" />
+      <span>Working…</span>
     </div>
   );
 }
@@ -54,7 +48,7 @@ export function ContentStreamView({ segments, isStreaming }: Props) {
   }
 
   return (
-    <div className="space-y-1">
+    <div className="flex flex-col gap-1">
       {segments.map((seg, i) => {
         if (seg.kind === "text") {
           const isLastText = i === lastTextIdx;

@@ -7,7 +7,10 @@
  * Positioning: `absolute bottom-full left-0 right-0 z-50` so it floats
  * above the pill row (consistent with SlashPicker placement).
  */
+import { Loader2, Pencil, Save, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WysiwygMarkdown } from "@/components/WysiwygMarkdown";
 
 export interface PromptPill {
@@ -88,34 +91,34 @@ export function PromptPopover({ prompt, onClose, onSave }: Props) {
   return (
     <div
       ref={containerRef}
-      className="absolute bottom-full left-0 right-0 z-50 mb-1 rounded-lg border border-border bg-card shadow-lg overflow-hidden"
+      className="absolute bottom-full left-0 right-0 z-50 mb-1 overflow-hidden rounded-lg border border-border bg-card shadow-lg"
     >
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border px-2.5 py-1.5">
         <span className="font-mono text-xs text-muted-foreground">
           <span className="opacity-50">/</span>
           <span className="text-foreground">{prompt.label}</span>
-          <span className="ml-1 opacity-50 text-xs">.prompt.md</span>
+          <span className="ml-1 text-xs opacity-50">.prompt.md</span>
         </span>
         <div className="flex items-center gap-1">
           {!isEditing && onSave && (
-            <button
-              type="button"
-              title="Edit"
-              onClick={handleEdit}
-              className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-border/40 hover:text-foreground transition"
-            >
-              ✎
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-xs" onClick={handleEdit} aria-label="Edit">
+                  <Pencil />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Edit</TooltipContent>
+            </Tooltip>
           )}
-          <button
-            type="button"
-            title="Close"
-            onClick={onClose}
-            className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-border/40 hover:text-foreground transition"
-          >
-            ×
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close">
+                <X />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Close</TooltipContent>
+          </Tooltip>
         </div>
       </div>
 
@@ -131,25 +134,20 @@ export function PromptPopover({ prompt, onClose, onSave }: Props) {
 
       {/* Footer (edit mode only) */}
       {isEditing && (
-        <div className="border-t border-border px-2.5 py-1.5 flex items-center justify-between gap-2">
-          {error ? <span className="text-xs text-red-400 flex-1">{error}</span> : <span />}
+        <div className="flex items-center justify-between gap-2 border-t border-border px-2.5 py-1.5">
+          {error ? <span className="flex-1 text-xs text-destructive">{error}</span> : <span />}
           <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={handleCancel}
-              disabled={mode === "saving"}
-              className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-border/30 disabled:opacity-50 transition"
-            >
+            <Button variant="outline" size="sm" onClick={handleCancel} disabled={mode === "saving"}>
               Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleSave()}
-              disabled={mode === "saving"}
-              className="rounded bg-primary px-2 py-0.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 transition"
-            >
+            </Button>
+            <Button size="sm" onClick={() => void handleSave()} disabled={mode === "saving"}>
+              {mode === "saving" ? (
+                <Loader2 data-icon="inline-start" className="animate-spin" />
+              ) : (
+                <Save data-icon="inline-start" />
+              )}
               {mode === "saving" ? "Saving…" : "Save to file"}
-            </button>
+            </Button>
           </div>
         </div>
       )}

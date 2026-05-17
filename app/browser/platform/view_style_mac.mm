@@ -1109,6 +1109,72 @@ void SetMainWindowBackgroundColor(void* nswindow_ptr, cef_color_t argb) {
   }
 }
 
+// PanelWindow (settings / flows / activities) styling:
+//   - content extends to the very top of the window via
+//     `NSWindowStyleMaskFullSizeContentView` so the OS titlebar contributes
+//     ZERO vertical space to the layout — the React header sits at y=0
+//     and the traffic lights overlay it.
+//   - title text hidden (the React panel renders its own heading)
+//   - titlebar background transparent → the page content shows through
+//     the titlebar zone uninterrupted; NSWindow.backgroundColor is set
+//     to the theme `chrome.bg_body` so the very first paint (before the
+//     React tree mounts) is the theme colour, not the system default
+//     (otherwise light mode shows a brief black titlebar / flash).
+//   - traffic lights remain in the upper-left, overlaying the page; the
+//     React header should leave ~80 px of left padding when launched
+//     inside a PanelWindow so its title text is not obscured.
+void StylePanelWindow(void* nswindow_ptr, cef_color_t argb) {
+  if (!nswindow_ptr)
+    return;
+  NSView* content = (__bridge NSView*)nswindow_ptr;
+  NSColor* color = ColorFromArgb(argb);
+
+  // ── Content view layer ─────────────────────────────────────────────
+  // Use the layer-BACKED pattern (wantsLayer=YES then access -layer).
+  // Layer-hosting (caller-assigned layer) leaves the layer with a 0×0
+  // frame because AppKit only auto-resizes layers it owns; that meant
+  // earlier hosting attempts painted backgroundColor onto a zero-area
+  // layer and the user saw NSWindow.backgroundColor (or, worse, a
+  // sibling view) instead.
+  content.wantsLayer = YES;
+  if (content.layer) {
+    content.layer.backgroundColor = color.CGColor;
+  }
+
+  // ── NSWindow-level styling ──────────────────────────────────────────
+  NSWindow* window = content.window;
+  if (!window) {
+    fprintf(stderr, "[StylePanelWindow] WARN: content.window is nil; "
+                    "NSWindow chrome (backgroundColor, appearance, drag) "
+                    "skipped this call. caller should retry next tick.\n");
+    return;
+  }
+
+  window.styleMask |= NSWindowStyleMaskFullSizeContentView;
+  window.titleVisibility = NSWindowTitleHidden;
+  window.titlebarAppearsTransparent = YES;
+  window.movableByWindowBackground = YES;
+
+  // Pin appearance to the cronymax theme regardless of system preference
+  // so AppKit's own chrome (traffic lights, any titlebar bleed) renders
+  // in our mode.
+  const double r = ((argb >> 16) & 0xFF) / 255.0;
+  const double g = ((argb >> 8) & 0xFF) / 255.0;
+  const double b = (argb & 0xFF) / 255.0;
+  const double luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+  window.appearance = [NSAppearance
+      appearanceNamed:(luminance > 0.5 ? NSAppearanceNameAqua
+                                       : NSAppearanceNameDarkAqua)];
+
+  window.opaque = YES;
+  window.backgroundColor = color;
+  window.hasShadow = YES;
+
+  fprintf(stderr,
+          "[StylePanelWindow] applied argb=%08x to NSWindow=%p content=%p\n",
+          argb, (void*)window, (void*)content);
+}
+
 void SetAppAppearance(bool dark) {
   if (@available(macOS 10.14, *)) {
     NSAppearanceName name =

@@ -1,7 +1,6 @@
 import { useCallback, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { PanelWindowHeader } from "@/components/PanelWindowHeader";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { shells } from "@/shells/bridge";
 import { ActivityTree } from "./ActivityTree";
 import { useActivityFeed } from "./useActivityFeed";
 
@@ -25,17 +24,9 @@ export function App() {
       className="flex h-screen flex-col bg-background text-foreground"
     >
       {/* ── Header ──────────────────────────────────────────────────────── */}
-      <div className="flex shrink-0 items-center justify-between px-3 pb-1 pt-3">
+      <PanelWindowHeader as="div" className="flex shrink-0 items-center px-3 pb-1 pt-3">
         <span className="text-sm font-semibold">Activity</span>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6"
-          onClick={() => shells.browser.shell.popover_close({}).catch(() => undefined)}
-        >
-          ×
-        </Button>
-      </div>
+      </PanelWindowHeader>
 
       {/* ── Filter tabs ─────────────────────────────────────────────────── */}
       <TabsList className="mx-3 mb-2 shrink-0 justify-start border-b border-border rounded-none h-auto bg-transparent px-0 pb-2">
