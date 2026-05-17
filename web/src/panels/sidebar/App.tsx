@@ -150,9 +150,17 @@ export function App() {
   }, []);
 
   return (
+    // Background driven by HTML rather than the native chrome: the native
+    // `SidebarView::ApplyTheme` path was not propagating the runtime theme
+    // change, so the sidebar appeared frozen in its initial mode even though
+    // text colors (which follow `--foreground` via `data-theme` on <html>)
+    // were updating correctly. `bg-cronymax-body` reads `--color-cronymax-body`,
+    // which is defined per-theme in theme.css and matches the native chrome's
+    // `chrome.bg_body` so the seam between the sidebar and the title bar / body
+    // panel stays seamless either way.
     <aside
       ref={dragRef as React.RefObject<HTMLElement>}
-      className="app-drag flex h-full flex-col bg-transparent pt-7 text-foreground"
+      className="app-drag flex h-full flex-col bg-cronymax-body pt-7 text-foreground"
     >
       {/* Items section */}
       <section className="no-drag flex-1 overflow-auto px-2 pb-4 pt-2">

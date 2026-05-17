@@ -30,15 +30,19 @@ ThemeChrome ViewModel::ChromeFor(const std::string& resolved) {
     c.bg_base = 0xFFFCFEFD;
     c.bg_float = 0xFFFFFFFF;
     c.bg_mask = 0x290E1817;
+    // Matches CSS `--background: oklch(1 0 0)` (pure white).
+    c.bg_content = 0xFFFFFFFF;
     c.border = 0xFFD5E2DE;
     c.primary = 0xFF0F8F83;
     c.text_title = 0xFF13201E;
     c.text_caption = 0xFF5A6E69;
   } else {
-    c.bg_body = 0xFF0E1716;
+    c.bg_body = 0xFF1A1A1A;
     c.bg_base = 0xFF131F1D;
     c.bg_float = 0xFF182625;
     c.bg_mask = 0x85020808;
+    // Matches CSS `--background: #3a3a3a` (chat / panel content surface).
+    c.bg_content = 0xFF3A3A3A;
     c.border = 0xFF29403D;
     c.primary = 0xFF22B8A7;
     c.text_title = 0xFFE8F2F0;

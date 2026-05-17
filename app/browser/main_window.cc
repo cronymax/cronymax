@@ -1,6 +1,7 @@
 #include "browser/main_window.h"
 #include "browser/models/profile_context_manager.h"
 #include "browser/models/view_model.h"
+#include "browser/views/panel_window.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -983,6 +984,21 @@ void MainWindow::ClosePopover() {
     popover_->Close();
 }
 
+// Open a panel page (settings / flows / activities) in its own movable,
+// resizable top-level window. Delegates to the static PanelWindow registry
+// so a repeated open of the same URL focuses the existing window instead of
+// duplicating. Replaces the in-window overlay popover that previously
+// shrank the content area and dimmed it with a scrim.
+// `main_window_` is forwarded as the parent so the new panel window can
+// center itself over the main app window instead of the screen.
+void MainWindow::OpenPanelWindow(const std::string& url,
+                                 const std::string& title) {
+  PanelWindow::OpenOrFocus(url, title,
+                           /*resource_ctx=*/this, client_handler_.get(),
+                           /*theme_ctx=*/this,
+                           /*parent_window=*/main_window_);
+}
+
 void MainWindow::UpdatePopoverVisibility() {
   if (!popover_)
     return;
@@ -1125,12 +1141,23 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
     if (auto browser = bv->GetBrowser())
       client_handler_->SendBrowserEvent(browser, event_name, json_payload);
   }
-  // Also push to the popover content view if one is open (e.g. Settings).
+  // Also push to the in-window overlay popover (transient web URL popover)
+  // when one is open.
   if (popover_ && popover_->IsOpen()) {
     if (auto bv = popover_->content_view()) {
       if (auto browser = bv->GetBrowser())
         client_handler_->SendBrowserEvent(browser, event_name, json_payload);
     }
+  }
+  // Push to every open PanelWindow (settings, flows, activities). These
+  // are independent top-level windows and need every broadcast event
+  // (theme.changed, space.switch_loading, etc.) to stay in sync with the
+  // main window.
+  for (const auto& bv : PanelWindow::AllBrowserViews()) {
+    if (!bv)
+      continue;
+    if (auto browser = bv->GetBrowser())
+      client_handler_->SendBrowserEvent(browser, event_name, json_payload);
   }
   // Phase 9: per-kind *_view_ singletons are gone. Broadcast to every
   // tab's content browser via the TabManager.

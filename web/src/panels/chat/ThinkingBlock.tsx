@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { ChevronDown, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Streamdown } from "streamdown";
+import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 /** Maximum characters of thinking content rendered to avoid layout thrash. */
 const MAX_THINKING_CHARS = 4096;
@@ -17,29 +20,25 @@ interface ThinkingBlockProps {
  * Renders the thinking/reasoning block produced by extended-thinking models.
  *
  * While streaming (`sealed === false`):  shows an animated "Thinking…" indicator.
- * Once sealed (`sealed === true`):       shows a collapsible `<details>` element
- *   with a "Thinking (N.Ns)" summary header and the accumulated thinking text
- *   inside, rendered via `<Streamdown>`.
+ * Once sealed (`sealed === true`):       shows a collapsible block with a
+ *   "Thinking (N.Ns)" summary header and the accumulated thinking text inside,
+ *   rendered via `<Streamdown>`.
  */
 export function ThinkingBlock({ thinkingText, sealed, elapsedMs }: ThinkingBlockProps) {
-  const [expanded, setExpanded] = useState(false);
-  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const [open, setOpen] = useState(false);
 
   // Auto-collapse when sealed.
   useEffect(() => {
-    if (sealed && detailsRef.current) {
-      detailsRef.current.open = false;
-      setExpanded(false);
-    }
+    if (sealed) setOpen(false);
   }, [sealed]);
 
-  // While streaming (not yet sealed): always show the animated dots indicator,
+  // While streaming (not yet sealed): always show the animated indicator,
   // even before any thinking text has arrived.
   if (!sealed) {
     return (
-      <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground italic select-none">
-        <span>Thinking</span>
-        <ThinkingDots />
+      <div className="mb-2 flex items-center gap-1.5 text-xs italic text-muted-foreground select-none">
+        <Loader2 className="size-3 animate-spin" />
+        <span>Thinking…</span>
       </div>
     );
   }
@@ -52,40 +51,30 @@ export function ThinkingBlock({ thinkingText, sealed, elapsedMs }: ThinkingBlock
   const elapsedSec = (elapsedMs / 1000).toFixed(1);
 
   return (
-    <details
-      ref={detailsRef}
-      className="mb-2 rounded-md border border-border bg-secondary overflow-hidden"
-      onToggle={(e) => setExpanded((e.target as HTMLDetailsElement).open)}
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="mb-2 overflow-hidden rounded-md border border-border bg-secondary"
     >
-      <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground select-none">
-        <span>Thinking ({elapsedSec}s)</span>
-        <span
-          className="ml-2 text-xs transition-transform duration-200"
-          style={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}
-          aria-hidden
+      <CollapsibleTrigger asChild>
+        <Button
+          variant="ghost"
+          className="flex h-auto w-full items-center justify-between rounded-none px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-transparent hover:text-foreground"
         >
-          ▾
-        </span>
-      </summary>
-      {expanded && (
+          <span>Thinking ({elapsedSec}s)</span>
+          <ChevronDown
+            className="size-3 transition-transform data-[state=closed]:-rotate-90"
+            data-state={open ? "open" : "closed"}
+          />
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
         <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
           <Streamdown animated={false} isAnimating={false}>
             {displayText}
           </Streamdown>
         </div>
-      )}
-    </details>
+      </CollapsibleContent>
+    </Collapsible>
   );
-}
-
-/** Animated "..." indicator for the streaming thinking state. */
-function ThinkingDots() {
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => setFrame((f) => (f + 1) % 4), 400);
-    return () => clearInterval(id);
-  }, []);
-  const dots = ".".repeat(frame);
-  // Fixed width so layout doesn't jump.
-  return <span className="inline-block w-4 text-left">{dots}</span>;
 }

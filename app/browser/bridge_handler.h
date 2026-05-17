@@ -58,8 +58,11 @@ struct ShellCallbacks {
   std::function<void(const std::string& panel)> show_panel;
   // Opens a popover window with the given URL
   std::function<void(const std::string& url)> popover_open;
-  // Closes the popover window
-  std::function<void()> popover_close;
+  // Closes the popover window owning the calling renderer. `browser_id`
+  // is the CefBrowser identifier of the page that invoked the bridge.
+  // Passed so PanelWindow can match its own browsers; the in-window
+  // overlay popover ignores the value.
+  std::function<void(int browser_id)> popover_close;
   // Reloads the popover content
   std::function<void()> popover_refresh;
   // Promote the popover to a real tab and close the popover

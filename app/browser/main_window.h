@@ -231,6 +231,8 @@ class MainWindow : public CefWindowDelegate,
   void ClosePopover() override;
   void ShowFloat(const std::string& url) override;
   void DismissFloat() override;
+  void OpenPanelWindow(const std::string& url,
+                       const std::string& title) override;
 
   // native-views-mvc Phase 3: ResourceContext implementation.
   std::string ResourceUrl(const std::string& relative) const override;

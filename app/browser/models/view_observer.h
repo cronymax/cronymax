@@ -27,6 +27,13 @@ struct ThemeChrome {
   cef_color_t bg_base = 0;
   cef_color_t bg_float = 0;
   cef_color_t bg_mask = 0;
+  // Mirrors the CSS `--background` semantic token in web/src/styles/theme.css.
+  // Used as the NSWindow chrome / CefBrowserView initial paint colour for
+  // panels whose React tree renders against `bg-background` (settings,
+  // flows, activity). Kept separate from `bg_body` (which is the deeper
+  // sidebar / chrome shell colour) so the panel window does not flash
+  // the sidebar colour before React paints the content surface.
+  cef_color_t bg_content = 0;
   cef_color_t border = 0;
   cef_color_t primary = 0;  // brand accent: teal
   cef_color_t text_title = 0;

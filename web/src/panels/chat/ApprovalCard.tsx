@@ -1,4 +1,8 @@
+import { Check, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { shells } from "@/shells/bridge";
 
 /** Trust level for a tool category. */
@@ -49,6 +53,12 @@ const TRUST_LABELS: Record<TrustLevel, string> = {
   bypass: "Bypass",
 };
 
+const TRUST_VARIANT: Record<TrustLevel, "default" | "destructive" | "outline"> = {
+  ask: "outline",
+  autopilot: "default",
+  bypass: "destructive",
+};
+
 export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny }: Props) {
   const category = toolName.split("_")[0] ?? toolName;
   const [trust, setTrust] = useState<TrustLevel>(() => loadTrustMap()[category] ?? "ask");
@@ -57,7 +67,7 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
   useEffect(() => {
     const level = loadTrustMap()[category] ?? "ask";
     setTrust(level);
-  }, [reviewId, category]);
+  }, [category]);
 
   const handleAllow = () => {
     shells.review.approve({ review_id: reviewId }).catch(() => undefined);
@@ -89,59 +99,47 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
   void runId;
 
   return (
-    <div className="mx-3 mb-1 rounded-lg border border-amber-500/50 bg-amber-500/5 p-3 text-xs">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="font-semibold text-amber-300">Tool approval required</span>
-          <span
-            className={
-              "rounded px-1.5 py-0.5 text-xs font-mono " +
-              (trust === "autopilot"
-                ? "bg-green-500/20 text-green-300"
-                : trust === "bypass"
-                  ? "bg-red-500/20 text-red-300"
-                  : "bg-amber-500/20 text-amber-300")
-            }
-          >
-            {TRUST_LABELS[trust]}
-          </span>
-        </div>
-        <span className="font-mono text-xs text-muted-foreground">
+    <Alert className="mx-3 mb-1 text-xs">
+      <ShieldAlert />
+      <AlertTitle className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-2">
+          <span>Tool approval required</span>
+          <Badge variant={TRUST_VARIANT[trust]}>{TRUST_LABELS[trust]}</Badge>
+        </span>
+        <span className="font-mono text-xs font-normal text-muted-foreground">
           category: <span className="text-foreground">{category}</span>
         </span>
-      </div>
+      </AlertTitle>
 
-      <div className="mb-2">
-        <div className="mb-1 font-semibold text-foreground">{toolName}</div>
-        <pre className="max-h-[120px] overflow-y-auto rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
-          {truncateJson(args)}
-        </pre>
-      </div>
+      <div className="mt-2 flex flex-col gap-2">
+        <div>
+          <div className="mb-1 font-medium text-foreground">{toolName}</div>
+          <pre className="max-h-[120px] overflow-y-auto whitespace-pre-wrap break-all rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">
+            {truncateJson(args)}
+          </pre>
+        </div>
 
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={handleAllow}
-          className="rounded bg-green-500/80 px-3 py-1 text-xs font-medium text-white hover:bg-green-500"
-        >
-          Allow
-        </button>
-        <button
-          type="button"
-          onClick={handleDeny}
-          className="rounded border border-red-500/50 bg-red-500/10 px-3 py-1 text-xs text-red-300 hover:bg-red-500/20"
-        >
-          Deny
-        </button>
-        <button
-          type="button"
-          onClick={() => void handleTrustAlways()}
-          disabled={saving}
-          className="ml-auto rounded border border-border bg-background px-3 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
-        >
-          Trust &quot;{category}&quot; always
-        </button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={handleAllow}>
+            <Check data-icon="inline-start" />
+            Allow
+          </Button>
+          <Button size="sm" variant="destructive" onClick={handleDeny}>
+            <X data-icon="inline-start" />
+            Deny
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="ml-auto"
+            onClick={() => void handleTrustAlways()}
+            disabled={saving}
+          >
+            <ShieldCheck data-icon="inline-start" />
+            Trust &quot;{category}&quot; always
+          </Button>
+        </div>
       </div>
-    </div>
+    </Alert>
   );
 }

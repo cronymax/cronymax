@@ -96,6 +96,12 @@ class OverlayActionContext {
   virtual void ClosePopover() = 0;
   virtual void ShowFloat(const std::string& url) = 0;
   virtual void DismissFloat() = 0;
+  // Open the given panel page (settings / flows / activities) in its own
+  // independent, movable top-level OS window. If a window with the same
+  // `url` is already open, brings it to the front instead of duplicating.
+  // Replaces the in-window overlay popover for these full-panel use cases.
+  virtual void OpenPanelWindow(const std::string& url,
+                               const std::string& title) = 0;
 
  protected:
   virtual ~OverlayActionContext() = default;

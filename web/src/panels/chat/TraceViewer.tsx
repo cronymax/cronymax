@@ -1,4 +1,17 @@
+import {
+  Brain,
+  Check,
+  CheckCheck,
+  ChevronRight,
+  Circle,
+  CircleDot,
+  Database,
+  type LucideIcon,
+  Pause,
+  Play,
+} from "lucide-react";
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Separator } from "@/components/ui/separator";
 import type { TraceEntry } from "./store";
@@ -15,24 +28,24 @@ function fmtRelTs(base: number, ts: number): string {
   return `+${(delta / 1000).toFixed(1)}s`;
 }
 
-const GLYPHS: Record<TraceEntry["kind"], string> = {
-  run_start: "◉",
-  assistant_turn: "◎",
-  tool_start: "▶",
-  tool_done: "✓",
-  approval_request: "⏸",
-  approval_resolved: "✔",
-  reflection: "🪞",
-  memory_write: "💾",
+const GLYPHS: Record<TraceEntry["kind"], LucideIcon> = {
+  run_start: CircleDot,
+  assistant_turn: Circle,
+  tool_start: Play,
+  tool_done: Check,
+  approval_request: Pause,
+  approval_resolved: CheckCheck,
+  reflection: Brain,
+  memory_write: Database,
 };
 
 const GLYPH_COLORS: Record<TraceEntry["kind"], string> = {
   run_start: "text-muted-foreground",
   assistant_turn: "text-primary",
-  tool_start: "text-amber-400",
-  tool_done: "text-green-400",
-  approval_request: "text-orange-400",
-  approval_resolved: "text-green-300",
+  tool_start: "text-amber-500",
+  tool_done: "text-primary",
+  approval_request: "text-amber-500",
+  approval_resolved: "text-primary",
   reflection: "text-purple-400",
   memory_write: "text-sky-400",
 };
@@ -76,7 +89,7 @@ function summarizeArgs(args: unknown): string {
 
 function truncate(s: string, max = 80): string {
   if (s.length <= max) return s;
-  return s.slice(0, max - 1) + "…";
+  return `${s.slice(0, max - 1)}…`;
 }
 
 function entryLabel(entry: TraceEntry): string {
@@ -169,7 +182,7 @@ function fmtTokenCount(n: number): string {
 function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
   const [open, setOpen] = useState(false);
   const indented = isChildEntry(entry);
-  const glyph = GLYPHS[entry.kind];
+  const Glyph = GLYPHS[entry.kind];
   const glyphColor = GLYPH_COLORS[entry.kind];
   const label = entryLabel(entry);
 
@@ -180,41 +193,45 @@ function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
   return (
     <Collapsible open={open} onOpenChange={setOpen} className={indented ? "ml-4" : ""}>
       <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-border/30 transition"
+        <Button
+          variant="ghost"
+          size="sm"
+          className="flex h-auto w-full items-center justify-start gap-1.5 rounded px-1 py-0.5 hover:bg-muted/40"
         >
-          <span className={`w-4 shrink-0 text-center font-mono text-xs ${glyphColor}`}>{glyph}</span>
-          <span className="flex-1 truncate font-mono text-xs text-muted-foreground">{label}</span>
+          <Glyph className={`size-3 shrink-0 ${glyphColor}`} />
+          <span className="flex-1 truncate text-left font-mono text-xs text-muted-foreground">{label}</span>
           {!isRunStart && (
             <span className="shrink-0 font-mono text-xs text-muted-foreground opacity-60">
               {fmtRelTs(base, entry.ts)}
             </span>
           )}
-          <span className="shrink-0 text-xs text-muted-foreground opacity-40">{open ? "▾" : "▸"}</span>
-        </button>
+          <ChevronRight
+            className="size-3 shrink-0 text-muted-foreground opacity-40 transition-transform data-[state=open]:rotate-90"
+            data-state={open ? "open" : "closed"}
+          />
+        </Button>
       </CollapsibleTrigger>
 
       <CollapsibleContent>
         {isRunStart && entry.kind === "run_start" ? (
-          <div className="ml-6 mt-0.5 space-y-1">
-            <div className="text-xs text-muted-foreground opacity-70 font-mono">
+          <div className="ml-6 mt-0.5 flex flex-col gap-1">
+            <div className="font-mono text-xs text-muted-foreground opacity-70">
               Tools: {entry.tools.join(", ") || "(none)"}
             </div>
-            <pre className="max-h-[240px] overflow-y-auto rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
+            <pre className="max-h-[240px] overflow-y-auto whitespace-pre-wrap break-all rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground">
               {entry.systemPrompt || "(no system prompt)"}
             </pre>
             {entry.userInput && (
               <>
-                <div className="text-xs text-muted-foreground opacity-70 font-mono mt-1">User message:</div>
-                <pre className="max-h-[240px] overflow-y-auto rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
+                <div className="mt-1 font-mono text-xs text-muted-foreground opacity-70">User message:</div>
+                <pre className="max-h-[240px] overflow-y-auto whitespace-pre-wrap break-all rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground">
                   {entry.userInput}
                 </pre>
               </>
             )}
           </div>
         ) : (
-          <pre className="ml-6 max-h-[200px] overflow-y-auto rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground whitespace-pre-wrap break-all">
+          <pre className="ml-6 max-h-[200px] overflow-y-auto whitespace-pre-wrap break-all rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground">
             {JSON.stringify(detail, null, 2)}
           </pre>
         )}
@@ -224,7 +241,7 @@ function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
 }
 
 export function TraceViewer({ entries, startExpanded }: Props) {
-  const [collapsed, setCollapsed] = useState(!startExpanded);
+  const [open, setOpen] = useState(!!startExpanded);
 
   if (entries.length === 0) return null;
 
@@ -235,18 +252,17 @@ export function TraceViewer({ entries, startExpanded }: Props) {
   const outputTokens = usage?.outputTokens ?? 0;
 
   return (
-    <Collapsible
-      open={!collapsed}
-      onOpenChange={(o) => setCollapsed(!o)}
-      className="rounded border border-border bg-card text-xs"
-    >
-      {/* Header / toggle */}
+    <Collapsible open={open} onOpenChange={setOpen} className="rounded border border-border bg-card text-xs">
       <CollapsibleTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-border/20 transition"
+        <Button
+          variant="ghost"
+          size="sm"
+          className="flex h-auto w-full items-center justify-start gap-2 rounded-none px-2 py-1.5 hover:bg-muted/40"
         >
-          <span className="font-mono text-xs text-muted-foreground">{collapsed ? "▶" : "▼"}</span>
+          <ChevronRight
+            className="size-3 text-muted-foreground transition-transform data-[state=open]:rotate-90"
+            data-state={open ? "open" : "closed"}
+          />
           <span className="text-xs font-semibold text-muted-foreground">Trace</span>
           <span className="text-xs text-muted-foreground opacity-60">
             {entries.length} {entries.length === 1 ? "entry" : "entries"}
@@ -255,13 +271,12 @@ export function TraceViewer({ entries, startExpanded }: Props) {
               ? ` · ${fmtTokenCount(inputTokens + outputTokens)} tok (↑${fmtTokenCount(inputTokens)} ↓${fmtTokenCount(outputTokens)})`
               : ""}
           </span>
-        </button>
+        </Button>
       </CollapsibleTrigger>
 
-      {/* Waterfall rows */}
       <CollapsibleContent>
         <Separator />
-        <div className="px-1 py-1 space-y-0.5">
+        <div className="flex flex-col gap-0.5 px-1 py-1">
           {sortedEntries(entries).map((entry, i) => (
             <TraceRow key={i} entry={entry} base={base} />
           ))}

@@ -1,9 +1,11 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "@/styles/theme.css";
+import { installPanelMode } from "@/styles/installPanelMode";
 import { installThemeMirror } from "@/styles/installThemeMirror";
 
 installThemeMirror();
+installPanelMode();
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { App } from "./App";

@@ -15,6 +15,7 @@
 #include "browser/platform/open_url_mac.h"
 #endif
 #include "browser/models/view_model.h"
+#include "browser/views/panel_window.h"
 #include "browser/tab/tab.h"
 #include "browser/tab/tab_behavior.h"
 #include "browser/tab/tab_manager.h"
@@ -113,12 +114,20 @@ void ViewDispatcher::Wire() {
   sh.popover_open = [this](const std::string& u) {
     overlay_ctx_->OpenPopover(u);
   };
-  sh.popover_close = [this]() { overlay_ctx_->ClosePopover(); };
+  // popover_close serves two callers: panel windows (settings / flows /
+  // activities, each their own PanelWindow) and the in-window web URL
+  // overlay popover. Route by the calling browser_id: if it belongs to a
+  // PanelWindow, close that window; otherwise fall through to the overlay.
+  sh.popover_close = [this](int browser_id) {
+    if (PanelWindow::CloseForBrowser(browser_id))
+      return;
+    overlay_ctx_->ClosePopover();
+  };
   sh.popover_refresh = [this]() { host_.popover_reload(); };
 
   sh.settings_popover_open = [this]() {
-    overlay_ctx_->OpenPopover(
-        resource_ctx_->ResourceUrl("panels/settings/index.html"));
+    overlay_ctx_->OpenPanelWindow(
+        resource_ctx_->ResourceUrl("panels/settings/index.html"), "Settings");
   };
 
   sh.popover_open_as_tab = [this]() {

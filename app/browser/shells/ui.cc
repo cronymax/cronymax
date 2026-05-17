@@ -220,8 +220,14 @@ void RegisterShellHandlers(BridgeRegistry& r, BridgeHandler* h) {
 
   // ── browser.shell.popover_close ───────────────────────────────────────────
   r.add("browser.shell.popover_close", [h](BridgeCtx ctx) {
+    // Forward the calling browser_id so PanelWindow can match a panel
+    // window's content browser (settings/flows/activities) and close
+    // that window. When the caller is the legacy in-window overlay
+    // popover instead, the id won't match any PanelWindow and the
+    // dispatcher falls through to overlay_ctx_->ClosePopover().
+    const int bid = ctx.browser ? ctx.browser->GetIdentifier() : 0;
     if (h->shell_cbs_.popover_close)
-      h->shell_cbs_.popover_close();
+      h->shell_cbs_.popover_close(bid);
     ctx.callback->Success(nlohmann::json{{"ok", true}});
   });
 
