@@ -250,10 +250,22 @@ App::App() {
   render_message_router_ = CefMessageRouterRendererSide::Create(config);
 }
 
-// Check whether a frame URL belongs to built-in pages (non-http/https origins).
+// Check whether a frame URL belongs to built-in pages.
+// Production: built-in panels are served from file:// (or a custom scheme),
+// so any http(s):// URL is an external site that must not see the bridge.
+// Dev (CRONYMAX_DEV=1): main_window.cc rewrites ResourceUrl() to
+// http://localhost:5173/<path>; we mirror that exact prefix here so external
+// tabs (https://example.com, …) still can't see the bridge.
+// CEF helper processes inherit the host's env, so getenv works here.
 static bool IsBuiltinUrl(const CefString& url) {
+  static const char* const kDevPanelPrefix = "http://localhost:5173/";
+  static const bool dev_mode = [] {
+    const char* v = std::getenv("CRONYMAX_DEV");
+    return v && *v;
+  }();
   std::string u = url.ToString();
-  // Built-in pages use file:// or a custom scheme; external pages use https://.
+  if (dev_mode && u.rfind(kDevPanelPrefix, 0) == 0)
+    return true;
   return u.rfind("https://", 0) != 0 && u.rfind("http://", 0) != 0;
 }
 
@@ -285,13 +297,18 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
         V8_PROPERTY_ATTRIBUTE_NONE);
   }
 
-  // Inject window.cronymax.runtime only into built-in main frames.
+  // Capture the main-frame V8 context for every main frame so async replies
+  // can enter it to resolve pending promises. Without this, browser-ctrl
+  // replies (kMsgBrowserCtrlReply) for http://localhost dev URLs would early-
+  // out at `if (!main_context_) return true;` and JS-side awaits would hang.
   if (!frame->IsMain())
     return;
+  main_context_ = context;
+
+  // Inject window.cronymax.runtime only into built-in main frames — external
+  // pages (https://...) must not see the runtime IPC surface.
   if (!IsBuiltinUrl(frame->GetURL()))
     return;
-
-  main_context_ = context;
 
   // Ensure window.cronymax exists; bridge.ts adds .browser to the same object.
   CefRefPtr<CefV8Value> global = context->GetGlobal();

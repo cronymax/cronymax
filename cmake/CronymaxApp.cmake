@@ -235,14 +235,26 @@ if(APPLE)
     )
 
     add_dependencies(cronymax_app ${_helper_target})
-    add_custom_command(
-      TARGET cronymax_app
-      POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "$<TARGET_BUNDLE_DIR:${_helper_target}>"
-        "$<TARGET_BUNDLE_DIR:cronymax_app>/Contents/Frameworks/${_helper_output_name}.app"
-      VERBATIM
-    )
+
+    # Copy the helper bundle into Contents/Frameworks whenever EITHER the
+    # helper OR cronymax_app gets (re)built. Hooking only on cronymax_app
+    # (the old behavior) misses incremental edits to renderer sources: the
+    # helper relinks but cronymax_app doesn't need to, so POST_BUILD never
+    # fires and the embedded copy stays stale — silently running old code
+    # under the new bundle. The cronymax_app hook is kept so first/clean
+    # builds still populate Frameworks/ in the right order.
+    foreach(_when IN ITEMS ${_helper_target} cronymax_app)
+      add_custom_command(
+        TARGET ${_when}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_BUNDLE_DIR:cronymax_app>/Contents/Frameworks"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "$<TARGET_BUNDLE_DIR:${_helper_target}>"
+          "$<TARGET_BUNDLE_DIR:cronymax_app>/Contents/Frameworks/${_helper_output_name}.app"
+        VERBATIM
+      )
+    endforeach()
   endforeach()
 endif()
 
