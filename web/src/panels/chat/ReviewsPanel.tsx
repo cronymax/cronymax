@@ -6,7 +6,11 @@
  * restart while the run's persisted state still records it as waiting).
  */
 
+import { Check, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { browser, runtime, shells } from "@/shells/bridge";
 
 interface PendingItem {
@@ -159,40 +163,39 @@ export function ReviewsPanel({ sessionId: _sessionId }: Props) {
   };
 
   return (
-    <div className="mx-3 mb-1 flex flex-col gap-1 rounded-md border border-amber-400/40 bg-amber-500/10 px-2 py-2">
-      <div className="mb-1 text-xs font-semibold text-amber-600 dark:text-amber-400">
-        Pending Reviews ({items.length})
+    <Alert className="mx-3 mb-1 text-xs">
+      <ShieldAlert />
+      <AlertTitle className="flex items-center gap-2">
+        <span>Pending reviews</span>
+        <Badge variant="outline">{items.length}</Badge>
+      </AlertTitle>
+
+      <div className="mt-2 flex flex-col gap-1">
+        {items.map((item, idx) => (
+          <div
+            key={item.review_id ?? `${item.run_id}-${idx}`}
+            className="flex items-center gap-2 rounded bg-muted/40 px-2 py-1"
+          >
+            <span className="max-w-[120px] truncate font-mono font-medium text-foreground">{item.tool_name}</span>
+            {item.review_id ? (
+              <span className="flex-1 truncate text-muted-foreground">{formatArgs(item.args)}</span>
+            ) : (
+              <span className="flex-1 truncate font-mono text-[10px] text-muted-foreground">
+                run {item.run_id.slice(0, 12)}
+              </span>
+            )}
+            <Button size="xs" onClick={() => handleApprove(item)}>
+              <Check data-icon="inline-start" />
+              Allow
+            </Button>
+            <Button size="xs" variant="destructive" onClick={() => handleReject(item)}>
+              <X data-icon="inline-start" />
+              Deny
+            </Button>
+          </div>
+        ))}
       </div>
-      {items.map((item, idx) => (
-        <div
-          key={item.review_id ?? `${item.run_id}-${idx}`}
-          className="flex items-center gap-2 rounded bg-background/50 px-2 py-1 text-xs"
-        >
-          <span className="font-mono font-medium text-foreground truncate max-w-[120px]">{item.tool_name}</span>
-          {item.review_id ? (
-            <span className="flex-1 truncate text-muted-foreground">{formatArgs(item.args)}</span>
-          ) : (
-            <span className="flex-1 truncate text-muted-foreground font-mono text-[10px]">
-              run {item.run_id.slice(0, 12)}
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => handleApprove(item)}
-            className="shrink-0 rounded bg-green-500/20 px-2 py-0.5 text-green-700 dark:text-green-300 hover:bg-green-500/40 transition"
-          >
-            ✓ Allow
-          </button>
-          <button
-            type="button"
-            onClick={() => handleReject(item)}
-            className="shrink-0 rounded bg-red-500/20 px-2 py-0.5 text-red-700 dark:text-red-300 hover:bg-red-500/40 transition"
-          >
-            ✗ Deny
-          </button>
-        </div>
-      ))}
-    </div>
+    </Alert>
   );
 }
 

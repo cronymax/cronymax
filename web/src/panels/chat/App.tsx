@@ -5,6 +5,7 @@ import {
   ChevronRight,
   ChevronsUpDown,
   Copy,
+  GitFork,
   Image as ImageIcon,
   Info,
   Loader2,
@@ -14,6 +15,7 @@ import {
   Plus,
   Square,
   TriangleAlert,
+  Undo2,
   X,
 } from "lucide-react";
 import {
@@ -375,24 +377,26 @@ function ConversationBlockView({
       {!isStreaming && hovered && (onRestore || onFork) && (
         <div className="flex items-center gap-1.5 pt-0.5">
           {onRestore && (
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="xs"
               onClick={() => onRestore(block.id)}
-              className="rounded border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground transition"
               title="Restore chat to this checkpoint (discards subsequent blocks)"
             >
-              ↩ Restore
-            </button>
+              <Undo2 data-icon="inline-start" />
+              Restore
+            </Button>
           )}
           {onFork && (
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="xs"
               onClick={() => onFork(block.id)}
-              className="rounded border border-border bg-background px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground transition"
               title="Fork a new chat from this checkpoint"
             >
-              ⎇ Fork
-            </button>
+              <GitFork data-icon="inline-start" />
+              Fork
+            </Button>
           )}
         </div>
       )}
@@ -2567,26 +2571,37 @@ export function App() {
 
       {/* ── Below-editor status bar: approval mode + context hint ──────────── */}
       <div className="flex items-center gap-2 px-3 pb-3 pt-0">
-        {/* Global Approval Mode selector */}
-        <select
+        {/* Global approval mode — semantic shadcn Select matches the effort
+            selectors above. Triggers in line with the composer toolbar via
+            `size="sm"`. */}
+        <Select
           value={globalApprovalMode}
-          onChange={(e) => {
-            const v = e.target.value as "default" | "autopilot" | "bypass";
-            setGlobalApprovalMode(v);
-            persistGlobalApprovalMode(v);
+          onValueChange={(v) => {
+            const next = v as "default" | "autopilot" | "bypass";
+            setGlobalApprovalMode(next);
+            persistGlobalApprovalMode(next);
           }}
-          className={cn(
-            "rounded-md px-1.5 py-1 text-xs transition",
-            "border-0 bg-transparent text-cronymax-caption hover:text-cronymax-title",
-          )}
-          title="Global approval mode — overrides per-tool trust for this session"
         >
-          <option value="default">approve: per-tool</option>
-          <option value="autopilot">approve: all</option>
-          <option value="bypass">approve: none</option>
-        </select>
+          <SelectTrigger
+            size="sm"
+            className="border-0 bg-transparent text-xs text-muted-foreground"
+            title="Global approval mode — overrides per-tool trust for this session"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="default">approve: per-tool</SelectItem>
+              <SelectItem value="autopilot">approve: all</SelectItem>
+              <SelectItem value="bypass">approve: none</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
 
-        {/* Context window hint */}
+        {/* Context window hint — `warn` (≥80 %) keeps amber as the only
+            intentional non-semantic accent (matches shell-mode composer
+            border); `critical` (≥95 %) uses `text-destructive` /
+            `bg-destructive/10` semantic tokens so it auto-flips with theme. */}
         {latestUsage &&
           contextLimit &&
           (() => {
@@ -2599,18 +2614,18 @@ export function App() {
                 className={cn(
                   "flex items-center gap-2 rounded-md px-2 py-1 text-[11px]",
                   critical
-                    ? "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300"
+                    ? "bg-destructive/10 text-destructive"
                     : warn
-                      ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                      ? "bg-amber-500/10 text-amber-600 dark:text-amber-300"
                       : "bg-muted/40 text-muted-foreground",
                 )}
                 title={`Input: ${latestUsage.inputTokens.toLocaleString()} tokens · Output: ${latestUsage.outputTokens.toLocaleString()} tokens`}
               >
-                <div className="w-16 overflow-hidden rounded-full bg-current/20 h-1">
+                <div className="h-1 w-16 overflow-hidden rounded-full bg-current/20">
                   <div
                     className={cn(
                       "h-full rounded-full transition-all",
-                      critical ? "bg-red-500" : warn ? "bg-amber-500" : "bg-primary/50",
+                      critical ? "bg-destructive" : warn ? "bg-amber-500" : "bg-primary/50",
                     )}
                     style={{ width: `${pct}%` }}
                   />
