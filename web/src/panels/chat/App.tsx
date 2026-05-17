@@ -37,6 +37,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Heading } from "@/components/ui/typography";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { cn } from "@/lib/utils";
@@ -104,6 +105,22 @@ function detectFileChange(tool: string, args: unknown): { path: string; operatio
   const path = typeof a[def.pathField] === "string" ? (a[def.pathField] as string) : null;
   if (!path) return null;
   return { path, operation: def.operation };
+}
+
+// ── shadcn Tooltip helper ──────────────────────────────────────────────
+// Wraps any element with a shadcn Tooltip so callers can replace
+// `title="..."` (browser-native tooltip — system styled, instant,
+// inconsistent with the rest of the UI) with the same theme-aware
+// tooltip used elsewhere. Pass plain text via `tip`; the child becomes
+// the trigger via `asChild`. A top-level `<TooltipProvider>` wraps
+// `<main>` so all instances share the same delay timer.
+function Tip({ tip, children }: { tip: string; children: React.ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent>{tip}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 // ── picker types ────────────────────────────────────────────────────────
@@ -377,26 +394,20 @@ function ConversationBlockView({
       {!isStreaming && hovered && (onRestore || onFork) && (
         <div className="flex items-center gap-1.5 pt-0.5">
           {onRestore && (
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => onRestore(block.id)}
-              title="Restore chat to this checkpoint (discards subsequent blocks)"
-            >
-              <Undo2 data-icon="inline-start" />
-              Restore
-            </Button>
+            <Tip tip="Restore chat to this checkpoint (discards subsequent blocks)">
+              <Button variant="outline" size="xs" onClick={() => onRestore(block.id)}>
+                <Undo2 data-icon="inline-start" />
+                Restore
+              </Button>
+            </Tip>
           )}
           {onFork && (
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => onFork(block.id)}
-              title="Fork a new chat from this checkpoint"
-            >
-              <GitFork data-icon="inline-start" />
-              Fork
-            </Button>
+            <Tip tip="Fork a new chat from this checkpoint">
+              <Button variant="outline" size="xs" onClick={() => onFork(block.id)}>
+                <GitFork data-icon="inline-start" />
+                Fork
+              </Button>
+            </Tip>
           )}
         </div>
       )}
@@ -1987,656 +1998,651 @@ export function App() {
   };
 
   return (
-    <main className="flex h-screen flex-col bg-background text-foreground">
-      {/* Header */}
-      <header className="flex items-center gap-3 border-b border-border bg-card px-3 py-2">
-        <Heading className="flex-1 truncate">{state.chatName}</Heading>
+    <TooltipProvider>
+      <main className="flex h-screen flex-col bg-background text-foreground">
+        {/* Header */}
+        <header className="flex items-center gap-3 border-b border-border bg-card px-3 py-2">
+          <Heading className="flex-1 truncate">{state.chatName}</Heading>
 
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          Flow:
-          <Select
-            value={state.selectedFlow}
-            onValueChange={(v) => {
-              dispatch({ type: "setSelectedFlow", name: v });
-              persistSelectedFlow(v);
-            }}
-          >
-            <SelectTrigger size="sm" className="max-w-[140px]">
-              <SelectValue placeholder="(no flows)" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {state.flows.map((n) => (
-                  <SelectItem key={n} value={n}>
-                    {n}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <Button type="button" variant="outline" size="sm" onClick={onClear}>
-          Clear
-        </Button>
-      </header>
-
-      {/* Migration notice */}
-      {state.migrationNotice && (
-        <Alert className="rounded-none border-0 border-b">
-          <Info />
-          <AlertDescription className="flex items-center gap-2">
-            <span className="flex-1">{state.migrationNotice}</span>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => dispatch({ type: "clearMigrationNotice" })}
-              aria-label="Dismiss"
-            >
-              <X />
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {/* Runtime reconnecting banner */}
-      {state.isReconnecting && (
-        <Alert className="rounded-none border-0 border-b">
-          <Loader2 className="animate-spin" />
-          <AlertDescription className="flex items-center gap-2">
-            <span className="flex-1">Reconnecting to runtime…</span>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              title="Check connection"
-              aria-label="Check connection"
-              onClick={() => {
-                void shells.browser.space
-                  .list()
-                  .then(() => dispatch({ type: "setReconnecting", reconnecting: false }))
-                  .catch(() => {
-                    /* still reconnecting — keep banner */
-                  });
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            Flow:
+            <Select
+              value={state.selectedFlow}
+              onValueChange={(v) => {
+                dispatch({ type: "setSelectedFlow", name: v });
+                persistSelectedFlow(v);
               }}
             >
-              <X />
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
+              <SelectTrigger size="sm" className="max-w-[140px]">
+                <SelectValue placeholder="(no flows)" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {state.flows.map((n) => (
+                    <SelectItem key={n} value={n}>
+                      {n}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
 
-      {/* Agent load error */}
-      {agentLoadError && (
-        <Alert variant="destructive" className="rounded-none border-0 border-b">
-          <TriangleAlert />
-          <AlertTitle>agent.registry.list failed</AlertTitle>
-          <AlertDescription>{agentLoadError}</AlertDescription>
-        </Alert>
-      )}
+          <Button type="button" variant="outline" size="sm" onClick={onClear}>
+            Clear
+          </Button>
+        </header>
 
-      {/* Block timeline */}
-      <div ref={timelineRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-2">
-        {state.blocks.map((b) => (
-          <BlockView
-            key={b.id}
-            block={b}
-            isStreaming={b.id === runningBlockId && b.kind === "conversation"}
-            onShellAction={onShellAction}
-            isHighlighted={b.id === highlightedBlockId}
-            workspacePrompts={workspacePrompts}
-            onRestoreBlock={!state.running ? onRestoreBlock : undefined}
-            onForkBlock={!state.running ? onForkBlock : undefined}
-          />
-        ))}
-      </div>
+        {/* Migration notice */}
+        {state.migrationNotice && (
+          <Alert className="rounded-none border-0 border-b">
+            <Info />
+            <AlertDescription className="flex items-center gap-2">
+              <span className="flex-1">{state.migrationNotice}</span>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => dispatch({ type: "clearMigrationNotice" })}
+                aria-label="Dismiss"
+              >
+                <X />
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
 
-      {/* ── Floating selection tooltip ──────────────────────────────
+        {/* Runtime reconnecting banner */}
+        {state.isReconnecting && (
+          <Alert className="rounded-none border-0 border-b">
+            <Loader2 className="animate-spin" />
+            <AlertDescription className="flex items-center gap-2">
+              <span className="flex-1">Reconnecting to runtime…</span>
+              <Tip tip="Check connection">
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Check connection"
+                  onClick={() => {
+                    void shells.browser.space
+                      .list()
+                      .then(() => dispatch({ type: "setReconnecting", reconnecting: false }))
+                      .catch(() => {
+                        /* still reconnecting — keep banner */
+                      });
+                  }}
+                >
+                  <X />
+                </Button>
+              </Tip>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Agent load error */}
+        {agentLoadError && (
+          <Alert variant="destructive" className="rounded-none border-0 border-b">
+            <TriangleAlert />
+            <AlertTitle>agent.registry.list failed</AlertTitle>
+            <AlertDescription>{agentLoadError}</AlertDescription>
+          </Alert>
+        )}
+
+        {/* Block timeline */}
+        <div ref={timelineRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-2">
+          {state.blocks.map((b) => (
+            <BlockView
+              key={b.id}
+              block={b}
+              isStreaming={b.id === runningBlockId && b.kind === "conversation"}
+              onShellAction={onShellAction}
+              isHighlighted={b.id === highlightedBlockId}
+              workspacePrompts={workspacePrompts}
+              onRestoreBlock={!state.running ? onRestoreBlock : undefined}
+              onForkBlock={!state.running ? onForkBlock : undefined}
+            />
+          ))}
+        </div>
+
+        {/* ── Floating selection tooltip ──────────────────────────────
           Anchored to the selection rect via PopoverAnchor (zero-pointer-
           events div positioned at the rect). Radix's popper handles edge
           collision, flip, and Portal rendering — so the tooltip never gets
           clipped by the webview's borders or by any ancestor's overflow. */}
-      {activeSelection && (
-        <Popover open modal={false}>
-          <PopoverAnchor asChild>
-            <div
-              aria-hidden
-              className="pointer-events-none fixed"
-              style={{
-                top: activeSelection.anchorRect.top,
-                left: activeSelection.anchorRect.left,
-                width: activeSelection.anchorRect.width,
-                height: activeSelection.anchorRect.height,
-              }}
-            />
-          </PopoverAnchor>
-          <PopoverContent
-            side="top"
-            sideOffset={4}
-            align="center"
-            collisionPadding={8}
-            // Keep the user's text selection alive: don't auto-focus when the
-            // popover opens, and don't return focus on close.
-            onOpenAutoFocus={(e) => e.preventDefault()}
-            onCloseAutoFocus={(e) => e.preventDefault()}
-            onMouseDown={(e) => {
-              // Always prevent default to keep text selection alive.
-              // Manually focus inputs so they still receive keyboard events.
-              e.preventDefault();
-              if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-                e.target.focus();
-              }
-            }}
-            className="flex w-auto flex-col gap-1 p-1.5"
-          >
-            {/* Quick actions row */}
-            <div className="flex items-center gap-0.5">
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={() => navigator.clipboard.writeText(activeSelection.selectedText)}
-              >
-                <Copy data-icon="inline-start" />
-                Copy
-              </Button>
-              <Button
-                size="xs"
-                onClick={() => {
-                  const commentId = crypto.randomUUID();
-                  dispatch({
-                    type: "pinComment",
-                    comment: {
-                      id: commentId,
-                      blockId: activeSelection.blockId,
-                      selectedText: activeSelection.selectedText,
-                      text: commentDraft.trim() || undefined,
-                      pinnedToPrompt: true,
-                    },
-                  });
-                  setCommentDraft("");
-                  setFrozenSelection(null);
-                  window.getSelection()?.removeAllRanges();
+        {activeSelection && (
+          <Popover open modal={false}>
+            <PopoverAnchor asChild>
+              <div
+                aria-hidden
+                className="pointer-events-none fixed"
+                style={{
+                  top: activeSelection.anchorRect.top,
+                  left: activeSelection.anchorRect.left,
+                  width: activeSelection.anchorRect.width,
+                  height: activeSelection.anchorRect.height,
                 }}
-              >
-                <Pin data-icon="inline-start" />
-                Pin
-              </Button>
-            </div>
-            {/* Comment input — base Textarea applies `field-sizing-content`
+              />
+            </PopoverAnchor>
+            <PopoverContent
+              side="top"
+              sideOffset={4}
+              align="center"
+              collisionPadding={8}
+              // Keep the user's text selection alive: don't auto-focus when the
+              // popover opens, and don't return focus on close.
+              onOpenAutoFocus={(e) => e.preventDefault()}
+              onCloseAutoFocus={(e) => e.preventDefault()}
+              onMouseDown={(e) => {
+                // Always prevent default to keep text selection alive.
+                // Manually focus inputs so they still receive keyboard events.
+                e.preventDefault();
+                if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+                  e.target.focus();
+                }
+              }}
+              className="flex w-auto flex-col gap-1 p-1.5"
+            >
+              {/* Quick actions row */}
+              <div className="flex items-center gap-0.5">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => navigator.clipboard.writeText(activeSelection.selectedText)}
+                >
+                  <Copy data-icon="inline-start" />
+                  Copy
+                </Button>
+                <Button
+                  size="xs"
+                  onClick={() => {
+                    const commentId = crypto.randomUUID();
+                    dispatch({
+                      type: "pinComment",
+                      comment: {
+                        id: commentId,
+                        blockId: activeSelection.blockId,
+                        selectedText: activeSelection.selectedText,
+                        text: commentDraft.trim() || undefined,
+                        pinnedToPrompt: true,
+                      },
+                    });
+                    setCommentDraft("");
+                    setFrozenSelection(null);
+                    window.getSelection()?.removeAllRanges();
+                  }}
+                >
+                  <Pin data-icon="inline-start" />
+                  Pin
+                </Button>
+              </div>
+              {/* Comment input — base Textarea applies `field-sizing-content`
                 which sizes the box to its content, so the `rows` attr is
                 ignored once the user types. Pin a real CSS floor instead:
                 2 lines of text-xs (line-height 1rem) + py-2 padding +
                 2 × 1px border ≈ 3.25rem. `max-h-32` caps runaway growth
                 with internal scroll. */}
-            <Textarea
-              rows={2}
-              value={commentDraft}
-              onChange={(e) => setCommentDraft(e.target.value)}
-              placeholder="Add a comment… (Enter to pin, Shift+Enter for newline)"
-              className="max-h-32 min-h-[3.25rem] w-64 resize-none text-xs"
-              onFocus={() => setFrozenSelection(selectionInfo ?? frozenSelection)}
-              onBlur={() => setFrozenSelection(null)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  const commentId = crypto.randomUUID();
-                  dispatch({
-                    type: "pinComment",
-                    comment: {
-                      id: commentId,
-                      blockId: activeSelection.blockId,
-                      selectedText: activeSelection.selectedText,
-                      text: commentDraft.trim() || undefined,
-                      pinnedToPrompt: true,
-                    },
-                  });
-                  setCommentDraft("");
-                  setFrozenSelection(null);
-                  window.getSelection()?.removeAllRanges();
-                }
-                if (e.key === "Escape") {
-                  setCommentDraft("");
-                  setFrozenSelection(null);
-                  window.getSelection()?.removeAllRanges();
-                }
-              }}
-            />
-          </PopoverContent>
-        </Popover>
-      )}
-
-      {/* ── Flow instances bar — visible when session has active flow runs ── */}
-      <FlowInstancesBar sessionId={state.activeChatId} />
-
-      {/* ── File changes summary ─────────────────────────────────────────── */}
-      <FileChangesView changes={sessionFileChanges} />
-
-      {/* ── Copilot-like composer ──────────────────────────────────── */}
-      <form onSubmit={onSubmit} className="px-3 pb-1 pt-1">
-        {/* Approval card — shown when agent awaits tool review */}
-        {state.awaitingApproval && (
-          <ApprovalCard
-            runId={state.awaitingApproval.runId}
-            reviewId={state.awaitingApproval.reviewId}
-            toolName={state.awaitingApproval.toolName}
-            args={state.awaitingApproval.args}
-            onAllow={() => dispatch({ type: "clearAwaitingApproval" })}
-            onDeny={() => dispatch({ type: "clearAwaitingApproval" })}
-          />
+              <Textarea
+                rows={2}
+                value={commentDraft}
+                onChange={(e) => setCommentDraft(e.target.value)}
+                placeholder="Add a comment… (Enter to pin, Shift+Enter for newline)"
+                className="max-h-32 min-h-[3.25rem] w-64 resize-none text-xs"
+                onFocus={() => setFrozenSelection(selectionInfo ?? frozenSelection)}
+                onBlur={() => setFrozenSelection(null)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    const commentId = crypto.randomUUID();
+                    dispatch({
+                      type: "pinComment",
+                      comment: {
+                        id: commentId,
+                        blockId: activeSelection.blockId,
+                        selectedText: activeSelection.selectedText,
+                        text: commentDraft.trim() || undefined,
+                        pinnedToPrompt: true,
+                      },
+                    });
+                    setCommentDraft("");
+                    setFrozenSelection(null);
+                    window.getSelection()?.removeAllRanges();
+                  }
+                  if (e.key === "Escape") {
+                    setCommentDraft("");
+                    setFrozenSelection(null);
+                    window.getSelection()?.removeAllRanges();
+                  }
+                }}
+              />
+            </PopoverContent>
+          </Popover>
         )}
 
-        {/* Attachment tray sits above the editor box */}
-        <AttachmentTray
-          attachments={state.attachments}
-          onRemove={(id) => dispatch({ type: "removeAttachment", id })}
-          onCommentClick={onCommentAttachmentClick}
-        />
+        {/* ── Flow instances bar — visible when session has active flow runs ── */}
+        <FlowInstancesBar sessionId={state.activeChatId} />
 
-        {/* Picker + editor wrapper — relative so the picker floats above */}
-        <div className="relative">
-          {/* ── Reviews panel — floats above editor when pending approvals exist ── */}
-          <div className="absolute bottom-full left-0 right-0 z-40 mb-1">
-            <ReviewsPanel sessionId={state.activeChatId} />
-          </div>
+        {/* ── File changes summary ─────────────────────────────────────────── */}
+        <FileChangesView changes={sessionFileChanges} />
 
-          {/* ── Slash / @ picker ──────────────────────────────────────── */}
-          {picker && pickerItems.length > 0 && (
-            <div className="absolute inset-x-0 bottom-full z-50 mb-1 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg">
-              <div className="px-2 pb-0.5 pt-1.5 text-xs font-medium text-muted-foreground">
-                {picker.type === "slash" ? "Commands" : "Agents"}
-              </div>
-              {pickerItems.map((item, idx) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  data-active={idx === pickerIdx}
-                  className={cn(
-                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition",
-                    idx === pickerIdx
-                      ? "bg-accent text-accent-foreground"
-                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                  )}
-                  onMouseEnter={() => setPickerIdx(idx)}
-                  onMouseDown={(e) => {
-                    // Use onMouseDown + preventDefault so the textarea doesn't blur
-                    e.preventDefault();
-                    commitPickerItem(item);
-                  }}
-                >
-                  <span className="w-5 shrink-0 text-center font-mono font-semibold text-primary">
-                    {picker.type === "slash" ? "/" : "@"}
-                  </span>
-                  <span className="font-semibold">{item.label}</span>
-                  {item.description && (
-                    <span className="ml-1 truncate text-muted-foreground">— {item.description}</span>
-                  )}
-                </button>
-              ))}
-            </div>
+        {/* ── Copilot-like composer ──────────────────────────────────── */}
+        <form onSubmit={onSubmit} className="px-3 pb-1 pt-1">
+          {/* Approval card — shown when agent awaits tool review */}
+          {state.awaitingApproval && (
+            <ApprovalCard
+              runId={state.awaitingApproval.runId}
+              reviewId={state.awaitingApproval.reviewId}
+              toolName={state.awaitingApproval.toolName}
+              args={state.awaitingApproval.args}
+              onAllow={() => dispatch({ type: "clearAwaitingApproval" })}
+              onDeny={() => dispatch({ type: "clearAwaitingApproval" })}
+            />
           )}
 
-          {/* Editor card */}
-          <div
-            className={cn(
-              "flex flex-col rounded-xl border bg-card transition-colors",
-              inputMode === "shell" ? "border-amber-500/70 bg-amber-500/5" : "border-border focus-within:border-ring",
-            )}
-          >
-            {/* Attached prompt pills (VS-Code-style slash command references) */}
-            {attachedPrompts.length > 0 && (
-              <div className="relative flex flex-wrap gap-1 px-2.5 pb-0 pt-2">
-                {/* PromptPopover rendered above the pill row */}
-                {activePillId !== null &&
-                  (() => {
-                    const activePill = attachedPrompts.find((p) => p.id === activePillId);
-                    if (!activePill) return null;
-                    return (
-                      <PromptPopover
-                        key={activePillId}
-                        prompt={activePill}
-                        onClose={() => setActivePillId(null)}
-                        onSave={async (label, content) => {
-                          const res = await shells.browser.workspace.prompt.save({ name: label, content });
-                          if (!res.ok) throw new Error(res.error ?? "Save failed");
-                          setAttachedPrompts((prev) =>
-                            prev.map((p) => (p.id === activePillId ? { ...p, content } : p)),
-                          );
-                          setActivePillId(null);
-                        }}
-                      />
-                    );
-                  })()}
-                {attachedPrompts.map((p) => (
+          {/* Attachment tray sits above the editor box */}
+          <AttachmentTray
+            attachments={state.attachments}
+            onRemove={(id) => dispatch({ type: "removeAttachment", id })}
+            onCommentClick={onCommentAttachmentClick}
+          />
+
+          {/* Picker + editor wrapper — relative so the picker floats above */}
+          <div className="relative">
+            {/* ── Reviews panel — floats above editor when pending approvals exist ── */}
+            <div className="absolute bottom-full left-0 right-0 z-40 mb-1">
+              <ReviewsPanel sessionId={state.activeChatId} />
+            </div>
+
+            {/* ── Slash / @ picker ──────────────────────────────────────── */}
+            {picker && pickerItems.length > 0 && (
+              <div className="absolute inset-x-0 bottom-full z-50 mb-1 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-lg">
+                <div className="px-2 pb-0.5 pt-1.5 text-xs font-medium text-muted-foreground">
+                  {picker.type === "slash" ? "Commands" : "Agents"}
+                </div>
+                {pickerItems.map((item, idx) => (
                   <button
+                    key={item.id}
                     type="button"
-                    key={p.id}
+                    data-active={idx === pickerIdx}
                     className={cn(
-                      "inline-flex cursor-pointer items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-xs text-primary transition",
-                      activePillId === p.id
-                        ? "border-primary/60 bg-primary/25"
-                        : "border-primary/30 bg-primary/15 hover:bg-primary/25",
+                      "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition",
+                      idx === pickerIdx
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                     )}
-                    onClick={() => setActivePillId((prev) => (prev === p.id ? null : p.id))}
+                    onMouseEnter={() => setPickerIdx(idx)}
+                    onMouseDown={(e) => {
+                      // Use onMouseDown + preventDefault so the textarea doesn't blur
+                      e.preventDefault();
+                      commitPickerItem(item);
+                    }}
                   >
-                    <span className="opacity-70">/</span>
-                    {p.label}
-                    <button
-                      type="button"
-                      className="ml-0.5 leading-none opacity-50 hover:opacity-100"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActivePillId((prev) => (prev === p.id ? null : prev));
-                        setAttachedPrompts((prev) => prev.filter((x) => x.id !== p.id));
-                      }}
-                      aria-label="Detach prompt"
-                    >
-                      <X className="size-3" />
-                    </button>
+                    <span className="w-5 shrink-0 text-center font-mono font-semibold text-primary">
+                      {picker.type === "slash" ? "/" : "@"}
+                    </span>
+                    <span className="font-semibold">{item.label}</span>
+                    {item.description && (
+                      <span className="ml-1 truncate text-muted-foreground">— {item.description}</span>
+                    )}
                   </button>
                 ))}
               </div>
             )}
 
-            {/* Prefix badge row (shown when mode ≠ chat) */}
-            {inputMode !== "chat" && (
-              <div className="flex items-center gap-1.5 px-3 pb-0 pt-2">
-                <Badge
-                  variant="secondary"
-                  className={cn(
-                    "font-mono",
-                    inputMode === "shell" && "bg-amber-500/20 text-amber-600 dark:text-amber-300",
-                  )}
-                >
-                  {inputMode === "shell" ? "$ shell" : "/ command"}
-                </Badge>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className="ml-auto"
-                  onClick={() => {
-                    if (inputRef.current) inputRef.current.value = "";
-                    setInputMode("chat");
-                    setPicker(null);
-                    setAttachedPrompts([]);
-                  }}
-                  aria-label="Reset mode"
-                >
-                  <X />
-                </Button>
-              </div>
-            )}
-
-            {/* Textarea */}
-            <Textarea
-              ref={inputRef}
-              rows={1}
-              disabled={!!state.awaitingApproval}
-              placeholder={
-                state.awaitingApproval
-                  ? "Waiting for tool approval…"
-                  : inputMode === "shell"
-                    ? "shell command…"
-                    : inputMode === "command"
-                      ? "command…"
-                      : "Ask anything… (@AgentName to address one, $ for shell, / for commands)"
-              }
-              onKeyDown={onKeyDown}
-              onChange={onInputChange}
-              onInput={onTextareaInput}
-              onPaste={onPaste}
-              className="min-h-0 resize-none rounded-none border-0 bg-transparent px-3 py-2.5 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
-            />
-
-            {/* Bottom toolbar row */}
-            <div className="flex items-center gap-1.5 px-2 pb-2">
-              {/* Add button */}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => fileInputRef.current?.click()}
-                title="Add file / image"
-              >
-                <Plus data-icon="inline-start" />
-                Add
-              </Button>
-              <input ref={fileInputRef} type="file" className="hidden" multiple onChange={onFileChange} />
-
-              {/* Model combobox */}
-              <Popover open={modelComboOpen} onOpenChange={setModelComboOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="max-w-[140px] justify-between font-normal text-muted-foreground"
-                    title="LLM model"
-                  >
-                    <span className="truncate">{state.model || "provider default"}</span>
-                    <ChevronsUpDown data-icon="inline-end" className="opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-[220px] p-0" align="start" side="top">
-                  <Command>
-                    <CommandInput placeholder="Search models…" className="h-7 text-xs" />
-                    <CommandList>
-                      <CommandEmpty className="text-xs">No models.</CommandEmpty>
-                      <CommandGroup>
-                        <CommandItem
-                          value=""
-                          onSelect={() => {
-                            dispatch({ type: "setModel", model: "" });
-                            persistSelectedModel("");
-                            setModelComboOpen(false);
+            {/* Editor card */}
+            <div
+              className={cn(
+                "flex flex-col rounded-xl border bg-card transition-colors",
+                inputMode === "shell" ? "border-amber-500/70 bg-amber-500/5" : "border-border focus-within:border-ring",
+              )}
+            >
+              {/* Attached prompt pills (VS-Code-style slash command references) */}
+              {attachedPrompts.length > 0 && (
+                <div className="relative flex flex-wrap gap-1 px-2.5 pb-0 pt-2">
+                  {/* PromptPopover rendered above the pill row */}
+                  {activePillId !== null &&
+                    (() => {
+                      const activePill = attachedPrompts.find((p) => p.id === activePillId);
+                      if (!activePill) return null;
+                      return (
+                        <PromptPopover
+                          key={activePillId}
+                          prompt={activePill}
+                          onClose={() => setActivePillId(null)}
+                          onSave={async (label, content) => {
+                            const res = await shells.browser.workspace.prompt.save({ name: label, content });
+                            if (!res.ok) throw new Error(res.error ?? "Save failed");
+                            setAttachedPrompts((prev) =>
+                              prev.map((p) => (p.id === activePillId ? { ...p, content } : p)),
+                            );
+                            setActivePillId(null);
                           }}
-                          className="text-xs"
-                        >
-                          <Check className={cn("mr-2 size-3 shrink-0", state.model ? "opacity-0" : "opacity-100")} />
-                          <span className="italic text-muted-foreground">provider default</span>
-                        </CommandItem>
-                      </CommandGroup>
-                      {modelGroups.map((g) => (
-                        <CommandGroup key={g.label} heading={g.label}>
-                          {g.models.map((m) => (
-                            <CommandItem
-                              key={m}
-                              value={m}
-                              onSelect={(v) => {
-                                dispatch({ type: "setModel", model: v });
-                                persistSelectedModel(v);
-                                setModelComboOpen(false);
-                              }}
-                              className="text-xs"
-                            >
-                              <Check
-                                className={cn("mr-2 size-3 shrink-0", m === state.model ? "opacity-100" : "opacity-0")}
-                              />
-                              <span className="truncate font-mono">{m}</span>
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      ))}
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
+                        />
+                      );
+                    })()}
+                  {attachedPrompts.map((p) => (
+                    <button
+                      type="button"
+                      key={p.id}
+                      className={cn(
+                        "inline-flex cursor-pointer items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-xs text-primary transition",
+                        activePillId === p.id
+                          ? "border-primary/60 bg-primary/25"
+                          : "border-primary/30 bg-primary/15 hover:bg-primary/25",
+                      )}
+                      onClick={() => setActivePillId((prev) => (prev === p.id ? null : p.id))}
+                    >
+                      <span className="opacity-70">/</span>
+                      {p.label}
+                      <button
+                        type="button"
+                        className="ml-0.5 leading-none opacity-50 hover:opacity-100"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActivePillId((prev) => (prev === p.id ? null : prev));
+                          setAttachedPrompts((prev) => prev.filter((x) => x.id !== p.id));
+                        }}
+                        aria-label="Detach prompt"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </button>
+                  ))}
+                </div>
+              )}
 
-              {/* Effort selector — provider-kind aware. Anthropic uses its
+              {/* Prefix badge row (shown when mode ≠ chat) */}
+              {inputMode !== "chat" && (
+                <div className="flex items-center gap-1.5 px-3 pb-0 pt-2">
+                  <Badge
+                    variant="secondary"
+                    className={cn(
+                      "font-mono",
+                      inputMode === "shell" && "bg-amber-500/20 text-amber-600 dark:text-amber-300",
+                    )}
+                  >
+                    {inputMode === "shell" ? "$ shell" : "/ command"}
+                  </Badge>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="ml-auto"
+                    onClick={() => {
+                      if (inputRef.current) inputRef.current.value = "";
+                      setInputMode("chat");
+                      setPicker(null);
+                      setAttachedPrompts([]);
+                    }}
+                    aria-label="Reset mode"
+                  >
+                    <X />
+                  </Button>
+                </div>
+              )}
+
+              {/* Textarea */}
+              <Textarea
+                ref={inputRef}
+                rows={1}
+                disabled={!!state.awaitingApproval}
+                placeholder={
+                  state.awaitingApproval
+                    ? "Waiting for tool approval…"
+                    : inputMode === "shell"
+                      ? "shell command…"
+                      : inputMode === "command"
+                        ? "command…"
+                        : "Ask anything… (@AgentName to address one, $ for shell, / for commands)"
+                }
+                onKeyDown={onKeyDown}
+                onChange={onInputChange}
+                onInput={onTextareaInput}
+                onPaste={onPaste}
+                className="min-h-0 resize-none rounded-none border-0 bg-transparent px-3 py-2.5 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
+              />
+
+              {/* Bottom toolbar row */}
+              <div className="flex items-center gap-1.5 px-2 pb-2">
+                {/* Add button */}
+                <Tip tip="Add file / image">
+                  <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+                    <Plus data-icon="inline-start" />
+                    Add
+                  </Button>
+                </Tip>
+                <input ref={fileInputRef} type="file" className="hidden" multiple onChange={onFileChange} />
+
+                {/* Model combobox */}
+                <Popover open={modelComboOpen} onOpenChange={setModelComboOpen}>
+                  <Tip tip="LLM model">
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="max-w-[140px] justify-between font-normal text-muted-foreground"
+                      >
+                        <span className="truncate">{state.model || "provider default"}</span>
+                        <ChevronsUpDown data-icon="inline-end" className="opacity-50" />
+                      </Button>
+                    </PopoverTrigger>
+                  </Tip>
+                  <PopoverContent className="w-[220px] p-0" align="start" side="top">
+                    <Command>
+                      <CommandInput placeholder="Search models…" className="h-7 text-xs" />
+                      <CommandList>
+                        <CommandEmpty className="text-xs">No models.</CommandEmpty>
+                        <CommandGroup>
+                          <CommandItem
+                            value=""
+                            onSelect={() => {
+                              dispatch({ type: "setModel", model: "" });
+                              persistSelectedModel("");
+                              setModelComboOpen(false);
+                            }}
+                            className="text-xs"
+                          >
+                            <Check className={cn("mr-2 size-3 shrink-0", state.model ? "opacity-0" : "opacity-100")} />
+                            <span className="italic text-muted-foreground">provider default</span>
+                          </CommandItem>
+                        </CommandGroup>
+                        {modelGroups.map((g) => (
+                          <CommandGroup key={g.label} heading={g.label}>
+                            {g.models.map((m) => (
+                              <CommandItem
+                                key={m}
+                                value={m}
+                                onSelect={(v) => {
+                                  dispatch({ type: "setModel", model: v });
+                                  persistSelectedModel(v);
+                                  setModelComboOpen(false);
+                                }}
+                                className="text-xs"
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 size-3 shrink-0",
+                                    m === state.model ? "opacity-100" : "opacity-0",
+                                  )}
+                                />
+                                <span className="truncate font-mono">{m}</span>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        ))}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+
+                {/* Effort selector — provider-kind aware. Anthropic uses its
                   own enum (low/medium/high/max), OpenAI uses
                   minimal/low/medium/high/xhigh. Copilot proxies the underlying
                   model and ignores both, so we hide the selector. Unknown
                   providers default to the OpenAI selector. */}
-              {(() => {
-                // Prefer the kind of the group containing the selected model;
-                // fall back to the currently-active provider's kind (covers
-                // empty `state.model` = "provider default" and unrecognised
-                // model strings).
-                const currentKind = modelGroups.find((g) => g.models.includes(state.model))?.kind || activeProviderKind;
-                if (currentKind === "github_copilot") return null;
-                // Radix Select disallows empty-string item values, so we
-                // round-trip `""` (provider default) through a sentinel.
-                const EFFORT_DEFAULT = "__default__";
-                if (currentKind === "anthropic") {
+                {(() => {
+                  // Prefer the kind of the group containing the selected model;
+                  // fall back to the currently-active provider's kind (covers
+                  // empty `state.model` = "provider default" and unrecognised
+                  // model strings).
+                  const currentKind =
+                    modelGroups.find((g) => g.models.includes(state.model))?.kind || activeProviderKind;
+                  if (currentKind === "github_copilot") return null;
+                  // Radix Select disallows empty-string item values, so we
+                  // round-trip `""` (provider default) through a sentinel.
+                  const EFFORT_DEFAULT = "__default__";
+                  if (currentKind === "anthropic") {
+                    return (
+                      <Select
+                        value={anthropicEffort || EFFORT_DEFAULT}
+                        onValueChange={(v) => {
+                          const next = (v === EFFORT_DEFAULT ? "" : v) as AnthropicEffort;
+                          setAnthropicEffortState(next);
+                          persistAnthropicEffort(next);
+                        }}
+                      >
+                        <Tip tip="Anthropic adaptive thinking effort (claude-* models)">
+                          <SelectTrigger size="sm" className="text-xs text-muted-foreground">
+                            <SelectValue />
+                          </SelectTrigger>
+                        </Tip>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value={EFFORT_DEFAULT}>think: default</SelectItem>
+                            <SelectItem value="low">think: low</SelectItem>
+                            <SelectItem value="medium">think: medium</SelectItem>
+                            <SelectItem value="high">think: high</SelectItem>
+                            <SelectItem value="max">think: max</SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    );
+                  }
                   return (
                     <Select
-                      value={anthropicEffort || EFFORT_DEFAULT}
+                      value={reasoningEffort || EFFORT_DEFAULT}
                       onValueChange={(v) => {
-                        const next = (v === EFFORT_DEFAULT ? "" : v) as AnthropicEffort;
-                        setAnthropicEffortState(next);
-                        persistAnthropicEffort(next);
+                        const next = (v === EFFORT_DEFAULT ? "" : v) as ReasoningEffort;
+                        setReasoningEffortState(next);
+                        persistReasoningEffort(next);
                       }}
                     >
-                      <SelectTrigger
-                        size="sm"
-                        className="text-xs text-muted-foreground"
-                        title="Anthropic adaptive thinking effort (claude-* models)"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
+                      <Tip tip="Reasoning effort (OpenAI gpt-5 / o-series)">
+                        <SelectTrigger size="sm" className="text-xs text-muted-foreground">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </Tip>
                       <SelectContent>
                         <SelectGroup>
                           <SelectItem value={EFFORT_DEFAULT}>think: default</SelectItem>
+                          <SelectItem value="minimal">think: minimal</SelectItem>
                           <SelectItem value="low">think: low</SelectItem>
                           <SelectItem value="medium">think: medium</SelectItem>
                           <SelectItem value="high">think: high</SelectItem>
-                          <SelectItem value="max">think: max</SelectItem>
+                          <SelectItem value="xhigh">think: xhigh</SelectItem>
                         </SelectGroup>
                       </SelectContent>
                     </Select>
                   );
-                }
-                return (
-                  <Select
-                    value={reasoningEffort || EFFORT_DEFAULT}
-                    onValueChange={(v) => {
-                      const next = (v === EFFORT_DEFAULT ? "" : v) as ReasoningEffort;
-                      setReasoningEffortState(next);
-                      persistReasoningEffort(next);
-                    }}
-                  >
-                    <SelectTrigger
-                      size="sm"
-                      className="text-xs text-muted-foreground"
-                      title="Reasoning effort (OpenAI gpt-5 / o-series)"
+                })()}
+
+                <div className="flex-1" />
+
+                {/* Send / Stop button */}
+                {state.running ? (
+                  <Tip tip="Stop run">
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="destructive"
+                      aria-label="Stop"
+                      onClick={() => {
+                        if (state.currentRunId) {
+                          flowRun.cancel(state.currentRunId).catch(() => undefined);
+                        }
+                      }}
                     >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value={EFFORT_DEFAULT}>think: default</SelectItem>
-                        <SelectItem value="minimal">think: minimal</SelectItem>
-                        <SelectItem value="low">think: low</SelectItem>
-                        <SelectItem value="medium">think: medium</SelectItem>
-                        <SelectItem value="high">think: high</SelectItem>
-                        <SelectItem value="xhigh">think: xhigh</SelectItem>
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                );
-              })()}
-
-              <div className="flex-1" />
-
-              {/* Send / Stop button */}
-              {state.running ? (
-                <Button
-                  type="button"
-                  size="icon-sm"
-                  variant="destructive"
-                  onClick={() => {
-                    if (state.currentRunId) {
-                      flowRun.cancel(state.currentRunId).catch(() => undefined);
-                    }
-                  }}
-                  title="Stop run"
-                  aria-label="Stop"
-                >
-                  <Square />
-                </Button>
-              ) : (
-                <Button
-                  type="submit"
-                  size="icon-sm"
-                  disabled={state.isReconnecting}
-                  title="Send (Enter)"
-                  aria-label="Send"
-                >
-                  <ArrowUp />
-                </Button>
-              )}
+                      <Square />
+                    </Button>
+                  </Tip>
+                ) : (
+                  <Tip tip="Send (Enter)">
+                    <Button type="submit" size="icon-sm" disabled={state.isReconnecting} aria-label="Send">
+                      <ArrowUp />
+                    </Button>
+                  </Tip>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-        {/* end relative picker wrapper */}
-      </form>
+          {/* end relative picker wrapper */}
+        </form>
 
-      {/* ── Below-editor status bar: approval mode + context hint ──────────── */}
-      <div className="flex items-center gap-2 px-3 pb-3 pt-0">
-        {/* Global approval mode — semantic shadcn Select matches the effort
+        {/* ── Below-editor status bar: approval mode + context hint ──────────── */}
+        <div className="flex items-center gap-2 px-3 pb-3 pt-0">
+          {/* Global approval mode — semantic shadcn Select matches the effort
             selectors above. Triggers in line with the composer toolbar via
             `size="sm"`. */}
-        <Select
-          value={globalApprovalMode}
-          onValueChange={(v) => {
-            const next = v as "default" | "autopilot" | "bypass";
-            setGlobalApprovalMode(next);
-            persistGlobalApprovalMode(next);
-          }}
-        >
-          <SelectTrigger
-            size="sm"
-            className="border-0 bg-transparent text-xs text-muted-foreground"
-            title="Global approval mode — overrides per-tool trust for this session"
+          <Select
+            value={globalApprovalMode}
+            onValueChange={(v) => {
+              const next = v as "default" | "autopilot" | "bypass";
+              setGlobalApprovalMode(next);
+              persistGlobalApprovalMode(next);
+            }}
           >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              <SelectItem value="default">approve: per-tool</SelectItem>
-              <SelectItem value="autopilot">approve: all</SelectItem>
-              <SelectItem value="bypass">approve: none</SelectItem>
-            </SelectGroup>
-          </SelectContent>
-        </Select>
+            <Tip tip="Global approval mode — overrides per-tool trust for this session">
+              <SelectTrigger size="sm" className="border-0 bg-transparent text-xs text-muted-foreground">
+                <SelectValue />
+              </SelectTrigger>
+            </Tip>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="default">approve: per-tool</SelectItem>
+                <SelectItem value="autopilot">approve: all</SelectItem>
+                <SelectItem value="bypass">approve: none</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
 
-        {/* Context window hint — `warn` (≥80 %) keeps amber as the only
+          {/* Context window hint — `warn` (≥80 %) keeps amber as the only
             intentional non-semantic accent (matches shell-mode composer
             border); `critical` (≥95 %) uses `text-destructive` /
             `bg-destructive/10` semantic tokens so it auto-flips with theme. */}
-        {latestUsage &&
-          contextLimit &&
-          (() => {
-            const used = latestUsage.inputTokens + latestUsage.outputTokens;
-            const pct = Math.min(100, Math.round((used / contextLimit) * 100));
-            const warn = pct >= 80;
-            const critical = pct >= 95;
-            return (
-              <div
-                className={cn(
-                  "flex items-center gap-2 rounded-md px-2 py-1 text-[11px]",
-                  critical
-                    ? "bg-destructive/10 text-destructive"
-                    : warn
-                      ? "bg-amber-500/10 text-amber-600 dark:text-amber-300"
-                      : "bg-muted/40 text-muted-foreground",
-                )}
-                title={`Input: ${latestUsage.inputTokens.toLocaleString()} tokens · Output: ${latestUsage.outputTokens.toLocaleString()} tokens`}
-              >
-                <div className="h-1 w-16 overflow-hidden rounded-full bg-current/20">
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-all",
-                      critical ? "bg-destructive" : warn ? "bg-amber-500" : "bg-primary/50",
-                    )}
-                    style={{ width: `${pct}%` }}
-                  />
+          {latestUsage &&
+            contextLimit &&
+            (() => {
+              const used = latestUsage.inputTokens + latestUsage.outputTokens;
+              const pct = Math.min(100, Math.round((used / contextLimit) * 100));
+              const warn = pct >= 80;
+              const critical = pct >= 95;
+              return (
+                <div
+                  className={cn(
+                    "flex items-center gap-2 rounded-md px-2 py-1 text-[11px]",
+                    critical
+                      ? "bg-destructive/10 text-destructive"
+                      : warn
+                        ? "bg-amber-500/10 text-amber-600 dark:text-amber-300"
+                        : "bg-muted/40 text-muted-foreground",
+                  )}
+                  title={`Input: ${latestUsage.inputTokens.toLocaleString()} tokens · Output: ${latestUsage.outputTokens.toLocaleString()} tokens`}
+                >
+                  <div className="h-1 w-16 overflow-hidden rounded-full bg-current/20">
+                    <div
+                      className={cn(
+                        "h-full rounded-full transition-all",
+                        critical ? "bg-destructive" : warn ? "bg-amber-500" : "bg-primary/50",
+                      )}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <span className="shrink-0 tabular-nums">
+                    {pct}% of {(contextLimit / 1_000).toFixed(0)}k ctx
+                  </span>
                 </div>
-                <span className="shrink-0 tabular-nums">
-                  {pct}% of {(contextLimit / 1_000).toFixed(0)}k ctx
-                </span>
-              </div>
-            );
-          })()}
-      </div>
-    </main>
+              );
+            })()}
+        </div>
+      </main>
+    </TooltipProvider>
   );
 }

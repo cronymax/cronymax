@@ -10,6 +10,7 @@
 import { Loader2, Pencil, Save, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { WysiwygMarkdown } from "@/components/WysiwygMarkdown";
 
 export interface PromptPill {
@@ -101,13 +102,23 @@ export function PromptPopover({ prompt, onClose, onSave }: Props) {
         </span>
         <div className="flex items-center gap-1">
           {!isEditing && onSave && (
-            <Button variant="ghost" size="icon-xs" onClick={handleEdit} title="Edit" aria-label="Edit">
-              <Pencil />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-xs" onClick={handleEdit} aria-label="Edit">
+                  <Pencil />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Edit</TooltipContent>
+            </Tooltip>
           )}
-          <Button variant="ghost" size="icon-xs" onClick={onClose} title="Close" aria-label="Close">
-            <X />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close">
+                <X />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Close</TooltipContent>
+          </Tooltip>
         </div>
       </div>
 
