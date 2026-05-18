@@ -690,8 +690,11 @@ bool RuntimeBridge::WaitForHandshake() {
 
 void RuntimeBridge::PumpLoop() {
   // Track when the last C++→Rust keepalive ping was sent.  We send one
-  // every 60 s so the Rust runtime's 180 s inbound-idle timer is never
-  // starved, even if the Rust→C++ ping/pong mechanism has an issue.
+  // every 60 s so the Rust runtime's inbound-idle timer is never starved,
+  // even if the Rust→C++ Ping/Pong mechanism has an issue.  If the send
+  // fails (broken GIPS connection), we send SIGTERM to the crony child so
+  // the supervisor restarts it promptly rather than waiting for crony's own
+  // idle timeout to fire.
   auto last_keepalive = std::chrono::steady_clock::now();
 
   while (!pump_stop_.load()) {
@@ -733,8 +736,25 @@ void RuntimeBridge::PumpLoop() {
         last_keepalive = now;
         // id must be a valid UUID; use the nil UUID since we never track
         // the reply — HandleControlReply silently drops unknown ids.
-        Invoke(
+        const bool ok = Invoke(
             R"({"tag":"control","id":"00000000-0000-0000-0000-000000000000","request":{"kind":"ping"}})");
+        if (!ok) {
+          // GIPS send failed — the connection to crony is broken.  Signal
+          // crony to exit so the supervisor restarts it immediately rather
+          // than waiting for crony's idle timeout (up to 1 hour).
+          // We read child_pid_ without resetting it so the supervisor's
+          // waitpid() still detects the exit and triggers the restart.
+#if !defined(_WIN32)
+          int pid = -1;
+          {
+            std::lock_guard lock(mu_);
+            pid = child_pid_;
+          }
+          if (pid > 0)
+            ::kill(pid, SIGTERM);
+#endif
+          break;  // exit PumpLoop; supervisor will handle the restart
+        }
       }
     }
 
@@ -804,21 +824,17 @@ void RuntimeBridge::SupervisorLoop() {
       if (supervisor_stop_.load())
         break;
 
-      int attempts = 0;
+      // Check kStopped before doing any teardown: a clean Stop() should not
+      // trigger pump teardown or the bridge_restarting signal.
       {
         std::lock_guard lock(mu_);
         if (status_ == RuntimeBridgeStatus::kStopped)
           break;
-        attempts = ++restart_count_;
-        if (attempts > kMaxRestartAttempts) {
-          last_error_ = "runtime crashed too many times; giving up";
-          status_ = RuntimeBridgeStatus::kFailed;
-          break;
-        }
-        status_ = RuntimeBridgeStatus::kRestarting;
       }
 
-      // Tear down the old pump and client before respawning.
+      // Tear down the old pump and client.  Must happen before dispatching
+      // bridge_restarting so that subscribers (e.g. RuntimeProxy) see a clean
+      // state when their restart callback fires.
       pump_stop_.store(true);
       {
         std::lock_guard lock(mu_);
@@ -830,13 +846,34 @@ void RuntimeBridge::SupervisorLoop() {
       if (pump_thread_.joinable())
         pump_thread_.join();
 
-      // Notify subscribers (e.g. RuntimeProxy) that the runtime is about to
-      // restart.  RuntimeProxy::HandleBridgeRestarting() drains its pending_
-      // callbacks with errors so renderer Promises reject instead of hanging.
+      // Always dispatch bridge_restarting — even when giving up at
+      // kMaxRestartAttempts.  This ensures RuntimeProxy::HandleBridgeRestarting
+      // drains pending_ callbacks (so renderer Promises reject rather than
+      // hanging) and fires restart_cb_ (so BridgeHandler snapshots
+      // space_runtime_subs_ and shows the reconnecting banner).
       DispatchPayload(R"({"tag":"bridge_restarting"})");
 
+      // Evaluate max-attempts only after the signal has been delivered.
+      int attempts = 0;
+      {
+        std::lock_guard lock(mu_);
+        attempts = ++restart_count_;
+        if (attempts > kMaxRestartAttempts) {
+          last_error_ = "runtime crashed too many times; giving up";
+          status_ = RuntimeBridgeStatus::kFailed;
+          break;
+        }
+        status_ = RuntimeBridgeStatus::kRestarting;
+      }
+
       if (!supervisor_stop_.load()) {
-        SpawnAndHandshake();
+        // Reset the counter on success so only *consecutive* failures count
+        // toward kMaxRestartAttempts.  Sleep-cycle restarts that fully recover
+        // should not accumulate toward the limit.
+        if (SpawnAndHandshake()) {
+          std::lock_guard lock(mu_);
+          restart_count_ = 0;
+        }
       }
 #if defined(_WIN32)
     }

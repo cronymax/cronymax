@@ -235,11 +235,30 @@ where
     keepalive.tick().await;
 
     let result = loop {
-        tokio::select! {
-            // Drain outbound first so subscribers don't starve when
-            // events are produced faster than we read.
-            biased;
+        // Drain up to 64 outbound messages in a priority pass before giving
+        // inbound and keepalive a fair chance.  Using an unconditional
+        // `biased;` select (the previous approach) caused the keepalive tick
+        // to be completely starved whenever the outbound queue was non-empty,
+        // which prevented Rust→C++ Pings from being sent and blocked
+        // C++ keepalive Pings in inbound_rx from being processed during
+        // heavy event-streaming runs.
+        let mut drained = 0u8;
+        while drained < 64 {
+            match out_rx.try_recv() {
+                Ok(msg) => {
+                    if let Err(e) = transport.send(msg).await {
+                        warn!(error = %e, "failed to flush outbound message");
+                        // Break out of the drain loop and propagate via
+                        // the normal select exit path.
+                        break;
+                    }
+                    drained += 1;
+                }
+                Err(_) => break,
+            }
+        }
 
+        tokio::select! {
             outbound = out_rx.recv() => {
                 match outbound {
                     Some(msg) => {

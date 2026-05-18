@@ -6,7 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { type LlmProvider, ModelSelect } from "../../components/ModelSelect";
 import { WysiwygMarkdown } from "../../components/WysiwygMarkdown";
-import { shells } from "../../shells/bridge";
+import { browser, shells } from "../../shells/bridge";
 import { agentRegistry } from "../../shells/runtime";
 import { Field } from "./App";
 
@@ -276,6 +276,9 @@ export function AgentsTab() {
 
   useEffect(() => {
     void loadList();
+    return browser.on("runtime.reconnected", () => {
+      void loadList();
+    });
   }, [loadList]);
 
   const onSelect = useCallback(

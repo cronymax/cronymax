@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { WysiwygMarkdown } from "../../components/WysiwygMarkdown";
+import { browser } from "../../shells/bridge";
 import { docType } from "../../shells/runtime";
 import { Field } from "./App";
 
@@ -45,6 +46,9 @@ export function DocTypesTab() {
 
   useEffect(() => {
     void loadList();
+    return browser.on("runtime.reconnected", () => {
+      void loadList();
+    });
   }, [loadList]);
 
   const onSelect = useCallback(async (dt: DocTypeSummary) => {
