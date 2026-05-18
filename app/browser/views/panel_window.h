@@ -59,6 +59,15 @@ class PanelWindow : public CefWindowDelegate {
   // popover when the calling browser isn't one of ours.
   static bool CloseForBrowser(int browser_id);
 
+  // Look up the native window handle (CefBrowserHost::GetWindowHandle —
+  // NSView* on macOS) of the panel window hosting the CefBrowser
+  // identified by `browser_id`. Returns 0 when no panel matches.
+  // `MainWindow`'s `OnDraggableRegionsChanged` dispatcher uses this to
+  // route `-webkit-app-region: drag` updates from panel pages to
+  // `ApplyDraggableRegions` on the panel's own NSView, the same plumbing
+  // the sidebar uses.
+  static CefWindowHandle LookupBrowserHandle(int browser_id);
+
   // Snapshot of every open panel window's content browser view, used by
   // `MainWindow::BroadcastToAllPanels` to deliver `theme.changed` and
   // similar broadcast events to each panel window.
@@ -83,7 +92,7 @@ class PanelWindow : public CefWindowDelegate {
 
   std::string url_;
   std::string title_;
-  ResourceContext* resource_ctx_;
+  [[maybe_unused]] ResourceContext* resource_ctx_;
   ClientHandler* client_handler_;
   ThemeContext* theme_ctx_;
   CefRefPtr<CefWindow> parent_window_;
