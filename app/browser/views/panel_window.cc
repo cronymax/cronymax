@@ -109,6 +109,24 @@ bool PanelWindow::CloseForBrowser(int browser_id) {
 }
 
 // static
+CefWindowHandle PanelWindow::LookupBrowserHandle(int browser_id) {
+  if (browser_id == 0)
+    return kNullWindowHandle;
+  for (auto& [url, panel] : registry()) {
+    if (!panel || !panel->browser_view_)
+      continue;
+    auto browser = panel->browser_view_->GetBrowser();
+    if (!browser || browser->GetIdentifier() != browser_id)
+      continue;
+    auto host = browser->GetHost();
+    if (!host)
+      continue;
+    return host->GetWindowHandle();
+  }
+  return kNullWindowHandle;
+}
+
+// static
 std::vector<CefRefPtr<CefBrowserView>> PanelWindow::AllBrowserViews() {
   std::vector<CefRefPtr<CefBrowserView>> out;
   out.reserve(registry().size());
@@ -155,9 +173,8 @@ void PanelWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   // here is what produced the "black flash" effect: the window first
   // appeared in the sidebar's `#1A1A1A` until React rendered the content
   // panel's `bg-background = #3A3A3A`, then jumped to the lighter colour.
-  settings.background_color = theme_ctx_
-                                  ? theme_ctx_->GetCurrentChrome().bg_content
-                                  : kFallbackBg;
+  settings.background_color =
+      theme_ctx_ ? theme_ctx_->GetCurrentChrome().bg_content : kFallbackBg;
   // Append a `#panel` hash so the React entry point can detect that it
   // is hosted in a standalone PanelWindow (full-size-content view, with
   // traffic-light buttons overlaying the top-left ~80 px) and add the
@@ -219,16 +236,16 @@ void PanelWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   StylePanelWindow(window->GetWindowHandle(), bg);
   window->Show();
   window->Activate();
-  CefPostTask(TID_UI,
-              base::BindOnce(
-                  [](CefRefPtr<PanelWindow> self, cef_color_t color) {
-                    if (!self->window_)
-                      return;
-                    StylePanelWindow(self->window_->GetWindowHandle(), color);
-                    if (self->browser_view_)
-                      self->browser_view_->RequestFocus();
-                  },
-                  CefRefPtr<PanelWindow>(this), bg));
+  CefPostTask(TID_UI, base::BindOnce(
+                          [](CefRefPtr<PanelWindow> self, cef_color_t color) {
+                            if (!self->window_)
+                              return;
+                            StylePanelWindow(self->window_->GetWindowHandle(),
+                                             color);
+                            if (self->browser_view_)
+                              self->browser_view_->RequestFocus();
+                          },
+                          CefRefPtr<PanelWindow>(this), bg));
 }
 
 void PanelWindow::OnWindowDestroyed(CefRefPtr<CefWindow> window) {

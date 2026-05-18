@@ -819,25 +819,41 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   };
 
 #if defined(__APPLE__)
-  // Forward CSS draggable-region updates from the sidebar to the native
-  // overlay. The topbar pump is gone (Phase 9); sidebar still uses
-  // -webkit-app-region: drag for its top strip.
+  // Forward CSS draggable-region updates from the sidebar AND from every
+  // open PanelWindow to the native overlay. CEF Alloy does not honour
+  // `-webkit-app-region` directly; it surfaces the rects via
+  // OnDraggableRegionsChanged and we translate them into a transparent
+  // NSView overlay (ApplyDraggableRegions). The sidebar uses this for its
+  // top strip; PanelWindowHeader uses it so the user can drag a standalone
+  // settings / flows / activities window from its header, since the
+  // NSWindow's traffic-light strip is hidden under
+  // NSWindowStyleMaskFullSizeContentView and the BrowserView covers the
+  // entire content area (no NSWindow background pixels left for
+  // movableByWindowBackground to act on).
   client_handler_->on_draggable_regions_changed =
       [this](int browser_id, const std::vector<CefDraggableRegion>& regions) {
-        auto _sv = sidebar_view();
-        if (!_sv)
-          return;
-        auto b = _sv->GetBrowser();
-        if (!b || b->GetIdentifier() != browser_id)
-          return;
         std::vector<DragRegion> rs;
         rs.reserve(regions.size());
         for (const auto& r : regions) {
           rs.push_back({r.bounds.x, r.bounds.y, r.bounds.width, r.bounds.height,
                         r.draggable != 0});
         }
-        ApplyDraggableRegions(b->GetHost()->GetWindowHandle(),
-                              rs.empty() ? nullptr : rs.data(), rs.size());
+        const DragRegion* data = rs.empty() ? nullptr : rs.data();
+
+        // 1. Sidebar (in-window).
+        if (auto _sv = sidebar_view()) {
+          if (auto b = _sv->GetBrowser();
+              b && b->GetIdentifier() == browser_id) {
+            ApplyDraggableRegions(b->GetHost()->GetWindowHandle(), data,
+                                  rs.size());
+            return;
+          }
+        }
+
+        // 2. Any open PanelWindow.
+        if (auto handle = PanelWindow::LookupBrowserHandle(browser_id)) {
+          ApplyDraggableRegions(handle, data, rs.size());
+        }
       };
 #endif
   // native-views-mvc Phase 6: pre-allocate fixed overlay slots.
