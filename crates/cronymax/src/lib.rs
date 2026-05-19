@@ -20,6 +20,7 @@ pub mod agent_loop;
 pub mod capability;
 pub mod config;
 pub mod crony;
+pub mod extensions;
 pub mod flow;
 pub mod lifecycle;
 pub mod llm;

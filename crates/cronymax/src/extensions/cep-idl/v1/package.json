@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "name": "@cronymax/cep-idl-v1",
+  "version": "1.0.0-frozen",
+  "description": "Cronymax Extension Platform · IDL v1 (FROZEN). Source of truth for the @cronymax/extension SDK and the Rust runtime types. Type-only; emits no JS.",
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "typescript": "5.6"
+  }
+}

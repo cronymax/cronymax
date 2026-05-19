@@ -1,0 +1,306 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 1080" font-family="'Noto Sans SC', -apple-system, 'Helvetica Neue', sans-serif">
+  <!-- Background -->
+  <rect width="1500" height="1080" fill="#fafbfc"/>
+
+  <!-- Title -->
+  <text x="50" y="48" font-size="28" font-weight="700" fill="#1a2733">Cronymax 扩展平台 · 整体架构</text>
+  <text x="50" y="76" font-size="14" fill="#5c6b78">v1 · Kernel + L1.5 Events + L2 Extension Points · 单层 Capability Gate</text>
+
+  <!-- ========== 顶部：cronymax core (Rust) ========== -->
+  <g id="core">
+    <rect x="40" y="100" width="1420" height="320" rx="14" fill="#e8f4f6" stroke="#2c8390" stroke-width="2"/>
+    <rect x="40" y="100" width="1420" height="40" rx="14" fill="#2c8390"/>
+    <rect x="40" y="125" width="1420" height="15" fill="#2c8390"/>
+    <text x="64" y="128" font-size="16" font-weight="700" fill="#ffffff">cronymax core (Rust process)</text>
+    <text x="1430" y="128" font-size="13" fill="#ffffff" text-anchor="end">平台代码</text>
+
+    <!-- 左：平台 UI -->
+    <g id="platform-ui">
+      <rect x="64" y="160" width="540" height="240" rx="10" fill="#ffffff" stroke="#7fb1bb" stroke-width="1.5"/>
+      <text x="80" y="186" font-size="14" font-weight="700" fill="#1f5a64">平台 UI（消费 L2 EP / 发 L1.5 events）</text>
+
+      <!-- chat panel -->
+      <rect x="80" y="204" width="160" height="76" rx="6" fill="#cfe8ec" stroke="#5a99a4" stroke-width="1"/>
+      <text x="160" y="232" font-size="13" font-weight="600" fill="#1f5a64" text-anchor="middle">Chat 面板</text>
+      <text x="160" y="252" font-size="11" fill="#3d6f78" text-anchor="middle">consume:</text>
+      <text x="160" y="268" font-size="10" fill="#3d6f78" text-anchor="middle">cronymax.chat.session-provider</text>
+
+      <!-- flows panel -->
+      <rect x="250" y="204" width="160" height="76" rx="6" fill="#cfe8ec" stroke="#5a99a4" stroke-width="1"/>
+      <text x="330" y="232" font-size="13" font-weight="600" fill="#1f5a64" text-anchor="middle">Flows 面板 + Runtime</text>
+      <text x="330" y="252" font-size="11" fill="#3d6f78" text-anchor="middle">consume:</text>
+      <text x="330" y="268" font-size="10" fill="#3d6f78" text-anchor="middle">cronymax.chat.session-provider</text>
+
+      <!-- settings panel -->
+      <rect x="420" y="204" width="170" height="76" rx="6" fill="#cfe8ec" stroke="#5a99a4" stroke-width="1"/>
+      <text x="505" y="232" font-size="13" font-weight="600" fill="#1f5a64" text-anchor="middle">Settings 面板</text>
+      <text x="505" y="252" font-size="11" fill="#3d6f78" text-anchor="middle">consume:</text>
+      <text x="505" y="268" font-size="10" fill="#3d6f78" text-anchor="middle">cronymax.config.schema / .page</text>
+
+      <!-- sidebar -->
+      <rect x="80" y="292" width="245" height="60" rx="6" fill="#cfe8ec" stroke="#5a99a4" stroke-width="1"/>
+      <text x="202" y="316" font-size="13" font-weight="600" fill="#1f5a64" text-anchor="middle">Sidebar / Activitybar / Statusbar</text>
+      <text x="202" y="336" font-size="10" fill="#3d6f78" text-anchor="middle">consume: cronymax.ui.*</text>
+
+      <!-- content render pipeline -->
+      <rect x="335" y="292" width="255" height="60" rx="6" fill="#cfe8ec" stroke="#5a99a4" stroke-width="1"/>
+      <text x="462" y="316" font-size="13" font-weight="600" fill="#1f5a64" text-anchor="middle">Content Render Pipeline</text>
+      <text x="462" y="336" font-size="10" fill="#3d6f78" text-anchor="middle">consume: cronymax.content.renderer</text>
+    </g>
+
+    <!-- 右：Core Services -->
+    <g id="core-services">
+      <rect x="624" y="160" width="812" height="240" rx="10" fill="#ffffff" stroke="#7fb1bb" stroke-width="1.5"/>
+      <text x="640" y="186" font-size="14" font-weight="700" fill="#1f5a64">Core Services</text>
+
+      <!-- Extension Manager -->
+      <rect x="640" y="204" width="380" height="80" rx="6" fill="#fff4d6" stroke="#c9a341" stroke-width="1.2"/>
+      <text x="830" y="226" font-size="13" font-weight="700" fill="#7a5b10" text-anchor="middle">Extension Manager</text>
+      <text x="830" y="246" font-size="11" fill="#7a5b10" text-anchor="middle">manifest / 安装 / 启用 / 激活事件匹配</text>
+      <text x="830" y="262" font-size="11" fill="#7a5b10" text-anchor="middle">扫描 ~/.cronymax/extensions/ · 持久化状态</text>
+      <text x="830" y="278" font-size="10" fill="#9c7a26" text-anchor="middle">解析 cronymax-extension.json · 校验命名空间</text>
+
+      <!-- Capability Gate -->
+      <rect x="1030" y="204" width="200" height="80" rx="6" fill="#fde2e5" stroke="#b54a5a" stroke-width="1.5"/>
+      <text x="1130" y="226" font-size="13" font-weight="700" fill="#9c2a3a" text-anchor="middle">Capability Gate</text>
+      <text x="1130" y="246" font-size="11" fill="#9c2a3a" text-anchor="middle">所有 L1 API 必经</text>
+      <text x="1130" y="262" font-size="11" fill="#9c2a3a" text-anchor="middle">每次调用都校验</text>
+      <text x="1130" y="278" font-size="10" fill="#9c2a3a" text-anchor="middle">process / fs / network / secrets / events</text>
+
+      <!-- L2 Contribution Registry -->
+      <rect x="1240" y="204" width="196" height="80" rx="6" fill="#e5dffb" stroke="#7958c9" stroke-width="1.2"/>
+      <text x="1338" y="226" font-size="13" font-weight="700" fill="#4a3a8a" text-anchor="middle">L2 Contribution Registry</text>
+      <text x="1338" y="246" font-size="11" fill="#4a3a8a" text-anchor="middle">12 个 EP</text>
+      <text x="1338" y="262" font-size="11" fill="#4a3a8a" text-anchor="middle">命名空间 cronymax.* 锁定</text>
+      <text x="1338" y="278" font-size="10" fill="#4a3a8a" text-anchor="middle">运行时注册条目</text>
+
+      <!-- L1 API impl -->
+      <rect x="640" y="296" width="370" height="92" rx="6" fill="#dde8d4" stroke="#5d8a4d" stroke-width="1.2"/>
+      <text x="825" y="318" font-size="13" font-weight="700" fill="#3a5a2a" text-anchor="middle">L1 Kernel API · 14 个原语</text>
+      <text x="825" y="336" font-size="10.5" fill="#3a5a2a" text-anchor="middle">lifecycle · capabilities · commands · events · config · secrets</text>
+      <text x="825" y="352" font-size="10.5" fill="#3a5a2a" text-anchor="middle">storage · process · fs · network · ui-slots · webview</text>
+      <text x="825" y="368" font-size="10.5" fill="#3a5a2a" text-anchor="middle">auth · extensions(.exports)</text>
+      <text x="825" y="382" font-size="9.5" fill="#5d8a4d" text-anchor="middle">─ 每次调用经 Capability Gate ─</text>
+
+      <!-- L1.5 Event Bus -->
+      <rect x="1020" y="296" width="416" height="92" rx="6" fill="#d4e2f0" stroke="#3a6a9c" stroke-width="1.2"/>
+      <text x="1228" y="318" font-size="13" font-weight="700" fill="#1f4a7a" text-anchor="middle">L1.5 Platform Event Bus · ~15 主题</text>
+      <text x="1228" y="336" font-size="10.5" fill="#1f4a7a" text-anchor="middle">cronymax.session.* · cronymax.message.* · cronymax.tool.*</text>
+      <text x="1228" y="352" font-size="10.5" fill="#1f4a7a" text-anchor="middle">cronymax.permission.* · cronymax.flow.*</text>
+      <text x="1228" y="368" font-size="10.5" fill="#1f4a7a" text-anchor="middle">cronymax.config.changed · cronymax.workspace.folders.changed</text>
+      <text x="1228" y="382" font-size="9.5" fill="#3a6a9c" text-anchor="middle">─ 平台 emit · 扩展按 capability 订阅 ─</text>
+    </g>
+  </g>
+
+  <!-- ========== 通道 1: core ↔ JS Host (cronymax/v1 RPC) ========== -->
+  <g id="ch-rpc">
+    <line x1="440" y1="420" x2="440" y2="508" stroke="#2c8390" stroke-width="2.5" stroke-dasharray="6 4"/>
+    <polygon points="440,510 434,498 446,498" fill="#2c8390"/>
+    <polygon points="440,420 434,432 446,432" fill="#2c8390"/>
+    <rect x="346" y="450" width="188" height="32" rx="4" fill="#ffffff" stroke="#2c8390" stroke-width="1"/>
+    <text x="440" y="466" font-size="11" font-weight="600" fill="#2c8390" text-anchor="middle">cronymax/v1 RPC</text>
+    <text x="440" y="478" font-size="9" fill="#5c6b78" text-anchor="middle">MessageChannel · capability-gated</text>
+  </g>
+
+  <!-- ========== 通道 2: core ↔ Webview (acquireCronymaxApi) ========== -->
+  <g id="ch-webview-api">
+    <line x1="1160" y1="420" x2="1160" y2="508" stroke="#6b4ba1" stroke-width="2.5" stroke-dasharray="6 4"/>
+    <polygon points="1160,510 1154,498 1166,498" fill="#6b4ba1"/>
+    <polygon points="1160,420 1154,432 1166,432" fill="#6b4ba1"/>
+    <rect x="1066" y="450" width="188" height="32" rx="4" fill="#ffffff" stroke="#6b4ba1" stroke-width="1"/>
+    <text x="1160" y="466" font-size="11" font-weight="600" fill="#6b4ba1" text-anchor="middle">acquireCronymaxApi()</text>
+    <text x="1160" y="478" font-size="9" fill="#5c6b78" text-anchor="middle">postMessage · 经平台中转</text>
+  </g>
+
+  <!-- ========== 通道 3: JS Host → External (process.spawn) ========== -->
+  <g id="ch-spawn">
+    <line x1="440" y1="830" x2="440" y2="868" stroke="#9c2a3a" stroke-width="2.5"/>
+    <polygon points="440,870 434,858 446,858" fill="#9c2a3a"/>
+    <rect x="356" y="838" width="168" height="22" rx="4" fill="#ffffff" stroke="#9c2a3a" stroke-width="1"/>
+    <text x="440" y="853" font-size="11" font-weight="600" fill="#9c2a3a" text-anchor="middle">L1.process.spawn ⛔cap</text>
+  </g>
+
+  <!-- ========== 通道 4: JS Host ↔ Webview (在两框之间的窄缝) ========== -->
+  <g id="ch-ext-webview">
+    <line x1="844" y1="670" x2="856" y2="670" stroke="#6b4ba1" stroke-width="2"/>
+    <polygon points="858,670 846,664 846,676" fill="#6b4ba1"/>
+    <polygon points="842,670 854,664 854,676" fill="#6b4ba1"/>
+    <text x="850" y="654" font-size="10" font-weight="600" fill="#6b4ba1" text-anchor="middle">postMessage</text>
+    <text x="850" y="690" font-size="9" fill="#6b4ba1" text-anchor="middle">(同扩展归属)</text>
+  </g>
+
+  <!-- ========== 中段：扩展运行时 ========== -->
+
+  <!-- Extension Host -->
+  <g id="ext-host">
+    <rect x="40" y="510" width="800" height="320" rx="14" fill="#fff8e8" stroke="#c97a1f" stroke-width="2"/>
+    <rect x="40" y="510" width="800" height="40" rx="14" fill="#c97a1f"/>
+    <rect x="40" y="535" width="800" height="15" fill="#c97a1f"/>
+    <text x="64" y="538" font-size="16" font-weight="700" fill="#ffffff">Extension Host (CEF helper process + V8)</text>
+    <text x="828" y="538" font-size="13" fill="#ffffff" text-anchor="end">扩展代码</text>
+
+    <text x="64" y="572" font-size="12" fill="#7a4810">受信扩展共享一个 V8 隔离 · 不受信扩展开独立 helper · 每个扩展只看到自家 ctx 范围的 cronymax/v1</text>
+
+    <!-- bytedance.coco -->
+    <rect x="64" y="586" width="380" height="226" rx="8" fill="#ffffff" stroke="#c97a1f" stroke-width="1.5"/>
+    <rect x="64" y="586" width="380" height="28" rx="8" fill="#fcdca5"/>
+    <rect x="64" y="606" width="380" height="8" fill="#fcdca5"/>
+    <text x="78" y="606" font-size="13" font-weight="700" fill="#7a4810">📦 bytedance.coco</text>
+    <text x="436" y="606" font-size="11" fill="#7a4810" text-anchor="end">v0.1.0 · main.ts</text>
+
+    <text x="78" y="636" font-size="11" font-weight="700" fill="#3a4a55">activate(ctx):</text>
+    <text x="78" y="654" font-size="11" font-family="monospace" fill="#3a4a55">cronymax.chat.registerSessionProvider(</text>
+    <text x="86" y="670" font-size="11" font-family="monospace" fill="#3a4a55">  "coco", { listModels, createSession, modes })</text>
+    <text x="78" y="688" font-size="11" font-family="monospace" fill="#3a4a55">cronymax.commands.register(</text>
+    <text x="86" y="704" font-size="11" font-family="monospace" fill="#3a4a55">  "coco.openSettings", ...)</text>
+
+    <text x="78" y="730" font-size="11" font-weight="700" fill="#3a4a55">createSession(opts):</text>
+    <text x="78" y="746" font-size="11" font-family="monospace" fill="#3a4a55">cronymax.process.spawn(</text>
+    <text x="86" y="762" font-size="11" font-family="monospace" fill="#3a4a55">  "coco", ["acp","serve"])</text>
+    <text x="78" y="780" font-size="11" font-family="monospace" fill="#3a4a55">→ ACP initialize / session/new</text>
+    <text x="78" y="796" font-size="11" font-family="monospace" fill="#3a4a55">→ return CocoSession</text>
+
+    <!-- 其它扩展 -->
+    <rect x="460" y="586" width="180" height="108" rx="8" fill="#ffffff" stroke="#c97a1f" stroke-width="1.5"/>
+    <rect x="460" y="586" width="180" height="24" rx="8" fill="#fcdca5"/>
+    <rect x="460" y="606" width="180" height="4" fill="#fcdca5"/>
+    <text x="472" y="604" font-size="12" font-weight="700" fill="#7a4810">📦 acme.mermaid</text>
+    <text x="472" y="628" font-size="11" fill="#3a4a55">contributes:</text>
+    <text x="472" y="644" font-size="10.5" font-family="monospace" fill="#3a4a55">cronymax.content.renderer</text>
+    <text x="472" y="664" font-size="11" fill="#3a4a55">activate(ctx):</text>
+    <text x="472" y="680" font-size="10.5" font-family="monospace" fill="#3a4a55">renderers.register(...)</text>
+
+    <rect x="660" y="586" width="180" height="108" rx="8" fill="#ffffff" stroke="#c97a1f" stroke-width="1.5"/>
+    <rect x="660" y="586" width="180" height="24" rx="8" fill="#fcdca5"/>
+    <rect x="660" y="606" width="180" height="4" fill="#fcdca5"/>
+    <text x="672" y="604" font-size="12" font-weight="700" fill="#7a4810">📦 acme.evaluator</text>
+    <text x="672" y="628" font-size="11" fill="#3a4a55">capabilities.events.</text>
+    <text x="672" y="644" font-size="11" fill="#3a4a55">subscribe:</text>
+    <text x="672" y="660" font-size="10" font-family="monospace" fill="#3a4a55">cronymax.message.</text>
+    <text x="672" y="676" font-size="10" font-family="monospace" fill="#3a4a55">assistant.done</text>
+
+    <!-- Slack 桥示例 -->
+    <rect x="460" y="704" width="380" height="108" rx="8" fill="#ffffff" stroke="#c97a1f" stroke-width="1.5"/>
+    <rect x="460" y="704" width="380" height="24" rx="8" fill="#fcdca5"/>
+    <rect x="460" y="724" width="380" height="4" fill="#fcdca5"/>
+    <text x="472" y="722" font-size="12" font-weight="700" fill="#7a4810">📦 acme.slack-bridge（其它扩展类型示意）</text>
+    <text x="472" y="748" font-size="10.5" fill="#3a4a55">contributes: cronymax.channels / ui.activitybar.item / ui.sidebar.view</text>
+    <text x="472" y="766" font-size="10.5" fill="#3a4a55">capabilities: network[*.slack.com], secrets[acme.slack.*]</text>
+    <text x="472" y="784" font-size="10.5" fill="#3a4a55">使用相同的 L1 API · 相同的清单 · 相同的安装/激活流程</text>
+    <text x="472" y="802" font-size="10" fill="#7a4810" font-style="italic">→ 平台代码不需要"知道" Slack 是什么</text>
+  </g>
+
+  <!-- Webview Sandbox -->
+  <g id="webviews">
+    <rect x="860" y="510" width="600" height="320" rx="14" fill="#f4ebff" stroke="#6b4ba1" stroke-width="2"/>
+    <rect x="860" y="510" width="600" height="40" rx="14" fill="#6b4ba1"/>
+    <rect x="860" y="535" width="600" height="15" fill="#6b4ba1"/>
+    <text x="884" y="538" font-size="16" font-weight="700" fill="#ffffff">Webview Sandbox · 独立 origin iframe</text>
+    <text x="1448" y="538" font-size="13" fill="#ffffff" text-anchor="end">扩展 UI</text>
+
+    <text x="884" y="572" font-size="12" fill="#4a3a8a">cronymax-webview://&lt;ext-id&gt;/&lt;path&gt; · postMessage 桥由平台中转 · CSP 默认极严</text>
+
+    <!-- Coco 设置页 -->
+    <rect x="884" y="586" width="270" height="108" rx="8" fill="#ffffff" stroke="#6b4ba1" stroke-width="1.5"/>
+    <rect x="884" y="586" width="270" height="24" rx="8" fill="#d8c8f0"/>
+    <rect x="884" y="606" width="270" height="4" fill="#d8c8f0"/>
+    <text x="896" y="604" font-size="12" font-weight="700" fill="#4a3a8a">🖼 Coco · Advanced Settings</text>
+    <text x="896" y="628" font-size="11" fill="#3a4a55">来自 bytedance.coco</text>
+    <text x="896" y="644" font-size="11" fill="#3a4a55">configPage entry = settings/index.html</text>
+    <text x="896" y="662" font-size="11" fill="#3a4a55">↔ main.ts via postMessage</text>
+
+    <!-- Mermaid 渲染器 iframe -->
+    <rect x="1170" y="586" width="280" height="108" rx="8" fill="#ffffff" stroke="#6b4ba1" stroke-width="1.5"/>
+    <rect x="1170" y="586" width="280" height="24" rx="8" fill="#d8c8f0"/>
+    <rect x="1170" y="606" width="280" height="4" fill="#d8c8f0"/>
+    <text x="1182" y="604" font-size="12" font-weight="700" fill="#4a3a8a">🖼 Mermaid Renderer</text>
+    <text x="1182" y="628" font-size="11" fill="#3a4a55">来自 acme.mermaid · block kind</text>
+    <text x="1182" y="644" font-size="11" fill="#3a4a55">match: text/x-mermaid</text>
+    <text x="1182" y="662" font-size="11" fill="#3a4a55">渲染 SVG · 不见聊天上下文</text>
+
+    <!-- Slack 侧栏 view -->
+    <rect x="884" y="704" width="566" height="108" rx="8" fill="#ffffff" stroke="#6b4ba1" stroke-width="1.5"/>
+    <rect x="884" y="704" width="566" height="24" rx="8" fill="#d8c8f0"/>
+    <rect x="884" y="724" width="566" height="4" fill="#d8c8f0"/>
+    <text x="896" y="722" font-size="12" font-weight="700" fill="#4a3a8a">🖼 Slack · Sidebar Workspace View（其它扩展贡献 UI 示意）</text>
+    <text x="896" y="748" font-size="11" fill="#3a4a55">来自 acme.slack-bridge · contributes: cronymax.ui.sidebar.view</text>
+    <text x="896" y="766" font-size="11" fill="#3a4a55">嵌入 cronymax 主渲染窗口的 sidebar slot · iframe sandbox</text>
+    <text x="896" y="786" font-size="10" fill="#4a3a8a" font-style="italic">→ 扩展 UI 跟平台 UI 同台显示，但通过 origin 隔离</text>
+  </g>
+
+  <!-- ========== 底部：外部子进程 ========== -->
+  <g id="external">
+    <rect x="40" y="870" width="800" height="180" rx="14" fill="#ffe5e8" stroke="#9c2a3a" stroke-width="2"/>
+    <rect x="40" y="870" width="800" height="40" rx="14" fill="#9c2a3a"/>
+    <rect x="40" y="895" width="800" height="15" fill="#9c2a3a"/>
+    <text x="64" y="898" font-size="16" font-weight="700" fill="#ffffff">External Subprocesses · 扩展通过 L1.process API spawn</text>
+
+    <!-- coco acp serve -->
+    <rect x="64" y="930" width="380" height="104" rx="8" fill="#ffffff" stroke="#9c2a3a" stroke-width="1.5"/>
+    <text x="78" y="954" font-size="13" font-weight="700" fill="#7a1f2c">⚙ coco acp serve</text>
+    <text x="78" y="976" font-size="11" fill="#3a4a55">由 bytedance.coco 扩展 spawn</text>
+    <text x="78" y="994" font-size="11" font-family="monospace" fill="#3a4a55">protocol: ACP (JSON-RPC over stdio)</text>
+    <text x="78" y="1010" font-size="11" font-family="monospace" fill="#3a4a55">capability 白名单允许此可执行 + argsPattern</text>
+    <text x="78" y="1028" font-size="10" fill="#9c2a3a" font-style="italic">→ 平台对 ACP 协议无知；翻译 ACP 事件是扩展自己的事</text>
+
+    <!-- MCP server / 任意第三方 -->
+    <rect x="460" y="930" width="380" height="104" rx="8" fill="#ffffff" stroke="#9c2a3a" stroke-width="1.5"/>
+    <text x="474" y="954" font-size="13" font-weight="700" fill="#7a1f2c">⚙ 其它子进程（举例）</text>
+    <text x="474" y="976" font-size="11" fill="#3a4a55">MCP server / LSP / 用户自带 agent 二进制</text>
+    <text x="474" y="994" font-size="11" fill="#3a4a55">任何扩展可 spawn，受 capability.process 白名单门控</text>
+    <text x="474" y="1012" font-size="11" fill="#3a4a55">stdin/stdout/stderr 流回扩展，再翻译成平台事件</text>
+  </g>
+
+  <!-- ========== 用户与外部世界 ========== -->
+  <g id="actors">
+    <rect x="880" y="870" width="580" height="180" rx="14" fill="#f0f4f8" stroke="#5c6b78" stroke-width="1.5" stroke-dasharray="4 4"/>
+    <text x="904" y="898" font-size="14" font-weight="700" fill="#3a4a55">用户操作 · 输入 · 安装授权</text>
+
+    <!-- 安装授权 -->
+    <rect x="904" y="912" width="260" height="60" rx="6" fill="#ffffff" stroke="#5c6b78" stroke-width="1"/>
+    <text x="1034" y="934" font-size="12" font-weight="600" fill="#3a4a55" text-anchor="middle">安装扩展 → 授权弹窗</text>
+    <text x="1034" y="952" font-size="10" fill="#5c6b78" text-anchor="middle">capabilities 译成人话</text>
+    <text x="1034" y="966" font-size="10" fill="#5c6b78" text-anchor="middle">用户点 [Allow] → 写入 grant 状态</text>
+
+    <!-- chat 操作 -->
+    <rect x="1184" y="912" width="260" height="60" rx="6" fill="#ffffff" stroke="#5c6b78" stroke-width="1"/>
+    <text x="1314" y="934" font-size="12" font-weight="600" fill="#3a4a55" text-anchor="middle">使用聊天 / 配置 / 选 agent</text>
+    <text x="1314" y="952" font-size="10" fill="#5c6b78" text-anchor="middle">选 Coco → 触发 onSessionProvider:coco</text>
+    <text x="1314" y="966" font-size="10" fill="#5c6b78" text-anchor="middle">扩展激活、注册、开会话</text>
+
+    <!-- flow 运行 -->
+    <rect x="904" y="982" width="540" height="56" rx="6" fill="#ffffff" stroke="#5c6b78" stroke-width="1"/>
+    <text x="1174" y="1004" font-size="12" font-weight="600" fill="#3a4a55" text-anchor="middle">flow 运行：step type=agent + agent yaml 引用 provider 字段</text>
+    <text x="1174" y="1022" font-size="10" fill="#5c6b78" text-anchor="middle">→ 同一份 session-provider registry 路径 · 跟 chat 面板完全等价</text>
+  </g>
+
+  <!-- 关键流的明示箭头已合并到上面的「通道」组里，这里不再额外画线 -->
+
+
+  <!-- ========== 图例 ========== -->
+  <g id="legend" transform="translate(40, 1052)">
+    <rect x="0" y="-6" width="32" height="14" rx="3" fill="#e8f4f6" stroke="#2c8390"/>
+    <text x="38" y="5" font-size="11" fill="#3a4a55">平台代码 (Rust)</text>
+
+    <rect x="160" y="-6" width="32" height="14" rx="3" fill="#fff8e8" stroke="#c97a1f"/>
+    <text x="198" y="5" font-size="11" fill="#3a4a55">扩展 JS (V8 host)</text>
+
+    <rect x="320" y="-6" width="32" height="14" rx="3" fill="#f4ebff" stroke="#6b4ba1"/>
+    <text x="358" y="5" font-size="11" fill="#3a4a55">Webview (iframe sandbox)</text>
+
+    <rect x="500" y="-6" width="32" height="14" rx="3" fill="#ffe5e8" stroke="#9c2a3a"/>
+    <text x="538" y="5" font-size="11" fill="#3a4a55">外部子进程</text>
+
+    <line x1="640" y1="0" x2="676" y2="0" stroke="#2c8390" stroke-width="2.5" stroke-dasharray="6 4"/>
+    <text x="682" y="5" font-size="11" fill="#3a4a55">cronymax/v1 RPC</text>
+
+    <line x1="820" y1="0" x2="856" y2="0" stroke="#3a6a9c" stroke-width="2" stroke-dasharray="4 3"/>
+    <text x="862" y="5" font-size="11" fill="#3a4a55">L1.5 事件订阅</text>
+
+    <line x1="1000" y1="0" x2="1036" y2="0" stroke="#9c2a3a" stroke-width="2.5"/>
+    <text x="1042" y="5" font-size="11" fill="#3a4a55">spawn 子进程（cap 门控）</text>
+
+    <line x1="1230" y1="0" x2="1266" y2="0" stroke="#6b4ba1" stroke-width="2"/>
+    <text x="1272" y="5" font-size="11" fill="#3a4a55">postMessage 桥</text>
+  </g>
+</svg>

@@ -1,0 +1,17 @@
+stateDiagram-v2
+    direction TB
+    [*] --> Uninstalled
+    Uninstalled --> Installed_Disabled : install<br/>校验 manifest + capability 授权
+    Installed_Disabled --> Enabled_Inactive : enable<br/>默认启用
+    Enabled_Inactive --> Active : activationEvent 触发<br/>host 起 V8 / 加载 main.js / 调 activate
+    Active --> Enabled_Inactive : deactivate<br/>subscriptions 自动 dispose
+    Active --> Active : crash<br/>自动重启 ≤ N 次
+    Active --> Enabled_Inactive : crash 超 N 次<br/>降级禁用 + 通知用户
+    Enabled_Inactive --> Installed_Disabled : disable<br/>用户禁用
+    Installed_Disabled --> Uninstalled : uninstall<br/>删除文件 + 清状态
+    Uninstalled --> [*]
+
+    Uninstalled : Uninstalled<br/>未安装
+    Installed_Disabled : Installed / Disabled<br/>已安装 · 未启用
+    Enabled_Inactive : Enabled / Inactive<br/>已启用 · 未激活
+    Active : Active<br/>已激活 · 运行中

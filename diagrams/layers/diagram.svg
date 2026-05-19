@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 640" font-family="'Noto Sans SC', -apple-system, sans-serif">
+  <rect width="1100" height="640" fill="#fafbfc"/>
+
+  <text x="40" y="42" font-size="22" font-weight="700" fill="#1a2733">三层模型 · Kernel / Events / Extension Points</text>
+  <text x="40" y="64" font-size="12" fill="#5c6b78">下层封闭稳定，上层可演化；命名空间 cronymax.* 全程锁定</text>
+
+  <!-- L2 layer (top, widest) -->
+  <g id="layer-l2">
+    <rect x="80" y="100" width="940" height="130" rx="10" fill="#e5dffb" stroke="#7958c9" stroke-width="2"/>
+    <rect x="80" y="100" width="200" height="130" rx="10" fill="#7958c9"/>
+    <rect x="80" y="120" width="200" height="110" fill="#7958c9"/>
+    <text x="180" y="138" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">L2</text>
+    <text x="180" y="162" font-size="12" font-weight="600" fill="#ffffff" text-anchor="middle">Extension</text>
+    <text x="180" y="178" font-size="12" font-weight="600" fill="#ffffff" text-anchor="middle">Points</text>
+    <text x="180" y="206" font-size="11" fill="#ddd1f5" text-anchor="middle">~12 个具名契约</text>
+
+    <text x="304" y="128" font-size="14" font-weight="700" fill="#4a3a8a">扩展贡献到平台 UI / 核心逻辑的具名槽位</text>
+    <text x="304" y="152" font-size="12" fill="#4a3a8a">• 静态清单声明 + runtime 注册</text>
+    <text x="304" y="170" font-size="12" fill="#4a3a8a">• 命名空间 cronymax.* 锁定，每个 EP 自带 schema</text>
+    <text x="304" y="188" font-size="12" fill="#4a3a8a">• 平台 UI 通过 contribution registry 消费</text>
+    <text x="304" y="206" font-size="11" fill="#6c5aa3">举例: cronymax.chat.session-provider · cronymax.content.renderer · cronymax.config.page</text>
+
+    <!-- "可增长" 指示 -->
+    <g transform="translate(940, 130)">
+      <rect x="0" y="0" width="64" height="74" rx="6" fill="#ffffff" stroke="#7958c9" stroke-width="1.2"/>
+      <text x="32" y="20" font-size="10" fill="#4a3a8a" text-anchor="middle">RFC</text>
+      <text x="32" y="36" font-size="10" fill="#4a3a8a" text-anchor="middle">可增长</text>
+      <polyline points="20,46 32,40 44,46" fill="none" stroke="#7958c9" stroke-width="1.5"/>
+      <polyline points="20,54 32,48 44,54" fill="none" stroke="#7958c9" stroke-width="1.5"/>
+      <polyline points="20,62 32,56 44,62" fill="none" stroke="#7958c9" stroke-width="1.5"/>
+    </g>
+  </g>
+
+  <!-- Up arrow from L1.5 to L2 -->
+  <g id="arrow-1">
+    <line x1="550" y1="270" x2="550" y2="240" stroke="#5c6b78" stroke-width="2"/>
+    <polygon points="550,232 543,246 557,246" fill="#5c6b78"/>
+    <text x="566" y="258" font-size="11" fill="#5c6b78">声明 + 注册</text>
+  </g>
+
+  <!-- L1.5 layer (middle) -->
+  <g id="layer-l15">
+    <rect x="120" y="280" width="860" height="118" rx="10" fill="#d4e2f0" stroke="#3a6a9c" stroke-width="2"/>
+    <rect x="120" y="280" width="200" height="118" rx="10" fill="#3a6a9c"/>
+    <rect x="120" y="300" width="200" height="98" fill="#3a6a9c"/>
+    <text x="220" y="318" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">L1.5</text>
+    <text x="220" y="342" font-size="12" font-weight="600" fill="#ffffff" text-anchor="middle">Platform Events</text>
+    <text x="220" y="378" font-size="11" fill="#c3d4e6" text-anchor="middle">~15 主题</text>
+
+    <text x="344" y="308" font-size="14" font-weight="700" fill="#1f4a7a">平台关键时刻发的事件，扩展按 cap 订阅</text>
+    <text x="344" y="332" font-size="12" fill="#1f4a7a">• 平台 emit · 扩展 subscribe（受 events.subscribe cap 门控）</text>
+    <text x="344" y="350" font-size="12" fill="#1f4a7a">• 用于侧录 / 审计 / 评分 / middleware / 统计</text>
+    <text x="344" y="370" font-size="11" fill="#3a6a9c">举例: cronymax.message.assistant.done · cronymax.tool.completed · cronymax.flow.step.failed</text>
+
+    <g transform="translate(900, 300)">
+      <rect x="0" y="0" width="64" height="74" rx="6" fill="#ffffff" stroke="#3a6a9c" stroke-width="1.2"/>
+      <text x="32" y="20" font-size="10" fill="#1f4a7a" text-anchor="middle">RFC</text>
+      <text x="32" y="36" font-size="10" fill="#1f4a7a" text-anchor="middle">可增长</text>
+      <polyline points="20,46 32,40 44,46" fill="none" stroke="#3a6a9c" stroke-width="1.5"/>
+      <polyline points="20,54 32,48 44,54" fill="none" stroke="#3a6a9c" stroke-width="1.5"/>
+      <polyline points="20,62 32,56 44,62" fill="none" stroke="#3a6a9c" stroke-width="1.5"/>
+    </g>
+  </g>
+
+  <!-- Up arrow from L1 to L1.5 -->
+  <g id="arrow-2">
+    <line x1="550" y1="438" x2="550" y2="408" stroke="#5c6b78" stroke-width="2"/>
+    <polygon points="550,400 543,414 557,414" fill="#5c6b78"/>
+    <text x="566" y="426" font-size="11" fill="#5c6b78">events.on / emit</text>
+  </g>
+
+  <!-- L1 layer (bottom, narrowest) -->
+  <g id="layer-l1">
+    <rect x="160" y="448" width="780" height="148" rx="10" fill="#dde8d4" stroke="#5d8a4d" stroke-width="2"/>
+    <rect x="160" y="448" width="200" height="148" rx="10" fill="#5d8a4d"/>
+    <rect x="160" y="468" width="200" height="128" fill="#5d8a4d"/>
+    <text x="260" y="488" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle">L1</text>
+    <text x="260" y="512" font-size="12" font-weight="600" fill="#ffffff" text-anchor="middle">Kernel Primitives</text>
+    <text x="260" y="548" font-size="11" fill="#c8d8c0" text-anchor="middle">14 个原语</text>
+    <text x="260" y="572" font-size="10" fill="#c8d8c0" text-anchor="middle">封闭集</text>
+
+    <text x="384" y="478" font-size="14" font-weight="700" fill="#3a5a2a">所有扩展能用的最底层 API · 每条都受 capability 门控</text>
+    <text x="384" y="500" font-size="11" font-family="monospace" fill="#3a5a2a">lifecycle · capabilities · commands · events · config · secrets</text>
+    <text x="384" y="516" font-size="11" font-family="monospace" fill="#3a5a2a">storage · process · fs · network · ui-slots · webview</text>
+    <text x="384" y="532" font-size="11" font-family="monospace" fill="#3a5a2a">auth · extensions(.exports)</text>
+    <text x="384" y="558" font-size="11" fill="#5d8a4d">─ 每次调用经 Capability Gate；clean exit / crash recovery 由平台保证 ─</text>
+    <text x="384" y="578" font-size="11" fill="#5d8a4d">含 VS Code 风格的简易跨扩展通信 extensions.getExtension(id).exports（无 schema/semver）</text>
+
+    <!-- 锁标识 -->
+    <g transform="translate(870, 470)">
+      <rect x="0" y="0" width="56" height="74" rx="6" fill="#ffffff" stroke="#5d8a4d" stroke-width="1.2"/>
+      <text x="28" y="20" font-size="10" fill="#3a5a2a" text-anchor="middle">封闭</text>
+      <!-- lock icon -->
+      <path d="M 16,34 L 16,32 a 12,12 0 0 1 24,0 L 40,34 L 38,34 L 38,32 a 10,10 0 0 0 -20,0 L 18,34 Z" fill="none" stroke="#3a5a2a" stroke-width="1.5"/>
+      <rect x="14" y="34" width="28" height="22" rx="2" fill="none" stroke="#3a5a2a" stroke-width="1.5"/>
+      <circle cx="28" cy="44" r="2" fill="#3a5a2a"/>
+      <line x1="28" y1="44" x2="28" y2="50" stroke="#3a5a2a" stroke-width="1.5"/>
+      <text x="28" y="68" font-size="9" fill="#3a5a2a" text-anchor="middle">改要发版</text>
+    </g>
+  </g>
+
+  <!-- Legend -->
+  <g id="legend" transform="translate(40, 620)">
+    <text x="0" y="0" font-size="11" fill="#5c6b78">→ 上层基于下层；上层每一项都通过下层原语实现</text>
+    <text x="320" y="0" font-size="11" fill="#5c6b78">↑ 数据流：扩展通过 L1 实现；通过 L1.5 听见平台；通过 L2 被平台听见</text>
+  </g>
+</svg>
