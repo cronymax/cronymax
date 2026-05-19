@@ -319,6 +319,67 @@ pub enum ControlRequest {
         base_url: String,
         api_key: String,
     },
+
+    // ── Flow run document review ──────────────────────────────────────────
+    /// Return all ports in `InReview` state for the given flow run.
+    /// For each port the response includes the document path and content.
+    /// Returns `ControlResponse::Data { payload: { "pending_reviews": [...] } }`.
+    FlowRunGetPendingReviews {
+        workspace_root: String,
+        /// If empty, scans all runs in the workspace; otherwise scans
+        /// only the specified run.
+        #[serde(default)]
+        flow_run_id: String,
+    },
+
+    /// Approve a pending document review in a flow run.
+    /// Calls `FlowRuntime::on_document_approved` and spawns downstream
+    /// agent nodes.  LLM config fields are injected by the C++ enricher
+    /// so that a `RunContext` can be reconstructed post-restart.
+    FlowRunApprove {
+        workspace_root: String,
+        flow_run_id: String,
+        node_id: String,
+        port: String,
+        /// Provider kind injected by LlmConfigEnricher (e.g. `"openai_compat"`).
+        #[serde(default)]
+        provider_kind: String,
+        /// Provider base URL injected by LlmConfigEnricher.
+        #[serde(default)]
+        base_url: String,
+        /// API key injected by LlmConfigEnricher.
+        #[serde(default)]
+        api_key: String,
+        /// Model name injected by LlmConfigEnricher.
+        #[serde(default)]
+        model: String,
+    },
+
+    /// Request changes on a pending document review in a flow run.
+    /// Calls `FlowRuntime::write_review_comments` +
+    /// `FlowRuntime::on_rejected_requeue` and re-spawns the producing node.
+    FlowRunRequestChanges {
+        workspace_root: String,
+        flow_run_id: String,
+        node_id: String,
+        port: String,
+        /// Free-form review comments.  Each entry should have at least a
+        /// `"message"` field; `"severity"` and `"suggestion"` are optional.
+        #[serde(default)]
+        comments: Vec<serde_json::Value>,
+        /// Provider kind injected by LlmConfigEnricher.
+        #[serde(default)]
+        provider_kind: String,
+        /// Provider base URL injected by LlmConfigEnricher.
+        #[serde(default)]
+        base_url: String,
+        /// API key injected by LlmConfigEnricher.
+        #[serde(default)]
+        api_key: String,
+        /// Model name injected by LlmConfigEnricher.
+        #[serde(default)]
+        model: String,
+    },
 }
 
 /// Reply to a [`ControlRequest`].

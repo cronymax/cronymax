@@ -197,9 +197,18 @@ impl FlowRuntimeRegistry {
     /// Return the [`FlowRuntime`] for `workspace_root`, creating and rehydrating
     /// it on the first call for that workspace.
     ///
+    /// `storage_dir` — when `Some`, run state (state.json, trace.jsonl, reviews.json)
+    /// is written under `<storage_dir>/flows/<flow_id>/runs/<run_id>/` instead of the
+    /// workspace directory. Pass `workspace_cache_dir` here so run artifacts stay in
+    /// app-private storage rather than the user's project directory.
+    ///
     /// Returns `(runtime, is_new)` — `is_new` is `true` the first time a given
     /// workspace is accessed so callers can fire startup notifications.
-    pub async fn get_or_create(&self, workspace_root: &Path) -> (Arc<FlowRuntime>, bool) {
+    pub async fn get_or_create(
+        &self,
+        workspace_root: &Path,
+        storage_dir: Option<&Path>,
+    ) -> (Arc<FlowRuntime>, bool) {
         let key = workspace_root.to_string_lossy().into_owned();
 
         // Fast path — already created.
@@ -208,7 +217,10 @@ impl FlowRuntimeRegistry {
         }
 
         // Slow path — create, rehydrate, insert.
-        let rt = Arc::new(FlowRuntime::new(workspace_root));
+        let rt = Arc::new(match storage_dir {
+            Some(sd) => FlowRuntime::new_with_storage_dir(workspace_root, sd),
+            None => FlowRuntime::new(workspace_root),
+        });
         let count = rt.rehydrate_from_disk().await;
         if count > 0 {
             tracing::info!(%count, workspace = %key, "flow_runtime_registry: rehydrated runs from disk");

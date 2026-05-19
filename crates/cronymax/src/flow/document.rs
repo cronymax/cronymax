@@ -50,22 +50,50 @@ pub struct DocInfo {
 // ---------------------------------------------------------------------------
 
 pub struct DocumentStore {
-    flow_dir: PathBuf,
+    /// Directory holding the current-revision `<name>.md` files.
+    docs_dir: PathBuf,
+    /// Directory holding immutable `<name>.<rev>.md` history snapshots.
+    /// Defaults to `<docs_dir>/.history` when not supplied explicitly.
+    history_root: PathBuf,
+    /// Directory holding POSIX flock sidecar `.lock` files.
+    /// Defaults to `<docs_dir>/.locks` when not supplied explicitly.
+    locks_root: PathBuf,
 }
 
 impl DocumentStore {
+    /// Create a store with all subdirs nested under `flow_dir/docs/` (legacy layout).
     pub fn new(flow_dir: PathBuf) -> Self {
-        Self { flow_dir }
+        let docs = flow_dir.join("docs");
+        let history = docs.join(".history");
+        let locks = docs.join(".locks");
+        Self {
+            docs_dir: docs,
+            history_root: history,
+            locks_root: locks,
+        }
     }
 
-    fn docs_dir(&self) -> PathBuf {
-        self.flow_dir.join("docs")
+    /// Create a store with explicit separate dirs.
+    ///
+    /// - `docs_dir`    — where `<name>.md` current files are written (workspace-visible)
+    /// - `history_dir` — where `<name>.<rev>.md` snapshots go (can be appDataDir)
+    /// - `locks_dir`   — where `<name>.lock` flock sidecars go (can be appDataDir)
+    pub fn new_with_dirs(docs_dir: PathBuf, history_dir: PathBuf, locks_dir: PathBuf) -> Self {
+        Self {
+            docs_dir,
+            history_root: history_dir,
+            locks_root: locks_dir,
+        }
     }
-    fn history_dir(&self) -> PathBuf {
-        self.flow_dir.join("docs").join(".history")
+
+    fn docs_dir(&self) -> &PathBuf {
+        &self.docs_dir
     }
-    fn locks_dir(&self) -> PathBuf {
-        self.flow_dir.join("docs").join(".locks")
+    fn history_dir(&self) -> &PathBuf {
+        &self.history_root
+    }
+    fn locks_dir(&self) -> &PathBuf {
+        &self.locks_root
     }
     fn doc_path(&self, name: &str) -> PathBuf {
         self.docs_dir().join(format!("{}.md", name))
@@ -78,7 +106,7 @@ impl DocumentStore {
         let history = self.history_dir();
         let prefix = format!("{}.", name);
         let mut latest = 0u32;
-        let entries = match std::fs::read_dir(&history) {
+        let entries = match std::fs::read_dir(history) {
             Ok(e) => e,
             Err(_) => return 0,
         };

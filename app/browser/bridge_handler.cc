@@ -125,6 +125,9 @@ class SpaceContextEnricher : public ControlEnricher {
         "start_run",
         "session_list",
         "session_thread_inspect",
+        "flow_run_get_pending_reviews",
+        "flow_run_approve",
+        "flow_run_request_changes",
     };
     if (kNeedsWorkspace.count(kind) && !req.contains("workspace_root"))
       req["workspace_root"] = wroot;
@@ -152,12 +155,20 @@ class LlmConfigEnricher : public ControlEnricher {
   void Enrich(const std::string& kind,
               nlohmann::json& req,
               SpaceManager* sm) override {
-    if (kind != "start_run")
+    const bool is_start_run = (kind == "start_run");
+    const bool is_flow_approve =
+        (kind == "flow_run_approve" || kind == "flow_run_request_changes");
+    if (!is_start_run && !is_flow_approve)
       return;
-    if (!req.contains("payload") || !req["payload"].is_object())
-      return;
-    if (!req["payload"].contains("task"))
-      return;
+
+    // `start_run` requires payload.task to proceed; flow review requests
+    // do not have a task field — skip this guard for them.
+    if (is_start_run) {
+      if (!req.contains("payload") || !req["payload"].is_object())
+        return;
+      if (!req["payload"].contains("task"))
+        return;
+    }
 
     std::string base_url = "https://api.openai.com/v1";
     std::string api_key;
@@ -206,6 +217,20 @@ class LlmConfigEnricher : public ControlEnricher {
         base_url = llm_cfg.base_url;
       api_key = llm_cfg.api_key;
     }
+
+    if (is_flow_approve) {
+      // Inject LLM config directly into the top-level request fields.
+      if (!req.contains("provider_kind"))
+        req["provider_kind"] = provider_kind;
+      if (!req.contains("base_url"))
+        req["base_url"] = base_url;
+      if (!req.contains("api_key"))
+        req["api_key"] = api_key;
+      if (!req.contains("model"))
+        req["model"] = model;
+      return;
+    }
+
     // Ensure payload.llm exists, then merge: renderer-supplied fields win.
     if (!req["payload"].contains("llm") || !req["payload"]["llm"].is_object())
       req["payload"]["llm"] = nlohmann::json::object();

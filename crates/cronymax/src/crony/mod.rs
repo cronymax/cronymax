@@ -84,7 +84,7 @@ mod tests {
             "system prompt must not be empty"
         );
         assert_eq!(def.prompt_source, PromptSource::Builtin);
-        assert_eq!(def.name, "crony");
+        assert_eq!(def.name, "Crony");
     }
 
     #[test]

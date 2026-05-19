@@ -15,6 +15,48 @@ function fmtDurationMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+/** Parse a raw JSON string arg into an object (or return as-is if already parsed). */
+function parseArgs(args: unknown): unknown {
+  if (typeof args === "string") {
+    const trimmed = args.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        /* fall through */
+      }
+    }
+  }
+  return args;
+}
+
+/** Extract the most informative single-line summary from tool arguments. */
+function summarizeArgs(args: unknown): string {
+  let value: unknown = args;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        value = JSON.parse(trimmed);
+      } catch {
+        return "";
+      }
+    } else {
+      return trimmed.length > 60 ? `${trimmed.slice(0, 59)}\u2026` : trimmed;
+    }
+  }
+  if (!value || typeof value !== "object") return "";
+  const obj = value as Record<string, unknown>;
+  const keys = ["command", "cmd", "path", "file_path", "file", "query", "url", "name", "message"];
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "string" && v) {
+      return v.length > 60 ? `${v.slice(0, 59)}\u2026` : v;
+    }
+  }
+  return "";
+}
+
 /**
  * Renders a tool call segment as an inline expandable card.
  *
@@ -28,6 +70,8 @@ export function ToolCallCard({ segment }: Props) {
   const isRunning = segment.status === "running";
   const isDone = segment.status === "done";
   const isError = segment.status === "error";
+
+  const argSummary = summarizeArgs(segment.args);
 
   const statusIcon = isDone ? (
     <Check className="size-3 text-primary" />
@@ -47,7 +91,15 @@ export function ToolCallCard({ segment }: Props) {
           className="flex h-auto w-full items-center justify-start gap-2 rounded-none px-2.5 py-1.5 hover:bg-muted/40"
         >
           {isRunning && <Loader2 className="size-3 animate-spin text-amber-500" />}
-          <span className="flex-1 truncate text-left font-mono text-xs text-muted-foreground">{segment.tool}</span>
+          <span className="min-w-0 shrink truncate text-left font-mono text-xs text-muted-foreground">
+            {segment.tool}
+          </span>
+          {argSummary && (
+            <span className="mx-0.5 min-w-0 flex-1 truncate text-left font-mono text-xs text-muted-foreground/50">
+              {argSummary}
+            </span>
+          )}
+          {!argSummary && <span className="flex-1" />}
           {statusIcon}
           {!isRunning && segment.durationMs != null && (
             <span className="shrink-0 font-mono text-xs text-muted-foreground opacity-60">
@@ -70,7 +122,7 @@ export function ToolCallCard({ segment }: Props) {
               Args
             </div>
             <pre className="max-h-[200px] overflow-y-auto whitespace-pre-wrap break-all rounded bg-background px-2 py-1 font-mono text-xs text-muted-foreground">
-              {JSON.stringify(segment.args, null, 2)}
+              {JSON.stringify(parseArgs(segment.args), null, 2)}
             </pre>
           </div>
           <div>

@@ -24,7 +24,7 @@ const KIND_PRESETS: Record<ProviderKind, { base_url: string; default_model: stri
     // Sonnet 4.6 is Anthropic's recommended default — best
     // balance of speed, cost, and capability; supports adaptive
     // thinking + effort out of the box.
-    default_model: "claude-sonnet-4-6",
+    default_model: "claude-sonnet-4.6",
     display: "Anthropic",
   },
   ollama: {

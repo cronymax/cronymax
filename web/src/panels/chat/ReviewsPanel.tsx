@@ -34,36 +34,59 @@ function parseRunStatus(raw: unknown): string {
   return "";
 }
 
-export function ReviewsPanel({ sessionId: _sessionId }: Props) {
+export function ReviewsPanel({ sessionId }: Props) {
   const [items, setItems] = useState<PendingItem[]>([]);
 
   const loadSnapshot = useCallback(() => {
     shells.browser.activity
       .snapshot()
       .then((resp: { runs?: unknown[]; pending_reviews?: unknown[] }) => {
+        const rawRuns = (resp.runs ?? []).map((r) => r as Record<string, unknown>);
+
+        // Build the set of run_ids that belong to the current session.
+        // When sessionId is null/undefined we show nothing (no active chat).
+        // Step 1: runs that are directly owned by this session.
+        const directSessionRunIds = new Set<string>(
+          rawRuns
+            .filter((r) => sessionId && (r.session_id as string | undefined) === sessionId)
+            .map((r) => r.id as string)
+            .filter(Boolean),
+        );
+        // Step 2: also include sub-agent runs whose flow_run_id is a session
+        // run (flow agents are spawned without a session_id but do have a
+        // flow_run_id pointing back to the originating flow run).
+        const sessionRunIds = new Set<string>(directSessionRunIds);
+        for (const r of rawRuns) {
+          const flowRunId = r.flow_run_id as string | undefined;
+          if (flowRunId && directSessionRunIds.has(flowRunId)) {
+            const id = r.id as string;
+            if (id) sessionRunIds.add(id);
+          }
+        }
+
         // ── 1. Parse explicit pending reviews ──────────────────────────
         const rawReviews = (resp.pending_reviews ?? []).map((r) => r as Record<string, unknown>);
         const reviewItems: PendingItem[] = rawReviews
           .map((r): PendingItem => {
-            // Shape: { id, run_id, request: { tool_name?, arguments? }, state }
+            // Shape: { id, run_id, request: { kind, tool, arguments? }, state }
             const req = (r.request as Record<string, unknown>) ?? {};
             return {
               review_id: (r.id as string) ?? (r.review_id as string) ?? null,
               run_id: (r.run_id as string) ?? "",
-              tool_name: (req.tool_name as string) ?? (r.tool_name as string) ?? "tool review",
+              // Rust stores the tool name under "tool" (not "tool_name")
+              tool_name: (req.tool as string) ?? (req.tool_name as string) ?? "tool review",
               args: req.arguments ?? req.args ?? r.args ?? {},
             };
           })
-          .filter((r) => r.review_id);
+          .filter((r) => r.review_id && sessionRunIds.has(r.run_id));
 
         // ── 2. Find runs in awaiting_review not already covered ────────
         const coveredRunIds = new Set(reviewItems.map((r) => r.run_id));
-        const rawRuns = (resp.runs ?? []).map((r) => r as Record<string, unknown>);
         const awaitingItems: PendingItem[] = rawRuns
           .filter((r) => {
             const status = parseRunStatus(r.status);
             const runId = (r.id as string) ?? "";
-            return status === "awaiting_review" && runId && !coveredRunIds.has(runId);
+            return status === "awaiting_review" && runId && !coveredRunIds.has(runId) && sessionRunIds.has(runId);
           })
           .map(
             (r): PendingItem => ({
@@ -77,7 +100,7 @@ export function ReviewsPanel({ sessionId: _sessionId }: Props) {
         setItems([...reviewItems, ...awaitingItems]);
       })
       .catch(() => undefined);
-  }, []);
+  }, [sessionId]);
 
   // Load on mount
   useEffect(() => {
@@ -95,23 +118,8 @@ export function ReviewsPanel({ sessionId: _sessionId }: Props) {
 
       // New review request — add directly without snapshot round-trip
       if (kind === "permission_request") {
-        const reviewId = payload.review_id as string | undefined;
-        const runId = payload.run_id as string | undefined;
-        const req = (payload.request as Record<string, unknown> | undefined) ?? {};
-        if (reviewId && runId) {
-          setItems((prev) => {
-            if (prev.some((r) => r.review_id === reviewId)) return prev;
-            return [
-              ...prev,
-              {
-                review_id: reviewId,
-                run_id: runId,
-                tool_name: (req.tool_name as string) ?? "tool review",
-                args: req.arguments ?? req.args ?? {},
-              },
-            ];
-          });
-        }
+        // Refresh snapshot so session filtering is applied correctly.
+        loadSnapshot();
         return;
       }
 
@@ -147,16 +155,16 @@ export function ReviewsPanel({ sessionId: _sessionId }: Props) {
   if (items.length === 0) return null;
 
   const handleApprove = (item: PendingItem) => {
-    const payload = item.review_id ? { review_id: item.review_id } : { run_id: item.run_id };
-    browser.send("review.approve", payload).catch(() => undefined);
+    browser.send("review.approve", { run_id: item.run_id, review_id: item.review_id ?? "" }).catch(() => undefined);
     setItems((prev) =>
       prev.filter((r) => (item.review_id ? r.review_id !== item.review_id : r.run_id !== item.run_id)),
     );
   };
 
   const handleReject = (item: PendingItem) => {
-    const payload = item.review_id ? { review_id: item.review_id } : { run_id: item.run_id };
-    browser.send("review.request_changes", payload).catch(() => undefined);
+    browser
+      .send("review.request_changes", { run_id: item.run_id, review_id: item.review_id ?? "" })
+      .catch(() => undefined);
     setItems((prev) =>
       prev.filter((r) => (item.review_id ? r.review_id !== item.review_id : r.run_id !== item.run_id)),
     );
