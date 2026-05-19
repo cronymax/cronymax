@@ -65,11 +65,13 @@ import {
   loadFlowsList,
   loadReasoningEffort,
   loadSelectedModel,
+  loadSelectedModelProvider,
   persistAnthropicEffort,
   persistChatData,
   persistReasoningEffort,
   persistSelectedFlow,
   persistSelectedModel,
+  persistSelectedModelProvider,
   type ReasoningEffort,
   type ShellBlock,
   type Thread,
@@ -1655,17 +1657,18 @@ export function App() {
       };
       if (reasoningEffortRef.current) runOpts.reasoning_effort = reasoningEffortRef.current;
       if (anthropicEffortRef.current) runOpts.anthropic_effort = anthropicEffortRef.current;
-      // For flow runs, don't forward the UI session-model: flow agents
-      // declare their own llm: overrides in YAML; if empty they fall back
-      // to the provider's default_model. Sending the UI model here would
-      // cause every agent in the flow to use the chat model picker's value,
-      // which may be invalid for the active provider.
-      if (state.model && !state.selectedFlow) runOpts.model = state.model;
+      // Forward the session model for all runs (direct and flow alike). For flow
+      // runs this becomes the base LLM config; agents with an explicit `llm:` in
+      // their YAML still override it per-agent inside the Rust runtime. Without
+      // forwarding it here, the C++ enricher falls back to the active provider's
+      // stored `default_model` which may be stale, mismatched, or from a different
+      // provider than what the user currently has selected.
+      if (state.model) runOpts.model = state.model;
       // If the picked model belongs to a non-active provider group, send
       // that provider's wire config alongside so the request actually
       // routes there instead of being sent to the active provider's
       // endpoint with a model name it doesn't recognise.
-      if (state.model && !state.selectedFlow) {
+      if (state.model) {
         const owner = modelGroups.find((g) => g.models.includes(state.model));
         if (owner && owner.id !== activeProviderId) {
           runOpts.provider_kind = owner.kind;
@@ -2436,6 +2439,7 @@ export function App() {
                             onSelect={() => {
                               dispatch({ type: "setModel", model: "" });
                               persistSelectedModel("");
+                              persistSelectedModelProvider(null);
                               setModelComboOpen(false);
                             }}
                             className="text-xs"
@@ -2453,6 +2457,12 @@ export function App() {
                                 onSelect={(v) => {
                                   dispatch({ type: "setModel", model: v });
                                   persistSelectedModel(v);
+                                  persistSelectedModelProvider({
+                                    id: g.id,
+                                    kind: g.kind,
+                                    base_url: g.base_url,
+                                    api_key: g.api_key,
+                                  });
                                   setModelComboOpen(false);
                                 }}
                                 className="text-xs"

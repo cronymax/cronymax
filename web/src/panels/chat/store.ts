@@ -1141,6 +1141,34 @@ export function persistSelectedModel(model: string): void {
   }
 }
 
+/** Provider config stored alongside the selected model so run-time routing
+ *  doesn't have to depend on the async-loaded modelGroups. */
+export interface StoredModelProvider {
+  id: string;
+  kind: string;
+  base_url: string;
+  api_key: string;
+}
+
+export function loadSelectedModelProvider(): StoredModelProvider | null {
+  try {
+    const raw = localStorage.getItem("chat_model_provider");
+    if (!raw) return null;
+    return JSON.parse(raw) as StoredModelProvider;
+  } catch {
+    return null;
+  }
+}
+
+export function persistSelectedModelProvider(p: StoredModelProvider | null): void {
+  try {
+    if (p) localStorage.setItem("chat_model_provider", JSON.stringify(p));
+    else localStorage.removeItem("chat_model_provider");
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Reasoning-effort override chosen in the chat toolbar. Empty = "use default". */
 export type ReasoningEffort = "" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
