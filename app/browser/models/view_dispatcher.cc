@@ -15,11 +15,11 @@
 #include "browser/platform/open_url_mac.h"
 #endif
 #include "browser/models/view_model.h"
-#include "browser/views/panel_window.h"
 #include "browser/tab/tab.h"
 #include "browser/tab/tab_behavior.h"
 #include "browser/tab/tab_manager.h"
 #include "browser/tab/web_tab_behavior.h"
+#include "browser/views/panel_window.h"
 #include "include/cef_parser.h"
 #include "include/cef_task.h"
 

@@ -189,8 +189,7 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
   // renders the panel as an in-window overlay with a scrim and a 24-px
   // content inset; that path is reserved for transient web URL popovers.
   auto add_panel_btn = [&](CefRefPtr<CefLabelButton>* slot, IconId icon,
-                           const std::string& label,
-                           const std::string& tooltip,
+                           const std::string& label, const std::string& tooltip,
                            const std::string& resource,
                            const std::string& window_title) {
     auto btn = MakeIconLabelButton(
@@ -216,8 +215,8 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
                 "Open Activities", "panels/activity/index.html", "Activities");
   add_panel_btn(&btn_flows_, IconId::kFlows, "Flows", "Open Flows",
                 "panels/flows/index.html", "Flows");
-  add_panel_btn(&btn_settings_, IconId::kSettings, "Settings",
-                "Open Settings", "panels/settings/index.html", "Settings");
+  add_panel_btn(&btn_settings_, IconId::kSettings, "Settings", "Open Settings",
+                "panels/settings/index.html", "Settings");
 
   // 4. Windows-controls slot (zero width on macOS).
   win_pad_ =
