@@ -101,7 +101,15 @@ impl LlmProvider for OpenAiProvider {
             .base_url
             .trim_end_matches('/')
             .trim_end_matches("/v1");
-        let url = format!("{base}/v1/chat/completions");
+        // GitHub Copilot's API lives at `{base}/chat/completions` (no `/v1/`
+        // prefix), whereas every other OpenAI-compatible endpoint uses
+        // `{base}/v1/chat/completions`.  The models endpoint follows the same
+        // convention (see `handler.rs` `ListProviderModels`).
+        let url = if self.config.copilot_mode {
+            format!("{base}/chat/completions")
+        } else {
+            format!("{base}/v1/chat/completions")
+        };
         let body = WireRequest::from_request(&request, &self.config.default_model);
 
         let mut req = self

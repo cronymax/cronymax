@@ -1,3 +1,5 @@
+import { runtimeSend } from "./bridge";
+
 /** Anthropic API contract version pinned in the `anthropic-version`
  * request header. Required by `/v1/*` endpoints; not related to the
  * model version. Keep in sync with `ANTHROPIC_API_VERSION` in
@@ -96,17 +98,23 @@ export async function listProviderModels(provider: ProviderEndpoint, timeoutMs =
   const url = `${base}/v1/models`;
 
   if (kind === "github_copilot") {
+    console.log("[llm] listing github_copilot models, base:", base, "has_api_key:", !!api_key);
     try {
-      const res = await fetch(url, {
-        headers,
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (res.ok) {
-        const list = await parseModelsResponse(res);
-        if (list.length > 0) return list;
-      }
-    } catch {
-      /* fall through to fallback */
+      // GitHub Copilot's models endpoint requires an exchanged short-lived
+      // Copilot API token, not the raw GitHub PAT.  Token exchange happens
+      // in the Rust runtime; route through the native bridge so CORS and
+      // auth are handled correctly.
+      const result = (await runtimeSend("list_provider_models", {
+        provider_kind: kind,
+        base_url: base,
+        api_key: api_key || "",
+      })) as { models?: string[] };
+      const list = result?.models ?? [];
+      if (list.length > 0) return list;
+      console.warn("[llm] list_provider_models returned empty list; using fallback");
+    } catch (e) {
+      console.error("[llm] list_provider_models failed:", e);
+      /* fall through to static fallback */
     }
     return COPILOT_FALLBACK;
   }

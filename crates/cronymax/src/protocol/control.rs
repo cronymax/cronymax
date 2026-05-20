@@ -307,6 +307,18 @@ pub enum ControlRequest {
         workspace_root: String,
         session_id: String,
     },
+
+    /// List models available from a provider endpoint.
+    ///
+    /// For `github_copilot` kind, the `api_key` is treated as a GitHub
+    /// OAuth token that is automatically exchanged for a short-lived Copilot
+    /// API token before the models request is made. Returns
+    /// `ControlResponse::Data { payload: { "models": [...] } }`.
+    ListProviderModels {
+        provider_kind: String,
+        base_url: String,
+        api_key: String,
+    },
 }
 
 /// Reply to a [`ControlRequest`].
