@@ -208,19 +208,38 @@ impl Transport for GipsTransport {
         // replies with a Pong, so this channel sees traffic at least every
         // ~90 s when the connection is alive.  Additionally the C++ PumpLoop
         // sends a proactive Control{Ping} every 60 s, which also resets this
-        // timer directly.  A 10-minute window therefore provides ample buffer
-        // even if a few keepalive exchanges are lost while still catching a
-        // genuinely dead host (e.g. crash) without leaking the crony process.
-        const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-        match tokio::time::timeout(IDLE_TIMEOUT, rx.recv()).await {
-            Ok(Some(msg)) => Ok(msg),
-            Ok(None) => Err(TransportError::Closed),
-            Err(_elapsed) => {
-                warn!(
-                    "recv idle timeout ({}s); assuming host disconnected",
-                    IDLE_TIMEOUT.as_secs()
-                );
-                Err(TransportError::Closed)
+        // timer directly.
+        //
+        // Genuine disconnects are detected through two reliable signals that
+        // do NOT depend on this timer:
+        //   1. The accept thread exits on CRONY_ERR_CLOSED from the GIPS
+        //      listener, which drops inbound_tx, causing rx.recv() to return
+        //      None (→ TransportError::Closed).
+        //   2. The C++ PumpLoop sends SIGTERM to the crony process when its
+        //      own Invoke() call fails (broken GIPS connection).
+        //
+        // The timer therefore serves only as an advisory "last-resort" for
+        // hard-hung scenarios (e.g. both SIGTERM and CRONY_ERR_CLOSED never
+        // arrive).  On timeout we emit a WARNING and loop — we do NOT close
+        // the session.  This prevents in-progress agent runs from being
+        // interrupted by transient keepalive stalls (e.g. a brief macOS GIPS
+        // scheduling hiccup that delays the C++ PumpLoop's 60 s Ping without
+        // actually breaking the connection).
+        const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+        loop {
+            match tokio::time::timeout(IDLE_TIMEOUT, rx.recv()).await {
+                Ok(Some(msg)) => return Ok(msg),
+                Ok(None) => return Err(TransportError::Closed),
+                Err(_elapsed) => {
+                    warn!(
+                        "recv idle timeout ({}s); no message from host in the last hour. \
+                         Connection may be stalled but is not being closed — genuine \
+                         disconnect is signalled via SIGTERM or channel close.",
+                        IDLE_TIMEOUT.as_secs()
+                    );
+                    // Loop: start a fresh timer.  The session stays open until
+                    // the channel drops (Ok(None)) or close() is called.
+                }
             }
         }
     }
