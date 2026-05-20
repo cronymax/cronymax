@@ -14,14 +14,12 @@
 #if defined(__APPLE__)
 #include "browser/platform/open_url_mac.h"
 #endif
+#include "browser/models/resource_context.h"
 #include "browser/models/view_model.h"
 #include "browser/tab/tab.h"
-#include "browser/tab/tab_behavior.h"
 #include "browser/tab/tab_manager.h"
 #include "browser/tab/web_tab_behavior.h"
 #include "browser/views/panel_window.h"
-#include "include/cef_parser.h"
-#include "include/cef_task.h"
 
 namespace cronymax {
 
@@ -126,8 +124,7 @@ void ViewDispatcher::Wire() {
   sh.popover_refresh = [this]() { host_.popover_reload(); };
 
   sh.settings_popover_open = [this]() {
-    overlay_ctx_->OpenPanelWindow(
-        resource_ctx_->ResourceUrl("panels/settings/index.html"), "Settings");
+    overlay_ctx_->OpenOverlay(resource_ctx_->AliasedResourceUrl("settings"));
   };
 
   sh.popover_open_as_tab = [this]() {
@@ -372,6 +369,11 @@ void ViewDispatcher::Wire() {
         }
       }
       model_->NotifyActiveTabChanged(url, browser_id);
+
+      if (host_.notify_sidebar_active_kind) {
+        host_.notify_sidebar_active_kind(
+            active ? TabKindToString(active->kind()) : "");
+      }
     }
 
     host_.persist_tab_titles_if_changed();
@@ -379,6 +381,10 @@ void ViewDispatcher::Wire() {
   });
 
   sh.run_file_dialog = host_.run_file_dialog;
+  sh.close_overlay = [this]() {
+    if (overlay_ctx_)
+      overlay_ctx_->CloseOverlay();
+  };
 
   client_handler_->SetShellCallbacks(std::move(sh));
 

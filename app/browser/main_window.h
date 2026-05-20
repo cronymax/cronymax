@@ -8,6 +8,7 @@
 
 #include "browser/client_handler.h"
 #include "browser/models/profile_context_manager.h"
+#include "browser/models/resource_context.h"
 #include "browser/models/view_context.h"
 #include "browser/models/view_dispatcher.h"
 #include "browser/models/view_model.h"
@@ -122,8 +123,8 @@ class MainWindow : public CefWindowDelegate,
   // Layout views.
   // native-views-mvc Phase 10: sidebar owned by SidebarView.
   std::unique_ptr<SidebarView> sidebar_view_obj_;
-  // Convenience accessor — returns browser_view_ from sidebar_view_obj_.
-  // Code using sidebar_view_ directly is migrated in Phase 10.
+  // Convenience accessor — returns the sidebar CefBrowserView (webview panel)
+  // from sidebar_view_obj_. Used for drag-region forwarding and push events.
   CefRefPtr<CefBrowserView> sidebar_view() const {
     return sidebar_view_obj_ ? sidebar_view_obj_->browser_view() : nullptr;
   }
@@ -233,9 +234,25 @@ class MainWindow : public CefWindowDelegate,
   void DismissFloat() override;
   void OpenPanelWindow(const std::string& url,
                        const std::string& title) override;
+  void OpenOverlay(const std::string& url) override;
+  void CloseOverlay() override;
 
-  // native-views-mvc Phase 3: ResourceContext implementation.
-  std::string ResourceUrl(const std::string& relative) const override;
+  // OVERLAY slot (z2): centered modal BrowserView (e.g. Settings).
+  CefRefPtr<CefBrowserView> overlay_bv_;
+  CefRefPtr<CefOverlayController> overlay_oc_;
+  bool overlay_open_ = false;
+  void* overlay_click_monitor_ = nullptr;
+  // URL queued for the overlay browser while its GetBrowser() is still null
+  // (async creation). Cleared once the navigation is dispatched.
+  std::string overlay_pending_url_;
+
+  // FLOAT slot (z3): contextual floating panel.
+  CefRefPtr<CefBrowserView> float_bv_;
+  CefRefPtr<CefOverlayController> float_oc_;
+  void* float_monitor_ = nullptr;
+
+  // Recompute and apply the OVERLAY centered rect. No-op if !overlay_open_.
+  void UpdateOverlayRect();
 
   IMPLEMENT_REFCOUNTING(MainWindow);
   DISALLOW_COPY_AND_ASSIGN(MainWindow);

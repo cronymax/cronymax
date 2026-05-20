@@ -135,6 +135,8 @@ export const Channels = {
         req: ShellSettingsPopoverOpenPayloadSchema,
         res: ShellSettingsPopoverOpenResponseSchema,
       }),
+      // Close the modal overlay (e.g. Settings OVERLAY opened from titlebar).
+      close_overlay: chan({ req: EmptySchema, res: EmptySchema }),
     },
 
     // refine-ui-theme-layout: theme persistence + system follow

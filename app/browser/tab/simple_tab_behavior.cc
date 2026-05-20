@@ -56,6 +56,8 @@ IconId IconIdForKind(TabKind kind) {
       return IconId::kTabWeb;
     case TabKind::kFlows:
       return IconId::kFlows;
+    case TabKind::kActivity:
+      return IconId::kActivities;
     case TabKind::kSettings:
       return IconId::kSettings;
   }

@@ -54,6 +54,11 @@ struct DispatcherHost {
   // ── File dialog ──────────────────────────────────────────────────────────
   std::function<void(std::function<void(const std::string& path)> callback)>
       run_file_dialog;
+
+  // ── Sidebar active-kind feedback ─────────────────────────────────────────
+  // Called whenever the active tab changes; passes the TabKindToString of
+  // the new active tab (or "" if no tab is active).
+  std::function<void(const std::string& kind)> notify_sidebar_active_kind;
 };
 
 class ViewDispatcher {

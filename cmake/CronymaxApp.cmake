@@ -42,6 +42,8 @@ set(CRONYMAX_APP_SRCS
   # native-views-mvc models/ (view-semantic renames of shell_*)
   app/browser/models/view_observer.h
   app/browser/models/view_context.h
+  app/browser/models/resource_context.h
+  app/browser/models/resource_context.cc
   app/browser/models/view_model.h
   app/browser/models/view_model.cc
   app/browser/models/view_dispatcher.h

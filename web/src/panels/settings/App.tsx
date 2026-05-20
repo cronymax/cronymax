@@ -144,8 +144,16 @@ export function App() {
 
   return (
     <main className="relative flex h-screen w-screen flex-col bg-background text-foreground">
-      <PanelWindowHeader className="flex shrink-0 items-center border-b border-border bg-card px-4 py-2">
+      <PanelWindowHeader className="flex shrink-0 items-center justify-between border-b border-border bg-card px-4 py-2">
         <Heading>Settings</Heading>
+        <button
+          type="button"
+          aria-label="Close settings"
+          className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          onClick={() => void shells.browser.shell.close_overlay()}
+        >
+          <X className="size-4" aria-hidden="true" />
+        </button>
       </PanelWindowHeader>
       <Tabs
         value={tab}
