@@ -949,28 +949,28 @@ void ApplyDraggableRegions(void* nsview_ptr,
 }
 - (NSView*)hitTest:(NSPoint)pointInSuperview {
   NSView* sv = self.superview;
-  fprintf(stderr,
-          "[drag] hitTest entry sv=%s bounds={%.0f,%.0f,%.0f,%.0f} "
-          "pt={%.0f,%.0f}\n",
-          sv ? "ok" : "NIL", self.bounds.origin.x, self.bounds.origin.y,
-          self.bounds.size.width, self.bounds.size.height, pointInSuperview.x,
-          pointInSuperview.y);
+  // fprintf(stderr,
+  //         "[drag] hitTest entry sv=%s bounds={%.0f,%.0f,%.0f,%.0f} "
+  //         "pt={%.0f,%.0f}\n",
+  //         sv ? "ok" : "NIL", self.bounds.origin.x, self.bounds.origin.y,
+  //         self.bounds.size.width, self.bounds.size.height,
+  //         pointInSuperview.x, pointInSuperview.y);
   NSPoint local = [self convertPoint:pointInSuperview fromView:sv];
   if (!NSPointInRect(local, self.bounds))
     return nil;
   for (NSValue* v in self.noDragRects) {
     if (NSPointInRect(local, v.rectValue)) {
-      fprintf(stderr, "[drag] hitTest passthrough at {%.0f,%.0f}\n", local.x,
-              local.y);
+      // fprintf(stderr, "[drag] hitTest passthrough at {%.0f,%.0f}\n", local.x,
+      //         local.y);
       return nil;
     }
   }
-  fprintf(stderr, "[drag] hitTest intercept at {%.0f,%.0f}\n", local.x,
-          local.y);
+  // fprintf(stderr, "[drag] hitTest intercept at {%.0f,%.0f}\n", local.x,
+  //         local.y);
   return self;
 }
 - (void)mouseDown:(NSEvent*)event {
-  fprintf(stderr, "[drag] mouseDown: performing window drag\n");
+  // fprintf(stderr, "[drag] mouseDown: performing window drag\n");
   NSWindow* w = self.window;
   if (w)
     [w performWindowDragWithEvent:event];
