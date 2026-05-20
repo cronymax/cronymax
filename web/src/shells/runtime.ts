@@ -129,6 +129,16 @@ export interface FlowDocReview {
   doc_path: string;
   /** Document markdown content (null if file not yet readable). */
   content: string | null;
+  /** Chat session that originated the flow run; null for legacy runs. */
+  originating_session_id?: string | null;
+}
+
+/** Response from getSessionPendingActions. */
+export interface SessionPendingActionsResponse {
+  /** Pending doc reviews for flow runs bound to this session. */
+  doc_reviews: FlowDocReview[];
+  /** Pending tool-approval reviews for agent runs in this session. */
+  approvals: unknown[];
 }
 
 /** A structured reviewer comment for request-changes. */
@@ -171,6 +181,16 @@ export const flowRun = {
     return (await runtimeSend("flow.run.get_pending_reviews", { flow_run_id: "" })) as {
       pending_reviews: FlowDocReview[];
     };
+  },
+  /**
+   * Return all pending doc reviews AND tool-approval reviews that belong to
+   * the given session in a single round-trip. workspace_root is injected by
+   * the C++ enricher.
+   */
+  async getSessionPendingActions(sessionId: string): Promise<SessionPendingActionsResponse> {
+    return (await runtimeSend("get.session.pending.actions", {
+      session_id: sessionId,
+    })) as SessionPendingActionsResponse;
   },
   /** Approve a pending document review, triggering downstream agents. */
   async approve(flow_run_id: string, node_id: string, port: string): Promise<void> {

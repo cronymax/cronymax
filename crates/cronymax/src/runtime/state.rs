@@ -81,6 +81,20 @@ impl std::fmt::Display for SessionId {
     }
 }
 
+/// Records where a thread was forked from its parent session. Stored
+/// on the child session and used to reconstruct a branched conversation
+/// history. Data-model only in this change — no routing behaviour yet.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForkPoint {
+    /// Index into the parent session's chat turn list at the branch point.
+    pub message_idx: usize,
+    /// The run (if any) that was active in the parent when the fork happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    /// Wall-clock ms when the fork was created.
+    pub created_at_ms: i64,
+}
+
 /// A persistent conversation session. Sits between a Space and its
 /// Runs: `Space → Session → Run`. The `thread` field is the
 /// authoritative LLM context window that survives across runs.
@@ -107,9 +121,13 @@ pub struct Session {
     /// because chat turns are written to `ChatStore` instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thread: Vec<ChatMessage>,
-    /// All run ids created in this session, in creation order.
+    /// All agent run ids created in this session, in creation order.
     #[serde(default)]
     pub run_ids: Vec<RunId>,
+    /// All flow run ids (format: `"run-<uuid_simple>"`) launched in this session.
+    /// Separate from `run_ids` because flow run IDs use a different format than `RunId`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flow_run_ids: Vec<String>,
     /// Namespace the agent reads memory from. `None` uses the session-default
     /// namespace derived from the session id.
     #[serde(default)]
@@ -118,6 +136,12 @@ pub struct Session {
     /// namespace derived from the session id.
     #[serde(default)]
     pub write_namespace: Option<MemoryNamespaceId>,
+    /// Parent session this session was forked from. `None` for root sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<SessionId>,
+    /// Where in the parent's thread this session branched. `None` for root sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_point: Option<ForkPoint>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
