@@ -21,7 +21,7 @@ use crate::flow::{FlowRuntimeOnCreate, FlowRuntimeRegistry};
 use crate::llm::factory::{DefaultLlmProviderFactory, LlmProviderFactory};
 use crate::memory::MemoryManager;
 use crate::protocol::events::RuntimeEventPayload;
-use crate::runtime::authority::RuntimeAuthority;
+use crate::runtime::authority::{flow_run_topics, RuntimeAuthority};
 use crate::terminal::SharedPtySessionManager;
 
 // ── RuntimeServices ───────────────────────────────────────────────────────────
@@ -72,12 +72,27 @@ impl RuntimeServices {
         let capability_factory: Arc<dyn CapabilityFactory> = Arc::new(DefaultCapabilityFactory);
 
         // Wire the FlowRuntime event emitter to the authority at composition root.
+        // Emits to ["flow:{event}", "flow_run:{flow_run_id}"] and also to
+        // "session:{sid}" when the flow run has an originating session.
         let auth_for_registry = authority.clone();
         let on_create: FlowRuntimeOnCreate = Arc::new(move |rt| {
             let auth = auth_for_registry.clone();
             rt.set_event_emitter(Box::new(move |event, json_payload| {
+                // Extract flow_run_id from the payload JSON ({"run_id": "run-..."}).
+                let flow_run_id: String = serde_json::from_str::<serde_json::Value>(json_payload)
+                    .ok()
+                    .and_then(|v| v.get("run_id").and_then(|r| r.as_str()).map(str::to_owned))
+                    .unwrap_or_default();
+                let session_id = if flow_run_id.is_empty() {
+                    None
+                } else {
+                    auth.resolve_session(&flow_run_id)
+                };
+                let mut topics = flow_run_topics(&flow_run_id, session_id.as_deref());
+                // Preserve the legacy flat topic for backward compatibility during migration.
+                topics.push(format!("flow:{event}"));
                 let data = serde_json::json!({ "event": event, "payload": json_payload });
-                auth.emit(format!("flow:{event}"), RuntimeEventPayload::Raw { data });
+                auth.emit_many(&topics, RuntimeEventPayload::Raw { data });
             }));
         });
         let flow_registry = Arc::new(FlowRuntimeRegistry::with_on_create(on_create));

@@ -109,7 +109,8 @@ export function ReviewsPanel({ sessionId }: Props) {
 
   // Listen for live review events and run status changes
   useEffect(() => {
-    const unsub = runtime.on("*", (event: unknown) => {
+    if (!sessionId) return;
+    const unsubscribe = runtime.on(`session:${sessionId}`, (event: unknown) => {
       const ev = event as Record<string, unknown>;
       if (!ev) return;
       const payload = ev.payload as Record<string, unknown> | undefined;
@@ -149,8 +150,8 @@ export function ReviewsPanel({ sessionId }: Props) {
         }
       }
     });
-    return () => unsub?.();
-  }, [loadSnapshot]);
+    return () => unsubscribe?.();
+  }, [sessionId, loadSnapshot]);
 
   if (items.length === 0) return null;
 

@@ -15,14 +15,19 @@
  * Returns null when there are no pending reviews.
  */
 
-import { Check, ChevronDown, MessageSquare, Plus, Send, ShieldAlert, X } from "lucide-react";
+import { Check, ChevronDown, Clock, MessageSquare, Plus, Send, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Textarea } from "@/components/ui/textarea";
-import { browser } from "@/shells/bridge";
-import { type FlowDocReview, type FlowReviewComment, flowRun } from "@/shells/runtime";
+import { runtime } from "@/shells/bridge";
+import {
+  type FlowDocReview,
+  type FlowReviewComment,
+  flowRun,
+  type SessionPendingActionsResponse,
+} from "@/shells/runtime";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -36,6 +41,14 @@ interface SelectionComment {
   /** Character offsets within the document body [start, end] */
   range: [number, number] | null;
   comment: string;
+}
+
+type ReviewVerdict = "approved" | "changes_requested";
+
+interface ResolvedReview {
+  item: ReviewItem;
+  verdict: ReviewVerdict;
+  resolvedAt: number;
 }
 
 interface ReviewCardProps {
@@ -208,7 +221,7 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
       className="rounded-lg border border-border bg-card shadow-sm overflow-hidden"
     >
       {/* ── Header ─────────────────────────────────────────────────────── */}
-      <CollapsibleTrigger className="flex items-center gap-2.5 px-3.5 py-2.5 bg-muted/40">
+      <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-accent/50">
         <ShieldAlert className="h-4 w-4 shrink-0 text-amber-400 animate-pulse" />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-foreground leading-tight truncate">
@@ -226,7 +239,7 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
 
       {/* ── Document content ────────────────────────────────────────────── */}
       {item.content && (
-        <CollapsibleContent className="border-t border-border">
+        <CollapsibleContent className="border-t border-border/50 bg-background pb-1">
           <div className="relative">
             {pendingSelection && (
               <div ref={selectionTooltipRef} className="absolute z-20 top-2 right-2">
@@ -381,19 +394,24 @@ export function FlowDocReviewPanel({ sessionId }: Props) {
   // Set of flow_run_ids we know about for this session
   const flowRunIdsRef = useRef<Set<string>>(new Set());
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
+  const [resolvedReviews, setResolvedReviews] = useState<ResolvedReview[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   /**
-   * Workspace-wide scan: discovers pending reviews across all flow runs
-   * without needing to know specific flow_run_ids first. Safe to call
-   * on mount even after an app restart.
+   * Session-scoped scan: returns all pending reviews for this session's
+   * flow runs. Replaces the workspace-wide scan so reviews from other
+   * sessions are never shown here.
    */
   const refreshAll = useCallback(async () => {
-    const result = await flowRun.getWorkspacePendingReviews().catch(() => ({ pending_reviews: [] as ReviewItem[] }));
-    for (const pr of result.pending_reviews) {
+    if (!sessionId) return;
+    const result: SessionPendingActionsResponse = await flowRun
+      .getSessionPendingActions(sessionId)
+      .catch(() => ({ doc_reviews: [] as ReviewItem[], approvals: [] }));
+    for (const pr of result.doc_reviews) {
       if (pr.flow_run_id) flowRunIdsRef.current.add(pr.flow_run_id);
     }
-    setReviews(result.pending_reviews);
-  }, []);
+    setReviews(result.doc_reviews);
+  }, [sessionId]);
 
   // Fetch pending reviews from all known flow runs and merge into state
   const refresh = useCallback(async () => {
@@ -419,68 +437,57 @@ export function FlowDocReviewPanel({ sessionId }: Props) {
     setReviews(merged);
   }, [refreshAll]);
 
-  // Remove an item optimistically from the local state
+  // Remove an item optimistically from the local state and record in history
   const removeItem = useCallback(
-    (item: ReviewItem) => {
+    (item: ReviewItem, verdict: ReviewVerdict) => {
       setReviews((prev) =>
         prev.filter((r) => !(r.flow_run_id === item.flow_run_id && r.node_id === item.node_id && r.port === item.port)),
       );
+      setResolvedReviews((prev) => [{ item, verdict, resolvedAt: Date.now() }, ...prev]);
       // Schedule a follow-up refresh to pick up any new reviews that might have been queued
       setTimeout(refresh, 1500);
     },
     [refresh],
   );
 
-  // Listen for run_status / flow events to discover flow run IDs and trigger refresh
+  // Listen for run_status / flow events to trigger refresh via session subscription.
+  // Uses runtime.on("session:{id}") which delivers the inner event directly as
+  // { sequence, emitted_at_ms, payload: { kind, ... } }.
   useEffect(() => {
     if (!sessionId) return;
 
-    const off = browser.on("event", (raw: unknown) => {
+    const unsubscribe = runtime.on(`session:${sessionId}`, (raw: unknown) => {
       const ev = raw as Record<string, unknown> | null;
-      if (!ev || ev.tag !== "event") return;
-      const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
-      const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
+      if (!ev) return;
+      const pl = (ev.payload as Record<string, unknown> | undefined) ?? {};
       const kind = pl.kind as string | undefined;
 
       if (kind === "run_status") {
-        const flowRunId = (pl.flow_run_id as string | undefined) ?? null;
-        const evSessionId = (pl.session_id as string | undefined) ?? null;
-
-        if (!flowRunId) return;
-        // Include only if session matches or already tracked
-        const alreadyTracked = flowRunIdsRef.current.has(flowRunId);
-        const sessionMatch = evSessionId ? evSessionId === sessionId : alreadyTracked;
-        if (!sessionMatch) return;
-
-        const changed = !alreadyTracked;
-        if (changed) flowRunIdsRef.current.add(flowRunId);
-
-        // Status events that indicate human review may be pending
-        const status = (pl.status as string | undefined) ?? "";
-        if (status === "awaiting_review" || changed) {
-          refresh();
-        }
+        // Any run_status (awaiting_review, succeeded, failed, cancelled) may
+        // indicate new or resolved document reviews for this session.
+        void refreshAll();
       }
 
       // flow.run.changed arrives as a Raw payload: { kind: "raw", data: { event: "flow.run.changed", ... } }
       if (kind === "raw") {
         const rawData = (pl.data as Record<string, unknown> | undefined) ?? {};
         const rawEvent = rawData.event as string | undefined;
-        // eslint-disable-next-line no-console
-        console.log("[FlowDocReviewPanel] raw event received:", rawEvent);
         if (rawEvent === "flow.run.changed" || rawEvent === "flow_run_changed") {
-          refresh();
+          void refresh();
+        }
+        if (rawEvent === "session.pending_actions_ready") {
+          void refreshAll();
         }
       } else if (kind === "flow.run.changed" || kind === "flow_run_changed") {
-        // Legacy / future path where the event is promoted to a typed payload.
-        refresh();
+        // Future path where the event kind is promoted directly.
+        void refresh();
       }
     });
 
-    return () => off();
-  }, [sessionId, refresh]);
+    return () => unsubscribe?.();
+  }, [sessionId, refresh, refreshAll]);
 
-  // On mount (and when sessionId changes): do a workspace-wide scan so the
+  // On mount (and when sessionId changes): do a session-scoped scan so the
   // panel shows pending reviews even after an app restart when no events
   // have fired and the in-memory activity snapshot is empty.
   useEffect(() => {
@@ -488,29 +495,75 @@ export function FlowDocReviewPanel({ sessionId }: Props) {
     refreshAll();
   }, [sessionId, refreshAll]);
 
-  // Polling fallback: if the event pipeline drops an event the panel
-  // would never update. Poll every 5 s so reviews always surface.
-  useEffect(() => {
-    if (!sessionId) return;
-    const id = setInterval(() => {
-      refreshAll();
-    }, 5000);
-    return () => clearInterval(id);
-  }, [sessionId, refreshAll]);
-
-  if (reviews.length === 0) return null;
+  if (reviews.length === 0 && resolvedReviews.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-2 px-3 py-2">
-      <p className="text-xs font-medium text-muted-foreground px-0.5">Pending Reviews ({reviews.length})</p>
-      {reviews.map((item) => (
-        <ReviewCard
-          key={`${item.flow_run_id}:${item.node_id}:${item.port}`}
-          item={item}
-          onApproved={removeItem}
-          onChangesRequested={removeItem}
-        />
-      ))}
+      {reviews.length > 0 && (
+        <>
+          <p className="text-xs font-medium text-muted-foreground px-0.5">Pending Reviews ({reviews.length})</p>
+          {reviews.map((item) => (
+            <ReviewCard
+              key={`${item.flow_run_id}:${item.node_id}:${item.port}`}
+              item={item}
+              onApproved={(it) => removeItem(it, "approved")}
+              onChangesRequested={(it) => removeItem(it, "changes_requested")}
+            />
+          ))}
+        </>
+      )}
+
+      {resolvedReviews.length > 0 && (
+        <Collapsible
+          open={historyOpen}
+          onOpenChange={setHistoryOpen}
+          className="rounded-lg border border-border bg-card shadow-sm overflow-hidden"
+        >
+          <CollapsibleTrigger className="flex w-full items-center gap-1.5 px-0.5 py-1 text-left">
+            <Clock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <span className="flex-1 text-xs font-medium text-muted-foreground">
+              Review History ({resolvedReviews.length})
+            </span>
+            <ChevronDown
+              className={`h-3.5 w-3.5 text-muted-foreground transition-transform duration-200 ${
+                historyOpen ? "rotate-180" : ""
+              }`}
+            />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="flex flex-col gap-1.5 pt-1">
+            {resolvedReviews.map((entry, idx) => {
+              const docName = entry.item.port || entry.item.node_id;
+              const approved = entry.verdict === "approved";
+              const timeLabel = new Date(entry.resolvedAt).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              });
+              return (
+                <div
+                  key={`${entry.item.flow_run_id}:${entry.item.node_id}:${entry.item.port}:${idx}`}
+                  className="flex items-center gap-2 rounded-md border border-border bg-card/50 px-3 py-1.5"
+                >
+                  {approved ? (
+                    <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                  ) : (
+                    <MessageSquare className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                  )}
+                  <span className="flex-1 min-w-0 text-xs text-foreground/80 truncate">{docName}</span>
+                  <Badge
+                    variant="outline"
+                    className={`text-xs px-1.5 py-0 h-4 font-normal shrink-0 ${
+                      approved ? "border-emerald-500/40 text-emerald-500" : "border-amber-400/40 text-amber-400"
+                    }`}
+                  >
+                    {approved ? "approved" : "changes requested"}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground shrink-0">{timeLabel}</span>
+                </div>
+              );
+            })}
+          </CollapsibleContent>
+        </Collapsible>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useReducer } from "react";
+import { useCallback, useEffect, useMemo, useReducer } from "react";
 import { runtime, shells } from "@/shells/bridge";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -236,71 +236,80 @@ export function useActivityFeed(filter: "all" | "live" | "needs_review") {
       .catch(() => undefined);
   }, [state.activeSpaceId]);
 
-  // Subscribe to all runtime events for live updates.
-  useEffect(() => {
-    const unsub = runtime.on("*", (event: unknown) => {
-      const ev = event as Record<string, unknown>;
-      if (!ev) return;
+  // Stable event handler for runtime events on individual run topics.
+  const handleRuntimeEvent = useCallback((event: unknown) => {
+    const ev = event as Record<string, unknown>;
+    if (!ev) return;
+    const payload = ev.payload as Record<string, unknown> | undefined;
+    if (!payload) return;
+    const kind = payload.kind as string | undefined;
+    const runId = payload.run_id as string | undefined;
+    if (!runId) return;
 
-      const payload = ev.payload as Record<string, unknown> | undefined;
-      if (!payload) return;
-      const kind = payload.kind as string | undefined;
-      const runId = payload.run_id as string | undefined;
-      if (!runId) return;
+    if (kind === "run_status") {
+      const status = payload.status as string | undefined;
+      if (status) dispatch({ type: "UPDATE_RUN_STATUS", runId, status });
+      return;
+    }
 
-      if (kind === "run_status") {
-        const status = payload.status as string | undefined;
-        if (status) dispatch({ type: "UPDATE_RUN_STATUS", runId, status });
+    if (kind === "trace") {
+      const trace = payload.trace as Record<string, unknown> | undefined;
+      if (!trace) return;
+      const traceKind = trace.kind as string | undefined;
+
+      if (traceKind === "assistant_turn") {
+        const usage = trace.usage as { input_tokens?: number; output_tokens?: number } | undefined;
+        const durationMs = (trace.duration_ms as number) ?? 0;
+        const turn = (trace.turn as number) ?? 0;
+        dispatch({
+          type: "UPDATE_RUN_TRACE",
+          runId,
+          turns: turn,
+          inputTokens: usage?.input_tokens ?? 0,
+          outputTokens: usage?.output_tokens ?? 0,
+          durationMs,
+        });
         return;
       }
 
-      if (kind === "trace") {
-        const trace = payload.trace as Record<string, unknown> | undefined;
-        if (!trace) return;
-        const traceKind = trace.kind as string | undefined;
-
-        if (traceKind === "assistant_turn") {
-          const usage = trace.usage as { input_tokens?: number; output_tokens?: number } | undefined;
-          const durationMs = (trace.duration_ms as number) ?? 0;
-          const turn = (trace.turn as number) ?? 0;
-          dispatch({
-            type: "UPDATE_RUN_TRACE",
-            runId,
-            turns: turn,
-            inputTokens: usage?.input_tokens ?? 0,
-            outputTokens: usage?.output_tokens ?? 0,
-            durationMs,
-          });
-          return;
-        }
-
-        if (traceKind === "review_resolved") {
-          const reviewId = trace.review_id as string | undefined;
-          if (reviewId) dispatch({ type: "CLEAR_REVIEW", reviewId, runId });
-          return;
-        }
-      }
-
-      if (kind === "permission_request") {
-        const reviewId = payload.review_id as string | undefined;
-        const request = payload.request as ReviewEntry["request"] | undefined;
-        if (reviewId) {
-          const review: ReviewEntry = {
-            id: reviewId,
-            run_id: runId,
-            request: request ?? {},
-            state: "pending",
-          };
-          dispatch({ type: "UPSERT_REVIEW", review, runId });
-        }
+      if (traceKind === "review_resolved") {
+        const reviewId = trace.review_id as string | undefined;
+        if (reviewId) dispatch({ type: "CLEAR_REVIEW", reviewId, runId });
         return;
       }
-    });
+    }
 
-    return () => {
-      if (unsub) unsub();
-    };
+    if (kind === "permission_request") {
+      const reviewId = payload.review_id as string | undefined;
+      const request = payload.request as ReviewEntry["request"] | undefined;
+      if (reviewId) {
+        const review: ReviewEntry = {
+          id: reviewId,
+          run_id: runId,
+          request: request ?? {},
+          state: "pending",
+        };
+        dispatch({ type: "UPSERT_REVIEW", review, runId });
+      }
+      return;
+    }
   }, []);
+
+  // Subscribe to run:{runId} for each tracked run for live status/trace updates.
+  // Re-subscribe only when the set of run IDs changes (not on value updates).
+  const runIdKey = useMemo(() => [...state.runs.keys()].sort().join(","), [state.runs]);
+  useEffect(() => {
+    if (state.runs.size === 0) return;
+    const unsubbers: Array<() => void> = [];
+    for (const runId of state.runs.keys()) {
+      const off = runtime.on(`run:${runId}`, handleRuntimeEvent);
+      if (off) unsubbers.push(off);
+    }
+    return () => {
+      for (const off of unsubbers) off();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runIdKey, handleRuntimeEvent]);
 
   const groups = computeGroups(state, filter);
   return { ...groups, reviews: state.reviews };

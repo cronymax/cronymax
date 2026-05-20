@@ -46,7 +46,12 @@ impl AgentRunner {
         let services = Arc::clone(&self.services);
         let authority = services.authority.clone();
 
-        let run_id = match authority.start_run(run_ctx.space_id, None, serde_json::json!({})) {
+        let run_id = match authority.start_run_with_session(
+            run_ctx.space_id,
+            None,
+            serde_json::json!({}),
+            run_ctx.session_id.clone(),
+        ) {
             Ok(id) => id,
             Err(e) => {
                 warn!(agent_id, error = %e, "agent_runner: authority.start_run failed");

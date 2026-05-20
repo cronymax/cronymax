@@ -42,7 +42,7 @@ import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { cn } from "@/lib/utils";
 import { FlowDocReviewPanel } from "@/panels/chat/FlowDocReviewPanel";
 import { FlowInstancesBar } from "@/panels/chat/FlowInstancesBar";
-import { browser, shells } from "@/shells/bridge";
+import { browser, runtime, shells } from "@/shells/bridge";
 import { listProviderModels } from "@/shells/llm";
 import { agentRegistry, agentRun, b64ToUtf8, flowRun, terminal as rt_terminal } from "@/shells/runtime";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
@@ -1332,8 +1332,15 @@ export function App() {
     // Track pending review info from awaiting_review status so we can
     // pair it with the arriving PermissionRequest event.
     let pendingReviewId: string | null = null;
+    let runtimeOff: (() => void) | null = null;
+    // Placeholder — replaced by the real browser.on unsub below.
+    let off: () => void = () => {};
+    const teardown = () => {
+      off();
+      runtimeOff?.();
+    };
 
-    const off = browser.on("event", (raw: unknown) => {
+    off = browser.on("event", (raw: unknown) => {
       const ev = raw as Record<string, unknown> | null;
       if (!ev) return;
 
@@ -1422,7 +1429,7 @@ export function App() {
               agentName: speaker || undefined,
             });
 
-            off();
+            teardown();
             dispatch({ type: "setCurrentRunId", runId: null });
             dispatch({ type: "setRunning", running: false });
             dispatch({ type: "setRunningBlockId", id: null });
@@ -1682,6 +1689,249 @@ export function App() {
       }
     });
 
+    // processRuntimeEvent — handles GIPS events from runtime.on("run:{id}", cb).
+    // The callback receives the inner event directly: { sequence, emitted_at_ms, payload:{...} }.
+    // This mirrors the ev.tag==="event" branch above but for the targeted subscription path.
+    const processRuntimeEvent = (raw: unknown) => {
+      const inner = raw as Record<string, unknown> | null;
+      if (!inner) return;
+      const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
+      const seq = inner.sequence as number | undefined;
+      if (typeof seq === "number") {
+        if (seenSeqs.has(String(seq))) return;
+        seenSeqs.add(String(seq));
+      }
+      const kind = pl.kind as string | undefined;
+
+      if (kind === "thinking_token") {
+        const delta = pl.delta as string | undefined;
+        if (delta) {
+          if (thinkingStartedAt === null) {
+            thinkingStartedAt = Date.now();
+          }
+          dispatch({ type: "appendThinkingSegment", id: blockId, delta });
+        }
+      } else if (kind === "token") {
+        if (thinkingStartedAt !== null && !thinkingSealed) {
+          thinkingSealed = true;
+          const elapsedMs = Date.now() - thinkingStartedAt;
+          dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
+        }
+        const content = (pl.delta ?? pl.content) as string | undefined;
+        if (content) {
+          hasContent = true;
+          dispatch({ type: "appendContentText", id: blockId, delta: content });
+        }
+      } else if (kind === "run_status") {
+        const status = pl.status as string | undefined;
+        if (status === "succeeded" || status === "failed" || status === "cancelled") {
+          dispatch({ type: "clearAwaitingApproval" });
+          if (thinkingStartedAt !== null && !thinkingSealed) {
+            thinkingSealed = true;
+            const elapsedMs = Date.now() - thinkingStartedAt;
+            dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
+          }
+          if (!hasContent) {
+            const detail = (pl.detail as Record<string, unknown> | undefined) ?? {};
+            const detailMsg = typeof detail.message === "string" ? detail.message : "";
+            let fallback: string;
+            if (status === "succeeded") {
+              fallback = "(completed)";
+            } else if (detailMsg) {
+              fallback = `(${status}) ${detailMsg}`;
+            } else if (lastErrorMessage) {
+              fallback = `(${status}) ${lastErrorMessage}`;
+            } else {
+              fallback = "(no output)";
+            }
+            dispatch({ type: "appendContentText", id: blockId, delta: fallback });
+            hasContent = true;
+          }
+          dispatch({
+            type: "finalizeBlock",
+            id: blockId,
+            status: status === "succeeded" ? "ok" : "fail",
+            agentName: speaker || undefined,
+          });
+          teardown();
+          dispatch({ type: "setCurrentRunId", runId: null });
+          dispatch({ type: "setRunning", running: false });
+          dispatch({ type: "setRunningBlockId", id: null });
+          inputRef.current?.focus();
+        } else if (status === "awaiting_review") {
+          const rid = pl.review_id as string | undefined;
+          if (rid) pendingReviewId = rid;
+        } else if (status === "running") {
+          dispatch({ type: "clearAwaitingApproval" });
+        }
+      } else if (kind === "permission_request") {
+        const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
+        const req = (pl.request as Record<string, unknown> | undefined) ?? {};
+        const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
+        const args = req.args ?? pl.args ?? {};
+        const category = toolName.split("_")[0] ?? toolName;
+        let effectiveTrust: "autopilot" | "bypass" | "ask";
+        if (globalApprovalMode === "autopilot") {
+          effectiveTrust = "autopilot";
+        } else if (globalApprovalMode === "bypass") {
+          effectiveTrust = "bypass";
+        } else {
+          const trustMap = loadTrustMap();
+          effectiveTrust = (trustMap[category] ?? "ask") as "autopilot" | "bypass" | "ask";
+        }
+        if (effectiveTrust === "autopilot") {
+          browser.send("review.approve", { run_id: runId, review_id: reviewId }).catch(() => undefined);
+        } else if (effectiveTrust === "bypass") {
+          browser.send("review.request_changes", { run_id: runId, review_id: reviewId }).catch(() => undefined);
+        } else {
+          dispatch({ type: "setAwaitingApproval", runId, reviewId, toolName, args });
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: { kind: "approval_request", reviewId, tool: toolName, args, ts: Date.now() },
+          });
+        }
+      } else if (kind === "trace") {
+        const trace = (pl.trace as Record<string, unknown> | undefined) ?? pl;
+        const traceKind = trace.kind as string | undefined;
+        if (traceKind === "run_start") {
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "run_start",
+              model: (trace.model as string | undefined) ?? "",
+              systemPrompt: (trace.system_prompt as string | undefined) ?? "",
+              userInput: (trace.user_input as string | undefined) ?? "",
+              tools: (trace.tools as string[] | undefined) ?? [],
+              turnsLimit: (trace.turns_limit as number | undefined) ?? 0,
+              ts: Date.now(),
+            },
+          });
+        } else if (traceKind === "assistant_turn") {
+          const usageRaw = trace.usage as Record<string, number> | undefined;
+          const usage = usageRaw
+            ? {
+                inputTokens: (usageRaw.input_tokens as number) ?? 0,
+                outputTokens: (usageRaw.output_tokens as number) ?? 0,
+              }
+            : undefined;
+          const turnDurationMs = trace.duration_ms as number | undefined;
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "assistant_turn",
+              turnId: (trace.turn as number | undefined) ?? (trace.turn_id as number | undefined) ?? 0,
+              text: (trace.text as string | undefined) ?? "",
+              finishReason: (trace.finish_reason as string | undefined) ?? "",
+              ts: Date.now(),
+              ...(usage ? { usage } : {}),
+              ...(turnDurationMs != null ? { durationMs: turnDurationMs } : {}),
+            },
+          });
+        } else if (traceKind === "tool_start") {
+          const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+          const tool = (trace.tool as string | undefined) ?? "";
+          const args = trace.arguments ?? trace.args ?? {};
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: { kind: "tool_start", toolCallId, tool, args, ts: Date.now() },
+          });
+          dispatch({ type: "appendToolCallSegment", id: blockId, toolCallId, tool, args });
+        } else if (traceKind === "tool_done") {
+          const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+          const tool = (trace.tool as string | undefined) ?? "";
+          const result = trace.result ?? {};
+          const isError = (trace.is_error as boolean | undefined) ?? false;
+          const durationMs = trace.duration_ms as number | undefined;
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "tool_done",
+              toolCallId,
+              tool,
+              result,
+              terminal: (trace.terminal as boolean | undefined) ?? false,
+              ts: Date.now(),
+              ...(durationMs != null ? { durationMs } : {}),
+              ...(isError ? { isError: true } : {}),
+            },
+          });
+          dispatch({
+            type: "updateToolCallSegment",
+            id: blockId,
+            toolCallId,
+            status: isError ? "error" : "done",
+            result,
+            ...(durationMs != null ? { durationMs } : {}),
+          });
+          if (!isError) {
+            const fileChange = detectFileChange(tool, trace.args);
+            if (fileChange) {
+              dispatch({ type: "appendFileChange", id: blockId, change: { ...fileChange, blockId, ts: Date.now() } });
+            }
+          }
+        } else if (traceKind === "error") {
+          const msg = (trace.message as string | undefined) ?? "";
+          if (msg) lastErrorMessage = msg;
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "tool_start",
+              toolCallId: "",
+              tool: "error",
+              args: { where: (trace.where as string | undefined) ?? "", message: msg || "error" },
+              ts: Date.now(),
+            },
+          });
+        } else if (traceKind === "review_resolved") {
+          const resolvedId = (trace.review_id as string | undefined) ?? "";
+          const decision = (trace.decision as string | undefined) === "approve" ? "approve" : "reject";
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: { kind: "approval_resolved", reviewId: resolvedId, decision, ts: Date.now() },
+          });
+        } else if (traceKind === "reflection") {
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "reflection",
+              turn: (trace.turn as number | undefined) ?? 0,
+              text: (trace.text as string | undefined) ?? "",
+              ts: Date.now(),
+            },
+          });
+        } else if (traceKind === "memory_write") {
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "memory_write",
+              namespace: (trace.namespace as string | undefined) ?? "",
+              key: (trace.key as string | undefined) ?? "",
+              source: (trace.source as string | undefined) ?? "",
+              ts: Date.now(),
+            },
+          });
+        }
+      } else if (kind === "log") {
+        const message = (pl.message as string | undefined) ?? "";
+        if (message) {
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: { kind: "tool_start", toolCallId: "", tool: "log", args: { message }, ts: Date.now() },
+          });
+        }
+      }
+    };
+
     try {
       // Inject pinned selection comments into the task body
       const commentAtts = block.attachments.filter((a) => a.kind === "comment");
@@ -1729,11 +1979,12 @@ export function App() {
       runId = await agentRun(body, runOpts);
       if (!runId) throw new Error("runtime did not return run_id");
       dispatch({ type: "setCurrentRunId", runId });
+      runtimeOff = runtime.on(`run:${runId}`, processRuntimeEvent);
       await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
         /* ignore */
       });
     } catch (err) {
-      off();
+      teardown();
       const errMsg = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
       const isBridgeError = errMsg.includes("bridge invoke failed") || errMsg.includes("send_failed");
       dispatch({
@@ -1767,7 +2018,7 @@ export function App() {
 
     setTimeout(
       () => {
-        off();
+        teardown();
         if (state.running) {
           dispatch({ type: "setRunning", running: false });
           dispatch({ type: "setRunningBlockId", id: null });

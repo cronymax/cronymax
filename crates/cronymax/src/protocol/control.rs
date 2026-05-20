@@ -332,6 +332,17 @@ pub enum ControlRequest {
         flow_run_id: String,
     },
 
+    /// Return all pending doc reviews AND tool-approval reviews for a single
+    /// chat session. Doc reviews are flow-run InReview ports whose
+    /// `originating_session_id` matches; approvals are `PendingReview`
+    /// entries for runs associated with the session.
+    /// The `workspace_root` is injected by the C++ enricher.
+    /// Returns `ControlResponse::Data { payload: { "doc_reviews": [...], "approvals": [...] } }`.
+    GetSessionPendingActions {
+        session_id: String,
+        workspace_root: String,
+    },
+
     /// Approve a pending document review in a flow run.
     /// Calls `FlowRuntime::on_document_approved` and spawns downstream
     /// agent nodes.  LLM config fields are injected by the C++ enricher

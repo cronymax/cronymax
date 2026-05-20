@@ -126,6 +126,7 @@ class SpaceContextEnricher : public ControlEnricher {
         "session_list",
         "session_thread_inspect",
         "flow_run_get_pending_reviews",
+        "get_session_pending_actions",
         "flow_run_approve",
         "flow_run_request_changes",
     };

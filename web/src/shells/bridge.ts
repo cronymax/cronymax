@@ -182,9 +182,9 @@ export const browser = {
 // ---------------------------------------------------------------------------
 // Runtime event routing
 //
-// `runtime.on("*", cb)` — wildcard: routed via broadcast_event("event", ...)
-//   which already broadcasts ALL runtime events from WireSpaceEventCallback.
-//   The full envelope is parsed and the inner event object is delivered to cb.
+// `runtime.on("*", cb)` — DEPRECATED: the wildcard broadcast path has been removed.
+//   Registering a wildcard handler logs a warning and delivers no events.
+//   Migrate to `runtime.on("session:{id}", cb)` or `runtime.on("run:{id}", cb)`.
 //
 // `runtime.on("topic", cb)` — topic-specific: sends a subscribe ctrl request
 //   to get a subscription UUID, then routes kMsgRuntimeEvent arrivals via
@@ -193,25 +193,6 @@ export const browser = {
 
 /** UUID → callback for topic-specific runtime subscriptions. */
 const runtimeSubscriptions = new Map<string, (event: unknown) => void>();
-/** Wildcard handlers registered via runtime.on("*", cb). */
-const runtimeWildcard = new Set<(event: unknown) => void>();
-
-// Route "event" broadcasts (from WireSpaceEventCallback) to wildcard handlers.
-// rawPayload is already a parsed object from the dispatch() fast-path; extract
-// the inner event object and forward it directly — no JSON round-trip needed.
-browser.on("event", (rawPayload: unknown) => {
-  if (runtimeWildcard.size === 0) return;
-  const envelope = rawPayload as Record<string, unknown>;
-  const innerEvent = envelope.event !== undefined ? envelope.event : envelope;
-  for (const cb of runtimeWildcard) {
-    try {
-      cb(innerEvent);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[bridge] runtime wildcard handler threw", err);
-    }
-  }
-});
 
 // ---------------------------------------------------------------------------
 // window.cronymax.shells — nested path-accumulating proxy for all channels.
@@ -320,8 +301,7 @@ export const runtime = {
   /**
    * Subscribe to a runtime topic.
    *
-   * - `"*"` — wildcard, receives all runtime events via the existing
-   *   broadcast_event("event", ...) path. No runtime subscription needed.
+   * - `"*"` — DEPRECATED: delivers no events. Migrate to `"session:{id}"` or `"run:{id}"`.
    * - Any other topic — sends a subscribe ctrl request to the runtime and
    *   routes kMsgRuntimeEvent arrivals via window.cronymax.runtime.on.
    *
@@ -331,10 +311,12 @@ export const runtime = {
    */
   on(topic: string, cb: (event: unknown) => void): (() => void) | null {
     if (topic === "*") {
-      runtimeWildcard.add(cb);
-      return () => {
-        runtimeWildcard.delete(cb);
-      };
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[bridge] runtime.on('*') is deprecated and delivers no events. Migrate to runtime.on('session:{id}', cb) or runtime.on('run:{id}', cb).",
+      );
+      void cb; // acknowledge parameter to avoid lint warnings
+      return () => {};
     }
 
     if (!window.cronymax?.runtime?.send) return null;
