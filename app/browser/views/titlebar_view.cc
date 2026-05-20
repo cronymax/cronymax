@@ -75,60 +75,7 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
   panel->AddChildView(lights_pad_);
   layout->SetFlexForView(lights_pad_, 0);
 
-  // 1a. Space selector.
-  {
-    static constexpr int kNewSpaceCmd = 9000;
-    const std::string init_label =
-        space_ctx_->GetCurrentSpaceName().empty()
-            ? "Default \u25BE"
-            : space_ctx_->GetCurrentSpaceName() + " \u25BE";
-
-    auto delegate = new FnMenuButtonDelegate(
-        [this](CefRefPtr<CefMenuButton> btn, const CefPoint& pt,
-               CefRefPtr<CefMenuButtonPressedLock> /*lock*/) {
-          const auto spaces = space_ctx_->GetSpaces();
-          const std::string active_id = space_ctx_->GetCurrentSpaceId();
-          auto menu = CefMenuModel::CreateMenuModel(
-              new FnMenuModelDelegate([this, spaces](int cmd) {
-                if (cmd == kNewSpaceCmd) {
-                  // Open the native folder picker first; only show the profile
-                  // picker card once the user has chosen a folder.
-                  if (host_.run_file_dialog) {
-                    host_.run_file_dialog([this](const std::string& path) {
-                      if (path.empty())
-                        return;
-                      if (host_.show_profile_picker) {
-                        host_.show_profile_picker(path);
-                      }
-                    });
-                  }
-                } else if (cmd >= 0 && cmd < static_cast<int>(spaces.size())) {
-                  space_ctx_->SwitchSpace(spaces[cmd].first);
-                }
-              }));
-          for (int i = 0; i < static_cast<int>(spaces.size()); ++i) {
-            menu->AddItem(i, spaces[i].second);
-            if (spaces[i].first == active_id)
-              menu->SetChecked(i, true);
-          }
-          menu->AddSeparator();
-          menu->AddItem(kNewSpaceCmd, "Open Folder\u2026");
-          btn->ShowMenu(menu, pt, CEF_MENU_ANCHOR_TOPLEFT);
-        });
-    btn_space_ = CefMenuButton::CreateMenuButton(delegate, init_label);
-    btn_space_->SetTextColor(CEF_BUTTON_STATE_NORMAL,
-                             theme ? theme->text_title : kTitleBarBtnFg);
-    btn_space_->SetTextColor(CEF_BUTTON_STATE_HOVERED,
-                             theme ? theme->text_title : kTitleBarBtnFg);
-    btn_space_->SetTextColor(CEF_BUTTON_STATE_PRESSED,
-                             theme ? theme->text_title : kTitleBarBtnFg);
-    btn_space_->SetBackgroundColor(theme ? theme->bg_body
-                                         : kTitleBarBgFallback);
-    panel->AddChildView(btn_space_);
-    layout->SetFlexForView(btn_space_, 0);
-  }
-
-  // 1b. Sidebar toggle.
+  // 1a. Sidebar toggle.
   {
     btn_sidebar_toggle_ = MakeIconLabelButton(
         new FnButtonDelegate([this]() {
@@ -182,41 +129,82 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
   panel->AddChildView(spacer_);
   layout->SetFlexForView(spacer_, 1);
 
-  // 3. Panel-window buttons.
+  // 3. Right-side controls: workspace dropdown then Settings.
   //
-  // These open their target page as an independent, movable top-level
-  // window (PanelWindow). Previously routed through `OpenPopover`, which
-  // renders the panel as an in-window overlay with a scrim and a 24-px
-  // content inset; that path is reserved for transient web URL popovers.
-  auto add_panel_btn = [&](CefRefPtr<CefLabelButton>* slot, IconId icon,
-                           const std::string& label, const std::string& tooltip,
-                           const std::string& resource,
-                           const std::string& window_title) {
-    auto btn = MakeIconLabelButton(
-        new FnButtonDelegate([this, resource, window_title]() {
-          CefPostTask(TID_UI,
-                      base::BindOnce(
-                          [](TitleBarView* self, std::string r, std::string t) {
-                            self->overlay_ctx_->OpenPanelWindow(
-                                self->resource_ctx_->ResourceUrl(r), t);
-                          },
-                          this, resource, window_title));
+  // Activities and Flows have been moved into the sidebar CEF panel.
+
+  // 3a. Workspace (space) selector — now on the right, left of Settings.
+  {
+    static constexpr int kNewSpaceCmd = 9000;
+    const std::string init_label =
+        space_ctx_->GetCurrentSpaceName().empty()
+            ? "Default \u25BE"
+            : space_ctx_->GetCurrentSpaceName() + " \u25BE";
+
+    auto delegate = new FnMenuButtonDelegate(
+        [this](CefRefPtr<CefMenuButton> btn, const CefPoint& pt,
+               CefRefPtr<CefMenuButtonPressedLock> /*lock*/) {
+          const auto spaces = space_ctx_->GetSpaces();
+          const std::string active_id = space_ctx_->GetCurrentSpaceId();
+          auto menu = CefMenuModel::CreateMenuModel(
+              new FnMenuModelDelegate([this, spaces](int cmd) {
+                if (cmd == kNewSpaceCmd) {
+                  if (host_.run_file_dialog) {
+                    host_.run_file_dialog([this](const std::string& path) {
+                      if (path.empty())
+                        return;
+                      if (host_.show_profile_picker)
+                        host_.show_profile_picker(path);
+                    });
+                  }
+                } else if (cmd >= 0 && cmd < static_cast<int>(spaces.size())) {
+                  space_ctx_->SwitchSpace(spaces[cmd].first);
+                }
+              }));
+          for (int i = 0; i < static_cast<int>(spaces.size()); ++i) {
+            menu->AddItem(i, spaces[i].second);
+            if (spaces[i].first == active_id)
+              menu->SetChecked(i, true);
+          }
+          menu->AddSeparator();
+          menu->AddItem(kNewSpaceCmd, "Open Folder\u2026");
+          btn->ShowMenu(menu, pt, CEF_MENU_ANCHOR_TOPLEFT);
+        });
+    btn_space_ = CefMenuButton::CreateMenuButton(delegate, init_label);
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_NORMAL,
+                             theme ? theme->text_title : kTitleBarBtnFg);
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_HOVERED,
+                             theme ? theme->text_title : kTitleBarBtnFg);
+    btn_space_->SetTextColor(CEF_BUTTON_STATE_PRESSED,
+                             theme ? theme->text_title : kTitleBarBtnFg);
+    btn_space_->SetBackgroundColor(theme ? theme->bg_body
+                                         : kTitleBarBgFallback);
+    panel->AddChildView(btn_space_);
+    layout->SetFlexForView(btn_space_, 0);
+  }
+
+  // 3b. Settings overlay button.
+  {
+    btn_settings_ = MakeIconLabelButton(
+        new FnButtonDelegate([this]() {
+          fprintf(stderr, "[diag] Settings btn pressed\n");
+          CefPostTask(TID_UI, base::BindOnce(
+                                  [](TitleBarView* self) {
+                                    self->overlay_ctx_->OpenOverlay(
+                                        self->resource_ctx_->AliasedResourceUrl(
+                                            "settings"));
+                                  },
+                                  this));
         }),
-        icon, label, tooltip);
-    btn->SetTextColor(CEF_BUTTON_STATE_NORMAL,
-                      theme ? theme->text_title : kTitleBarBtnFg);
-    btn->SetTextColor(CEF_BUTTON_STATE_HOVERED, 0xFFFFFFFF);
-    btn->SetBackgroundColor(theme ? theme->bg_body : kTitleBarBgFallback);
-    panel->AddChildView(btn);
-    layout->SetFlexForView(btn, 0);
-    *slot = btn;
-  };
-  add_panel_btn(&btn_activities_, IconId::kActivities, "Activities",
-                "Open Activities", "panels/activity/index.html", "Activities");
-  add_panel_btn(&btn_flows_, IconId::kFlows, "Flows", "Open Flows",
-                "panels/flows/index.html", "Flows");
-  add_panel_btn(&btn_settings_, IconId::kSettings, "Settings", "Open Settings",
-                "panels/settings/index.html", "Settings");
+        IconId::kSettings, "Settings", "Open Settings");
+    btn_settings_->SetTextColor(CEF_BUTTON_STATE_NORMAL,
+                                theme ? theme->text_title : kTitleBarBtnFg);
+    btn_settings_->SetTextColor(CEF_BUTTON_STATE_HOVERED, 0xFFFFFFFF);
+    btn_settings_->SetBackgroundColor(theme ? theme->bg_body
+                                            : kTitleBarBgFallback);
+    panel->AddChildView(btn_settings_);
+    layout->SetFlexForView(btn_settings_, 0);
+  }
 
   // 4. Windows-controls slot (zero width on macOS).
   win_pad_ =
@@ -241,11 +229,19 @@ void TitleBarView::RefreshDragRegion() {
   const CefRect bar_in_window(bar.x - win.x, bar.y - win.y, bar.width,
                               bar.height);
 
+  // Use bar.x/bar.y (titlebar panel screen coords) as the anchor for
+  // all noDragRect positions.  CefWindow::GetBounds() on macOS can return
+  // the full window frame y (including the native titlebar height of ~32px)
+  // rather than the content-view y.  Buttons reported by GetBoundsInScreen()
+  // are always relative to the content-view origin, so subtracting win.y
+  // would produce an offset 32px too large (making ly negative and the
+  // noDragRect fall off-screen).  The titlebar panel screen y (bar.y) is
+  // always equal to the content-view top, giving the correct delta.
   std::vector<CefRect> nodrag;
   if (lights_pad_) {
     CefRect lr = lights_pad_->GetBoundsInScreen();
     if (lr.width > 0 && lr.height > 0)
-      nodrag.emplace_back(lr.x - win.x, lr.y - win.y, lr.width, lr.height);
+      nodrag.emplace_back(lr.x - bar.x, lr.y - bar.y, lr.width, lr.height);
   }
   auto add = [&](const CefRefPtr<CefLabelButton>& b) {
     if (!b)
@@ -253,7 +249,7 @@ void TitleBarView::RefreshDragRegion() {
     CefRect r = b->GetBoundsInScreen();
     if (r.width <= 0 || r.height <= 0)
       return;
-    nodrag.emplace_back(r.x - win.x, r.y - win.y, r.width, r.height);
+    nodrag.emplace_back(r.x - bar.x, r.y - bar.y, r.width, r.height);
   };
   auto add_view = [&](const CefRefPtr<CefView>& b) {
     if (!b)
@@ -261,15 +257,13 @@ void TitleBarView::RefreshDragRegion() {
     CefRect r = b->GetBoundsInScreen();
     if (r.width <= 0 || r.height <= 0)
       return;
-    nodrag.emplace_back(r.x - win.x, r.y - win.y, r.width, r.height);
+    nodrag.emplace_back(r.x - bar.x, r.y - bar.y, r.width, r.height);
   };
   add(btn_sidebar_toggle_);
   add_view(btn_space_);
   add(btn_web_);
   add(btn_term_);
   add(btn_chat_);
-  add(btn_activities_);
-  add(btn_flows_);
   add(btn_settings_);
   InstallTitleBarDragOverlay(main_win_->GetWindowHandle(), bar_in_window,
                              nodrag.empty() ? nullptr : nodrag.data(),
@@ -294,13 +288,11 @@ void TitleBarView::ApplyTheme(const ThemeChrome& chrome) {
   }
   const bool title_dark = ((chrome.text_title >> 8) & 0xFF) > 0x80;
   constexpr IconId kIcons[] = {IconId::kSidebarToggle, IconId::kTabWeb,
-                               IconId::kTabTerminal,   IconId::kTabChat,
-                               IconId::kFlows,         IconId::kActivities,
+                               IconId::kTabTerminal, IconId::kTabChat,
                                IconId::kSettings};
-  CefRefPtr<CefLabelButton>* kBtns[] = {
-      &btn_sidebar_toggle_, &btn_web_,        &btn_term_,    &btn_chat_,
-      &btn_flows_,          &btn_activities_, &btn_settings_};
-  for (int i = 0; i < 7; ++i) {
+  CefRefPtr<CefLabelButton>* kBtns[] = {&btn_sidebar_toggle_, &btn_web_,
+                                        &btn_term_, &btn_chat_, &btn_settings_};
+  for (int i = 0; i < 5; ++i) {
     auto* b = kBtns[i]->get();
     if (!b)
       continue;

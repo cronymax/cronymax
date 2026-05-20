@@ -274,6 +274,13 @@ void RegisterShellHandlers(BridgeRegistry& r, BridgeHandler* h) {
     ctx.callback->Success(nlohmann::json{{"ok", true}});
   });
 
+  // ── browser.shell.close_overlay ──────────────────────────────────────────
+  r.add("browser.shell.close_overlay", [h](BridgeCtx ctx) {
+    if (h->shell_cbs_.close_overlay)
+      h->shell_cbs_.close_overlay();
+    ctx.callback->Success(nlohmann::json{{"ok", true}});
+  });
+
   // ── browser.theme.get ─────────────────────────────────────────────────────
   r.add("browser.theme.get", [h](BridgeCtx ctx) {
     if (!h->theme_cbs_.get_mode) {

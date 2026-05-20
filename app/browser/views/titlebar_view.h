@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "browser/models/resource_context.h"
 #include "browser/models/theme_aware_view.h"
 #include "browser/models/view_context.h"
 #include "browser/models/view_observer.h"
@@ -89,8 +90,7 @@ class TitleBarView : public ThemeAwareView, public ViewObserver<SpaceChanged> {
   CefRefPtr<CefLabelButton> btn_web_;
   CefRefPtr<CefLabelButton> btn_term_;
   CefRefPtr<CefLabelButton> btn_chat_;
-  CefRefPtr<CefLabelButton> btn_flows_;
-  CefRefPtr<CefLabelButton> btn_activities_;
+  // btn_flows_ and btn_activities_ have been moved to the sidebar CEF panel.
   CefRefPtr<CefLabelButton> btn_settings_;
 };
 

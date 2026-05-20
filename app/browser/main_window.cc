@@ -3,6 +3,7 @@
 #include "browser/models/view_model.h"
 #include "browser/views/panel_window.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -78,29 +79,6 @@ CefRefPtr<CefLabelButton> Button(CefButtonDelegate* delegate,
 }
 [[maybe_unused]] void EnsureButtonReferenced() {
   (void)&Button;
-}
-
-std::string EncodeFilePathForUrl(const std::string& path) {
-  static constexpr char kHex[] = "0123456789ABCDEF";
-  std::string out;
-  out.reserve(path.size() + 16);
-  for (unsigned char ch : path) {
-    char c = static_cast<char>(ch);
-    if (std::isalnum(ch) || c == '-' || c == '_' || c == '.' || c == '~' ||
-        c == '/' || c == ':') {
-      out.push_back(c);
-      continue;
-    }
-    out.push_back('%');
-    out.push_back(kHex[(ch >> 4) & 0x0F]);
-    out.push_back(kHex[ch & 0x0F]);
-  }
-  return out;
-}
-
-std::string FileUrlFromPath(const std::filesystem::path& path) {
-  auto normalized = path.lexically_normal().string();
-  return "file://" + EncodeFilePathForUrl(normalized);
 }
 
 // Phase 8: kContentCornerRadius + RoundContentCorners() removed —
@@ -246,20 +224,15 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   // arc-style-tab-cards: TabManager owns every tab; per-kind *_view_
   // singletons are gone. All non-web kinds are singleton tabs whose
   // content browser loads the existing renderer HTML.
-  shell_model_.tabs_ = std::make_unique<TabManager>(this);
+  shell_model_.tabs_ = std::make_unique<TabManager>(this, this);
   shell_model_.tabs_->SetClientHandler(client_handler_.get());
   // native-title-bar: terminal/chat are multi-instance now (each click of
   // "+ Terminal" / "+ Chat" creates a fresh tab). Agent/graph stay
   // singletons.
   shell_model_.tabs_->RegisterSingletonKind(TabKind::kSettings);
-  shell_model_.tabs_->SetKindContentUrl(TabKind::kChat,
-                                        ResourceUrl("panels/chat/index.html"));
-  shell_model_.tabs_->SetKindContentUrl(
-      TabKind::kTerminal, ResourceUrl("panels/terminal/index.html"));
-  shell_model_.tabs_->SetKindContentUrl(TabKind::kFlows,
-                                        ResourceUrl("panels/flows/index.html"));
-  shell_model_.tabs_->SetKindContentUrl(
-      TabKind::kSettings, ResourceUrl("panels/settings/index.html"));
+  shell_model_.tabs_->RegisterSingletonKind(TabKind::kActivity);
+  shell_model_.tabs_->RegisterSingletonKind(TabKind::kFlows);
+  shell_model_.tabs_->SetHiddenFromList({TabKind::kActivity, TabKind::kFlows});
 
   // refine-ui-theme-layout: load persisted theme mode (defaults to
   // "system") and seed shell_model_.current_chrome_ before BuildChrome so the
@@ -485,9 +458,31 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   root_layout->SetFlexForView(body_panel_, 1);
 
   // ── Sidebar (Phase 10: owned by SidebarView) ─────────────────────────────
-  sidebar_view_obj_ =
-      std::make_unique<SidebarView>(/*resource_ctx=*/this,
-                                    /*theme_ctx=*/this, client_handler_);
+  {
+    SidebarView::Host sv_host;
+    sv_host.open_panel_window = [this](const std::string& url,
+                                       const std::string& title) {
+      OpenPanelWindow(url, title);
+    };
+    sv_host.open_singleton_tab = [this](const std::string& kind_s) {
+      TabKind kind;
+      if (kind_s == "activity")
+        kind = TabKind::kActivity;
+      else if (kind_s == "flows")
+        kind = TabKind::kFlows;
+      else
+        return;
+      if (!shell_model_.tabs_->IsSingletonKind(kind))
+        return;
+      bool created = false;
+      TabId id = shell_model_.tabs_->FindOrCreateSingleton(kind, &created);
+      if (!id.empty())
+        shell_model_.tabs_->Activate(id);
+    };
+    sidebar_view_obj_ = std::make_unique<SidebarView>(
+        /*resource_ctx=*/this,
+        /*theme_ctx=*/this, client_handler_, std::move(sv_host));
+  }
   auto sv = sidebar_view_obj_->Build();
   body_panel_->AddChildView(sv);
   body_layout->SetFlexForView(sv, 0);
@@ -615,6 +610,10 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   };
 #endif
   disp_host.run_file_dialog = run_file_dialog_;
+  disp_host.notify_sidebar_active_kind = [this](const std::string& kind) {
+    if (sidebar_view_obj_)
+      sidebar_view_obj_->UpdateActiveButtonState(kind);
+  };
 
   dispatcher_ = std::make_unique<ViewDispatcher>(
       /*tabs_ctx=*/this, /*space_ctx=*/this,
@@ -763,6 +762,15 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
       }
       ContentView::RoundCornersFor(bv, main_window_,
                                    shell_model_.current_chrome_.bg_body);
+    }
+    // If the overlay browser just finished async creation and there is a
+    // pending URL queued from an OpenOverlay() call that arrived before
+    // GetBrowser() became non-null, dispatch the navigation now.
+    if (overlay_bv_ && overlay_bv_->GetBrowser() &&
+        overlay_bv_->GetBrowser()->GetIdentifier() == browser_id &&
+        !overlay_pending_url_.empty()) {
+      overlay_bv_->GetBrowser()->GetMainFrame()->LoadURL(overlay_pending_url_);
+      overlay_pending_url_.clear();
     }
   };
 
@@ -929,6 +937,33 @@ void MainWindow::BuildOverlaySlots() {
                       ? shell_model_.current_chrome_.bg_float
                       : static_cast<cef_color_t>(0xFF182625)));
 
+  // ── Slot 2: OVERLAY BrowserView (z2 — Settings modal) ──────────────────
+  overlay_bv_ = CefBrowserView::CreateBrowserView(
+      client_handler_, "about:blank", bs, nullptr, nullptr,
+      new AlloyBrowserViewDelegate());
+  overlay_oc_ = main_window_->AddOverlayView(
+      overlay_bv_, CEF_DOCKING_MODE_CUSTOM, /*can_activate=*/true);
+  overlay_oc_->SetVisible(false);
+  // Deferred: apply all-corner rounding + shadow to the OVERLAY NSWindow.
+  CefPostTask(TID_UI,
+              base::BindOnce(
+                  [](CefRefPtr<CefBrowserView> bv) {
+                    StyleOverlayBrowserView(
+                        bv->GetBrowser()
+                            ? bv->GetBrowser()->GetHost()->GetWindowHandle()
+                            : nullptr,
+                        12.0, kCornerAll, /*with_shadow=*/true);
+                  },
+                  overlay_bv_));
+
+  // ── Slot 3: FLOAT BrowserView (z3 — contextual float panels) ────────────
+  float_bv_ = CefBrowserView::CreateBrowserView(client_handler_, "about:blank",
+                                                bs, nullptr, nullptr,
+                                                new AlloyBrowserViewDelegate());
+  float_oc_ = main_window_->AddOverlayView(float_bv_, CEF_DOCKING_MODE_CUSTOM,
+                                           /*can_activate=*/true);
+  float_oc_->SetVisible(false);
+
   // ── Profile picker overlay (workspace-with-profile D9) ──────────────────
   ProfilePickerOverlay::Host ph;
   ph.run_file_dialog = run_file_dialog_;
@@ -1048,6 +1083,8 @@ void MainWindow::OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
   (void)new_bounds;
   if (popover_ && popover_->IsOpen())
     popover_->LayoutPopover();
+  if (overlay_open_)
+    UpdateOverlayRect();
   RefreshTitleBarDragRegion();
 }
 
@@ -1204,9 +1241,9 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
         bv = sb->browser_view();
       }
     }
-    fprintf(stderr, "[BroadcastToAllPanels] tab=%s kind=%s bv=%s\n",
-            s.id.c_str(), TabKindToString(s.kind), bv ? "ok" : "NULL");
-    fflush(stderr);
+    // fprintf(stderr, "[BroadcastToAllPanels] tab=%s kind=%s bv=%s\n",
+    //         s.id.c_str(), TabKindToString(s.kind), bv ? "ok" : "NULL");
+    // fflush(stderr);
     if (bv) {
       if (auto browser = bv->GetBrowser())
         client_handler_->SendBrowserEvent(browser, event_name, json_payload);
@@ -1234,55 +1271,6 @@ bool MainWindow::OnKeyEvent(CefRefPtr<CefTextfield> textfield,
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-std::string MainWindow::ResourceUrl(const std::string& relative_path) const {
-  // Dev mode: when CRONYMAX_DEV is set, panels are served by Vite at
-  // http://localhost:5173/<relative_path>. Allows HMR while the C++ shell
-  // continues to mount each panel as its own CefBrowserView.
-  if (const char* dev = std::getenv("CRONYMAX_DEV"); dev && *dev) {
-    return std::string("http://localhost:5173/") + relative_path;
-  }
-
-  std::vector<std::filesystem::path> candidates;
-
-  CefString resources_path;
-  if (CefGetPath(PK_DIR_RESOURCES, resources_path)) {
-    const auto resources = std::filesystem::path(resources_path.ToString());
-    candidates.push_back(resources / "web" / relative_path);
-    candidates.push_back(resources / relative_path);
-  }
-
-  CefString exe_path;
-  if (CefGetPath(PK_DIR_EXE, exe_path)) {
-    // PK_DIR_EXE is already a directory (Contents/MacOS on macOS).
-    const auto exe_dir = std::filesystem::path(exe_path.ToString());
-    candidates.push_back(exe_dir / "../Resources/web" / relative_path);
-    candidates.push_back(exe_dir / "../../Resources/web" / relative_path);
-  }
-
-  const auto cwd = std::filesystem::current_path();
-  candidates.push_back(cwd / "web" / relative_path);
-  candidates.push_back(cwd / "../web" / relative_path);
-  candidates.push_back(cwd / "../../web" / relative_path);
-
-  for (const auto& candidate : candidates) {
-    std::error_code ec;
-    const auto normalized =
-        std::filesystem::absolute(candidate, ec).lexically_normal();
-    if (ec)
-      continue;
-    if (std::filesystem::exists(normalized, ec) && !ec) {
-      return FileUrlFromPath(normalized);
-    }
-  }
-
-  // Keep previous behavior as a deterministic fallback for diagnostics.
-  if (!candidates.empty()) {
-    return FileUrlFromPath(std::filesystem::absolute(candidates.front()));
-  }
-
-  return "about:blank";
-}
 
 // ---------------------------------------------------------------------------
 // 4.5: Per-Space tab persistence (web tabs only). Title sync runs on every
@@ -1590,12 +1578,123 @@ void MainWindow::SetTitleBarDragRegion(const CefRect& /*rect*/) {
 }
 
 // OverlayActionContext -------------------------------------------------
-void MainWindow::ShowFloat(const std::string& /*url*/) {
-  // Phase 6+ (PopoverOverlay) will implement transient float panels.
+void MainWindow::OpenOverlay(const std::string& url) {
+  if (!overlay_bv_ || !overlay_oc_ || !main_window_)
+    return;
+  // Store pending URL so on_browser_created can load it if GetBrowser() is
+  // still null (async browser creation on the first open).
+  overlay_pending_url_ = url;
+  if (auto b = overlay_bv_->GetBrowser()) {
+    b->GetMainFrame()->LoadURL(url);
+    overlay_pending_url_.clear();
+  }
+  overlay_open_ = true;
+  UpdateOverlayRect();
+#if defined(__APPLE__)
+  if (!overlay_click_monitor_) {
+    const CefRect wb = main_window_->GetBounds();
+    const int oh = static_cast<int>(wb.height * 0.90);
+    const int oy = (wb.height - oh) / 2;
+    // Exclude rect covers the FULL window width from y=0 (top of frame,
+    // including title bar) to the bottom of the overlay. This prevents
+    // title-bar button clicks (e.g. Settings button, y ≈ 0-38) from
+    // triggering a spurious overlay-close when the overlay is open.
+    // Only clicks below the overlay (the thin strip at the bottom) will
+    // trigger dismiss.
+    const CefRect monitor_rect{0, 0, wb.width, oy + oh};
+    overlay_click_monitor_ = InstallClickOutsideMonitor(
+        reinterpret_cast<void*>(main_window_->GetWindowHandle()), monitor_rect,
+        [](void* user) {
+          auto* self = static_cast<MainWindow*>(user);
+          CefPostTask(TID_UI, base::BindOnce(&MainWindow::CloseOverlay,
+                                             CefRefPtr<MainWindow>(self)));
+        },
+        this);
+  }
+  // Raise the overlay NSWindow above any open popover child windows.
+  CefPostTask(
+      TID_UI,
+      base::BindOnce(
+          [](CefRefPtr<MainWindow> self) {
+            if (self->overlay_bv_ && self->overlay_bv_->GetBrowser()) {
+              void* h = reinterpret_cast<void*>(self->overlay_bv_->GetBrowser()
+                                                    ->GetHost()
+                                                    ->GetWindowHandle());
+              RaiseOverlayWindow(h);
+            }
+          },
+          CefRefPtr<MainWindow>(this)));
+#endif
+}
+
+void MainWindow::CloseOverlay() {
+  if (overlay_oc_) {
+    // Do NOT zero bounds before hiding — mirrors Popover::Close() and
+    // ProfilePickerOverlay::Hide() which only call SetVisible(false).
+    // Zeroing bounds while visible causes the overlay to be positioned at
+    // (0,0) with size 0; CEF on macOS may then ignore the subsequent
+    // SetBounds(valid_rect) call made while the overlay is invisible,
+    // resulting in a zero-size (invisible) overlay on the next open.
+    overlay_oc_->SetVisible(false);
+  }
+  overlay_open_ = false;
+#if defined(__APPLE__)
+  if (overlay_click_monitor_) {
+    RemoveClickOutsideMonitor(overlay_click_monitor_);
+    overlay_click_monitor_ = nullptr;
+  }
+#endif
+}
+
+void MainWindow::UpdateOverlayRect() {
+  if (!overlay_oc_ || !overlay_open_ || !main_window_)
+    return;
+  const CefRect wb = main_window_->GetBounds();
+  const int ow = static_cast<int>(wb.width * 0.90);
+  const int oh = static_cast<int>(wb.height * 0.90);
+  const CefRect rect{(wb.width - ow) / 2, (wb.height - oh) / 2, ow, oh};
+  overlay_oc_->SetBounds(rect);
+  overlay_oc_->SetVisible(true);
+}
+
+void MainWindow::ShowFloat(const std::string& url) {
+  if (!float_bv_ || !float_oc_ || !main_window_)
+    return;
+  DismissFloat();
+  if (auto b = float_bv_->GetBrowser())
+    b->GetMainFrame()->LoadURL(url);
+  const CefRect wb = main_window_->GetBounds();
+  constexpr int kFloatW = 400;
+  constexpr int kFloatH = 300;
+  constexpr int kMargin = 20;
+  const int fw = std::min(kFloatW, wb.width - 2 * kMargin);
+  const int fh = std::min(kFloatH, wb.height - 2 * kMargin);
+  const CefRect rect{(wb.width - fw) / 2, (wb.height - fh) / 2, fw, fh};
+  float_oc_->SetBounds(rect);
+  float_oc_->SetVisible(true);
+#if defined(__APPLE__)
+  float_monitor_ = InstallClickOutsideMonitor(
+      reinterpret_cast<void*>(main_window_->GetWindowHandle()), rect,
+      [](void* user) {
+        auto* self = static_cast<MainWindow*>(user);
+        CefPostTask(TID_UI, base::BindOnce(&MainWindow::DismissFloat,
+                                           CefRefPtr<MainWindow>(self)));
+      },
+      this);
+#endif
 }
 
 void MainWindow::DismissFloat() {
-  // Phase 6+ stub.
+  if (float_oc_) {
+    float_oc_->SetBounds({0, 0, 0, 0});
+    float_oc_->SetVisible(false);
+  }
+#if defined(__APPLE__)
+  if (float_monitor_) {
+    RemoveClickOutsideMonitor(float_monitor_);
+    float_monitor_ = nullptr;
+  }
+#endif
 }
 
 // ResourceContext ------------------------------------------------------

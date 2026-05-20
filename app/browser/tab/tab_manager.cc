@@ -7,6 +7,7 @@
 #include <sstream>
 #include <utility>
 
+#include "browser/models/resource_context.h"
 #include "browser/tab/simple_tab_behavior.h"
 #include "browser/tab/tab_behavior.h"
 #include "browser/tab/web_tab_behavior.h"
@@ -51,7 +52,8 @@ const char* AutoNumberPrefix(TabKind k) {
 }
 }  // namespace
 
-TabManager::TabManager(ThemeContext* theme_ctx) : theme_ctx_(theme_ctx) {}
+TabManager::TabManager(ThemeContext* theme_ctx, ResourceContext* resource_ctx)
+    : theme_ctx_(theme_ctx), resource_ctx_(resource_ctx) {}
 TabManager::~TabManager() = default;
 
 void TabManager::RegisterSingletonKind(TabKind kind) {
@@ -191,6 +193,8 @@ std::vector<TabSummary> TabManager::Snapshot() const {
   std::vector<TabSummary> out;
   out.reserve(tabs_.size());
   for (const auto& t : tabs_) {
+    if (hidden_from_list_.count(t->kind()))
+      continue;
     out.push_back(
         TabSummary{t->tab_id(), t->kind(), DisplayNameFor(t.get()), t->meta()});
   }
@@ -214,12 +218,13 @@ std::string TabManager::GetTabMeta(const TabId& id,
 std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
     TabKind kind,
     const OpenParams& params) {
-  auto resolve_url = [&](const char* fallback) -> std::string {
+  auto resolve_url = [&](const std::string& alias,
+                         const std::string& fallback =
+                             "about:blank") -> std::string {
     if (!params.url.empty())
       return params.url;
-    auto it = kind_content_urls_.find(kind);
-    if (it != kind_content_urls_.end() && !it->second.empty()) {
-      return it->second;
+    if (resource_ctx_) {
+      return resource_ctx_->AliasedResourceUrl(alias, fallback);
     }
     return fallback;
   };
@@ -227,7 +232,7 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
     case TabKind::kWeb: {
       if (!client_handler_)
         return nullptr;
-      const std::string url = resolve_url("https://www.google.com");
+      const std::string url = resolve_url("web", "https://www.google.com");
       const std::string init_url = params.lazy_load ? "about:blank" : url;
       auto beh = std::make_unique<WebTabBehavior>(client_handler_, theme_ctx_,
                                                   init_url);
@@ -244,7 +249,7 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
             client_handler_, theme_ctx_, kind, std::string("\xEE\x9C\x80"),
             params.display_name.empty() ? std::string("Terminal")
                                         : params.display_name,
-            resolve_url("about:blank"));
+            resolve_url("terminal"));
         beh->SetRequestContext(request_context_);
         return beh;
       }
@@ -256,7 +261,7 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
             client_handler_, theme_ctx_, kind, std::string("\xF0\x9F\x92\xAC"),
             params.display_name.empty() ? std::string("Chat")
                                         : params.display_name,
-            resolve_url("about:blank"));
+            resolve_url("chat"));
         beh->SetRequestContext(request_context_);
         return beh;
       }
@@ -266,7 +271,17 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
       {
         auto beh = std::make_unique<SimpleTabBehavior>(
             client_handler_, theme_ctx_, kind, std::string("\xE2\x9A\x99"),
-            "Flows", resolve_url("about:blank"));
+            "Flows", resolve_url("flows"));
+        beh->SetRequestContext(request_context_);
+        return beh;
+      }
+    case TabKind::kActivity:
+      if (!client_handler_)
+        return nullptr;
+      {
+        auto beh = std::make_unique<SimpleTabBehavior>(
+            client_handler_, theme_ctx_, kind, std::string("\xE2\x9A\x99"),
+            "Activity", resolve_url("activity"));
         beh->SetRequestContext(request_context_);
         return beh;
       }
@@ -276,7 +291,7 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
       {
         auto beh = std::make_unique<SimpleTabBehavior>(
             client_handler_, theme_ctx_, kind, std::string("\xE2\x9A\x99"),
-            "Settings", resolve_url("about:blank"));
+            "Settings", resolve_url("settings"));
         beh->SetRequestContext(request_context_);
         return beh;
       }
