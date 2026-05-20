@@ -419,6 +419,7 @@ impl RunMiddleware for TraceEmitterMiddleware {
         };
 
         let duration_ms = self.tool_durations.lock().get(&call.id).copied();
+        let is_error = matches!(outcome, ToolOutcome::Error(_));
 
         let mut trace = serde_json::json!({
             "kind": "tool_done",
@@ -426,6 +427,7 @@ impl RunMiddleware for TraceEmitterMiddleware {
             "tool_call_id": call.id,
             "result": result_value,
             "terminal": terminal,
+            "is_error": is_error,
         });
 
         if let Some(ms) = duration_ms {

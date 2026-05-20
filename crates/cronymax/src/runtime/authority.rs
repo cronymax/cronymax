@@ -633,6 +633,13 @@ impl RuntimeAuthority {
         Ok(())
     }
 
+    /// Look up the `RunId` for a given review. Returns `None` if the
+    /// review is not found (e.g., already garbage-collected after resolve).
+    pub fn run_id_for_review(&self, review_id: ReviewId) -> Option<RunId> {
+        let inner = self.inner.lock();
+        inner.snapshot.reviews.get(&review_id).map(|r| r.run_id)
+    }
+
     /// Like [`open_review`] but returns a [`ReviewHandle`] whose
     /// `completion` future resolves once the host calls
     /// [`resolve_review`]. Used by the agent loop's approval pause.

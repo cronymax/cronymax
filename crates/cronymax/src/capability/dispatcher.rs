@@ -625,6 +625,7 @@ impl DispatcherBuilder {
         run_id: String,
         agent_id: String,
         tx: tokio::sync::mpsc::Sender<DocumentSubmitted>,
+        cache_dir: Option<std::path::PathBuf>,
     ) -> &mut Self {
         use crate::llm::ToolDef;
 
@@ -660,8 +661,10 @@ impl DispatcherBuilder {
             let rid = run_id.clone();
             let aid = agent_id.clone();
             let sender = tx.clone();
+            let cd = cache_dir.clone();
             async move {
-                crate::capability::submit_document::handle(args, wr, fid, rid, aid, sender).await
+                crate::capability::submit_document::handle(args, wr, fid, rid, aid, sender, cd)
+                    .await
             }
         })
     }

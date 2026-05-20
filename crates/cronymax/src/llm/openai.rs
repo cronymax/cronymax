@@ -178,15 +178,9 @@ async fn pump(response: reqwest::Response, tx: mpsc::UnboundedSender<LlmEvent>) 
                 return;
             }
         };
-        match std::str::from_utf8(&chunk) {
-            Ok(s) => buf.push_str(s),
-            Err(_) => {
-                let _ = tx.send(LlmEvent::Error {
-                    message: "non-utf8 chunk from provider".into(),
-                });
-                return;
-            }
-        }
+        // Use lossy conversion so a single invalid byte (e.g. a partially-
+        // compressed chunk or a BOM) doesn't abort the whole stream.
+        buf.push_str(&String::from_utf8_lossy(&chunk));
         // Parse complete lines out of the rolling buffer.
         while let Some(idx) = buf.find('\n') {
             let line: String = buf.drain(..=idx).collect();

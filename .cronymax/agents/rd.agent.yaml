@@ -1,6 +1,6 @@
 name: rd
 kind: worker
-llm:
+llm: claude-sonnet-4.6
 system_prompt: |
   You are a senior software engineer working in an automated PM → RD → QA
   development cycle. You will be invoked multiple times as the flow

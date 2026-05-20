@@ -9,6 +9,7 @@ import {
   type LucideIcon,
   Pause,
   Play,
+  X,
 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -38,6 +39,8 @@ const GLYPHS: Record<TraceEntry["kind"], LucideIcon> = {
   reflection: Brain,
   memory_write: Database,
 };
+
+const GLYPH_ERROR: LucideIcon = X;
 
 const GLYPH_COLORS: Record<TraceEntry["kind"], string> = {
   run_start: "text-muted-foreground",
@@ -96,15 +99,32 @@ function entryLabel(entry: TraceEntry): string {
   switch (entry.kind) {
     case "run_start":
       return `${entry.model} · ${entry.tools.length} tools · max ${entry.turnsLimit} turns`;
-    case "assistant_turn":
-      return `turn ${entry.turnId}${entry.finishReason ? ` (${entry.finishReason})` : ""}`;
+    case "assistant_turn": {
+      const parts: string[] = [`turn ${entry.turnId}${entry.finishReason ? ` (${entry.finishReason})` : ""}`];
+      if (entry.usage) {
+        parts.push(`${fmtTokenCount(entry.usage.inputTokens)}↑ ${fmtTokenCount(entry.usage.outputTokens)}↓`);
+      }
+      if (entry.durationMs != null) {
+        parts.push(entry.durationMs < 1000 ? `${entry.durationMs}ms` : `${(entry.durationMs / 1000).toFixed(1)}s`);
+      }
+      return parts.join(" · ");
+    }
     case "tool_start": {
       const tool = entry.tool || "tool";
       const summary = truncate(summarizeArgs(entry.args));
       return summary ? `${tool}: ${summary}` : tool;
     }
-    case "tool_done":
-      return `${entry.tool || "tool"} done`;
+    case "tool_done": {
+      const tool = entry.tool || "tool";
+      const status = entry.isError ? " ✗" : " ✓";
+      const dur =
+        entry.durationMs != null
+          ? entry.durationMs < 1000
+            ? ` ${entry.durationMs}ms`
+            : ` ${(entry.durationMs / 1000).toFixed(1)}s`
+          : "";
+      return `${tool}${status}${dur}`;
+    }
     case "approval_request":
       return `approval: ${entry.tool}`;
     case "approval_resolved":
@@ -122,8 +142,20 @@ function entryDetail(entry: TraceEntry): unknown {
       return { systemPrompt: entry.systemPrompt, tools: entry.tools };
     case "assistant_turn":
       return { text: entry.text };
-    case "tool_start":
-      return entry.args;
+    case "tool_start": {
+      const raw = entry.args;
+      if (typeof raw === "string") {
+        const trimmed = raw.trim();
+        if (trimmed.startsWith("{")) {
+          try {
+            return JSON.parse(trimmed);
+          } catch {
+            /* fall through */
+          }
+        }
+      }
+      return raw;
+    }
     case "tool_done":
       return entry.result;
     case "approval_request":
@@ -182,8 +214,9 @@ function fmtTokenCount(n: number): string {
 function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
   const [open, setOpen] = useState(false);
   const indented = isChildEntry(entry);
-  const Glyph = GLYPHS[entry.kind];
-  const glyphColor = GLYPH_COLORS[entry.kind];
+  const isError = entry.kind === "tool_done" && !!entry.isError;
+  const Glyph = isError ? GLYPH_ERROR : GLYPHS[entry.kind];
+  const glyphColor = isError ? "text-destructive" : GLYPH_COLORS[entry.kind];
   const label = entryLabel(entry);
 
   // run_start shows system prompt as plain text + tool list, not JSON

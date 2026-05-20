@@ -91,6 +91,16 @@ impl Workspace {
         self.docs_dir(flow).join(format!("{doc}.md"))
     }
 
+    /// `<root>/.cronymax/specs/<run_id>/` — per-run final produces.
+    pub fn specs_dir(&self, run_id: &str) -> PathBuf {
+        self.cronymax_dir().join("specs").join(run_id)
+    }
+
+    /// `<root>/.cronymax/specs/<run_id>/<doc>.md`
+    pub fn spec_file(&self, run_id: &str, doc: &str) -> PathBuf {
+        self.specs_dir(run_id).join(format!("{doc}.md"))
+    }
+
     pub fn history_dir(&self, flow: &str) -> PathBuf {
         self.docs_dir(flow).join(".history")
     }

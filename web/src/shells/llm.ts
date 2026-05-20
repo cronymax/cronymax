@@ -21,12 +21,12 @@ export interface ProviderEndpoint {
 /** Static fallback when an Anthropic-compatible endpoint doesn't implement
  * `GET /v1/models`. Keep current models near the top. */
 export const ANTHROPIC_FALLBACK = [
-  "claude-opus-4-7",
-  "claude-opus-4-6",
-  "claude-sonnet-4-6",
-  "claude-opus-4-5",
-  "claude-sonnet-4-5",
-  "claude-haiku-4-5",
+  "claude-opus-4.7",
+  "claude-opus-4.6",
+  "claude-sonnet-4.6",
+  "claude-opus-4.5",
+  "claude-sonnet-4.5",
+  "claude-haiku-4.5",
 ];
 
 /** Static fallback for GitHub Copilot endpoints that don't return `/models`. */

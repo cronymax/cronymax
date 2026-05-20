@@ -118,6 +118,10 @@ export type TraceEntry =
       result: unknown;
       terminal: boolean;
       ts: number;
+      /** Actual wall-clock duration from the Rust runtime (ms). */
+      durationMs?: number;
+      /** True when the tool returned an error outcome. */
+      isError?: boolean;
     }
   | {
       kind: "approval_request";
@@ -200,7 +204,19 @@ export interface ShellBlock {
   thread?: Thread;
 }
 
-export type Block = ConversationBlock | ShellBlock;
+/** Lightweight flow-activity notification shown inline in the chat timeline. */
+export interface FlowNotificationBlock {
+  kind: "flow-notification";
+  id: string;
+  message: string;
+  /** "success" = approval/completion, "info" = status update */
+  variant: "success" | "info";
+  ts: number;
+  /** Kept for type compatibility with block iterators that access comments. */
+  comments: Comment[];
+}
+
+export type Block = ConversationBlock | ShellBlock | FlowNotificationBlock;
 
 export type ActiveView = { kind: "main" } | { kind: "thread"; blockId: string; threadId: string };
 
@@ -315,6 +331,12 @@ export type Action =
   | { type: "setCurrentRunId"; runId: string | null }
   | { type: "appendFileChange"; id: string; change: FileChange }
   | { type: "restoreToBlock"; blockId: string }
+  | {
+      type: "createFlowNotification";
+      id: string;
+      message: string;
+      variant: "success" | "info";
+    }
   | { type: "_unused"; _placeholder?: never };
 
 // ── Shell output processor ────────────────────────────────────────────
@@ -712,6 +734,18 @@ function reducer(state: State, action: Action): State {
       const idx = state.blocks.findIndex((b) => b.id === action.blockId);
       if (idx < 0) return state;
       return { ...state, blocks: state.blocks.slice(0, idx + 1), activeView: { kind: "main" } };
+    }
+
+    case "createFlowNotification": {
+      const notifBlock: FlowNotificationBlock = {
+        kind: "flow-notification",
+        id: action.id,
+        message: action.message,
+        variant: action.variant,
+        ts: Date.now(),
+        comments: [],
+      };
+      return { ...state, blocks: [...state.blocks, notifBlock] };
     }
 
     default:

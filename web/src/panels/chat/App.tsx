@@ -28,7 +28,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { FlowInstancesBar } from "@/components/FlowInstancesBar";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,6 +40,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Heading } from "@/components/ui/typography";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { cn } from "@/lib/utils";
+import { FlowDocReviewPanel } from "@/panels/chat/FlowDocReviewPanel";
+import { FlowInstancesBar } from "@/panels/chat/FlowInstancesBar";
 import { browser, shells } from "@/shells/bridge";
 import { listProviderModels } from "@/shells/llm";
 import { agentRegistry, agentRun, b64ToUtf8, flowRun, terminal as rt_terminal } from "@/shells/runtime";
@@ -48,6 +49,7 @@ import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
 import { ContentStreamView } from "./ContentStreamView";
 import { resolveContextLimit } from "./contextLimits";
 import { FileChangesView } from "./FileChangesView";
+import { FlowTrajectoryDiagram } from "./FlowTrajectoryDiagram";
 import { LiveTasksView } from "./LiveTasksView";
 import { PromptPopover } from "./PromptPopover";
 import { ReviewsPanel } from "./ReviewsPanel";
@@ -59,13 +61,13 @@ import {
   chatNameFor,
   ensureChat,
   type FileChange,
+  type FlowNotificationBlock,
   loadAnthropicEffort,
   loadChatData,
   loadChatsList,
   loadFlowsList,
   loadReasoningEffort,
   loadSelectedModel,
-  loadSelectedModelProvider,
   persistAnthropicEffort,
   persistChatData,
   persistReasoningEffort,
@@ -508,6 +510,23 @@ function ShellBlockView({
   );
 }
 
+// ── FlowNotificationBlockView ──────────────────────────────────────────
+
+function FlowNotificationBlockView({ block }: { block: FlowNotificationBlock }) {
+  return (
+    <div
+      className={`flex items-start gap-2.5 px-3 py-2 rounded-md border text-sm ${
+        block.variant === "success"
+          ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
+          : "border-blue-500/30 bg-blue-500/5 text-blue-700 dark:text-blue-400"
+      }`}
+    >
+      <span className="mt-0.5 shrink-0 text-base leading-none">{block.variant === "success" ? "✅" : "ℹ️"}</span>
+      <span className="leading-snug">{block.message}</span>
+    </div>
+  );
+}
+
 function BlockView({
   block,
   isStreaming,
@@ -536,6 +555,9 @@ function BlockView({
         onFork={onForkBlock}
       />
     );
+  }
+  if (block.kind === "flow-notification") {
+    return <FlowNotificationBlockView block={block} />;
   }
   return <ShellBlockView block={block} onAction={onShellAction} isHighlighted={isHighlighted} />;
 }
@@ -941,6 +963,36 @@ export function App() {
     // (re-created each render); listing them here would re-fire init every
     // render and reset state.blocks via loadChat, making just-sent message
     // cards flash and disappear.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Persistent flow-activity notification listener ─────────────────────
+  // Receives `flow.agent.notify` Raw events emitted on the original agent-run
+  // subscription (which stays alive for the life of the flow), converts them
+  // to FlowNotificationBlocks in the chat timeline regardless of whether an
+  // onRun listener is currently active.
+  useEffect(() => {
+    const off = browser.on("event", (raw: unknown) => {
+      const ev = raw as Record<string, unknown> | null;
+      if (!ev || ev.tag !== "event") return;
+      const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
+      const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
+      if (pl.kind !== "raw") return;
+      const data = pl.data as Record<string, unknown> | undefined;
+      if (data?.event !== "flow.agent.notify") return;
+      const message = data.message as string | undefined;
+      if (!message) return;
+      const kind = data.kind as string | undefined;
+      const variant: "success" | "info" = kind === "success" ? "success" : "info";
+      dispatch({
+        type: "createFlowNotification",
+        id: crypto.randomUUID(),
+        message,
+        variant,
+      });
+    });
+    return () => off();
+    // dispatch is stable; re-mount only if the reference changes (never in practice)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1370,10 +1422,6 @@ export function App() {
               agentName: speaker || undefined,
             });
 
-            // Persist
-            const { data } = loadChatData(chatId);
-            persistChatData(chatId, { ...data, blocks: [...data.blocks] });
-
             off();
             dispatch({ type: "setCurrentRunId", runId: null });
             dispatch({ type: "setRunning", running: false });
@@ -1409,9 +1457,9 @@ export function App() {
           }
 
           if (effectiveTrust === "autopilot") {
-            browser.send("review.approve", { review_id: reviewId }).catch(() => undefined);
+            browser.send("review.approve", { run_id: runId, review_id: reviewId }).catch(() => undefined);
           } else if (effectiveTrust === "bypass") {
-            browser.send("review.request_changes", { review_id: reviewId }).catch(() => undefined);
+            browser.send("review.request_changes", { run_id: runId, review_id: reviewId }).catch(() => undefined);
           } else {
             // "ask" — show the approval card
             dispatch({
@@ -1515,6 +1563,8 @@ export function App() {
                 result,
                 terminal: (trace.terminal as boolean | undefined) ?? false,
                 ts: Date.now(),
+                ...(durationMs != null ? { durationMs } : {}),
+                ...(isError ? { isError: true } : {}),
               },
             });
             // Update the tool_call segment in the content stream
@@ -2220,12 +2270,6 @@ export function App() {
           </Popover>
         )}
 
-        {/* ── Flow instances bar — visible when session has active flow runs ── */}
-        <FlowInstancesBar sessionId={state.activeChatId} />
-
-        {/* ── File changes summary ─────────────────────────────────────────── */}
-        <FileChangesView changes={sessionFileChanges} />
-
         {/* ── Copilot-like composer ──────────────────────────────────── */}
         <form onSubmit={onSubmit} className="px-3 pb-1 pt-1">
           {/* Approval card — shown when agent awaits tool review */}
@@ -2250,7 +2294,18 @@ export function App() {
           {/* Picker + editor wrapper — relative so the picker floats above */}
           <div className="relative">
             {/* ── Reviews panel — floats above editor when pending approvals exist ── */}
-            <div className="absolute bottom-full left-0 right-0 z-40 mb-1">
+            <div className="absolute bottom-full left-0 right-0 z-40 mb-1 flex flex-col gap-1">
+              {/* ── Flow instances bar — visible when session has active flow runs ── */}
+              <FlowInstancesBar sessionId={state.activeChatId} />
+
+              {/* ── File changes summary ─────────────────────────────────────────── */}
+              <FileChangesView changes={sessionFileChanges} />
+
+              {/* Flow trajectory diagram — shown when a flow is selected and has runs */}
+              {state.selectedFlow && (
+                <FlowTrajectoryDiagram selectedFlow={state.selectedFlow} sessionId={state.activeChatId} />
+              )}
+              <FlowDocReviewPanel sessionId={state.activeChatId} />
               <ReviewsPanel sessionId={state.activeChatId} />
             </div>
 

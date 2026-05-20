@@ -265,7 +265,7 @@ pub fn register_flow_tools(
                         for (port, &status) in &ns.ports {
                             if status == PortStatus::InReview {
                                 let doc_path =
-                                    format!(".cronymax/flows/{}/docs/{}.md", state.flow_id, port);
+                                    format!(".cronymax/specs/{}/{}.md", state.run_id, port);
                                 pending.push(serde_json::json!({
                                     "node_id": node_id,
                                     "port": port,

@@ -260,7 +260,12 @@ pub type EventEmitter = Box<dyn Fn(&str, &str) + Send + Sync + 'static>;
 
 /// Manages active flow runs for one Space.
 pub struct FlowRuntime {
+    /// Workspace layout — used to READ flow definitions and WRITE producer docs.
     layout: Workspace,
+    /// App-data directory used to WRITE run state, traces, and reviews.
+    /// Layout: `<storage_dir>/flows/<flow_id>/runs/<run_id>/`
+    /// Defaults to the workspace root for backwards-compat (tests, legacy).
+    storage_dir: PathBuf,
     runs: RwLock<HashMap<String, Arc<RwLock<FlowRunState>>>>,
     event_emitter: RwLock<Option<EventEmitter>>,
     trace_writers: RwLock<HashMap<String, Arc<TraceWriter>>>,
@@ -275,20 +280,58 @@ impl std::fmt::Debug for FlowRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlowRuntime")
             .field("layout", &self.layout)
+            .field("storage_dir", &self.storage_dir)
             .field("run_count", &self.runs.read().len())
             .finish()
     }
 }
 
 impl FlowRuntime {
-    pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
+    /// Create a `FlowRuntime` where run state is persisted under `storage_dir`
+    /// (e.g. `workspace_cache_dir`) and flow definitions / producer docs are
+    /// read / written under `workspace_root`.
+    pub fn new_with_storage_dir(
+        workspace_root: impl Into<PathBuf>,
+        storage_dir: impl Into<PathBuf>,
+    ) -> Self {
+        let workspace_root = workspace_root.into();
         Self {
             layout: Workspace::new(workspace_root),
+            storage_dir: storage_dir.into(),
             runs: RwLock::new(HashMap::new()),
             event_emitter: RwLock::new(None),
             trace_writers: RwLock::new(HashMap::new()),
             chat_sessions: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Convenience constructor for tests — run state is stored inside the
+    /// workspace directory (same layout as before the appDataDir split).
+    pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
+        let root: PathBuf = workspace_root.into();
+        Self::new_with_storage_dir(root.clone(), root)
+    }
+
+    // ── Run-state path helpers (use storage_dir, not workspace layout) ────
+
+    fn run_state_dir(&self, flow_id: &str, run_id: &str) -> PathBuf {
+        self.storage_dir
+            .join("flows")
+            .join(flow_id)
+            .join("runs")
+            .join(run_id)
+    }
+
+    fn run_state_file(&self, flow_id: &str, run_id: &str) -> PathBuf {
+        self.run_state_dir(flow_id, run_id).join("state.json")
+    }
+
+    fn run_trace_file(&self, flow_id: &str, run_id: &str) -> PathBuf {
+        self.run_state_dir(flow_id, run_id).join("trace.jsonl")
+    }
+
+    fn run_reviews_file(&self, flow_id: &str, run_id: &str) -> PathBuf {
+        self.run_state_dir(flow_id, run_id).join("reviews.json")
     }
 
     pub fn set_event_emitter(&self, cb: EventEmitter) {
@@ -341,7 +384,7 @@ impl FlowRuntime {
 
         // Persist and register.
         self.persist_run(&state).await?;
-        let trace_path = self.layout.run_trace_file(flow_id, &run_id);
+        let trace_path = self.run_trace_file(flow_id, &run_id);
         let trace_writer = Arc::new(TraceWriter::new(trace_path));
         let mut start_evt = TraceEvent::now(TraceKind::RunStarted);
         start_evt.run_id = run_id.clone();
@@ -539,7 +582,7 @@ impl FlowRuntime {
 
         let doc_path = self
             .get_run(run_id)
-            .map(|s| format!(".cronymax/flows/{}/docs/{}.md", s.flow_id, port))
+            .map(|_s| format!(".cronymax/specs/{}/{}.md", run_id, port))
             .unwrap_or_default();
 
         let mut reviewer_contexts: Vec<InvocationContext> = reviewers
@@ -911,7 +954,7 @@ impl FlowRuntime {
             .documents
             .iter()
             .map(|d| AvailableDoc {
-                path: format!(".cronymax/flows/{}/docs/{}.md", state.flow_id, d.name),
+                path: format!(".cronymax/specs/{}/{}.md", state.run_id, d.name),
                 doc_type: d.doc_type.clone(),
                 revision: d.current_revision,
             })
@@ -1133,7 +1176,8 @@ impl FlowRuntime {
 
     /// Scan existing `state.json` files and reload. Running → Paused.
     pub async fn rehydrate_from_disk(&self) -> usize {
-        let flows_dir = self.layout.flows_dir();
+        // Run state lives under `<storage_dir>/flows/<flow_id>/runs/<run_id>/`.
+        let flows_dir = self.storage_dir.join("flows");
         let mut count = 0;
 
         let mut flows = match tokio::fs::read_dir(&flows_dir).await {
@@ -1232,7 +1276,7 @@ impl FlowRuntime {
     }
 
     async fn persist_run(&self, state: &FlowRunState) -> anyhow::Result<()> {
-        let path = self.layout.run_state_file(&state.flow_id, &state.run_id);
+        let path = self.run_state_file(&state.flow_id, &state.run_id);
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -1251,7 +1295,7 @@ impl FlowRuntime {
         run_id: &str,
         port: &str,
     ) -> Vec<ReviewComment> {
-        let reviews_path = self.layout.run_reviews_file(flow_id, run_id);
+        let reviews_path = self.run_reviews_file(flow_id, run_id);
         let raw = match tokio::fs::read_to_string(&reviews_path).await {
             Ok(s) => s,
             Err(_) => return vec![],
@@ -1280,7 +1324,7 @@ impl FlowRuntime {
         reviewer: &str,
         comments: Vec<ReviewComment>,
     ) -> anyhow::Result<()> {
-        let reviews_path = self.layout.run_reviews_file(flow_id, run_id);
+        let reviews_path = self.run_reviews_file(flow_id, run_id);
         if let Some(parent) = reviews_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -1341,7 +1385,7 @@ impl FlowRuntime {
         revision: u32,
         status: &str,
     ) -> anyhow::Result<()> {
-        let reviews_path = self.layout.run_reviews_file(flow_id, run_id);
+        let reviews_path = self.run_reviews_file(flow_id, run_id);
         if let Some(parent) = reviews_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -1572,8 +1616,13 @@ nodes:
         let rt = FlowRuntime::new(dir.path());
         let flow = make_simple_flow();
         let (run_id, _) = rt.start_run(&flow, "hi").await.unwrap();
-        let layout = Workspace::new(dir.path());
-        let path = layout.run_state_file("test-flow", &run_id);
+        let path = dir
+            .path()
+            .join("flows")
+            .join("test-flow")
+            .join("runs")
+            .join(&run_id)
+            .join("state.json");
         assert!(path.exists(), "state.json should be written immediately");
     }
 
