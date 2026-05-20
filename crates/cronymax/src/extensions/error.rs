@@ -22,6 +22,9 @@ pub enum ExtensionError {
     #[error("publisher prefix mismatch: id `{id}` does not start with `{publisher}.`")]
     PublisherPrefixMismatch { id: String, publisher: String },
 
+    #[error("manifest field `{0}` is required but missing or empty")]
+    RequiredFieldMissing(String),
+
     #[error("extension `{0}` is not installed")]
     NotInstalled(String),
 

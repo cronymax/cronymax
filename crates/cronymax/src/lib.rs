@@ -14,7 +14,11 @@
 //! protocol-version constant, and a placeholder `Runtime` handle that
 //! `crony` can construct/start/stop.
 
-#![forbid(unsafe_code)]
+// Default to denying unsafe; one specific module (`extensions::host::node`)
+// opts in via `#![allow(unsafe_code)]` because fd-3 inheritance for the
+// extension RPC channel fundamentally requires `pre_exec` + `dup2`
+// (see spec §6.1.1). Every other call site must remain safe.
+#![deny(unsafe_code)]
 
 pub mod agent_loop;
 pub mod capability;

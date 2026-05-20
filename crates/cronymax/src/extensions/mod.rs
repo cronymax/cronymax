@@ -46,6 +46,7 @@ pub mod contributions;
 pub mod error;
 pub mod events;
 pub mod host;
+pub mod logging;
 pub mod manifest;
 pub mod registry;
 pub mod rpc;

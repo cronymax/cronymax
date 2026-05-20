@@ -12,6 +12,17 @@ compile_commands.json
 # Runtime logs (the top-level `*.log` rule above only matches files,
 # not directories — be explicit so `log/` doesn't show up untracked).
 /log/
+web/log/
+
+# Bundled Node 26 binary — downloaded by `scripts/fetch-node26.sh`.
+# Per-platform, ~200 MB per arch. The hand-written `bootstrap.js`
+# sibling and any test fixtures stay tracked.
+crates/cronymax/bundled/node/
+
+# TypeScript compile outputs for the SDK + sample extensions; rebuilt
+# from source via `tsc -p ...`.
+sdk/*/dist/
+examples/*/dist/
 
 # Web (Vite + pnpm)
 bun.lock

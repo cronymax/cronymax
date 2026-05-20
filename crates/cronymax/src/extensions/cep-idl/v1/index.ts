@@ -163,6 +163,11 @@ export type {
   FileStat,
   Workspace,
   WorkspaceFileSystem,
+  WorkspaceFolder,
   WorkspaceFsError,
   WorkspaceFsErrorCode,
 } from "./workspace";
+
+// NB: the cep-idl/v1 copy is the **types-only** source of truth. Runtime
+// value exports (`cronymax`, `window`, `commands`, ...) live only in the
+// distributed SDK at sdk/extension/src/index.ts via `./runtime`.

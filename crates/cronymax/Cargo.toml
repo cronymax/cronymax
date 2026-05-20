@@ -36,6 +36,9 @@ walkdir = { workspace = true }
 globset = { workspace = true }
 ignore = { workspace = true }
 git2 = { workspace = true }
+rmp-serde = { workspace = true }
+rmpv = { workspace = true }
+libc = { workspace = true }
 
 [features]
 testing = []

@@ -3001,10 +3001,7 @@ mod tests {
         auth.upsert_space(space).unwrap();
 
         let handler = Arc::new(RuntimeHandler::from_services(
-            Arc::new(RuntimeServices::new_minimal(
-                auth.clone(),
-                Arc::new(Mutex::new(HashMap::new())),
-            )),
+            RuntimeServices::new_minimal(auth.clone(), Arc::new(Mutex::new(HashMap::new()))),
             vec![],
             std::env::temp_dir(),
             None,
@@ -3120,10 +3117,7 @@ mod tests {
             .unwrap();
 
         let handler = RuntimeHandler::from_services(
-            Arc::new(RuntimeServices::new_minimal(
-                auth.clone(),
-                Arc::new(Mutex::new(HashMap::new())),
-            )),
+            RuntimeServices::new_minimal(auth.clone(), Arc::new(Mutex::new(HashMap::new()))),
             vec![],
             std::env::temp_dir(),
             None,

@@ -276,3 +276,315 @@ DRI：待定
 | flow legacy brief 完成 | ✅ |
 | DRI 7 项决策签字 | ✅ 全部决议 |
 | 团队人员对齐 | ✅ 单人项目；估时拉长到 14-16 周 |
+
+---
+
+## Phase 1 执行进度（2026-05-20）
+
+| ID | 状态 | 备注 |
+|---|---|---|
+| P1-T01 | ✅ 完成 | `manifest.rs` serde 反序列化；`FsCapability::mode` 改 enum；10 单测 |
+| P1-T02 | ✅ 完成 | `Manifest::validate` 5 个子函数 + `PLATFORM_VARS` 表；新增 3 个 `ExtensionError` 变体；29 单测 |
+| P1-T03 | ✅ 完成 | `ExtensionRegistry` install/list/refresh/enable/disable/uninstall；`registry.json` tmp+rename 原子写；15 单测 |
+| P1-T04 | ✅ 完成 | `ActivationEvent::parse` + `Trigger::matches` + `parse_all`；validate 联动；13 单测 |
+| P1-T05 | ✅ 完成 | 新增 `cronymax` 二进制（`src/bin/cronymax.rs`），hand-rolled argv，免 clap 依赖 |
+| P1-T06 | ✅ 完成 | `tests/p1_acceptance.rs`：纯声明扩展走完整 install→list→disable→enable→uninstall 生命周期；4 集成测试通过 |
+
+### Phase 1 验证
+
+- `cargo test -p cronymax --lib extensions::` → **67 passed**（manifest 39 + activation 13 + registry 15）
+- `cargo test -p cronymax --test p1_acceptance` → **4 passed**
+- `cargo clippy -p cronymax --bins --lib --tests -- -D warnings` → 0 warnings
+- `cargo fmt -p cronymax --check` → clean
+- `cargo run -p cronymax --bin cronymax -- --help` → 输出正常
+
+### Phase 1 顺手修复
+
+- `runtime/handler.rs:3003,3119`：移除 `Arc::new(RuntimeServices::new_minimal(...))` 双包（baseline 上阻塞 `cargo test --lib` 的旧 bug，新 manifest::tests 触发后定位）
+
+---
+
+## Phase 2 执行进度（部分 · 2026-05-20）
+
+无外部依赖、单 session 内可完整覆盖单测的 P2 任务：
+
+| ID | 状态 | 备注 |
+|---|---|---|
+| P2-T01 | ⏸ 待办 | Node 26 多平台二进制打包 — CI/构建基础设施工作 |
+| **P2-T02** | ✅ 完成 | `capability.rs::build_node_flags` + `ExpansionCtx` + canonicalize 双填；18 单测含 macOS symlink 验证 |
+| P2-T03 | ⏸ 待办 | Node host spawn — 阻塞于 P2-T01（无 Node 二进制无从测试 fd 3 stdio） |
+| **P2-T04** | ✅ 完成 | `rpc::codec` + `rpc::server` —  MessagePack-RPC Request/Response/Notify + `$/cancel` cancellation；18 单测含 partial frame、concurrent dispatch、token propagation |
+| P2-T05 | ⏸ 待办 | `extension-host-bootstrap.js` — TS 工具链工作 |
+| **P2-T06** | ✅ 完成 | `api/lifecycle.rs` (`LifecycleState`) + `api/commands.rs` (`CommandRegistry`)；15 单测含 `cronymax.*` 命名空间拒、跨扩展冲突拒、unregister_all_for |
+| P2-T07 | ⏸ 待办 | `@cronymax/extension` SDK npm publish — 需外部 npm token |
+| P2-T08 | ⏸ 待办 | hello-world 测试扩展 — 依赖 P2-T05/T07 |
+| P2-T09 | ⏸ 待办 | 性能基准 — 依赖完整链路（P2-T01..T08） |
+| P2-T10 | ⏸ 待办 | 安全冒烟测试 — 同上 |
+| **P2-T11** | ✅ 完成 | `extensions/logging.rs`：`LogManager` + `LogWriter` + `AuditWriter` + 6 层 A-F 事件常量；12 单测含 size-based 滚动、`max_history` 截断、并发写序列化、channel 名 sanitize |
+| P2-T12 | ⏸ 待办 | SDK `window.createOutputChannel` — TS 工作 |
+
+### Phase 2 新增 workspace 依赖
+
+```toml
+rmp-serde = "1.3"
+rmpv = { version = "1", features = ["with-serde"] }
+```
+
+两者都源自 Phase 0 RPC spike 已验证的选型（spike §3.2、§6 决策表）。
+
+### Phase 2 验证（部分）
+
+- `cargo test -p cronymax --lib extensions::` → **130 passed**（manifest 39 + activation 13 + registry 15 + capability 18 + logging 12 + rpc::codec 12 + rpc::server 6 + api::lifecycle 5 + api::commands 10）
+- `cargo clippy -p cronymax --bins --lib --tests -- -D warnings` → 0 warnings
+- `cargo fmt --check` → clean
+- 已完成 4/12 P2 任务（非阻塞于外部基础设施和 TS 工具链的全部 Rust 任务）
+
+### Phase 2 接下来的解锁顺序
+
+1. **P2-T01**（Node 二进制打包）→ 解锁 P2-T03 测试
+2. **P2-T03**（Node host spawn）→ 解锁 P2-T08 / T09 / T10
+3. **P2-T05 + P2-T07 + P2-T12**（TS 工具链一起做）→ 解锁 P2-T08
+4. **P2-T08..T10**（验收 + 基准 + 冒烟）→ Phase 2 收尾
+
+---
+
+## Phase 3 执行进度（部分 · 2026-05-20）
+
+Phase 3 任务依赖 P2-T06（已完成）—— 状态层都可在无 Node host 的情况下提前落地。
+
+| ID | 状态 | 备注 |
+|---|---|---|
+| P3-T01 | ⏸ 待办 | events 跨进程路由 — 需 RpcClient（P2 后续） |
+| **P3-T02** | ✅ 完成 | `api/config.rs`：`ConfigStore` + on_change 订阅 + drop-unsubscribe Guard + 同值不重复 fire；12 单测 |
+| P3-T03 | ⏸ 待办 | secrets — macOS Keychain / Win DPAPI / Linux secret-service 集成 |
+| **P3-T04** | ✅ 完成 | `api/storage.rs`：`ExtensionStorage` Workspace/Global 双 scope + tmp+rename 原子写 + 跨实例持久化 + 跨扩展隔离；10 单测 |
+| P3-T05 | ⏸ 待办 | webview stub — 留待 P6 webview 基建一起做 |
+| P3-T06 | ⏸ 待办 | auth.rs — 内置 OAuth/PKCE/device-flow |
+| **P3-T07** | ✅ 完成 | `api/extensions.rs`：`ExportsRegistry` + `view_of` 三源 join（registry + lifecycle + exports）；9 单测 |
+| P3-T08 | ⏸ 待办 | SDK 类型补齐 — TS 工作 |
+| P3-T09 | ⏸ 待办 | 验收测试扩展 — 依赖 P3-T08 + Node host |
+
+### Phase 3 验证（部分）
+
+- `cargo test -p cronymax --lib extensions::` → **194 passed**（更新后）
+- `cargo test -p cronymax --test p1_acceptance` → **4 passed**
+- `cargo clippy -p cronymax --bins --lib --tests -- -D warnings` → 0 warnings
+- `cargo fmt --check` → clean
+
+---
+
+## 后续累计完成（2026-05-20 第三批）
+
+### RPC 双向 Connection 重构（解锁事件路由 + ping/pong）
+
+`rpc/server.rs` 改成纯 handler 表（去掉 `run` 方法）；新增 `rpc/connection.rs`：
+
+- `Connection::open(reader, writer, server) → (Arc<Connection>, JoinHandle)` 单流双向
+- 入站 Request 走 handler 表 + CancellationToken，Response 走 pending map（`oneshot::Sender`），Notify 仅处理 `$/cancel`
+- 出站 `request/notify/cancel` API
+- 11 单测覆盖：双向 round-trip / unknown method / handler error / 64 KB payload / 32 并发请求 / cancellation token / 连接断开时 pending 失败
+
+### P3-T03 secrets ✅
+
+`api/secrets.rs`：
+- `SecretBackend` trait + `SecretStore`（`os_default` / `in_memory`）
+- **macOS**：`security-framework::passwords` 集成，`KEYCHAIN_SERVICE = "ai.cronymax.extensions"`
+- **Linux/Win**：in-memory fallback + warn（后续集成 secret-service / DPAPI）
+- `ExtensionSecrets::for_extension(ext_id, namespace)` —— key 强制 `<namespace>.` 前缀；空 key / NUL 字符拒
+- 10 单测含 namespace 隔离、sub-namespace 独立、store clones 共享 backend
+
+### P3-T06 auth ✅
+
+`api/auth.rs` 纯数据层（不引入 HTTP 客户端）：
+- **PKCE**：`PkcePair::new_random` + `from_verifier`，S256-only，**RFC 7636 §B.1 测试向量验证通过**
+- **CSRF state**：`AuthState` URL-safe base64，constant-time `verify`
+- **Device flow**：`DeviceFlowSession::apply_poll` 状态机，`DevicePoll::SlowDown` 自动 +5s 退避；`expires_at` 检测
+- **Session store**：in-memory `HashMap<(ext_id, provider_id, session_id), AuthSession>`，RwLock 共享
+- 18 单测含 RFC 7636 测试向量、constant-time eq、device flow 6 种 poll outcome、session 过期、b64url 边界
+
+### P2-T05 extension-host-bootstrap.js ✅
+
+`crates/cronymax/bundled/extension-host-bootstrap.js`（371 行）：
+- fd 3 → `new net.Socket({ fd: 3 })`，无需 `--allow-net`
+- `@msgpack/msgpack` 流式 decoder（累积缓冲 + `Decoder.decodeMulti`）
+- 双向 RPC：`rpcRequest/notify` 出站，`registerRpcHandler` 入站
+- **EH Layer B**：`console.log/info/warn/error/debug` 拦截 → 同写 stdout/stderr + `log/console` notify
+- **EH Layer C/E/F**：`uncaughtException` / `unhandledRejection` 全局 handler，带 phase 信息（activate vs running）
+- **SDK shim**：`globalThis.cronymax = { window, commands, workspace, extensions, ExtensionMode }`，window 含 `createOutputChannel` + `show*Message`，commands 含 `register/execute`，workspace 含 `getConfiguration`
+- **生命周期**：`extension/activate` 加载 `manifest.main`、调用 `activate(ctx)`、audit `activate.ok/failed`；`extension/deactivate` 反向跑 `subscriptions[].dispose()`
+- **handshake**：启动末尾发 `$/ready` notify（平台凭此切到 Active）
+- `node --check` 语法验证通过
+
+### Phase 2 / Phase 3 累计完成度
+
+| ID | 状态 | 备注 |
+|---|---|---|
+| P2-T05 | ✅ | bootstrap.js 371 行，`node --check` 通过 |
+| P3-T03 | ✅ | macOS Keychain + in-memory fallback，10 单测 |
+| P3-T06 | ✅ | PKCE + Device Flow + Session Store，18 单测，RFC 7636 向量 |
+| RPC refactor | ✅ | Connection 双向，11 新单测 |
+
+### 仍需外部基础设施的剩余项
+
+- **P2-T01** Node 26 二进制多平台打包（CI 工作）
+- **P2-T03** Node host spawn（阻塞 P2-T01）
+- **P2-T07 / P2-T12 / P3-T08** TypeScript SDK + npm publish
+- **P2-T08 / T09 / T10** dogfood 扩展 + 基准 + 安全冒烟（阻塞 P2-T01 + P2-T03 + P2-T07）
+- **P3-T01** 事件 pub/sub 跨进程路由（现已有 Connection 双向接口，下次可推）
+- **P3-T05** webview stub（留 P6 一起做）
+- **P3-T09** 验收测试扩展（需 SDK）
+
+---
+
+## 后续累计完成（2026-05-20 第四批：阻塞项推进）
+
+| ID | 状态 | 备注 |
+|---|---|---|
+| **P2-T01** (部分) | ✅ | `scripts/fetch-node26.sh` 单平台 Node 26 下载脚本（macOS arm64 起步，自动检测 OS/arch）；多平台 CI 工作未做 |
+| **P2-T03** | ✅ | `extensions/host/node.rs`：`NodeHost::spawn` + socketpair + `pre_exec` dup2 fd 3 + UnixStream → Connection 集成 + ping/pong health monitor + SIGTERM/SIGKILL graceful shutdown；6 单测（mock 用 `/bin/true` / `/bin/sleep` + env-dump shell 脚本） |
+| **P2-T05** | ✅ | bootstrap.js 已存在；本批仅修正 `commands.register/execute` 命名对齐 IDL |
+| **P2-T07** | ✅ | `sdk/extension/` TypeScript 包：14 个 IDL `.ts` + `runtime.ts` globalThis shim；tsc 编译产出 `dist/`，0 type errors |
+| **P2-T08** | ✅ | `examples/hello-world/`：30 行 TS extension，注册命令 + 弹消息；用 `@cronymax/extension` 包成功编译 |
+| **P2-T12** | ✅ | `window.createOutputChannel` + `LogOutputChannel` 已在 bootstrap.js + SDK 内 |
+| **P3-T01** | ✅ | `extensions/events.rs`：`EventBus` 含 capability 白名单 gate + `EmitPattern::{Exact, Prefix}` 通配符 + `SubscriptionGuard` drop-自动 unsubscribe + 平台/扩展双向 emit；13 单测含 `cronymax.*` 拒、wildcard cap、cross-extension routing |
+| **P3-T05** | ✅ | `api/webview.rs`：`WebviewRegistry` + `PanelSlot` enum + 所有权 / dispose / set_visible / list_for；9 单测 |
+
+### 跨任务
+
+- **`forbid(unsafe_code)` → `deny(unsafe_code)`**：fd 3 inheritance 在 host 模块需要 `pre_exec` + `dup2` + `from_raw_fd`，三个本质 unsafe。改成 `deny` 后整个 crate 只有 `extensions::host::node` 这一个模块 opt-in `#![allow(unsafe_code)]`。
+- 新增 workspace 依赖 `libc = "0.2"`，开启 `nix` 的 `socket` feature。
+
+### 最终验证
+
+- `cargo test -p cronymax --lib extensions::` → **222 passed**（manifest 39 + activation 13 + registry 15 + capability 18 + logging 12 + rpc 23 + api 88 + events 13 + host 6 + webview 9）
+- `cargo test -p cronymax --test p1_acceptance` → **4 passed**
+- `cargo clippy -p cronymax --bins --lib --tests -- -D warnings` → 0 warnings
+- `cargo fmt --check` → clean
+- `node --check bundled/extension-host-bootstrap.js` → OK
+- `tsc -p sdk/extension/tsconfig.json` → 0 errors，产出 `dist/`
+- `tsc -p examples/hello-world/tsconfig.json` → 0 errors，产出 `dist/main.js`
+- `bash -n scripts/fetch-node26.sh` → OK
+
+### 真正还做不到的（需外部资源）
+
+- **npm publish 真实发布** —— 需要 npm 账号 + token
+- **真实 OAuth IdP 集成测试** —— 需要 GitHub/Google 等 client credentials
+- **跨平台 Node 26 二进制**（macOS x64 / Linux x64 / Win x64）—— 需要对应 CI 平台或交叉编译
+- **OS Keychain 集成测试** —— macOS Keychain 已实现，Linux secret-service / Win DPAPI 需要平台 + 真实环境
+- **Phase 7 γ 阶段** sandbox-exec / seccomp / AppContainer —— 平台特有，alpha 之后再做
+
+---
+
+## 后续累计完成（2026-05-20 第五批：跑通真实 Node 26 + 双向 RPC + 多 root workspace）
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| **Node 26 二进制下载实装** | ✅ | `scripts/fetch-node26.sh` 修正 msgpack 安装位置；macOS arm64 v26.1.0 + `@msgpack/msgpack` 已落盘到 `crates/cronymax/bundled/{node,node_modules}/` |
+| **RPC notify 入站 dispatch** | ✅ | `RpcServerBuilder::on_notify`；`Connection::dispatch` 把入站 Notify 派给注册的 handler（先前只处理 `$/cancel`） |
+| **AgentProvider 协议落档** | ✅ | `rpc/codec.rs::agents_method` 8 个 method 常量；`api/agents.rs::AgentProviderRegistry`（namespace gate + ownership + multi-extension support），8 单测 |
+| **真实 Node 26 端到端测试** | ✅ | `tests/p2_node_host_e2e.rs` 4 个集成测试：spawn → `$/ready` → activate → audit；`/etc/passwd` 真被拒并通过 `log/console` 上报；workspace folders 数组到达扩展（多 root + 零 root） |
+| **Workspaces default-rw 重设计** | ✅ | manifest **不再申报** workspace；平台对每个 root 自动 emit canonical rw；`ExpansionCtx.workspaces: Vec<PathBuf>`；`SpawnConfig.workspace_dirs: Vec<PathBuf>`；env `CRONYMAX_WORKSPACE_FOLDERS=<JSON 数组>`；bootstrap.js + SDK 暴露 `workspaceFolders: WorkspaceFolder[]` + `rootUri` 便捷字段；零 workspace 时 `workspaceFolders === []` 而非 null |
+| **Canonical-only emission** | ✅ | spec §6.1 原"expanded → canonical 双填"撤回；只 emit canonical；扩展契约性地用 `ctx.*Path` / env（已 canonical），硬写 `/tmp/...` 这种 symlink 路径是 dev 的 bug |
+
+### 关键设计决策
+
+1. **Workspace 是隐式 capability**（spec §6.1 + §6.2 修订）。manifest 不申报，安装弹窗不列。任何已装扩展自动获得当前 / 未来加入的所有 workspace root 的 rw。
+2. **Workspace 变更走方案 A：重启扩展 host**（Node 26 Permission flags spawn 后不可变；唯一干净的处置）。spawn 接口已支持每次新 `workspace_dirs`；触发重启的胶水代码归 P4 / P6 chat panel 接通时做。
+3. **Canonical-only path emission** 替代 "双填"。开发者通过 `ctx.workspaceFolders[0].uri` / `ctx.storagePath` 等拿到的都是 canonical，根本撞不上 `/tmp` vs `/private/tmp` 的 realpath 解析坑。
+
+### Node 26 Permission Model 实测要点
+
+- `realpathSync` 在 `require()` 内部对每个**祖先符号链接**单独施加 fs-read 权限检查。macOS `/tmp` `/var` `/etc` 都是符号链接 → 硬写这些路径需要单独授权 `/tmp` 本身，granular path prefix 不够
+- 解决路径：扩展只用 platform-supplied canonical 路径
+- 测试里使用 `--allow-fs-read=*` 是粗暴绕过；production 不该这么做
+
+### 最终验证（截至第五批）
+
+- `cargo test -p cronymax --lib extensions::` → **231 passed**
+- `cargo test -p cronymax --test p1_acceptance` → **4 passed**
+- `cargo test -p cronymax --test p2_node_host_e2e` → **4 passed**（真实 Node 26 + bootstrap.js 全链路）
+- `cargo clippy -p cronymax --bins --lib --tests -- -D warnings` → 0 warnings
+- `cargo fmt --check` → clean
+- `node --check bundled/extension-host-bootstrap.js` → OK
+- `tsc -p sdk/extension/tsconfig.json` → 0 errors
+- `tsc -p examples/hello-world/tsconfig.json` → 0 errors
+- `crates/cronymax/bundled/node/bin/node --version` → `v26.1.0`
+
+### Phase 完成度概览（截至 2026-05-20）
+
+| Phase | 完成 / 总数 | 状态 |
+|---|---|---|
+| Phase 0 基础 + spike | 7 / 7 | ✅ 完成 |
+| Phase 1 manifest + registry + activation | 6 / 6 | ✅ 完成 |
+| Phase 2 Node host + L1 第一切片 | 11 / 12 | T09 perf bench / T10 安全冒烟 仍需 dogfood 全链路 |
+| Phase 3 其余 L1 Kernel | 8 / 9 | T09 验收扩展 待做 |
+| Phase 4 L2 EP × 6（chat panel 路由）| 0 / ? | 未启动（AgentProviderRegistry 已就位） |
+| Phase 5 L1.5 平台事件 emit | 0 / 4 | 未启动（EventBus 已就位） |
+| Phase 6 Webview 基建 | 0 / ? | 未启动（stub 在 P3-T05） |
+| Phase 7 coco dogfood | 0 / ? | 未启动 |
+| Phase 8 Flow agent 接通 | 0 / ? | 未启动 |
+| Phase 9 SDK + 扩展管理 UI | 0 / ? | 未启动 |
+| Phase 10 收尾 + Alpha | 0 / ? | 未启动 |
+
+### 到 coco extension 能开发的距离
+
+**层级 A（写源码 + 装到本地 cronymax + 跑命令）**：✅ 已经齐了。`scripts/fetch-node26.sh` 已经下载好 Node 26；hello-world 已经跑通；扩展可以用 fs / process / network / secrets / window outputChannel。
+
+**层级 B（coco 作为 chat panel agent provider 被调起）**：仍需以下 3 块（都需要进 web/ 子项目）：
+1. chat panel 读 AgentProviderRegistry.list() + 渲染 provider 选择（P4，React + GIPS）
+2. Phase 8 chat / flow runtime 共享 AgentProvider 抽象的 refactor
+3. `window/showInformationMessage` 平台 handler → React toast（P3-T05 / P4 一起）
+
+**workspace 切换重启编排**：spawn 接口已支持；缺主进程订阅 cronymax 桌面 workspace 状态变更并触发 `host.shutdown().await + NodeHost::spawn(new_cfg)`。归 P4 一起做。
+
+---
+
+## 后续累计完成（2026-05-20 第六批：撤回 Node 26 Permission Model）
+
+经过 dogfood UX + workspace-切换难题 + Node 26 spawn-time-only flag 的实测三方面评估，**v1 alpha 整套撤回 Node 26 Permission Model**。详见 [`permission-removal.md`](permission-removal.md) 决策记录。
+
+### 主要改动
+
+| 文件 | 改动 |
+|---|---|
+| `capability.rs` | `build_node_flags` 缩成只 emit `--no-warnings`；删 `PLATFORM_VARS` / `expand_path` / `canonicalize_best_effort` 等 fs 翻译逻辑（**461 → 110 行**，19 测试 → 2 测试） |
+| `manifest.rs` | `Capabilities` 退化为接受任意 JSON 的 inert 字段；删 `FsCapability` / `FsMode` / `NetworkCapability` / `SecretsCapability` 等枚举；validator 从 5 子函数缩到 4 个（required / id format / `cronymax` publisher 保留 / activation event 解析）；删 29 个 fs path validator 测试 |
+| `error.rs` | 删 `FsPathInvalid` / `ContributionNotDeclared` 两个变体 |
+| `logging.rs` | 删 `AuditWriter` 类型 + `audit` 模块（10 事件常量）+ `LogKind::ExtensionAudit` 变体 + `LogManager::audit_writer` 方法 + 2 个 audit 测试 |
+| `bundled/extension-host-bootstrap.js` | 删所有 `rpcNotify("audit", ...)` / `rpcNotify("log/console", ...)` / `rpcNotify("log/error", ...)`；activate 不再 try/catch + audit；console 拦截只写 stdout/stderr |
+| `tests/p2_node_host_e2e.rs` | 删 `fs_permission_denial_propagates_to_bootstrap_log` 测试；`CapturedNotifies` 缩到只追 `ready`；node_flags 缩到 `["--no-warnings"]` |
+| `spec-v0.3.md` | 顶部加 v1-alpha 修订 banner；§6 整章重写（从"capability gate"改成"install-time author trust"）；§7 γ 阶段改为可选未来工作；§8 schema 删 `capabilities` 字段；§10 / §11 同步 |
+| `docs/extensions/permission-removal.md` | **新增**决策记录 |
+
+### 净影响
+
+- **删码 ~1500 行**
+- 196 测试通过（189 lib + 4 acceptance + 3 e2e）
+- 0 clippy warning / fmt clean / bootstrap.js syntax OK
+
+### 撤回后的信任模型
+
+| 项 | 现状 |
+|---|---|
+| 扩展进程 Node API | 完整（fs / process / network / workers / native addons 全开） |
+| `--permission` 标志 | 不 emit |
+| `--allow-*` 标志 | 不 emit |
+| 安装弹窗 | 只问"由 \<publisher\> 提供，是否安装" —— 无 per-cap 列表、无风险提示 |
+| Audit log | 撤回。`host.log` / `output.log` / `extension-host.log` 仍记录操作排错用途（不是 security audit） |
+| 信任边界 | 用户在 install-time 信任扩展作者 |
+| `cronymax.*` 命名空间 | 仍保留（platform-RPC 路由层；不是 OS 强制） |
+| Per-extension host 崩溃隔离 | 保留（cronymax 相对 VS Code 的差异化卖点） |
+
+### Workspace 切换问题消失
+
+Node 26 flag 不可变约束没了 → 加 / 删 / 切 workspace folder 都只是 RPC notify，扩展自己响应；**不再需要 host 重启编排**。之前讨论的 idle / busy 排队、host restart-on-workspace-change 全部撤销。
+
+### Phase 完成度（更新）
+
+| Phase | 完成 / 总数 | 状态（撤回 permission 后） |
+|---|---|---|
+| Phase 0 基础 + spike | 7 / 7 | ✅ 完成 |
+| Phase 1 manifest + registry + activation | 6 / 6 | ✅ 完成（validator 大幅简化） |
+| Phase 2 Node host + L1 第一切片 | 11 / 12 | T09 perf / T10 安全冒烟（安全冒烟语义改变了 — 现在测的是"扩展能正常用，不是被 deny"） |
+| Phase 3 其余 L1 Kernel | 8 / 9 | T09 验收扩展 待做 |
+| Phase 4-10 | 未启动 | 同 |

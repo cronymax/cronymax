@@ -20,7 +20,7 @@ use super::error::{ExtensionError, ExtensionResult};
 /// Fields mirror the TypeScript `Manifest` interface in
 /// `cep-idl/v1/manifest.ts`. Optional fields keep `Option<T>` so growth in
 /// future v1 patch releases is non-breaking.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Manifest {
     /// `<publisher>.<name>`. Must start with `publisher.`.
@@ -54,79 +54,24 @@ pub struct Manifest {
     pub extension_dependencies: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Engines {
     /// SemVer range string, e.g. `^1.0`.
     pub cronymax: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// v1 alpha dropped the OS-level capability gate. The `capabilities` field
+/// is still parsed for forward compatibility — older manifests with
+/// `fs / network / process / ...` keys still load — but the platform does
+/// not enforce any of it. Treat this as inert documentation.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Capabilities {
-    /// Each entry declares one path scope; the platform expands variables
-    /// (see [`FsCapability::path`]) and emits matching `--allow-fs-*` flags.
-    /// Per-extension storage dirs are granted unconditionally and don't need
-    /// to appear here.
-    #[serde(default)]
-    pub fs: Vec<FsCapability>,
-    /// Informational only in v1 — Node 26's `--allow-net` is boolean; this
-    /// list is surfaced in the install-time consent dialog.
-    pub network: Option<NetworkCapability>,
-    #[serde(default)]
-    pub process: Option<bool>,
-    #[serde(default)]
-    pub workers: Option<bool>,
-    #[serde(default, rename = "native_addons")]
-    pub native_addons: Option<bool>,
-
-    pub secrets: Option<SecretsCapability>,
-
-    #[serde(default, rename = "events.subscribe")]
-    pub events_subscribe: Vec<String>,
-    #[serde(default, rename = "events.emit")]
-    pub events_emit: Vec<String>,
-
-    #[serde(default, rename = "ui-slots")]
-    pub ui_slots: Vec<String>,
-    #[serde(default, rename = "extension-points")]
-    pub extension_points: Vec<String>,
-
-    #[serde(default, rename = "auth.providers")]
-    pub auth_providers: Vec<String>,
+    /// Reserved for future use. Currently accepts any JSON; not enforced.
+    #[serde(flatten)]
+    pub _ignored: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-/// One filesystem grant. `path` MUST use one of the platform variables (see
-/// [`crate::extensions::capability`]):
-///
-/// * `{WORKSPACE}`
-/// * `{HOME}/<subpath>`
-/// * `{EXT_DIR}`
-/// * `{EXT_STORAGE}`
-/// * `{EXT_GLOBAL_STORAGE}`
-/// * `{TMP}/<subpath>`
-/// * `{CRONYMAX_CONFIG}/<subpath>`
-///
-/// Absolute hard-coded paths are rejected at manifest validation. The
-/// platform expands the variable at spawn time and canonicalises the result.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FsCapability {
-    pub path: String,
-    /// `"r"` or `"rw"`.
-    pub mode: String,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct NetworkCapability {
-    #[serde(default)]
-    pub allow: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SecretsCapability {
-    /// Namespace prefix — must be inside the extension's publisher prefix.
-    pub namespace: String,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Contributes {
     #[serde(default, rename = "cronymax.command")]
     pub commands: Vec<CommandContribution>,
@@ -142,7 +87,7 @@ pub struct Contributes {
     pub sidebar_views: Vec<SidebarViewContribution>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandContribution {
     pub id: String,
     pub title: String,
@@ -152,14 +97,15 @@ pub struct CommandContribution {
     pub icon: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigPageContribution {
     pub id: String,
     pub title: String,
     pub entry: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentProviderContribution {
     pub id: String,
     pub label: String,
@@ -175,7 +121,7 @@ pub struct AgentProviderContribution {
     pub supports_mcp: Option<bool>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentRendererContribution {
     pub id: String,
     #[serde(rename = "mimeTypes")]
@@ -183,7 +129,7 @@ pub struct ContentRendererContribution {
     pub entry: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SidebarViewContribution {
     pub id: String,
     pub title: String,
@@ -193,18 +139,84 @@ pub struct SidebarViewContribution {
 }
 
 impl Manifest {
-    /// Parse the on-disk JSON. **Phase 1 fills in validation.**
-    pub fn from_json(_raw: &str) -> ExtensionResult<Self> {
-        Err(ExtensionError::ManifestParse(
-            "manifest parsing is implemented in Phase 1 (P1-T01)".into(),
-        ))
+    /// Parse the on-disk JSON. Pure syntactic deserialization; semantic
+    /// checks live in [`Manifest::validate`].
+    pub fn from_json(raw: &str) -> ExtensionResult<Self> {
+        serde_json::from_str(raw).map_err(|e| ExtensionError::ManifestParse(e.to_string()))
     }
 
-    /// Run all schema checks. **Phase 1 fills these in.**
+    /// Run schema-level checks. v1 alpha dropped the OS capability gate
+    /// (see `permission-removal.md`), so the rules collapse to four:
+    ///
+    /// 1. Required string fields are non-empty
+    /// 2. `id == "<publisher>.<name>"` and `id`'s first segment matches
+    ///    `publisher`
+    /// 3. The `cronymax` publisher / `cronymax.*` namespace is reserved
+    ///    for the platform (the only namespace that's still gated; it
+    ///    sits at the RPC routing layer, not OS-level)
+    /// 4. Every entry in `activationEvents` parses as a known activation
+    ///    event
     pub fn validate(&self, _ext_dir: &std::path::Path) -> ExtensionResult<()> {
-        Err(ExtensionError::ManifestInvalid(
-            "manifest validation is implemented in Phase 1 (P1-T02)".into(),
-        ))
+        self.validate_required_fields()?;
+        self.validate_id_format()?;
+        self.validate_namespace_reserved()?;
+        self.validate_activation_events()?;
+        Ok(())
+    }
+
+    fn validate_activation_events(&self) -> ExtensionResult<()> {
+        super::activation::parse_all(&self.activation_events).map(|_| ())
+    }
+
+    fn validate_required_fields(&self) -> ExtensionResult<()> {
+        fn require(field: &str, value: &str) -> ExtensionResult<()> {
+            if value.is_empty() {
+                Err(ExtensionError::RequiredFieldMissing(field.into()))
+            } else {
+                Ok(())
+            }
+        }
+        require("id", &self.id)?;
+        require("name", &self.name)?;
+        require("version", &self.version)?;
+        require("publisher", &self.publisher)?;
+        require("main", &self.main)?;
+        require("engines.cronymax", &self.engines.cronymax)?;
+        Ok(())
+    }
+
+    fn validate_id_format(&self) -> ExtensionResult<()> {
+        let (pub_part, name_part) = self.id.split_once('.').ok_or_else(|| {
+            ExtensionError::ManifestInvalid(format!(
+                "id `{}` must be `<publisher>.<name>` (got no `.`)",
+                self.id
+            ))
+        })?;
+        if pub_part != self.publisher {
+            return Err(ExtensionError::PublisherPrefixMismatch {
+                id: self.id.clone(),
+                publisher: self.publisher.clone(),
+            });
+        }
+        if name_part.is_empty() {
+            return Err(ExtensionError::ManifestInvalid(format!(
+                "id `{}` is missing the `<name>` segment after `.`",
+                self.id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Only the publisher reservation survived the v1-alpha capability
+    /// drop. `cronymax` is platform-owned; third-party extensions can't
+    /// claim that publisher (and therefore can't take `cronymax.*` ids).
+    fn validate_namespace_reserved(&self) -> ExtensionResult<()> {
+        if self.publisher == "cronymax" {
+            return Err(ExtensionError::NamespaceReserved(
+                "publisher `cronymax` is reserved".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -215,4 +227,378 @@ pub struct InstalledExtension {
     pub ext_dir: PathBuf,
     /// Free-form extension-defined metadata, persisted across restarts.
     pub user_data: HashMap<String, serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_json() -> &'static str {
+        r#"{
+            "id": "alice.minimal",
+            "name": "Minimal",
+            "version": "0.0.1",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./main.js",
+            "activationEvents": []
+        }"#
+    }
+
+    #[test]
+    fn parses_minimal_manifest() {
+        let m = Manifest::from_json(minimal_json()).expect("minimal manifest parses");
+        assert_eq!(m.id, "alice.minimal");
+        assert_eq!(m.name, "Minimal");
+        assert_eq!(m.version, "0.0.1");
+        assert_eq!(m.publisher, "alice");
+        assert_eq!(m.engines.cronymax, "^1.0");
+        assert_eq!(m.main, "./main.js");
+        assert!(m.activation_events.is_empty());
+        // defaults
+        assert!(m.contributes.commands.is_empty());
+        assert!(m.extension_dependencies.is_empty());
+        // optional metadata
+        assert!(m.description.is_none());
+        assert!(m.icon.is_none());
+        assert!(m.keywords.is_none());
+    }
+
+    #[test]
+    fn malformed_json_returns_parse_error() {
+        let err = Manifest::from_json("{ not json").unwrap_err();
+        assert!(
+            matches!(err, ExtensionError::ManifestParse(_)),
+            "expected ManifestParse, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn from_json_uses_manifest_parse_not_json_variant() {
+        // Regression check: `From<serde_json::Error>` on `ExtensionError` maps
+        // to `Json(...)`, but `from_json` must surface `ManifestParse(...)` so
+        // callers can distinguish manifest-shaped failures from other JSON
+        // I/O in the platform.
+        let err = Manifest::from_json("{").unwrap_err();
+        match err {
+            ExtensionError::ManifestParse(msg) => assert!(!msg.is_empty()),
+            other => panic!("expected ManifestParse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_top_level_fields_are_tolerated() {
+        // Forward-compat: a manifest written against a future v1.x patch
+        // release MUST still parse on an older runtime. Validation
+        // (`P1-T02`) is where strict checks happen.
+        let raw = r#"{
+            "id": "alice.fwd",
+            "name": "Fwd",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js",
+            "activationEvents": [],
+            "someFutureField": { "anything": 42 }
+        }"#;
+        let m = Manifest::from_json(raw).expect("forward-compat manifest parses");
+        assert_eq!(m.id, "alice.fwd");
+    }
+
+    #[test]
+    fn legacy_capabilities_block_parses_but_is_inert() {
+        // v1 alpha dropped the OS capability gate. Old manifests that
+        // carry `capabilities.{fs,network,process,secrets,...}` must
+        // still parse cleanly so existing extensions don't break; the
+        // platform just ignores the content.
+        let raw = r#"{
+            "id": "alice.legacy",
+            "name": "Legacy",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js",
+            "activationEvents": [],
+            "capabilities": {
+                "fs":               [{ "path": "{WORKSPACE}", "mode": "rw" }],
+                "network":          { "allow": ["api.openai.com"] },
+                "process":          true,
+                "workers":          false,
+                "native_addons":    false,
+                "secrets":          { "namespace": "alice.legacy.*" },
+                "events.subscribe": ["cronymax.message.assistant.done"],
+                "events.emit":      ["alice.legacy.*"],
+                "ui-slots":         ["sidebar"],
+                "extension-points": ["cronymax.command"],
+                "auth.providers":   ["oauth-generic"]
+            }
+        }"#;
+        let m = Manifest::from_json(raw).expect("legacy capabilities still parse");
+        m.validate(std::path::Path::new("/tmp/fake"))
+            .expect("legacy capabilities are inert; validation must pass");
+    }
+
+    #[test]
+    fn contributes_dotted_keys_and_camel_case() {
+        let raw = r#"{
+            "id": "alice.contrib",
+            "name": "Contrib",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js",
+            "activationEvents": [],
+            "contributes": {
+                "cronymax.command": [
+                    { "id": "alice.contrib.hello", "title": "Hello", "category": "Greetings" }
+                ],
+                "cronymax.config.schema": {
+                    "title": "Alice",
+                    "properties": { "x": { "type": "string" } }
+                },
+                "cronymax.config.page": [
+                    { "id": "page.main", "title": "Main", "entry": "./settings.html" }
+                ],
+                "cronymax.agents.provider": [
+                    {
+                        "id": "alice.contrib.agent",
+                        "label": "Alice Agent",
+                        "supportsModels": true,
+                        "supportsModes": false,
+                        "supportsMcp": true
+                    }
+                ],
+                "cronymax.content.renderer": [
+                    { "id": "rend.foo", "mimeTypes": ["text/x-foo", "text/x-bar"], "entry": "./r.html" }
+                ],
+                "cronymax.ui.sidebar.view": [
+                    { "id": "view.main", "title": "Main", "entry": "./view.html" }
+                ]
+            }
+        }"#;
+        let m = Manifest::from_json(raw).unwrap();
+        let k = &m.contributes;
+
+        assert_eq!(k.commands.len(), 1);
+        assert_eq!(k.commands[0].id, "alice.contrib.hello");
+        assert_eq!(k.commands[0].category.as_deref(), Some("Greetings"));
+
+        let schema = k.config_schema.as_ref().expect("schema is present");
+        assert_eq!(schema.get("title").and_then(|v| v.as_str()), Some("Alice"));
+
+        assert_eq!(k.config_pages.len(), 1);
+        assert_eq!(k.config_pages[0].entry, "./settings.html");
+
+        assert_eq!(k.agent_providers.len(), 1);
+        let ap = &k.agent_providers[0];
+        assert_eq!(ap.id, "alice.contrib.agent");
+        assert_eq!(ap.supports_models, Some(true));
+        assert_eq!(ap.supports_modes, Some(false));
+        assert_eq!(ap.supports_mcp, Some(true));
+
+        assert_eq!(k.content_renderers.len(), 1);
+        assert_eq!(
+            k.content_renderers[0].mime_types,
+            vec!["text/x-foo".to_string(), "text/x-bar".to_string()]
+        );
+
+        assert_eq!(k.sidebar_views.len(), 1);
+        assert_eq!(k.sidebar_views[0].id, "view.main");
+    }
+
+    #[test]
+    fn extension_dependencies_round_trip() {
+        let raw = r#"{
+            "id": "alice.dep",
+            "name": "Dep",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js",
+            "activationEvents": ["onStartup"],
+            "extensionDependencies": ["bob.lib", "carol.util"]
+        }"#;
+        let m = Manifest::from_json(raw).unwrap();
+        assert_eq!(m.activation_events, vec!["onStartup".to_string()]);
+        assert_eq!(
+            m.extension_dependencies,
+            vec!["bob.lib".to_string(), "carol.util".to_string()]
+        );
+    }
+
+    // ── P1-T02 validation tests ────────────────────────────────────────────
+
+    fn validate(json: &str) -> ExtensionResult<Manifest> {
+        let m = Manifest::from_json(json)?;
+        m.validate(std::path::Path::new("/tmp/fake-ext-dir"))?;
+        Ok(m)
+    }
+
+    #[test]
+    fn validate_accepts_minimal_manifest() {
+        // Minimal manifest defines no capabilities / contributes — should
+        // pass clean.
+        validate(minimal_json()).expect("minimal manifest validates");
+    }
+
+    #[test]
+    fn validate_rejects_empty_id() {
+        let raw = r#"{
+            "id": "",
+            "name": "X",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js"
+        }"#;
+        let err = validate(raw).unwrap_err();
+        assert!(
+            matches!(err, ExtensionError::RequiredFieldMissing(ref f) if f == "id"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_missing_main() {
+        let raw = r#"{
+            "id": "alice.x",
+            "name": "X",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": ""
+        }"#;
+        let err = validate(raw).unwrap_err();
+        assert!(
+            matches!(err, ExtensionError::RequiredFieldMissing(ref f) if f == "main"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_missing_engines() {
+        let raw = r#"{
+            "id": "alice.x",
+            "name": "X",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "" },
+            "main": "./m.js"
+        }"#;
+        let err = validate(raw).unwrap_err();
+        assert!(
+            matches!(err, ExtensionError::RequiredFieldMissing(ref f) if f == "engines.cronymax"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_publisher_mismatch() {
+        let raw = r#"{
+            "id": "bob.bar",
+            "name": "Bar",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js"
+        }"#;
+        let err = validate(raw).unwrap_err();
+        assert!(
+            matches!(err, ExtensionError::PublisherPrefixMismatch { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_id_without_dot() {
+        let raw = r#"{
+            "id": "nodotted",
+            "name": "X",
+            "version": "0.1.0",
+            "publisher": "nodotted",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js"
+        }"#;
+        let err = validate(raw).unwrap_err();
+        assert!(
+            matches!(err, ExtensionError::ManifestInvalid(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_id_with_empty_name_segment() {
+        let raw = r#"{
+            "id": "alice.",
+            "name": "X",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js"
+        }"#;
+        let err = validate(raw).unwrap_err();
+        assert!(
+            matches!(err, ExtensionError::ManifestInvalid(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_cronymax_publisher() {
+        let raw = r#"{
+            "id": "cronymax.builtin",
+            "name": "Builtin",
+            "version": "0.1.0",
+            "publisher": "cronymax",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js"
+        }"#;
+        let err = validate(raw).unwrap_err();
+        assert!(
+            matches!(err, ExtensionError::NamespaceReserved(_)),
+            "got {err:?}"
+        );
+    }
+
+    // Capability-block tests were dropped in the v1-alpha permission-model
+    // removal. Manifests with arbitrary `capabilities.{fs,network,...}`
+    // shapes parse but the platform no longer interprets them.
+
+    #[test]
+    fn validate_rejects_unknown_activation_event() {
+        let raw = r#"{
+            "id": "alice.x",
+            "name": "X",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js",
+            "activationEvents": ["onLaunch"]
+        }"#;
+        let err = validate(raw).unwrap_err();
+        assert!(
+            matches!(err, ExtensionError::UnknownActivationEvent(ref e) if e == "onLaunch"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_known_activation_events() {
+        let raw = r#"{
+            "id": "alice.x",
+            "name": "X",
+            "version": "0.1.0",
+            "publisher": "alice",
+            "engines": { "cronymax": "^1.0" },
+            "main": "./m.js",
+            "activationEvents": [
+                "onStartup",
+                "*",
+                "onCommand:alice.x.hi",
+                "onAgentProvider:alice.x.agent",
+                "onView:alice.x.view"
+            ]
+        }"#;
+        validate(raw).expect("all known prefixes validate");
+    }
 }

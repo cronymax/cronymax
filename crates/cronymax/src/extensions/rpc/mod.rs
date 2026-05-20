@@ -5,4 +5,8 @@
 //! cancellation token piggy-backed on requests.
 
 pub mod codec;
+pub mod connection;
 pub mod server;
+
+pub use connection::Connection;
+pub use server::{CancellationToken, RpcServer, RpcServerBuilder};

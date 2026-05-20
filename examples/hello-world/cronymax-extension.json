@@ -1,0 +1,22 @@
+{
+  "id": "cronymax-examples.hello-world",
+  "name": "Hello World",
+  "version": "0.1.0",
+  "publisher": "cronymax-examples",
+  "engines": { "cronymax": "^1.0" },
+  "main": "./dist/main.js",
+  "description": "Smallest possible Cronymax extension: registers a single command that pops a message.",
+  "activationEvents": ["onCommand:cronymax-examples.hello-world.hello"],
+  "contributes": {
+    "cronymax.command": [
+      {
+        "id": "cronymax-examples.hello-world.hello",
+        "title": "Hello, World!",
+        "category": "Examples"
+      }
+    ]
+  },
+  "capabilities": {
+    "extension-points": ["cronymax.command"]
+  }
+}
