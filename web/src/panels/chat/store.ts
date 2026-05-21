@@ -208,6 +208,20 @@ export interface AgentSummary {
   name: string;
   kind: string;
   llm: string;
+  label?: string;
+  owning_ext?: string;
+  description?: string;
+  supports_models?: boolean;
+  supports_modes?: boolean;
+  supports_mcp?: boolean;
+}
+
+export function agentPickerDescription(agent: AgentSummary): string | undefined {
+  if (agent.kind === "extension_provider") {
+    const label = agent.label || agent.name;
+    return agent.owning_ext ? `extension: ${label} · ${agent.owning_ext}` : `extension: ${label}`;
+  }
+  return agent.kind ? `kind: ${agent.kind}` : undefined;
 }
 
 export interface State {

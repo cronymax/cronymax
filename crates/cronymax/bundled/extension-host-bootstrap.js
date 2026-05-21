@@ -266,6 +266,12 @@ process.on("unhandledRejection", (reason) => {
 
 const subscriptions = []; // Disposable list — ctx.subscriptions
 const channels = new Map(); // name → OutputChannel
+// Live AgentSession instances keyed by their `id` field. Populated when
+// `agents/session.create:<providerId>` resolves; consumed by the
+// per-session handlers (prompt / dispose / cancel / resolvePermission)
+// registered below. Spec §4 — the wire format routes by sessionId; the
+// per-provider scope only matters for session creation.
+const agentSessions = new Map();
 
 function createOutputChannel(name, options) {
   const isLog = !!(options && options.log);
@@ -377,7 +383,18 @@ const cronymax = {
     registerProvider(providerId, impl) {
       registerRpcHandler(
         "agents/session.create:" + providerId,
-        async (params) => impl.createSession(params),
+        async (params) => {
+          const session = await impl.createSession(params);
+          if (!session || typeof session.id !== "string" || !session.id) {
+            throw new Error(
+              `provider '${providerId}' createSession() must return AgentSession with a non-empty string id`,
+            );
+          }
+          // Stash so the global session.prompt / dispose / cancel /
+          // resolvePermission handlers (registered below) can find it.
+          agentSessions.set(session.id, session);
+          return { sessionId: session.id };
+        },
       );
       registerRpcHandler(
         "agents/listModels:" + providerId,
@@ -436,6 +453,162 @@ globalThis.cronymax = cronymax;
 // ── 5. activate / deactivate handlers ------------------------------------
 
 registerRpcHandler("$/ping", async () => "pong");
+
+// ── AgentSession plumbing (cep-idl/v1/agents.ts §AgentSession) -----------
+//
+// session.create is per-provider (registered by registerProvider above);
+// the rest are global because they look up by sessionId. Iteration of
+// session.prompt() events streams back as `agents/event` notifies; turn
+// completion is signalled via `agents/turn.done`. The session.prompt
+// request itself resolves only after the iterator finishes (or errors /
+// cancels), so the platform can serialize turns on a single sessionId.
+
+function buildCancellationToken(cancelFlag) {
+  const cbs = [];
+  let fired = false;
+  const fireOnce = () => {
+    if (fired) return;
+    fired = true;
+    for (const cb of cbs) {
+      try {
+        cb();
+      } catch (e) {
+        process.stderr.write(`[bootstrap] cancellation cb threw: ${e}\n`);
+      }
+    }
+  };
+  // Poll the in-flight cancel flag; flip onCancellationRequested
+  // listeners on first observation. A 25ms cadence keeps prompt() iteration
+  // responsive to user cancel without burning CPU on a tight loop.
+  const poller = setInterval(() => {
+    if (cancelFlag.cancelled) {
+      clearInterval(poller);
+      fireOnce();
+    }
+  }, 25);
+  return {
+    token: {
+      get isCancellationRequested() {
+        return cancelFlag.cancelled;
+      },
+      onCancellationRequested(cb) {
+        if (cancelFlag.cancelled) {
+          // Already cancelled — schedule callback on next tick.
+          Promise.resolve().then(() => {
+            try {
+              cb();
+            } catch (e) {
+              process.stderr.write(
+                `[bootstrap] cancellation cb threw (sync path): ${e}\n`,
+              );
+            }
+          });
+          return {
+            dispose() {
+              /* no-op — already fired */
+            },
+          };
+        }
+        cbs.push(cb);
+        return {
+          dispose() {
+            const i = cbs.indexOf(cb);
+            if (i >= 0) cbs.splice(i, 1);
+          },
+        };
+      },
+    },
+    dispose: () => clearInterval(poller),
+  };
+}
+
+registerRpcHandler("agents/session.prompt", async (params, cancelFlag) => {
+  const sessionId = params && params.sessionId;
+  if (typeof sessionId !== "string" || !sessionId) {
+    throw new Error("agents/session.prompt: missing string sessionId");
+  }
+  const session = agentSessions.get(sessionId);
+  if (!session) {
+    throw new Error(`agents/session.prompt: unknown sessionId '${sessionId}'`);
+  }
+  const message = (params && params.message) || { text: "" };
+  const { token, dispose: disposeToken } = buildCancellationToken(cancelFlag);
+  let sawDone = false;
+  try {
+    for await (const event of session.prompt(message, token)) {
+      rpcNotify("agents/event", { sessionId, event });
+      if (event && event.kind === "done") {
+        sawDone = true;
+        break;
+      }
+    }
+    if (!sawDone) {
+      // Iterator ended without emitting a done event — synthesize one so
+      // the platform observes a well-formed turn boundary. cancelled wins
+      // over end_turn if the cancel flag was raised mid-iteration.
+      const stopReason = cancelFlag.cancelled ? "cancelled" : "end_turn";
+      const synthetic = { kind: "done", stopReason };
+      rpcNotify("agents/event", { sessionId, event: synthetic });
+    }
+  } catch (err) {
+    const msg = err && err.message ? String(err.message) : String(err);
+    rpcNotify("agents/event", {
+      sessionId,
+      event: { kind: "done", stopReason: "error", errorMessage: msg },
+    });
+  } finally {
+    disposeToken();
+  }
+  rpcNotify("agents/turn.done", { sessionId });
+  return null;
+});
+
+registerRpcHandler("agents/session.resolvePermission", async (params) => {
+  const sessionId = params && params.sessionId;
+  if (typeof sessionId !== "string" || !sessionId) {
+    throw new Error("agents/session.resolvePermission: missing string sessionId");
+  }
+  const session = agentSessions.get(sessionId);
+  if (!session) {
+    throw new Error(
+      `agents/session.resolvePermission: unknown sessionId '${sessionId}'`,
+    );
+  }
+  if (typeof session.resolvePermission !== "function") {
+    throw new Error(
+      `agents/session.resolvePermission: session '${sessionId}' has no resolvePermission()`,
+    );
+  }
+  await session.resolvePermission(params.requestId, params.decision);
+  return null;
+});
+
+registerRpcHandler("agents/session.cancel", async (params) => {
+  const sessionId = params && params.sessionId;
+  if (typeof sessionId !== "string" || !sessionId) {
+    throw new Error("agents/session.cancel: missing string sessionId");
+  }
+  const session = agentSessions.get(sessionId);
+  if (!session) return null;
+  if (typeof session.cancel === "function") {
+    await session.cancel();
+  }
+  return null;
+});
+
+registerRpcHandler("agents/session.dispose", async (params) => {
+  const sessionId = params && params.sessionId;
+  if (typeof sessionId !== "string" || !sessionId) {
+    throw new Error("agents/session.dispose: missing string sessionId");
+  }
+  const session = agentSessions.get(sessionId);
+  if (!session) return null;
+  agentSessions.delete(sessionId);
+  if (typeof session.dispose === "function") {
+    await session.dispose();
+  }
+  return null;
+});
 
 // Platform → extension reverse notify: a register call failed on the
 // runtime side (id not declared in manifest / cross-extension collision

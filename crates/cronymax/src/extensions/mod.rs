@@ -54,5 +54,5 @@ pub mod runtime;
 
 pub use error::ExtensionError;
 pub use manifest::Manifest;
-pub use registry::ExtensionRegistry;
+pub use registry::{default_registry_root, ExtensionRegistry};
 pub use runtime::ExtensionRuntime;

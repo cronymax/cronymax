@@ -54,6 +54,7 @@ import { ReviewsPanel } from "./ReviewsPanel";
 import {
   type AnthropicEffort,
   type Attachment,
+  agentPickerDescription,
   type Block,
   type ConversationBlock,
   chatNameFor,
@@ -1832,7 +1833,7 @@ export function App() {
         .map((a) => ({
           id: a.name,
           label: a.name,
-          description: a.kind ? `kind: ${a.kind}` : undefined,
+          description: agentPickerDescription(a),
         }))
         .slice(0, 8);
     }

@@ -12,7 +12,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cronymax::extensions::ExtensionRegistry;
+use cronymax::extensions::{default_registry_root, ExtensionRegistry};
 
 const HELP: &str = r#"cronymax — extension platform CLI
 
@@ -165,8 +165,5 @@ fn resolve_root(override_path: Option<&str>) -> Result<PathBuf, String> {
     if let Some(p) = override_path {
         return Ok(PathBuf::from(p));
     }
-    let home = env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
-        .ok_or("could not resolve HOME / USERPROFILE; pass --root <dir>")?;
-    Ok(PathBuf::from(home).join(".cronymax").join("extensions"))
+    default_registry_root().ok_or("could not resolve HOME / USERPROFILE; pass --root <dir>".into())
 }

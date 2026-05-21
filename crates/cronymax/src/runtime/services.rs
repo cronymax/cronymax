@@ -17,6 +17,7 @@ use parking_lot::Mutex;
 
 use crate::capability::factory::{CapabilityFactory, DefaultCapabilityFactory};
 use crate::config::RuntimeConfig;
+use crate::extensions::{default_registry_root, ExtensionRegistry, ExtensionRuntime};
 use crate::flow::{FlowRuntimeOnCreate, FlowRuntimeRegistry};
 use crate::llm::factory::{DefaultLlmProviderFactory, LlmProviderFactory};
 use crate::memory::MemoryManager;
@@ -52,6 +53,10 @@ pub struct RuntimeServices {
 
     /// Optional semantic-memory manager (present when embedding is configured).
     pub memory_manager: Option<Arc<MemoryManager>>,
+
+    /// Extension platform runtime. Consumers use this to discover and drive
+    /// activated extension contribution points.
+    pub extensions: Option<ExtensionRuntime>,
 }
 
 impl RuntimeServices {
@@ -82,6 +87,14 @@ impl RuntimeServices {
         });
         let flow_registry = Arc::new(FlowRuntimeRegistry::with_on_create(on_create));
 
+        let extensions = default_registry_root().map(|extensions_root| {
+            let mut extension_registry = ExtensionRegistry::new(extensions_root);
+            if let Err(e) = extension_registry.refresh() {
+                tracing::warn!(error = %e, "extension registry refresh failed during runtime startup");
+            }
+            ExtensionRuntime::new(extension_registry)
+        });
+
         Arc::new(Self {
             authority,
             flow_registry,
@@ -89,6 +102,7 @@ impl RuntimeServices {
             capability_factory,
             terminal_managers,
             memory_manager,
+            extensions,
         })
     }
 
@@ -108,6 +122,7 @@ impl RuntimeServices {
             capability_factory,
             terminal_managers,
             memory_manager: None,
+            extensions: None,
         })
     }
 }

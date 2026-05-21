@@ -92,6 +92,7 @@ pub mod agents_method {
     pub const SESSION_PROMPT: &str = "agents/session.prompt";
     pub const SESSION_RESOLVE_PERMISSION: &str = "agents/session.resolvePermission";
     pub const SESSION_DISPOSE: &str = "agents/session.dispose";
+    pub const SESSION_CANCEL: &str = "agents/session.cancel";
     pub const EVENT: &str = "agents/event";
     pub const TURN_DONE: &str = "agents/turn.done";
 }

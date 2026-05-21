@@ -65,6 +65,12 @@ struct PersistedEntry {
     installed_at: u64,
 }
 
+pub fn default_registry_root() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join(".cronymax").join("extensions"))
+}
+
 impl ExtensionRegistry {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -386,6 +392,18 @@ mod tests {
             }}"#
         );
         fs::write(root.join(MANIFEST_FILENAME), raw).unwrap();
+    }
+
+    #[test]
+    fn default_registry_root_uses_cli_install_location() {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+        let Some(home) = home else {
+            return;
+        };
+        assert_eq!(
+            default_registry_root().unwrap(),
+            PathBuf::from(home).join(".cronymax").join("extensions"),
+        );
     }
 
     #[test]

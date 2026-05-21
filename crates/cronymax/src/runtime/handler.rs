@@ -423,6 +423,37 @@ impl Handler for RuntimeHandler {
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .unwrap_or(crate::crony::CronyBuiltin::ID);
+
+                // Extension-provider dispatch guard. The chat panel agent list
+                // now includes `kind: "extension_provider"` entries (see
+                // ControlRequest::AgentRegistryList), so the user can pick a
+                // provider that doesn't have a `<id>.agent.yaml` on disk.
+                // Without this guard, `load_agent_with_builtin` would silently
+                // fall through to a default `AgentDef { name: agent_id }` and
+                // run the user's prompt against the workspace-default LLM with
+                // no system prompt — i.e. the chat would look like it works
+                // but the extension would never be involved. Reject upfront
+                // with a typed error until session.create / session.prompt /
+                // agents/event streaming lands (P4-T05 / P8).
+                if flow_id_opt.is_none() {
+                    if let Some(extensions) = self.services.extensions.as_ref() {
+                        if let Some(provider) = extensions.providers().get(resolved_agent_id) {
+                            warn!(
+                                provider_id = %provider.provider_id,
+                                owning_ext = %provider.owning_ext,
+                                "start_run: extension provider dispatch is pending implementation",
+                            );
+                            return ControlResponse::Err {
+                                error: ControlError::InvalidState {
+                                    message: format!(
+                                        "extension provider `{}` (from `{}`) is listed but session dispatch is not yet wired; pick a built-in agent for now",
+                                        provider.provider_id, provider.owning_ext
+                                    ),
+                                },
+                            };
+                        }
+                    }
+                }
                 let preloaded_chat_agent_def: Option<crate::capability::agent_loader::AgentDef> =
                     if flow_id_opt.is_none() {
                         Some(
@@ -2227,6 +2258,25 @@ impl Handler for RuntimeHandler {
                             })
                         }),
                 );
+                if let Some(extensions) = &self.services.extensions {
+                    agents.extend(extensions.providers().list().into_iter().map(|p| {
+                        serde_json::json!({
+                            "name": p.provider_id,
+                            "kind": "extension_provider",
+                            "llm": p.provider_id,
+                            "llm_provider": p.provider_id,
+                            "llm_model": "",
+                            "builtin": false,
+                            "prompt_sealed": true,
+                            "label": p.label,
+                            "description": p.description,
+                            "owning_ext": p.owning_ext,
+                            "supports_models": p.supports_models,
+                            "supports_modes": p.supports_modes,
+                            "supports_mcp": p.supports_mcp,
+                        })
+                    }));
+                }
                 ControlResponse::Data {
                     payload: serde_json::json!({ "agents": agents }),
                 }
@@ -2967,6 +3017,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::extensions::api::agents::ProviderEntry;
+    use crate::extensions::{ExtensionRegistry, ExtensionRuntime};
     use crate::protocol::dispatch::run as dispatch_run;
     use crate::protocol::envelope::ClientToRuntime;
     use crate::protocol::transport::memory;
@@ -3046,16 +3098,25 @@ mod tests {
             })
             .await
             .unwrap();
-        let _run_id = match client.recv().await.unwrap() {
-            RuntimeToClient::Control {
-                response: ControlResponse::RunStarted { run_id, .. },
-                ..
-            } => run_id,
-            other => panic!("expected RunStarted, got {other:?}"),
+        let mut early_event: Option<RuntimeToClient> = None;
+        let _run_id = loop {
+            match client.recv().await.unwrap() {
+                RuntimeToClient::Control {
+                    response: ControlResponse::RunStarted { run_id, .. },
+                    ..
+                } => break run_id,
+                ev @ RuntimeToClient::Event { .. } => early_event = Some(ev),
+                other => panic!("expected RunStarted or Event, got {other:?}"),
+            }
         };
 
-        // Expect the resulting Event message on the subscription.
-        match client.recv().await.unwrap() {
+        // Depending on task scheduling, the fan-out event can arrive before
+        // the RunStarted control reply on this in-memory transport.
+        let event_msg = match early_event {
+            Some(ev) => ev,
+            None => client.recv().await.unwrap(),
+        };
+        match event_msg {
             RuntimeToClient::Event {
                 subscription: s,
                 event,
@@ -3146,6 +3207,194 @@ mod tests {
                 assert_eq!(pending_reviews.len(), 0);
             }
             other => panic!("expected SpaceSnapshot, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_registry_list_includes_extension_providers() {
+        let auth = RuntimeAuthority::in_memory();
+        let extensions = ExtensionRuntime::new(ExtensionRegistry::default());
+        extensions
+            .providers()
+            .register(ProviderEntry {
+                provider_id: "alice.agent".into(),
+                owning_ext: "alice.ext".into(),
+                label: "Alice Agent".into(),
+                icon: None,
+                description: Some("extension provider".into()),
+                supports_models: true,
+                supports_modes: false,
+                supports_mcp: true,
+            })
+            .unwrap();
+
+        let services = RuntimeServices {
+            authority: auth,
+            flow_registry: Arc::new(crate::flow::FlowRuntimeRegistry::default()),
+            llm_factory: Arc::new(crate::llm::factory::DefaultLlmProviderFactory::new()),
+            capability_factory: Arc::new(crate::capability::factory::DefaultCapabilityFactory),
+            terminal_managers: Arc::new(Mutex::new(HashMap::new())),
+            memory_manager: None,
+            extensions: Some(extensions),
+        };
+        let handler =
+            RuntimeHandler::from_services(Arc::new(services), vec![], std::env::temp_dir(), None);
+
+        let resp = handler
+            .handle_control(
+                CorrelationId::new(),
+                ControlRequest::AgentRegistryList {
+                    workspace_root: std::env::temp_dir().display().to_string(),
+                },
+            )
+            .await;
+
+        let payload = match resp {
+            ControlResponse::Data { payload } => payload,
+            other => panic!("expected Data, got {other:?}"),
+        };
+        let agents = payload["agents"].as_array().expect("agents array");
+        let provider = agents
+            .iter()
+            .find(|agent| agent["name"] == "alice.agent")
+            .expect("extension provider present");
+        assert_eq!(provider["kind"], "extension_provider");
+        assert_eq!(provider["llm"], "alice.agent");
+        assert_eq!(provider["label"], "Alice Agent");
+        assert_eq!(provider["owning_ext"], "alice.ext");
+        assert_eq!(provider["supports_models"], true);
+        assert_eq!(provider["supports_mcp"], true);
+    }
+
+    #[tokio::test]
+    async fn start_run_with_extension_provider_agent_id_returns_invalid_state() {
+        let auth = RuntimeAuthority::in_memory();
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
+        let space_id = space.id;
+        auth.upsert_space(space).unwrap();
+
+        let extensions = ExtensionRuntime::new(ExtensionRegistry::default());
+        extensions
+            .providers()
+            .register(ProviderEntry {
+                provider_id: "alice.agent".into(),
+                owning_ext: "alice.ext".into(),
+                label: "Alice Agent".into(),
+                icon: None,
+                description: None,
+                supports_models: false,
+                supports_modes: false,
+                supports_mcp: false,
+            })
+            .unwrap();
+
+        let services = RuntimeServices {
+            authority: auth,
+            flow_registry: Arc::new(crate::flow::FlowRuntimeRegistry::default()),
+            llm_factory: Arc::new(crate::llm::factory::DefaultLlmProviderFactory::new()),
+            capability_factory: Arc::new(crate::capability::factory::DefaultCapabilityFactory),
+            terminal_managers: Arc::new(Mutex::new(HashMap::new())),
+            memory_manager: None,
+            extensions: Some(extensions),
+        };
+        let handler =
+            RuntimeHandler::from_services(Arc::new(services), vec![], std::env::temp_dir(), None);
+
+        let resp = handler
+            .handle_control(
+                CorrelationId::new(),
+                ControlRequest::StartRun {
+                    space_id: space_id.to_string(),
+                    payload: serde_json::json!({"task": "hello"}),
+                    session_id: None,
+                    session_name: None,
+                    agent_id: Some("alice.agent".into()),
+                },
+            )
+            .await;
+
+        match resp {
+            ControlResponse::Err {
+                error: ControlError::InvalidState { message },
+            } => {
+                assert!(message.contains("alice.agent"), "message: {message}");
+                assert!(message.contains("alice.ext"), "message: {message}");
+            }
+            other => panic!("expected InvalidState error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn start_run_for_flow_skips_extension_provider_guard() {
+        let auth = RuntimeAuthority::in_memory();
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
+        let space_id = space.id;
+        auth.upsert_space(space).unwrap();
+
+        let extensions = ExtensionRuntime::new(ExtensionRegistry::default());
+        extensions
+            .providers()
+            .register(ProviderEntry {
+                provider_id: "alice.agent".into(),
+                owning_ext: "alice.ext".into(),
+                label: "Alice Agent".into(),
+                icon: None,
+                description: None,
+                supports_models: false,
+                supports_modes: false,
+                supports_mcp: false,
+            })
+            .unwrap();
+
+        let services = RuntimeServices {
+            authority: auth,
+            flow_registry: Arc::new(crate::flow::FlowRuntimeRegistry::default()),
+            llm_factory: Arc::new(crate::llm::factory::DefaultLlmProviderFactory::new()),
+            capability_factory: Arc::new(crate::capability::factory::DefaultCapabilityFactory),
+            terminal_managers: Arc::new(Mutex::new(HashMap::new())),
+            memory_manager: None,
+            extensions: Some(extensions),
+        };
+        let handler =
+            RuntimeHandler::from_services(Arc::new(services), vec![], std::env::temp_dir(), None);
+
+        // flow_id is present, so the extension-provider guard must not fire.
+        // The run should be created (or fail for a flow-specific reason),
+        // but never with the extension-provider InvalidState error.
+        let resp = handler
+            .handle_control(
+                CorrelationId::new(),
+                ControlRequest::StartRun {
+                    space_id: space_id.to_string(),
+                    payload: serde_json::json!({
+                        "task": "hello",
+                        "flow_id": "some-flow",
+                    }),
+                    session_id: None,
+                    session_name: None,
+                    agent_id: Some("alice.agent".into()),
+                },
+            )
+            .await;
+
+        if let ControlResponse::Err {
+            error: ControlError::InvalidState { ref message },
+        } = resp
+        {
+            assert!(
+                !message.contains("extension provider"),
+                "flow path should not hit the extension provider guard, got: {message}",
+            );
         }
     }
 }
