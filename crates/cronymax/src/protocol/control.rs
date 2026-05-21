@@ -57,6 +57,12 @@ pub enum ControlRequest {
         session_name: Option<String>,
         #[serde(default)]
         agent_id: Option<String>,
+        /// Frontend-generated child session id for the flow thread.
+        /// When set alongside a `flow_id` in the payload, the runtime upserts
+        /// a child session with this id, sets its parent/fork_point, and routes
+        /// all flow node sub-runs into it.
+        #[serde(default)]
+        child_session_id: Option<String>,
     },
 
     /// Cancel an in-flight run.

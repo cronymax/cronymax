@@ -176,7 +176,7 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
   useEffect(() => {
     if (!pendingSelection) return;
     function onMouseDown(e: MouseEvent) {
-      if (selectionTooltipRef.current && selectionTooltipRef.current.contains(e.target as Node)) {
+      if (selectionTooltipRef.current?.contains(e.target as Node)) {
         return;
       }
       setPendingSelection(null);
@@ -388,9 +388,11 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
 
 interface Props {
   sessionId: string | null | undefined;
+  /** When false, the resolved-review history section is hidden (default: true). */
+  showHistory?: boolean;
 }
 
-export function FlowDocReviewPanel({ sessionId }: Props) {
+export function FlowDocReviewPanel({ sessionId, showHistory = true }: Props) {
   // Set of flow_run_ids we know about for this session
   const flowRunIdsRef = useRef<Set<string>>(new Set());
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
@@ -495,7 +497,7 @@ export function FlowDocReviewPanel({ sessionId }: Props) {
     refreshAll();
   }, [sessionId, refreshAll]);
 
-  if (reviews.length === 0 && resolvedReviews.length === 0) return null;
+  if (reviews.length === 0 && (resolvedReviews.length === 0 || !showHistory)) return null;
 
   return (
     <div className="flex flex-col gap-2 px-3 py-2">
@@ -513,7 +515,7 @@ export function FlowDocReviewPanel({ sessionId }: Props) {
         </>
       )}
 
-      {resolvedReviews.length > 0 && (
+      {showHistory && resolvedReviews.length > 0 && (
         <Collapsible
           open={historyOpen}
           onOpenChange={setHistoryOpen}
@@ -530,7 +532,7 @@ export function FlowDocReviewPanel({ sessionId }: Props) {
               }`}
             />
           </CollapsibleTrigger>
-          <CollapsibleContent className="flex flex-col gap-1.5 pt-1">
+          <CollapsibleContent className="flex flex-col gap-1.5 pt-1 border-t border-border/50 bg-background pb-1">
             {resolvedReviews.map((entry, idx) => {
               const docName = entry.item.port || entry.item.node_id;
               const approved = entry.verdict === "approved";

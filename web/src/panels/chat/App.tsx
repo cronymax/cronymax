@@ -279,6 +279,31 @@ function ThreadSummary({ thread, onExpand }: { thread: Thread; onExpand: () => v
   );
 }
 
+import type { FlowThread } from "./store";
+
+function FlowThreadSummary({ thread, onExpand }: { thread: FlowThread; onExpand: () => void }) {
+  const eventCount = thread.events.length;
+  const isLive = thread.flowRunId === "";
+  return (
+    <Card size="sm" className="mt-2 text-xs">
+      <CardContent className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-primary">Flow thread</span>
+          {eventCount > 0 && (
+            <span className="text-muted-foreground">
+              {eventCount} event{eventCount !== 1 ? "s" : ""}
+            </span>
+          )}
+          {isLive && <span className="italic text-muted-foreground">running…</span>}
+          <Button variant="link" size="sm" onClick={onExpand} className="ml-auto h-auto p-0">
+            View thread
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ConversationBlockView({
   block,
   isStreaming,
@@ -286,6 +311,7 @@ function ConversationBlockView({
   workspacePrompts = [],
   onRestore,
   onFork,
+  onViewThread,
 }: {
   block: ConversationBlock;
   isStreaming: boolean;
@@ -293,6 +319,7 @@ function ConversationBlockView({
   workspacePrompts?: PickerItem[];
   onRestore?: (blockId: string) => void;
   onFork?: (blockId: string) => void;
+  onViewThread?: (blockId: string, threadId: string) => void;
 }) {
   const pinnedComments = block.comments.filter((c) => c.pinnedToPrompt);
   const [activePillLabel, setActivePillLabel] = useState<string | null>(null);
@@ -391,6 +418,14 @@ function ConversationBlockView({
           onExpand={() => {
             /* noop */
           }}
+        />
+      )}
+
+      {/* Flow thread — entry point to the inline node-conversation thread */}
+      {block.flowThread && onViewThread && (
+        <FlowThreadSummary
+          thread={block.flowThread}
+          onExpand={() => onViewThread(block.id, block.flowThread!.flowRunId || block.flowThread!.childSessionId)}
         />
       )}
 
@@ -535,6 +570,7 @@ function BlockView({
   workspacePrompts,
   onRestoreBlock,
   onForkBlock,
+  onViewThread,
 }: {
   block: Block;
   isStreaming: boolean;
@@ -543,6 +579,7 @@ function BlockView({
   workspacePrompts?: PickerItem[];
   onRestoreBlock?: (blockId: string) => void;
   onForkBlock?: (blockId: string) => void;
+  onViewThread?: (blockId: string, threadId: string) => void;
 }) {
   if (block.kind === "conversation") {
     return (
@@ -553,6 +590,7 @@ function BlockView({
         workspacePrompts={workspacePrompts}
         onRestore={onRestoreBlock}
         onFork={onForkBlock}
+        onViewThread={onViewThread}
       />
     );
   }
@@ -832,6 +870,21 @@ export function App() {
 
   // ── comment attachment → scroll & highlight ────────────────────────────
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null);
+
+  // ── Persistent child-session subscriptions ─────────────────────────────
+  // These subscriptions must outlive the parent run (the chat agent exits
+  // quickly after kicking off the flow; the flow agents keep running).
+  // Keyed by childSessionId so we never double-subscribe across re-renders.
+  const childSessionSubsRef = useRef<Map<string, (() => void) | null>>(new Map());
+  // Cleanup on unmount only
+  useEffect(
+    () => () => {
+      for (const fn of childSessionSubsRef.current.values()) fn?.();
+      childSessionSubsRef.current.clear();
+    },
+    [],
+  );
+
   const onCommentAttachmentClick = (a: Attachment) => {
     if (!a.commentId) return;
     // Find the block that owns this comment
@@ -1328,6 +1381,9 @@ export function App() {
     // (e.g. LLM HTTP failure). Used as the assistantText fallback when
     // the run terminates without producing any tokens.
     let lastErrorMessage = "";
+    // When a flow run is started, hold the frontend-generated child session id
+    // so processRuntimeEvent can dispatch setFlowThreadRunId when flow.run.changed arrives.
+    const flowChildSessionId: string | undefined = state.selectedFlow ? crypto.randomUUID() : undefined;
 
     // Track pending review info from awaiting_review status so we can
     // pair it with the arriving PermissionRequest event.
@@ -1335,9 +1391,53 @@ export function App() {
     let runtimeOff: (() => void) | null = null;
     // Placeholder — replaced by the real browser.on unsub below.
     let off: () => void = () => {};
+    // Child-session subscription for flow thread events — set up eagerly so
+    // no events are lost between agentRun() returning and a React render.
+    // Subscribe to child session events BEFORE starting the run so no events
+    // are lost. Stored in childSessionSubsRef (component-level) so the
+    // subscription outlives the parent run — the chat agent exits quickly
+    // after kicking off the flow, but flow agents keep running.
+    if (flowChildSessionId && !childSessionSubsRef.current.has(flowChildSessionId)) {
+      const unsub = runtime.on(`session:${flowChildSessionId}`, (raw: unknown) => {
+        const ev = raw as Record<string, unknown>;
+        const pl = (ev.payload as Record<string, unknown> | undefined) ?? {};
+        const evKind = pl.kind as string | undefined;
+        if (evKind === "run_status") {
+          const agentId = (pl.agent_id as string | undefined) ?? "";
+          const runStatus = (pl.status as string | undefined) ?? "";
+          if (runStatus === "running" || runStatus === "succeeded" || runStatus === "failed") {
+            dispatch({
+              type: "appendFlowThreadEvent",
+              id: blockId,
+              event: {
+                agentId,
+                kind: "status",
+                seqNum: (ev.sequence as number) ?? 0,
+                ts: Date.now(),
+                segment: { kind: "text", content: `${agentId}: ${runStatus}` },
+              },
+            });
+          }
+        } else if (evKind === "raw") {
+          const rawData = (pl.data as Record<string, unknown> | undefined) ?? {};
+          if (rawData.event === "flow.run.changed") {
+            try {
+              const inner = JSON.parse((rawData.payload as string | undefined) ?? "{}") as Record<string, unknown>;
+              const flowRunId = inner.run_id as string | undefined;
+              if (flowRunId) dispatch({ type: "setFlowThreadRunId", id: blockId, flowRunId });
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      });
+      childSessionSubsRef.current.set(flowChildSessionId, unsub);
+    }
     const teardown = () => {
       off();
       runtimeOff?.();
+      // NOTE: childSessionOff is intentionally NOT torn down here — the flow
+      // agents continue running after the parent chat run completes.
     };
 
     off = browser.on("event", (raw: unknown) => {
@@ -1929,6 +2029,20 @@ export function App() {
             entry: { kind: "tool_start", toolCallId: "", tool: "log", args: { message }, ts: Date.now() },
           });
         }
+      } else if (kind === "raw") {
+        // flow.run.changed and other raw flow events arrive as { kind: "raw", data: { event: "...", payload: "..." } }
+        const rawData = (pl.data as Record<string, unknown> | undefined) ?? {};
+        if (rawData.event === "flow.run.changed" && flowChildSessionId) {
+          try {
+            const inner = JSON.parse((rawData.payload as string | undefined) ?? "{}") as Record<string, unknown>;
+            const flowRunId = inner.run_id as string | undefined;
+            if (flowRunId) {
+              dispatch({ type: "setFlowThreadRunId", id: blockId, flowRunId });
+            }
+          } catch {
+            // ignore parse errors
+          }
+        }
       }
     };
 
@@ -1954,6 +2068,9 @@ export function App() {
         session_id: chatId,
         agent_id: state.selectedFlow ? undefined : state.agentId || undefined,
         flow_id: state.selectedFlow || undefined,
+        // When starting a flow run, pass the frontend-generated child session id so
+        // the Rust runtime can route all flow node sub-runs into it.
+        child_session_id: flowChildSessionId,
       };
       if (reasoningEffortRef.current) runOpts.reasoning_effort = reasoningEffortRef.current;
       if (anthropicEffortRef.current) runOpts.anthropic_effort = anthropicEffortRef.current;
@@ -1979,6 +2096,15 @@ export function App() {
       runId = await agentRun(body, runOpts);
       if (!runId) throw new Error("runtime did not return run_id");
       dispatch({ type: "setCurrentRunId", runId });
+      // Attach a FlowThread to this block so the UI can show the inline thread entry.
+      // The flowRunId starts empty and is filled in when the first flow.run.changed event arrives.
+      if (flowChildSessionId) {
+        dispatch({
+          type: "attachFlowThread",
+          id: blockId,
+          flowThread: { flowRunId: "", childSessionId: flowChildSessionId, events: [] },
+        });
+      }
       runtimeOff = runtime.on(`run:${runId}`, processRuntimeEvent);
       await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
         /* ignore */
@@ -2293,6 +2419,14 @@ export function App() {
   };
 
   const runningBlockId = state.runningBlockId;
+  const activeView = state.activeView;
+
+  const onViewThread = (blockId: string, threadId: string) => {
+    dispatch({ type: "setActiveView", view: { kind: "thread", blockId, threadId } });
+  };
+  const onBackToMain = () => {
+    dispatch({ type: "setActiveView", view: { kind: "main" } });
+  };
 
   // Copilot-like textarea auto-height
   const onTextareaInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -2391,21 +2525,74 @@ export function App() {
           </Alert>
         )}
 
-        {/* Block timeline */}
-        <div ref={timelineRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-2">
-          {state.blocks.map((b) => (
-            <BlockView
-              key={b.id}
-              block={b}
-              isStreaming={b.id === runningBlockId && b.kind === "conversation"}
-              onShellAction={onShellAction}
-              isHighlighted={b.id === highlightedBlockId}
-              workspacePrompts={workspacePrompts}
-              onRestoreBlock={!state.running ? onRestoreBlock : undefined}
-              onForkBlock={!state.running ? onForkBlock : undefined}
-            />
-          ))}
-        </div>
+        {/* Block timeline — hidden when viewing a flow thread */}
+        {activeView.kind === "main" && (
+          <div ref={timelineRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-2">
+            {state.blocks.map((b) => (
+              <BlockView
+                key={b.id}
+                block={b}
+                isStreaming={b.id === runningBlockId && b.kind === "conversation"}
+                onShellAction={onShellAction}
+                isHighlighted={b.id === highlightedBlockId}
+                workspacePrompts={workspacePrompts}
+                onRestoreBlock={!state.running ? onRestoreBlock : undefined}
+                onForkBlock={!state.running ? onForkBlock : undefined}
+                onViewThread={onViewThread}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Thread view — shown when activeView.kind === "thread" */}
+        {activeView.kind === "thread" &&
+          (() => {
+            const forkBlock = state.blocks.find((b) => b.id === activeView.blockId && b.kind === "conversation") as
+              | import("./store").ConversationBlock
+              | undefined;
+            const ft = forkBlock?.flowThread;
+            return (
+              <div className="flex flex-1 flex-col gap-0 overflow-hidden">
+                {/* Thread header */}
+                <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+                  <Button variant="ghost" size="xs" onClick={onBackToMain} className="gap-1">
+                    <span>← Back</span>
+                  </Button>
+                  <span className="text-sm font-semibold text-muted-foreground">Flow thread</span>
+                  {ft?.flowRunId && (
+                    <span className="font-mono text-xs text-muted-foreground">{ft.flowRunId.slice(0, 14)}</span>
+                  )}
+                </div>
+                {/* Thread body */}
+                <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
+                  {/* Document reviews for this flow run — use child session so we see the right reviews */}
+                  <FlowDocReviewPanel sessionId={ft?.childSessionId ?? state.activeChatId} />
+                  {/* Trajectory diagram */}
+                  {ft?.flowRunId && state.selectedFlow && (
+                    <FlowTrajectoryDiagram
+                      selectedFlow={state.selectedFlow}
+                      sessionId={state.activeChatId}
+                      selectedNodeId={null}
+                      onSelectNode={() => void 0}
+                      onConversationsUpdate={() => void 0}
+                    />
+                  )}
+                  {/* Events */}
+                  {ft?.events.length === 0 && (
+                    <div className="text-sm italic text-muted-foreground">
+                      {ft.flowRunId ? "No events yet." : "Flow starting…"}
+                    </div>
+                  )}
+                  {ft?.events.map((ev, i) => (
+                    <div key={i} className="flex flex-col gap-1 text-sm">
+                      <span className="text-xs font-medium text-muted-foreground">{ev.agentId}</span>
+                      {ev.segment?.kind === "text" && <div className="whitespace-pre-wrap">{ev.segment.content}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
         {/* ── Floating selection tooltip ──────────────────────────────
           Anchored to the selection rect via PopoverAnchor (zero-pointer-
@@ -2552,11 +2739,8 @@ export function App() {
               {/* ── File changes summary ─────────────────────────────────────────── */}
               <FileChangesView changes={sessionFileChanges} />
 
-              {/* Flow trajectory diagram — shown when a flow is selected and has runs */}
-              {state.selectedFlow && (
-                <FlowTrajectoryDiagram selectedFlow={state.selectedFlow} sessionId={state.activeChatId} />
-              )}
-              <FlowDocReviewPanel sessionId={state.activeChatId} />
+              {/* Doc reviews shown in thread view; pending-only fallback in main view so nothing is missed */}
+              {activeView.kind === "main" && <FlowDocReviewPanel sessionId={state.activeChatId} showHistory={false} />}
               <ReviewsPanel sessionId={state.activeChatId} />
             </div>
 

@@ -41,6 +41,14 @@ pub enum RuntimeEventPayload {
     RunStatus {
         run_id: String,
         status: String,
+        /// Agent identifier for this run. For flow node sub-runs this is
+        /// the node's agent name (e.g. `"pm-design"`); for top-level chat
+        /// runs it is the UUID-string of the authority agent, or `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+        /// Flow run this sub-run belongs to, or `None` for top-level runs.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        flow_run_id: Option<String>,
         detail: Option<serde_json::Value>,
     },
 

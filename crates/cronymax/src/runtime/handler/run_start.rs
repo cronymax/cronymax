@@ -27,7 +27,7 @@ use crate::llm::{
 use crate::protocol::control::{ControlError, ControlRequest, ControlResponse};
 use crate::protocol::envelope::RuntimeToClient;
 use crate::runtime::run_context::RunContext;
-use crate::runtime::state::{RunId, SessionId, Space};
+use crate::runtime::state::{ForkPoint, RunId, SessionId, Space};
 use uuid::Uuid;
 
 use super::helpers::{
@@ -44,6 +44,7 @@ impl RuntimeHandler {
             session_id,
             session_name,
             agent_id,
+            child_session_id,
         } = req
         else {
             unreachable!()
@@ -291,6 +292,18 @@ impl RuntimeHandler {
                                         self.authority
                                             .attach_flow_run_to_session(sid, frid.clone());
                                     }
+                                    // Bind the child session (or parent session) in the
+                                    // authority's flow_sessions map so flow.run.changed and
+                                    // other flow events are routed to session:{id} where the
+                                    // frontend thread-view subscription can receive them.
+                                    let bind_target = child_session_id
+                                        .as_deref()
+                                        .filter(|s| !s.is_empty())
+                                        .map(str::to_owned)
+                                        .or_else(|| maybe_session_id.as_ref().map(|s| s.0.clone()));
+                                    if let Some(ref target) = bind_target {
+                                        self.authority.bind_session(&frid, target);
+                                    }
                                     (frid, ctxs)
                                 }
                                 Err(e) => {
@@ -321,12 +334,49 @@ impl RuntimeHandler {
                         .first()
                         .map(crate::runtime::agent_runner::render_system_message);
 
+                    // If the caller supplied a child_session_id, upsert it and
+                    // set its parent/fork_point so thread views can subscribe to it.
+                    let maybe_child_session_id: Option<SessionId> = child_session_id
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .map(|s| {
+                            let child_sid = SessionId::from(s);
+                            let _ = self.authority.get_or_create_session(
+                                child_sid.clone(),
+                                space,
+                                None,
+                            );
+                            if let Some(ref parent_sid) = maybe_session_id {
+                                self.authority.set_session_fork_point(
+                                    &child_sid,
+                                    parent_sid.clone(),
+                                    ForkPoint {
+                                        message_idx: prior_thread.len(),
+                                        run_id: Some(run_id),
+                                        created_at_ms: crate::runtime::authority::now_ms(),
+                                    },
+                                );
+                            }
+                            // Also record the flow_run_id in the child session's
+                            // flow_run_ids for panel discovery.
+                            if !flow_run_id.is_empty() {
+                                self.authority
+                                    .attach_flow_run_to_session(&child_sid, flow_run_id.clone());
+                            }
+                            child_sid
+                        });
+                    // Flow node sub-runs are routed to the child session when present,
+                    // otherwise fall back to the parent session.
+                    let flow_session_id = maybe_child_session_id
+                        .clone()
+                        .or_else(|| maybe_session_id.clone());
+
                     let flow_ctx = RunContext {
                         space_id: space,
                         workspace_root: workspace_root.clone(),
                         flow_id: Some(fid.clone()),
                         flow_run_id: Some(flow_run_id.clone()),
-                        session_id: maybe_session_id.clone(),
+                        session_id: flow_session_id,
                         flow_runtime: Some(flow_rt.clone()),
                         doc_tx: doc_tx.clone(),
                         llm_config: LlmConfig::from_payload_fields(

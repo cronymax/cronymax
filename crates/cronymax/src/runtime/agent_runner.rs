@@ -49,7 +49,7 @@ impl AgentRunner {
         let run_id = match authority.start_run_with_session(
             run_ctx.space_id,
             None,
-            serde_json::json!({}),
+            serde_json::json!({ "agent_name": &agent_id }),
             run_ctx.session_id.clone(),
         ) {
             Ok(id) => id,

@@ -90,7 +90,8 @@ pub enum PortStatus {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InvocationTrigger {
     /// `"initial"` | `"and_join"` | `"cycle_retrigger"` | `"implicit_reinvoke"` |
-    /// `"rejected_requeue"` | `"human_submit"` | `"reviewer_invocation"`
+    /// `"rejected_requeue"` | `"human_submit"` | `"reviewer_invocation"` |
+    /// `"human_feedback"` (human typed message in thread view directed at a node)
     pub kind: String,
     /// Port that was approved, triggering this invocation (absent for initial).
     #[serde(default, skip_serializing_if = "Option::is_none")]

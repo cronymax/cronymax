@@ -178,6 +178,8 @@ export interface ConversationBlock {
   status: "running" | "ok" | "fail";
   comments: Comment[];
   thread?: Thread;
+  /** Attached flow thread when this block triggered a flow run. */
+  flowThread?: FlowThread;
   createdAt: number;
   /** Accumulated thinking/reasoning content from an extended-thinking model. */
   thinkingText: string;
@@ -217,6 +219,50 @@ export interface FlowNotificationBlock {
 }
 
 export type Block = ConversationBlock | ShellBlock | FlowNotificationBlock;
+
+// ── NodeConversation ──────────────────────────────────────────────────
+// Represents the per-node agent conversation stream for a flow sub-run.
+// Keyed by agentId (node name, e.g. "pm-design") in the conversations Map.
+
+export type StatusKind = "pending" | "running" | "awaiting_review" | "succeeded" | "failed";
+
+export interface NodeConversation {
+  /** Authority run_id for this sub-run. */
+  runId: string;
+  /** Node agent name, e.g. "pm-design". */
+  agentId: string;
+  /** Flow run this sub-run belongs to. */
+  flowRunId: string;
+  status: StatusKind;
+  contentStream: ContentSegment[];
+  traceEntries: TraceEntry[];
+  startedAt: number | null;
+}
+
+// ── FlowThread ──────────────────────────────────────────────────────────────
+// Inline thread attached to the ConversationBlock that triggered a flow run.
+// Populated as flow node sub-runs stream events into the child session.
+
+/** A single event from any flow node agent, keyed by sequence number. */
+export interface FlowThreadEvent {
+  agentId: string;
+  kind: "token" | "tool_call" | "trace" | "status";
+  segment?: ContentSegment;
+  entry?: TraceEntry;
+  /** Monotonically increasing within the child session. */
+  seqNum: number;
+  ts: number;
+}
+
+/** The flow thread attached to a fork block. */
+export interface FlowThread {
+  /** Backend-generated flow run id ("run-<uuid>"). Empty string until the first run_status event confirms it. */
+  flowRunId: string;
+  /** Frontend-generated child session id (crypto.randomUUID()). Known before any event arrives. */
+  childSessionId: string;
+  /** Chronologically ordered events from all node agents in this flow run. */
+  events: FlowThreadEvent[];
+}
 
 export type ActiveView = { kind: "main" } | { kind: "thread"; blockId: string; threadId: string };
 
@@ -337,6 +383,12 @@ export type Action =
       message: string;
       variant: "success" | "info";
     }
+  /** Attach a new FlowThread to a ConversationBlock (called when flow starts). */
+  | { type: "attachFlowThread"; id: string; flowThread: FlowThread }
+  /** Fill in the flowRunId once the first run_status event reveals it. */
+  | { type: "setFlowThreadRunId"; id: string; flowRunId: string }
+  /** Append an event from a flow node agent into the block's flowThread. */
+  | { type: "appendFlowThreadEvent"; id: string; event: FlowThreadEvent }
   | { type: "_unused"; _placeholder?: never };
 
 // ── Shell output processor ────────────────────────────────────────────
@@ -746,6 +798,41 @@ function reducer(state: State, action: Action): State {
         comments: [],
       };
       return { ...state, blocks: [...state.blocks, notifBlock] };
+    }
+
+    case "attachFlowThread": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) =>
+          b.id === action.id && b.kind === "conversation" ? { ...b, flowThread: action.flowThread } : b,
+        ),
+      };
+    }
+
+    case "setFlowThreadRunId": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.id || b.kind !== "conversation" || !b.flowThread) return b;
+          return { ...b, flowThread: { ...b.flowThread, flowRunId: action.flowRunId } };
+        }),
+      };
+    }
+
+    case "appendFlowThreadEvent": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.id || b.kind !== "conversation" || !b.flowThread) return b;
+          return {
+            ...b,
+            flowThread: {
+              ...b.flowThread,
+              events: [...b.flowThread.events, action.event],
+            },
+          };
+        }),
+      };
     }
 
     default:

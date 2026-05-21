@@ -43,7 +43,7 @@ use crate::protocol::SubscriptionId;
 
 use super::persistence::{Persistence, PersistenceError};
 use super::state::{
-    Agent, AgentId, MemoryEntry, MemoryNamespace, MemoryNamespaceId, PendingReview,
+    Agent, AgentId, ForkPoint, MemoryEntry, MemoryNamespace, MemoryNamespaceId, PendingReview,
     PermissionState, ReviewId, Run, RunId, RunStatus, Session, SessionId, Snapshot, Space, SpaceId,
 };
 use crate::llm::ChatMessage;
@@ -318,6 +318,26 @@ impl RuntimeAuthority {
         }
     }
 
+    /// Set the parent session and fork point on a child session.
+    /// Called when a flow run creates a child session from the frontend-supplied
+    /// `child_session_id`. Best-effort — silently no-ops when the session does
+    /// not exist.
+    pub fn set_session_fork_point(
+        &self,
+        session_id: &SessionId,
+        parent_session_id: SessionId,
+        fork_point: ForkPoint,
+    ) {
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        if let Some(session) = inner.snapshot.sessions.get_mut(session_id) {
+            session.parent_session_id = Some(parent_session_id);
+            session.fork_point = Some(fork_point);
+            session.updated_at_ms = now;
+            let _ = self.persistence.save(&inner.snapshot);
+        }
+    }
+
     /// Flush the final LLM context window back into `Session.thread`.
     /// Called by the agent loop after every run (success or failure).
     /// If the session no longer exists (e.g. was deleted mid-run), the
@@ -431,6 +451,13 @@ impl RuntimeAuthority {
             updated_at_ms: now,
         };
         let id = run.id;
+        // Enrich initial pending event with agent identity from spec (populated
+        // by flow node runs that store "agent_name" in the spec JSON).
+        let initial_agent_id = run
+            .spec
+            .get("agent_name")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         // Append run_id to the session (if any) while still holding the lock
         // so the session and run are written atomically.
         if let Some(ref sid) = session_id {
@@ -450,6 +477,8 @@ impl RuntimeAuthority {
             RuntimeEventPayload::RunStatus {
                 run_id: id.to_string(),
                 status: "pending".into(),
+                agent_id: initial_agent_id,
+                flow_run_id: None,
                 detail: None,
             },
         );
@@ -559,6 +588,13 @@ impl RuntimeAuthority {
             });
         }
         let session_id = run.session_id.clone();
+        let agent_id_str = run.agent_id.map(|id| id.to_string()).or_else(|| {
+            run.spec
+                .get("agent_name")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+        let flow_run_id_str = run.flow_run_id.clone();
         run.status = RunStatus::AwaitingReview;
         run.updated_at_ms = now;
         let review = PendingReview {
@@ -580,6 +616,8 @@ impl RuntimeAuthority {
             RuntimeEventPayload::RunStatus {
                 run_id: run_id.to_string(),
                 status: "awaiting_review".into(),
+                agent_id: agent_id_str,
+                flow_run_id: flow_run_id_str,
                 detail: None,
             },
         );
@@ -947,6 +985,15 @@ impl RuntimeAuthority {
             }
             _ => None,
         };
+        // Enrich the event with agent_id and flow_run_id so subscribers
+        // can route events to the correct flow node without a snapshot lookup.
+        let agent_id_str = run.agent_id.map(|id| id.to_string()).or_else(|| {
+            run.spec
+                .get("agent_name")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+        let flow_run_id_str = run.flow_run_id.clone();
         let session_id = run.session_id.clone();
         run.status = next;
         run.updated_at_ms = now;
@@ -958,6 +1005,8 @@ impl RuntimeAuthority {
             RuntimeEventPayload::RunStatus {
                 run_id: run_id.to_string(),
                 status: label.into(),
+                agent_id: agent_id_str,
+                flow_run_id: flow_run_id_str,
                 detail,
             },
         );

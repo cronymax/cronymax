@@ -31,7 +31,8 @@ import { Activity, ChevronDown, ChevronUp } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { browser, shells } from "@/shells/bridge";
+import { runtime, shells } from "@/shells/bridge";
+import type { ContentSegment, NodeConversation, StatusKind, TraceEntry } from "./store";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -73,7 +74,7 @@ interface FlowRunEntry {
   subRuns: SubRun[];
 }
 
-type StatusKind = "pending" | "running" | "awaiting_review" | "succeeded" | "failed";
+// StatusKind is imported from store.ts
 
 // ── localStorage flow-spec helpers ────────────────────────────────────────
 
@@ -217,20 +218,45 @@ function StatusIndicator({ status }: { status: StatusKind }) {
   );
 }
 
-function NodeChip({ node, status, isActive }: { node: FlowNodeDef; status: StatusKind; isActive: boolean }) {
+function NodeChip({
+  node,
+  status,
+  isActive,
+  isSelected,
+  onClick,
+}: {
+  node: FlowNodeDef;
+  status: StatusKind;
+  isActive: boolean;
+  isSelected?: boolean;
+  onClick?: () => void;
+}) {
   return (
     <div
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") onClick();
+            }
+          : undefined
+      }
       className={cn(
         "flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium shrink-0 transition-colors",
-        isActive
-          ? "border-primary/60 bg-primary/10 text-foreground"
-          : status === "succeeded"
-            ? "border-green-500/30 bg-green-500/5 text-muted-foreground"
-            : status === "failed"
-              ? "border-red-500/30 bg-red-500/5 text-muted-foreground"
-              : status === "awaiting_review"
-                ? "border-amber-400/50 bg-amber-400/10 text-foreground"
-                : "border-border bg-card text-muted-foreground",
+        onClick && "cursor-pointer hover:border-primary/50",
+        isSelected
+          ? "border-primary bg-primary/15 text-foreground ring-1 ring-primary/30"
+          : isActive
+            ? "border-primary/60 bg-primary/10 text-foreground"
+            : status === "succeeded"
+              ? "border-green-500/30 bg-green-500/5 text-muted-foreground"
+              : status === "failed"
+                ? "border-red-500/30 bg-red-500/5 text-muted-foreground"
+                : status === "awaiting_review"
+                  ? "border-amber-400/50 bg-amber-400/10 text-foreground"
+                  : "border-border bg-card text-muted-foreground",
       )}
     >
       <StatusIndicator status={status} />
@@ -274,14 +300,269 @@ function ArrowSep({ hasBackEdge }: { hasBackEdge?: boolean }) {
   );
 }
 
+// ── useFlowNodeConversations hook ─────────────────────────────────────────
+
+/**
+ * Subscribes to per-run runtime events for all sub-runs in the given
+ * `flowRuns` snapshot. Returns a live `Map<agentId, NodeConversation>` that
+ * updates as token / trace / run_status events arrive.
+ *
+ * Also subscribes to `runtime.on("session:{sessionId}")` to discover new
+ * sub-runs that start after the snapshot was taken.
+ */
+export function useFlowNodeConversations(
+  sessionId: string | null | undefined,
+  flowRuns: FlowRunEntry[],
+  topology: FlowTopology | null,
+): Map<string, NodeConversation> {
+  const [conversations, setConversations] = useState<Map<string, NodeConversation>>(new Map());
+
+  // runId → agentId
+  const runAgentMapRef = useRef<Map<string, string>>(new Map());
+  // runId → unsubscribe function
+  const unsubsRef = useRef<Map<string, () => void>>(new Map());
+  // Seeded flowRunIds (avoids double-seeding topology placeholder nodes)
+  const seededFridsRef = useRef<Set<string>>(new Set());
+
+  /** Process a single runtime event for a known agentId. */
+  const processRunEvent = useCallback((agentId: string, event: unknown) => {
+    const ev = event as { payload?: Record<string, unknown> } | null;
+    if (!ev?.payload) return;
+    const pl = ev.payload;
+    const kind = pl.kind as string | undefined;
+
+    setConversations((prev) => {
+      const conv = prev.get(agentId);
+      if (!conv) return prev;
+      const next = new Map(prev);
+
+      if (kind === "run_status") {
+        const newStatus = parseStatusKind((pl.status as string) ?? "pending");
+        next.set(agentId, {
+          ...conv,
+          status: newStatus,
+          startedAt: newStatus === "running" && conv.startedAt === null ? Date.now() : conv.startedAt,
+        });
+        return next;
+      }
+
+      if (kind === "token") {
+        const delta = (pl.delta as string) ?? "";
+        if (!delta) return prev;
+        const stream = [...conv.contentStream];
+        const last = stream[stream.length - 1];
+        if (last?.kind === "thinking" && !(last as { sealed?: boolean }).sealed) {
+          stream[stream.length - 1] = { ...last, sealed: true } as ContentSegment;
+        }
+        const prevLast = stream[stream.length - 1];
+        if (prevLast?.kind === "text") {
+          stream[stream.length - 1] = { kind: "text", content: prevLast.content + delta };
+        } else {
+          stream.push({ kind: "text", content: delta });
+        }
+        next.set(agentId, { ...conv, contentStream: stream });
+        return next;
+      }
+
+      if (kind === "thinking_token") {
+        const delta = (pl.delta as string) ?? "";
+        if (!delta) return prev;
+        const stream = [...conv.contentStream];
+        const last = stream[stream.length - 1];
+        if (last?.kind === "thinking" && !(last as { sealed?: boolean }).sealed) {
+          stream[stream.length - 1] = {
+            kind: "thinking",
+            content: (last as { content: string }).content + delta,
+            sealed: false,
+            elapsedMs: 0,
+          };
+        } else {
+          stream.push({ kind: "thinking", content: delta, sealed: false, elapsedMs: 0 });
+        }
+        next.set(agentId, { ...conv, contentStream: stream });
+        return next;
+      }
+
+      if (kind === "trace") {
+        const trace = (pl.trace as Record<string, unknown> | undefined) ?? pl;
+        const tk = trace.kind as string | undefined;
+        const ts = Date.now();
+
+        if (tk === "tool_start") {
+          const toolCallId = (trace.tool_call_id as string) ?? "";
+          const tool = (trace.tool as string) ?? "";
+          const args = trace.arguments ?? trace.args ?? {};
+          const entry: TraceEntry = { kind: "tool_start", toolCallId, tool, args, ts };
+          const segment: ContentSegment = { kind: "tool_call", toolCallId, tool, args, status: "running" };
+          next.set(agentId, {
+            ...conv,
+            contentStream: [...conv.contentStream, segment],
+            traceEntries: [...conv.traceEntries, entry],
+          });
+          return next;
+        }
+
+        if (tk === "tool_done") {
+          const toolCallId = (trace.tool_call_id as string) ?? "";
+          const tool = (trace.tool as string) ?? "";
+          const result = trace.result ?? {};
+          const isError = (trace.is_error as boolean | undefined) ?? false;
+          const durationMs = trace.duration_ms as number | undefined;
+          const entry: TraceEntry = {
+            kind: "tool_done",
+            toolCallId,
+            tool,
+            result,
+            terminal: (trace.terminal as boolean | undefined) ?? false,
+            ts,
+            ...(durationMs != null ? { durationMs } : {}),
+            ...(isError ? { isError: true } : {}),
+          };
+          const stream = conv.contentStream.map((seg) => {
+            if (seg.kind === "tool_call" && seg.toolCallId === toolCallId) {
+              return {
+                ...seg,
+                status: isError ? ("error" as const) : ("done" as const),
+                result,
+                ...(durationMs != null ? { durationMs } : {}),
+              };
+            }
+            return seg;
+          });
+          next.set(agentId, {
+            ...conv,
+            contentStream: stream,
+            traceEntries: [...conv.traceEntries, entry],
+          });
+          return next;
+        }
+      }
+
+      return prev;
+    });
+  }, []);
+
+  /** Subscribe to a run's event stream if not already subscribed. */
+  const subscribeToRun = useCallback(
+    (runId: string, agentId: string) => {
+      if (unsubsRef.current.has(runId) || !runId) return;
+      runAgentMapRef.current.set(runId, agentId);
+      const off = runtime.on(`run:${runId}`, (event) => processRunEvent(agentId, event));
+      if (off) unsubsRef.current.set(runId, off);
+    },
+    [processRunEvent],
+  );
+
+  /** Seed + subscribe when flowRuns change (new snapshot data). */
+  useEffect(() => {
+    for (const flowRun of flowRuns) {
+      // Pre-seed placeholder NodeConversation for every topology node on first
+      // encounter of this flow run, so the panel can show pending chips immediately.
+      if (!seededFridsRef.current.has(flowRun.flowRunId) && topology) {
+        seededFridsRef.current.add(flowRun.flowRunId);
+        setConversations((prev) => {
+          const next = new Map(prev);
+          for (const node of topology.orderedNodes) {
+            if (!next.has(node.agentName)) {
+              next.set(node.agentName, {
+                runId: "",
+                agentId: node.agentName,
+                flowRunId: flowRun.flowRunId,
+                status: "pending",
+                contentStream: [],
+                traceEntries: [],
+                startedAt: null,
+              });
+            }
+          }
+          return next;
+        });
+      }
+
+      // Register snapshot sub-runs and subscribe to their event streams.
+      for (const subRun of flowRun.subRuns) {
+        if (!subRun.agentId || !subRun.id || runAgentMapRef.current.has(subRun.id)) continue;
+        const snapshotStatus = parseStatusKind(subRun.status);
+        setConversations((prev) => {
+          const next = new Map(prev);
+          const existing = next.get(subRun.agentId!);
+          next.set(subRun.agentId!, {
+            runId: subRun.id,
+            agentId: subRun.agentId!,
+            flowRunId: flowRun.flowRunId,
+            status: snapshotStatus,
+            contentStream: existing?.contentStream ?? [],
+            traceEntries: existing?.traceEntries ?? [],
+            startedAt: existing?.startedAt ?? (snapshotStatus === "running" ? Date.now() : null),
+          });
+          return next;
+        });
+        subscribeToRun(subRun.id, subRun.agentId);
+      }
+    }
+  }, [flowRuns, topology, subscribeToRun]);
+
+  /** Subscribe to session-level events to discover new sub-runs. */
+  useEffect(() => {
+    if (!sessionId) return;
+    const off = runtime.on(`session:${sessionId}`, (raw: unknown) => {
+      const ev = raw as { payload?: Record<string, unknown> } | null;
+      if (!ev?.payload || ev.payload.kind !== "run_status") return;
+      const pl = ev.payload;
+      const runId = (pl.run_id as string | undefined) ?? "";
+      const agentId = (pl.agent_id as string | undefined) ?? null;
+      if (!runId || !agentId || runAgentMapRef.current.has(runId)) return;
+      // Seed a fresh NodeConversation for this new sub-run.
+      setConversations((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(agentId);
+        next.set(agentId, {
+          runId,
+          agentId,
+          flowRunId: (pl.flow_run_id as string | undefined) ?? "",
+          status: parseStatusKind((pl.status as string) ?? "pending"),
+          contentStream: existing?.contentStream ?? [],
+          traceEntries: existing?.traceEntries ?? [],
+          startedAt: null,
+        });
+        return next;
+      });
+      subscribeToRun(runId, agentId);
+    });
+    return () => off?.();
+  }, [sessionId, subscribeToRun]);
+
+  /** Cleanup when sessionId changes. */
+  useEffect(() => {
+    return () => {
+      for (const off of unsubsRef.current.values()) off();
+      unsubsRef.current.clear();
+      runAgentMapRef.current.clear();
+      seededFridsRef.current.clear();
+      setConversations(new Map());
+    };
+  }, [sessionId]);
+
+  return conversations;
+}
+
 // ── Main component ────────────────────────────────────────────────────────
 
 interface Props {
   selectedFlow: string;
   sessionId: string | null | undefined;
+  onSelectNode?: (agentName: string | null) => void;
+  selectedNodeId?: string | null;
+  onConversationsUpdate?: (convs: Map<string, NodeConversation>) => void;
 }
 
-export function FlowTrajectoryDiagram({ selectedFlow, sessionId }: Props) {
+export function FlowTrajectoryDiagram({
+  selectedFlow,
+  sessionId,
+  onSelectNode,
+  selectedNodeId,
+  onConversationsUpdate,
+}: Props) {
   const [topology, setTopology] = useState<FlowTopology | null>(null);
   const [flowRuns, setFlowRuns] = useState<FlowRunEntry[]>([]);
   const [activeRunIndex, setActiveRunIndex] = useState(0);
@@ -351,9 +632,10 @@ export function FlowTrajectoryDiagram({ selectedFlow, sessionId }: Props) {
           }
           const runsMap = subRunsRef.current.get(flowRunId)!;
           const runId = (r.id as string) ?? "";
+          const spec = (r.spec as Record<string, unknown> | null) ?? {};
           runsMap.set(runId, {
             id: runId,
-            agentId: (r.agent_id as string | null) ?? null,
+            agentId: (r.agent_id as string | null) ?? (spec.agent_name as string | null) ?? null,
             status: parseRawStatus(r.status),
           });
         }
@@ -362,39 +644,40 @@ export function FlowTrajectoryDiagram({ selectedFlow, sessionId }: Props) {
       .catch(() => undefined);
   }, [sessionId, rebuildFlowRuns]);
 
-  // Live run_status events.
+  // Live run_status events via targeted session subscription.
   useEffect(() => {
     if (!sessionId) return;
-    const off = browser.on("event", (raw: unknown) => {
-      const ev = raw as Record<string, unknown> | null;
-      if (!ev || ev.tag !== "event") return;
-      const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
-      const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
-      if (pl.kind !== "run_status") return;
+    const off = runtime.on(`session:${sessionId}`, (raw: unknown) => {
+      const ev = raw as { payload?: Record<string, unknown> } | null;
+      if (!ev?.payload || ev.payload.kind !== "run_status") return;
+      const pl = ev.payload;
 
       const runId = (pl.run_id as string | undefined) ?? "";
       const status = (pl.status as string | undefined) ?? "pending";
       const flowRunId = (pl.flow_run_id as string | undefined) ?? null;
       const agentId = (pl.agent_id as string | undefined) ?? null;
-      const evSessionId = (pl.session_id as string | undefined) ?? null;
 
-      if (!flowRunId) return;
-      const alreadyTracked = subRunsRef.current.has(flowRunId);
-      const sessionMatch = evSessionId ? evSessionId === sessionId : alreadyTracked;
-      if (!sessionMatch) return;
+      if (!flowRunId || !runId) return;
 
       if (!subRunsRef.current.has(flowRunId)) {
         const nextSeq = subRunsRef.current.size + 1;
         flowRunOrderRef.current.set(flowRunId, nextSeq);
         subRunsRef.current.set(flowRunId, new Map());
-        // Snap active view to the newest run.
         setActiveRunIndex(nextSeq - 1);
       }
       subRunsRef.current.get(flowRunId)!.set(runId, { id: runId, agentId, status });
       rebuildFlowRuns();
     });
-    return () => off();
+    return () => off?.();
   }, [sessionId, rebuildFlowRuns]);
+
+  // ── Node conversations hook ─────────────────────────────────────────
+  const conversations = useFlowNodeConversations(sessionId, flowRuns, topology);
+  const onConversationsUpdateRef = useRef(onConversationsUpdate);
+  onConversationsUpdateRef.current = onConversationsUpdate;
+  useEffect(() => {
+    onConversationsUpdateRef.current?.(conversations);
+  }, [conversations]);
 
   // ── Render guard ──────────────────────────────────────────────────────
   if (!selectedFlow || flowRuns.length === 0) return null;
@@ -489,7 +772,17 @@ export function FlowTrajectoryDiagram({ selectedFlow, sessionId }: Props) {
 
               return (
                 <div key={node.key} className="flex items-center gap-0.5">
-                  <NodeChip node={{ ...node, id: Number(node.key), x: 0 }} status={status} isActive={isActive} />
+                  <NodeChip
+                    node={{ ...node, id: Number(node.key), x: 0 }}
+                    status={status}
+                    isActive={isActive}
+                    isSelected={selectedNodeId === node.agentName}
+                    onClick={
+                      onSelectNode
+                        ? () => onSelectNode(selectedNodeId === node.agentName ? null : node.agentName)
+                        : undefined
+                    }
+                  />
                   {!isLast && <ArrowSep hasBackEdge={backEdge} />}
                 </div>
               );

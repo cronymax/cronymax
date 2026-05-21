@@ -64,6 +64,10 @@ export interface AgentRunOptions {
   agent_id?: string;
   /** When set, starts a flow run with this flow id instead of a direct agent run. */
   flow_id?: string;
+  /** Frontend-generated child session id for the flow thread (crypto.randomUUID()).
+   * When present, the Rust runtime upserts a child session with this id and routes
+   * all flow node sub-runs into it so the thread view can subscribe independently. */
+  child_session_id?: string;
 }
 
 export const agentRegistry = {
@@ -237,6 +241,7 @@ export async function agentRun(task: string, opts: AgentRunOptions = {}): Promis
   if (opts.session_id) req.session_id = opts.session_id;
   if (opts.session_name) req.session_name = opts.session_name;
   if (opts.agent_id) req.agent_id = opts.agent_id;
+  if (opts.child_session_id) req.child_session_id = opts.child_session_id;
   const res = (await runtimeSend("start.run", req)) as { run_id?: string };
   if (!res.run_id) throw new Error("runtime did not return run_id");
   return res.run_id;
