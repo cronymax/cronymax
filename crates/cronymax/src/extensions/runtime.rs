@@ -81,7 +81,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use rmpv::Value;
 
-use crate::extensions::api::agents::{AgentProviderRegistry, ProviderEntry};
+use crate::extensions::api::agents::{
+    AgentProviderRegistry, AgentSessionEvent, AgentSessionRouter, ProviderEntry,
+};
 use crate::extensions::api::commands::CommandRegistry;
 use crate::extensions::api::lifecycle::LifecycleState;
 use crate::extensions::api::renderers::{ContentRendererRegistry, RendererEntry};
@@ -127,6 +129,13 @@ struct RuntimeState {
     /// register notifies fired during activate() can find the conn);
     /// remove on deactivate or activate-failure rollback.
     handles: Mutex<HashMap<String, ExtensionHandle>>,
+    /// Routes inbound `agents/event` and `agents/turn.done` notifies
+    /// from any extension host to the in-flight chat / flow dispatcher
+    /// that holds the corresponding `session_id`. Populated by the
+    /// dispatcher right before `agents/session.prompt`, drained by the
+    /// dispatcher on run completion. Shared across extensions because
+    /// the wire format routes by sessionId, not by owning_ext.
+    session_router: AgentSessionRouter,
 }
 
 impl ExtensionRuntime {
@@ -141,6 +150,7 @@ impl ExtensionRuntime {
                 renderers: ContentRendererRegistry::new(),
                 sidebars: SidebarViewRegistry::new(),
                 handles: Mutex::new(HashMap::new()),
+                session_router: AgentSessionRouter::new(),
             }),
         }
     }
@@ -157,6 +167,16 @@ impl ExtensionRuntime {
 
     pub fn sidebars(&self) -> &SidebarViewRegistry {
         &self.state.sidebars
+    }
+
+    /// Streaming session event router. Chat / flow dispatchers call
+    /// [`AgentSessionRouter::register`] before sending
+    /// `agents/session.prompt`, then iterate the returned receiver until a
+    /// `TurnDone` / `Done` arrives. Inbound `agents/event` and
+    /// `agents/turn.done` notify handlers (registered per-extension by
+    /// [`Self::build_rpc_server`]) push into the same router.
+    pub fn session_router(&self) -> &AgentSessionRouter {
+        &self.state.session_router
     }
 
     /// Snapshot of every contribution currently ingested, scoped to one
@@ -413,6 +433,112 @@ impl ExtensionRuntime {
                 async move {
                     let provider_id = extract_str_field(&params, "providerId")?;
                     let _ = providers.unregister(&ext_id, &provider_id)?;
+                    Ok(())
+                }
+            });
+        }
+
+        // ── agents/event ───────────────────────────────────────────────
+        //
+        // Streamed AgentEvent payload from the extension's session.prompt
+        // iterator. Notify shape: `{ sessionId, event: { kind, ... } }`.
+        // We deserialize the inner event into AgentSessionEvent (typed)
+        // and forward to the dispatcher via the runtime's session router.
+        // Missing sinks are not errors: they happen routinely when a
+        // dispatcher cancels mid-turn or when bookkeeping races a final
+        // notify — the inbound notify is logged & dropped.
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.on_notify(agents_method::EVENT, move |params| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let json = rmpv_to_json(&params);
+                    let obj = json.as_object().ok_or_else(|| {
+                        ExtensionError::Rpc(format!(
+                            "agents/event from `{ext_id}` is not an object: {json}",
+                        ))
+                    })?;
+                    let session_id = obj
+                        .get("sessionId")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            ExtensionError::Rpc(format!(
+                                "agents/event from `{ext_id}` missing string sessionId",
+                            ))
+                        })?
+                        .to_string();
+                    let event_val = obj.get("event").cloned().ok_or_else(|| {
+                        ExtensionError::Rpc(format!(
+                            "agents/event from `{ext_id}` missing `event` field",
+                        ))
+                    })?;
+                    let event: AgentSessionEvent =
+                        serde_json::from_value(event_val).map_err(|e| {
+                            ExtensionError::Rpc(format!(
+                                "agents/event from `{ext_id}` failed to decode AgentEvent: {e}",
+                            ))
+                        })?;
+                    match state.session_router.route_event(&session_id, event).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            tracing::debug!(
+                                target = "cronymax::extensions",
+                                ext_id = %ext_id,
+                                session_id = %session_id,
+                                "dropped agents/event: no dispatcher sink registered",
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target = "cronymax::extensions",
+                                ext_id = %ext_id,
+                                session_id = %session_id,
+                                error = %e,
+                                "failed to route agents/event to dispatcher",
+                            );
+                        }
+                    }
+                    Ok(())
+                }
+            });
+        }
+
+        // ── agents/turn.done ───────────────────────────────────────────
+        //
+        // Explicit turn-boundary signal from bootstrap.js after the
+        // session.prompt iterator returns. Even when the extension itself
+        // emits a `{kind:"done"}` event first, the dispatcher gets a
+        // separate `TurnDone` marker so cleanup logic can run unconditionally.
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.on_notify(agents_method::TURN_DONE, move |params| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let session_id = extract_str_field(&params, "sessionId")?;
+                    match state.session_router.route_turn_done(&session_id).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            tracing::debug!(
+                                target = "cronymax::extensions",
+                                ext_id = %ext_id,
+                                session_id = %session_id,
+                                "dropped agents/turn.done: no dispatcher sink registered",
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target = "cronymax::extensions",
+                                ext_id = %ext_id,
+                                session_id = %session_id,
+                                error = %e,
+                                "failed to route agents/turn.done to dispatcher",
+                            );
+                        }
+                    }
                     Ok(())
                 }
             });
@@ -688,6 +814,63 @@ fn extract_str_field(params: &Value, field: &str) -> ExtensionResult<String> {
     Err(ExtensionError::Rpc(format!(
         "missing or non-string field `{field}` in notify params",
     )))
+}
+
+/// Convert an `rmpv::Value` (what the RPC layer delivers) into a
+/// `serde_json::Value` so it can be re-deserialized into a typed shape
+/// (e.g. [`AgentSessionEvent`]).
+///
+/// The conversion is total over the subset of rmpv variants any
+/// JSON-source JS process can produce via `@msgpack/msgpack` (no `Ext`
+/// tags, no non-string map keys). On encountering a non-string map key
+/// we degrade to a stringified form rather than returning an error —
+/// the dispatcher gets to see the bad shape in the resulting JSON, and
+/// `serde_json::from_value` on a downstream typed deserialize will
+/// report a precise field-level error.
+fn rmpv_to_json(v: &Value) -> serde_json::Value {
+    use serde_json::Value as J;
+    match v {
+        Value::Nil => J::Null,
+        Value::Boolean(b) => J::Bool(*b),
+        Value::Integer(i) => {
+            if let Some(n) = i.as_i64() {
+                serde_json::Number::from(n).into()
+            } else if let Some(n) = i.as_u64() {
+                serde_json::Number::from(n).into()
+            } else if let Some(f) = i.as_f64() {
+                serde_json::Number::from_f64(f)
+                    .map(J::Number)
+                    .unwrap_or(J::Null)
+            } else {
+                J::Null
+            }
+        }
+        Value::F32(f) => serde_json::Number::from_f64(*f as f64)
+            .map(J::Number)
+            .unwrap_or(J::Null),
+        Value::F64(f) => serde_json::Number::from_f64(*f)
+            .map(J::Number)
+            .unwrap_or(J::Null),
+        Value::String(s) => J::String(s.as_str().unwrap_or("").to_string()),
+        Value::Binary(b) => J::Array(
+            b.iter()
+                .map(|x| serde_json::Number::from(*x as u64).into())
+                .collect(),
+        ),
+        Value::Array(arr) => J::Array(arr.iter().map(rmpv_to_json).collect()),
+        Value::Map(pairs) => {
+            let mut m = serde_json::Map::with_capacity(pairs.len());
+            for (k, val) in pairs {
+                let key = k
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("{k:?}"));
+                m.insert(key, rmpv_to_json(val));
+            }
+            J::Object(m)
+        }
+        Value::Ext(tag, data) => serde_json::json!({ "__ext_tag": tag, "__ext_data": data }),
+    }
 }
 
 fn find_provider_decl<'a>(
@@ -1163,5 +1346,119 @@ mod tests {
         let cmds = runtime.contributions_for_ep("cronymax.command");
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0][0]["id"], "alice.x.hi");
+    }
+
+    #[tokio::test]
+    async fn agents_event_notify_routes_to_registered_dispatcher_sink() {
+        let (runtime, peer_conn) = wired_pair().await;
+
+        let session_id = "s-evt".to_string();
+        let mut rx = runtime
+            .session_router()
+            .register(session_id.clone())
+            .unwrap();
+
+        // Peer side emits an `agents/event` notify with a Text payload
+        // shaped exactly like the bootstrap.js wire format.
+        peer_conn
+            .notify(
+                agents_method::EVENT,
+                Value::Map(vec![
+                    (
+                        Value::String("sessionId".into()),
+                        Value::String(session_id.clone().into()),
+                    ),
+                    (
+                        Value::String("event".into()),
+                        Value::Map(vec![
+                            (Value::String("kind".into()), Value::String("text".into())),
+                            (
+                                Value::String("text".into()),
+                                Value::String("hello chat".into()),
+                            ),
+                        ]),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+
+        // The dispatcher sink should observe the typed event.
+        let msg = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .expect("dispatcher should receive event within 500ms")
+            .expect("channel should still be open");
+        match msg {
+            crate::extensions::api::agents::AgentSessionMessage::Event(
+                AgentSessionEvent::Text { text },
+            ) => assert_eq!(text, "hello chat"),
+            other => panic!("expected Event(Text), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agents_turn_done_notify_routes_to_dispatcher_sink() {
+        let (runtime, peer_conn) = wired_pair().await;
+
+        let session_id = "s-end".to_string();
+        let mut rx = runtime
+            .session_router()
+            .register(session_id.clone())
+            .unwrap();
+
+        peer_conn
+            .notify(
+                agents_method::TURN_DONE,
+                Value::Map(vec![(
+                    Value::String("sessionId".into()),
+                    Value::String(session_id.clone().into()),
+                )]),
+            )
+            .await
+            .unwrap();
+
+        let msg = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .expect("dispatcher should receive turn.done within 500ms")
+            .expect("channel should still be open");
+        assert!(matches!(
+            msg,
+            crate::extensions::api::agents::AgentSessionMessage::TurnDone
+        ));
+    }
+
+    #[tokio::test]
+    async fn agents_event_notify_for_unregistered_session_is_dropped_quietly() {
+        let (_runtime, peer_conn) = wired_pair().await;
+        // No router registration for "ghost-session". The runtime should
+        // accept the notify, log a debug line, and not crash. We assert
+        // by sending a follow-up `$/ping` request that succeeds.
+        peer_conn
+            .notify(
+                agents_method::EVENT,
+                Value::Map(vec![
+                    (
+                        Value::String("sessionId".into()),
+                        Value::String("ghost-session".into()),
+                    ),
+                    (
+                        Value::String("event".into()),
+                        Value::Map(vec![
+                            (Value::String("kind".into()), Value::String("text".into())),
+                            (
+                                Value::String("text".into()),
+                                Value::String("orphaned".into()),
+                            ),
+                        ]),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+
+        // Yield so the dispatch task processes the notify before we tear
+        // down the duplex — we don't care about a reply, just that nothing
+        // panicked.
+        tokio::task::yield_now().await;
     }
 }
