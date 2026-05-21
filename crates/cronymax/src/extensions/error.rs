@@ -34,6 +34,12 @@ pub enum ExtensionError {
     #[error("extension `{0}` is not enabled")]
     NotEnabled(String),
 
+    #[error("extension `{0}` is not activated")]
+    NotActivated(String),
+
+    #[error("extension `{0}` is already activated")]
+    AlreadyActivated(String),
+
     // ── activation / host ──────────────────────────────────────────────────
     #[error("activation event `{0}` is not understood")]
     UnknownActivationEvent(String),

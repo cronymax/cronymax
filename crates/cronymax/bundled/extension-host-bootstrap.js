@@ -133,6 +133,22 @@ function dispatchFrame(frame) {
       const target = params[0];
       const cancel = inFlight.get(target);
       if (cancel) cancel.cancelled = true;
+      return;
+    }
+    // Other inbound notifies (e.g. extension/registerError) — dispatch
+    // to the registered handler if one exists. Fire-and-forget: any
+    // result or error is logged but never sent back, since notifies
+    // have no response frame.
+    const handler = handlers.get(method);
+    if (handler) {
+      Promise.resolve()
+        .then(() => handler(params))
+        .catch((err) => {
+          const msg = err && err.message ? String(err.message) : String(err);
+          console.error(
+            `[cronymax-bootstrap] notify handler '${method}' threw: ${msg}`,
+          );
+        });
     }
   }
 }
@@ -143,26 +159,34 @@ function dispatchFrame(frame) {
 let inboundBuf = Buffer.alloc(0);
 rpcSocket.on("data", (chunk) => {
   inboundBuf = inboundBuf.length === 0 ? chunk : Buffer.concat([inboundBuf, chunk]);
-  while (inboundBuf.length > 0) {
-    let consumed = 0;
-    let frame;
-    try {
-      const result = decoder.decodeMulti(inboundBuf);
-      const iter = result[Symbol.iterator]();
-      const first = iter.next();
-      if (first.done) break;
-      frame = first.value;
-      consumed = decoder.pos | 0; // Decoder exposes the last byte position
-      if (consumed <= 0 || consumed > inboundBuf.length) break;
-    } catch (e) {
-      // Incomplete frame; wait for more bytes.
-      if (String(e).includes("not enough data") || String(e).includes("RangeError")) {
-        break;
-      }
-      process.stderr.write(`[bootstrap] decode error: ${e}\n`);
-      break;
+  // `Decoder.decodeMulti` returns a generator; iterating consumes each
+  // frame in sequence and `decoder.bytePosition` (or `pos` on older
+  // versions) tracks how much of the input has been consumed *up to and
+  // including* the most recently yielded frame. Collect frames while
+  // they decode cleanly; once the iterator throws (RangeError = need
+  // more bytes), trim what we consumed and wait for the next chunk.
+  const frames = [];
+  let consumed = 0;
+  try {
+    const decoder = new Decoder();
+    for (const frame of decoder.decodeMulti(inboundBuf)) {
+      frames.push(frame);
+      // `pos` is the canonical "next-byte" cursor on @msgpack/msgpack's
+      // Decoder; it's updated after each successful decode.
+      consumed = decoder.pos;
     }
+  } catch (e) {
+    // RangeError / "not enough data" means the next frame is partial;
+    // anything we already pushed into `frames` is valid up to `consumed`.
+    const s = String(e);
+    if (!s.includes("not enough data") && !s.includes("RangeError")) {
+      process.stderr.write(`[bootstrap] decode error: ${e}\n`);
+    }
+  }
+  if (consumed > 0) {
     inboundBuf = inboundBuf.subarray(consumed);
+  }
+  for (const frame of frames) {
     try {
       dispatchFrame(frame);
     } catch (e) {
@@ -344,6 +368,62 @@ const cronymax = {
       return rpcRequest("extensions/getExtension", { id });
     },
   },
+  agents: {
+    // Extensions call this from activate() to make a contributed
+    // provider available to the chat panel / flow runtime. The platform
+    // looks up the provider's metadata (label / icon / supports*) from
+    // the manifest's contributes["cronymax.agents.provider"] entry; the
+    // notify here just announces "the JS impl is live".
+    registerProvider(providerId, impl) {
+      registerRpcHandler(
+        "agents/session.create:" + providerId,
+        async (params) => impl.createSession(params),
+      );
+      registerRpcHandler(
+        "agents/listModels:" + providerId,
+        async () => impl.listModels(),
+      );
+      const dispose = () =>
+        rpcNotify("agents/unregisterProvider", { providerId });
+      rpcNotify("agents/registerProvider", { providerId });
+      const sub = { dispose };
+      subscriptions.push(sub);
+      return sub;
+    },
+  },
+  renderers: {
+    // Extensions call this from activate() to make a content renderer
+    // available. The platform routes render() requests by MIME type.
+    registerRenderer(rendererId, handler) {
+      registerRpcHandler(
+        "renderers/render:" + rendererId,
+        async (params) => handler(params),
+      );
+      const dispose = () =>
+        rpcNotify("renderers/unregister", { rendererId });
+      rpcNotify("renderers/register", { rendererId });
+      const sub = { dispose };
+      subscriptions.push(sub);
+      return sub;
+    },
+  },
+  sidebar: {
+    // Extensions call this from activate() to make a sidebar view
+    // available. Title / icon / entry come from the manifest.
+    register(viewId, handler) {
+      if (handler) {
+        registerRpcHandler(
+          "sidebar/view.message:" + viewId,
+          async (params) => handler(params),
+        );
+      }
+      const dispose = () => rpcNotify("sidebar/unregister", { viewId });
+      rpcNotify("sidebar/register", { viewId });
+      const sub = { dispose };
+      subscriptions.push(sub);
+      return sub;
+    },
+  },
 };
 
 // Make it reachable via `require("@cronymax/extension")` shim — the SDK
@@ -356,6 +436,20 @@ globalThis.cronymax = cronymax;
 // ── 5. activate / deactivate handlers ------------------------------------
 
 registerRpcHandler("$/ping", async () => "pong");
+
+// Platform → extension reverse notify: a register call failed on the
+// runtime side (id not declared in manifest / cross-extension collision
+// / namespace-reserved / etc.). Surface as console.error so developers
+// notice — silent drop hides bugs until users complain.
+registerRpcHandler("extension/registerError", async (params) => {
+  const ep = params && params.ep ? String(params.ep) : "<unknown ep>";
+  const id = params && params.id ? String(params.id) : "<unknown id>";
+  const reason = params && params.reason ? String(params.reason) : "<no reason>";
+  console.error(
+    `[cronymax] register failed: ep=${ep} id=${id} reason=${reason}`,
+  );
+});
+
 
 registerRpcHandler("extension/activate", async () => {
   const mainPath = path.join(EXT_DIR, manifest.main);

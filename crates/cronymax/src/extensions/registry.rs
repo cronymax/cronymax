@@ -85,6 +85,34 @@ impl ExtensionRegistry {
         self.entries.values()
     }
 
+    /// Test-only: inject an in-memory entry without touching disk.
+    /// Used by ExtensionRuntime tests that need a known manifest but
+    /// don't want to round-trip through `install`.
+    #[cfg(test)]
+    pub(crate) fn insert_for_test(&mut self, id: &str, manifest: Manifest) {
+        self.insert_for_test_with_enabled(id, manifest, true);
+    }
+
+    /// Test-only: inject an in-memory entry with explicit `enabled`.
+    #[cfg(test)]
+    pub(crate) fn insert_for_test_with_enabled(
+        &mut self,
+        id: &str,
+        manifest: Manifest,
+        enabled: bool,
+    ) {
+        let ext_dir = self.root.join(id);
+        self.entries.insert(
+            id.to_string(),
+            RegistryEntry {
+                manifest,
+                ext_dir,
+                enabled,
+                installed_at: now_seconds(),
+            },
+        );
+    }
+
     /// Re-scan `<root>/` and reconcile against `registry.json`:
     ///
     /// * a dir with a valid manifest that is **not** in `registry.json`

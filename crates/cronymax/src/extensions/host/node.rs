@@ -211,6 +211,27 @@ impl NodeHost {
         &self.state.ext_id
     }
 
+    /// Test-only: construct a `NodeHost` with no underlying process.
+    /// Used by [`crate::extensions::runtime`] unit tests that need a
+    /// stand-in handle so they can populate `ExtensionRuntime.state.handles`
+    /// without paying for a real spawn. The returned host's `is_alive()`
+    /// returns `false`, `connection()` returns `None`, and `shutdown()`
+    /// returns an error — but the value can be moved through code that
+    /// only cares about `ext_id()` and key it by string.
+    #[cfg(test)]
+    pub(crate) fn dummy_for_test(ext_id: &str) -> Self {
+        Self {
+            state: Arc::new(HostState {
+                ext_id: ext_id.to_string(),
+                child: TokioMutex::new(None),
+                connection: TokioMutex::new(None),
+                rpc_task: TokioMutex::new(None),
+                health_task: TokioMutex::new(None),
+                restart_count: TokioMutex::new(0),
+            }),
+        }
+    }
+
     /// Number of times the host has been restarted in its lifetime.
     pub async fn restart_count(&self) -> u32 {
         *self.state.restart_count.lock().await

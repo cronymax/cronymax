@@ -50,7 +50,9 @@ pub mod logging;
 pub mod manifest;
 pub mod registry;
 pub mod rpc;
+pub mod runtime;
 
 pub use error::ExtensionError;
 pub use manifest::Manifest;
 pub use registry::ExtensionRegistry;
+pub use runtime::ExtensionRuntime;

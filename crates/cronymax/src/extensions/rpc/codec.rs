@@ -34,7 +34,14 @@ pub const METHOD_CANCEL: &str = "$/cancel";
 pub mod method {
     pub const EXTENSION_ACTIVATE: &str = "extension/activate";
     pub const EXTENSION_DEACTIVATE: &str = "extension/deactivate";
+    /// Platform → extension reverse notify sent when a register
+    /// notify (agents / commands / renderers / sidebar) fails. Payload
+    /// is `{ ep: string, id: string, reason: string }`. The bootstrap.js
+    /// SDK shim turns it into a `console.error` so developers see the
+    /// failure instead of silently dropping.
+    pub const EXTENSION_REGISTER_ERROR: &str = "extension/registerError";
     pub const COMMANDS_REGISTER: &str = "commands/register";
+    pub const COMMANDS_UNREGISTER: &str = "commands/unregister";
     pub const COMMANDS_EXECUTE: &str = "commands/execute";
     pub const EVENTS_PUBLISH: &str = "events/publish";
     pub const EVENTS_SUBSCRIBE: &str = "events/subscribe";
@@ -43,6 +50,20 @@ pub mod method {
     pub const PING: &str = "$/ping";
     pub const READY: &str = "$/ready";
     pub const AUDIT: &str = "audit";
+}
+
+/// Method names for the `cronymax.content.renderer` L2 EP (extension →
+/// platform notify on register / unregister).
+pub mod renderers_method {
+    pub const REGISTER: &str = "renderers/register";
+    pub const UNREGISTER: &str = "renderers/unregister";
+}
+
+/// Method names for the `cronymax.ui.sidebar.view` L2 EP (extension →
+/// platform notify on register / unregister).
+pub mod sidebar_method {
+    pub const REGISTER: &str = "sidebar/register";
+    pub const UNREGISTER: &str = "sidebar/unregister";
 }
 
 /// Method names for the `cronymax.agents.provider` L2 EP — both directions.

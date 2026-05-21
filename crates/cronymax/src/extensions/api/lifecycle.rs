@@ -40,9 +40,7 @@ impl LifecycleState {
     /// `AlreadyActivated` if it was already in the map.
     pub fn mark_activated(&mut self, ext_id: &str) -> ExtensionResult<()> {
         if self.activated.contains_key(ext_id) {
-            return Err(ExtensionError::ManifestInvalid(format!(
-                "extension `{ext_id}` is already activated"
-            )));
+            return Err(ExtensionError::AlreadyActivated(ext_id.to_string()));
         }
         self.activated.insert(
             ext_id.to_string(),
@@ -54,13 +52,13 @@ impl LifecycleState {
         Ok(())
     }
 
-    /// Drop the activation record. Returns `NotEnabled` if the extension
+    /// Drop the activation record. Returns `NotActivated` if the extension
     /// was not actually activated (a no-op is plausibly desirable but we
     /// surface it so callers can audit double-deactivate bugs).
     pub fn mark_deactivated(&mut self, ext_id: &str) -> ExtensionResult<()> {
         self.activated
             .remove(ext_id)
-            .ok_or_else(|| ExtensionError::NotEnabled(ext_id.to_string()))?;
+            .ok_or_else(|| ExtensionError::NotActivated(ext_id.to_string()))?;
         Ok(())
     }
 
@@ -124,7 +122,7 @@ mod tests {
         s.mark_activated("alice.x").unwrap();
         let err = s.mark_activated("alice.x").unwrap_err();
         assert!(
-            matches!(err, ExtensionError::ManifestInvalid(_)),
+            matches!(err, ExtensionError::AlreadyActivated(_)),
             "got {err:?}"
         );
     }
@@ -133,7 +131,10 @@ mod tests {
     fn deactivate_unknown_errors() {
         let mut s = LifecycleState::new();
         let err = s.mark_deactivated("alice.x").unwrap_err();
-        assert!(matches!(err, ExtensionError::NotEnabled(_)), "got {err:?}");
+        assert!(
+            matches!(err, ExtensionError::NotActivated(_)),
+            "got {err:?}"
+        );
     }
 
     #[test]

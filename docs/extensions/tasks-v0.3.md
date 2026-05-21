@@ -588,3 +588,99 @@ Node 26 flag 不可变约束没了 → 加 / 删 / 切 workspace folder 都只�
 | Phase 2 Node host + L1 第一切片 | 11 / 12 | T09 perf / T10 安全冒烟（安全冒烟语义改变了 — 现在测的是"扩展能正常用，不是被 deny"） |
 | Phase 3 其余 L1 Kernel | 8 / 9 | T09 验收扩展 待做 |
 | Phase 4-10 | 未启动 | 同 |
+
+---
+
+## Phase 4 执行进度（2026-05-21）
+
+P4 重点是 wiring：Phase 0–3 已把每个 L2 EP 的 typed registry 建好，但全没接 RPC。本批把它们全接通，并落下 top-level orchestrator。
+
+| ID | 状态 | 备注 |
+|---|---|---|
+| **P4-T01** | ✅ 完成 | `contributions/mod.rs::ingest()` 遍历六个 `contributes.*` 字段，序列化进 `entries: HashMap<ep_id, HashMap<ext_id, ContributionEntry>>`；`remove_extension(ext_id)` 反向清理；10 单测 |
+| **P4-T02** | ✅ 完成 | `api/renderers.rs` (`ContentRendererRegistry`) + `api/sidebar.rs` (`SidebarViewRegistry`)：跟 `AgentProviderRegistry` 同 shape——`Arc<RwLock<HashMap>>` + 命名空间 gate + ownership + `unregister_all_for`；8 + 6 单测 |
+| **P4-T03 / P4-T04** | ✅ 完成（合并一次完成） | `extensions/runtime.rs`：`ExtensionRuntime` orchestrator 持有六个 typed registry + 每扩展 NodeHost。`activate()` 路径：(1) 读 manifest (2) ingest contributions (3) build per-extension `RpcServer` 注册 8 个 notify handler (4) spawn host (5) 填 `LateConn` slot (6) RPC 调 `extension/activate` 等结果 (7) mark lifecycle。`deactivate()`：调 `extension/deactivate` → 清六个 registry → kill host。 |
+| **P4-T05** | ✅ 完成 | `error.rs` 加 `NotActivated` + `AlreadyActivated`；`LifecycleState::mark_activated/_deactivated` 切到新变体 |
+| **P4-T06** | ✅ 完成 | `tests/p4_extension_runtime_e2e.rs`：合成 manifest 申报 4 个 L2 EP，扩展 `activate()` 里调 `cronymax.commands.register / cronymax.agents.registerProvider / cronymax.renderers.registerRenderer / cronymax.sidebar.register`，验证 4 个 typed registry 都观察到注册；`deactivate()` 全清 |
+| **P4-T07** | ✅ 完成（本节）|  |
+| P4-T08 | ⏸ 待办 | permissionRequest 事件桥接平台权限弹窗——需要 chat panel UI 接通 |
+
+### Phase 4 关键设计选择
+
+1. **`ExtensionRuntime` 是 single owner**：六个 typed registry + ExtensionRegistry + LifecycleState 全归它持有，外部（chat panel / flow runtime / settings UI）只通过它访问。这是 plan §2 "每个 L2 EP 走 `contributions/`" 的工程化落点。
+2. **`LateConn` 解 wiring 死循环**：`RpcServer` 必须在 `NodeHost::spawn` 之前 build（spawn 接收 RpcServer），但 register-notify handler 又需要 spawn 后才存在的 `Arc<Connection>` 去填进 `ProviderEntry.conn`。方案：在 build 阶段把一个空 `LateConn` slot 借给闭包，activate() 拿到 conn 后立刻 `slot.set(conn)`。Handler 第一次 fire 时（必然在 `extension/activate` 之后）一定能读到。
+3. **register-notify 找 manifest declaration**：扩展 `cronymax.agents.registerProvider("alice.x.gpt", impl)` 时只发 `{ providerId }`，不发 label/icon/supports_*。Runtime 从 `manifest.contributes.agent_providers` 里 lookup 取这些字段。这保证两件事：(a) 扩展运行时改不了 manifest 申报的 metadata（防混淆）（b) 未在 manifest 申报就 register 的会被拒（`BadContribution` 错误，silent drop notify）。
+4. **`activate()` 同步等 `extension/activate` RPC**：早期版本 host spawn 完就 return，让调用方决定何时 kick activate。改为 runtime 内部直接调，因为：(a) 调用方真正想要的语义是"扩展能用了" (b) 不调 activate 的话扩展永远不会发 register notify (c) 失败时回滚 contributions 干净
+
+### Phase 4 验证
+
+- `cargo test -p cronymax --lib extensions::` → **223 passed**（189 baseline + 10 contributions + 8 renderers + 6 sidebar + 10 runtime）
+- `cargo test -p cronymax --test p1_acceptance` → **4 passed**
+- `cargo test -p cronymax --test p2_node_host_e2e` → **3 passed**（撤回 permission 后剩余）
+- `cargo test -p cronymax --test p4_extension_runtime_e2e` → **1 passed**（真实 Node 26 + 合成 alice.p4 扩展全链路 activate→register×4→deactivate→clear）
+- `cargo clippy -p cronymax --bins --lib --tests -- -D warnings` → 0 warnings
+- `cargo fmt --check` → clean
+- `node --check bundled/extension-host-bootstrap.js` → OK（新增 `agents.registerProvider` / `renderers.registerRenderer` / `sidebar.register` SDK shim）
+
+### Phase 4 接下来还能推什么
+
+- **P4-T08** permissionRequest 事件桥接：需要 chat panel React + tool 调度 emit `permission/needRequest`，runtime 路由到 platform 弹窗。归 P5 chat panel 接通时一起做
+- **chat panel UI**：从 `runtime.providers().list()` 渲染 provider picker；这是 V2 验收清单的内容
+- **flow runtime agent step**：`flow/agent_step.rs` 改成查 `runtime.providers().get(id)`——V5/V6 验收清单
+
+### Phase 完成度（Phase 4 接入后）
+
+| Phase | 完成 / 总数 | 状态 |
+|---|---|---|
+| Phase 0 基础 + spike | 7 / 7 | ✅ 完成 |
+| Phase 1 manifest + registry + activation | 6 / 6 | ✅ 完成 |
+| Phase 2 Node host + L1 第一切片 | 11 / 12 | T09 perf / T10 安全冒烟（撤回 permission 后语义改变）|
+| Phase 3 其余 L1 Kernel | 8 / 9 | T09 验收扩展 待做 |
+| Phase 4 L2 EP × 6 wiring | 7 / 8 | ✅ T01-T07 主体完成；T08 permissionRequest 等 chat panel 接通 |
+| Phase 5-10 | 未启动 | 同 |
+
+---
+
+## Phase 4 follow-ups（2026-05-21 下午）
+
+讨论关键设计时发现两个不满意点；都改了。
+
+### F1 + F2：删 `LateConn`,Entry 不再持 conn
+
+**问题**：`ProviderEntry.conn: Arc<Connection>` 引入了 chicken-and-egg —— handler 闭包要在 spawn 之前 build,但 conn 要在 spawn 之后才有。`LateConn` 是个 set-once slot 的解法,但是时序耦合脆。
+
+**解法**：entry 不再持 conn。chat panel / flow 通过 `runtime.send_to_extension(ext_id, method, params)` / `runtime.notify_extension(...)` 发请求,runtime 内部从 `state.handles[ext_id]` lookup 当前的 conn。activate() 流程改成 spawn 后**立即**把 handle 塞进 state.handles(而不是等 activate RPC 返回之后),这样 handle.conn 在 register-notify handler fire 时已经可用。失败时 rollback 把 handle 拿出来 shutdown。
+
+**改动**:
+- `ProviderEntry` / `RendererEntry` / `SidebarViewEntry` 都删 `conn: Arc<Connection>` 字段
+- runtime.rs 删 `LateConn` 结构和 `late_conns` map
+- 加 `send_to_extension(ext_id, method, params) → Result<Value>` 和 `notify_extension(...)` 公共 API
+- `state.handles.insert` 时机从 "activate RPC 成功后" 提前到 "spawn 完成后";rollback 路径加 `rollback_failed_activate`
+- 加 `NodeHost::dummy_for_test()` 让单测能注入 conn-only handle
+
+### F3：反向 `extension/registerError` notify
+
+**问题**：register-notify 处理失败时只是 silent drop,扩展开发者完全看不到。
+
+**解法**:
+- 加新 RPC method 常量 `method::EXTENSION_REGISTER_ERROR = "extension/registerError"`
+- 每个 register handler 失败时通过 `report_register_outcome(...)` 反向发 `{ ep, id, reason }` notify 给扩展进程
+- bootstrap.js 注册 `extension/registerError` handler,`console.error` 出来,进 stderr,落 extension-host.log
+- bootstrap.js 同时拓展 type=2 inbound notify dispatch,过去只处理 `$/cancel`,现在所有 inbound notify 都 lookup handlers 表
+
+### 顺手发现并修复:bootstrap.js msgpack decoder.pos bug
+
+**症状**：`decoder.decodeMulti(buf).next()` 之后 `decoder.pos | 0` 返回的不是真实消耗字节数 —— 短方法名(如 `extension/activate` 18 字符)碰巧吻合,长方法名(如 `commands/execute:alice.p4.hi` 28 字符)就报 23 字节消耗实际 33 字节,导致 10 字节 stale data 残留 buffer,下一帧解码错位变成 `notify undefined`。
+
+**修复**：换成 `for (const frame of decoder.decodeMulti(buf))` 迭代,每次成功 yield 后用 `decoder.pos` 更新一个本地 `consumed` 累加器。`Decoder` 也改成每次 on(data) 创建新实例避免跨调用状态污染。Iterator 抛 RangeError 表示需要更多 bytes,break 出循环并 trim 已 consumed 部分。
+
+### 验证（最终）
+
+- `cargo test -p cronymax --lib extensions::` → **226 passed**(+3:新增 send_to_extension / notify_extension not-activated 测试 + registerError emit 测试 - 原 silent-drop 测试改写)
+- `cargo test -p cronymax --test p1_acceptance` → **4 passed**
+- `cargo test -p cronymax --test p2_node_host_e2e` → **3 passed**
+- `cargo test -p cronymax --test p4_extension_runtime_e2e` → **2 passed**(新增 registerError e2e + 原 e2e 加 send_to_extension round-trip)
+- `cargo clippy -p cronymax --bins --lib --tests -- -D warnings` → 0
+- `cargo fmt --check` → clean
+
+合计 **235 tests pass**。
