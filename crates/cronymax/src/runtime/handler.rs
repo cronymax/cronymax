@@ -424,34 +424,43 @@ impl Handler for RuntimeHandler {
                     .filter(|s| !s.is_empty())
                     .unwrap_or(crate::crony::CronyBuiltin::ID);
 
-                // Extension-provider dispatch guard. The chat panel agent list
-                // now includes `kind: "extension_provider"` entries (see
+                // Extension-provider dispatch. The chat panel agent list now
+                // includes `kind: "extension_provider"` entries (see
                 // ControlRequest::AgentRegistryList), so the user can pick a
-                // provider that doesn't have a `<id>.agent.yaml` on disk.
-                // Without this guard, `load_agent_with_builtin` would silently
-                // fall through to a default `AgentDef { name: agent_id }` and
-                // run the user's prompt against the workspace-default LLM with
-                // no system prompt — i.e. the chat would look like it works
-                // but the extension would never be involved. Reject upfront
-                // with a typed error until session.create / session.prompt /
-                // agents/event streaming lands (P4-T05 / P8).
-                if flow_id_opt.is_none() {
-                    if let Some(extensions) = self.services.extensions.as_ref() {
-                        if let Some(provider) = extensions.providers().get(resolved_agent_id) {
-                            warn!(
-                                provider_id = %provider.provider_id,
-                                owning_ext = %provider.owning_ext,
-                                "start_run: extension provider dispatch is pending implementation",
-                            );
-                            return ControlResponse::Err {
-                                error: ControlError::InvalidState {
-                                    message: format!(
-                                        "extension provider `{}` (from `{}`) is listed but session dispatch is not yet wired; pick a built-in agent for now",
-                                        provider.provider_id, provider.owning_ext
-                                    ),
-                                },
-                            };
-                        }
+                // provider whose owning_ext is an installed extension. When
+                // hit, route through ExtensionRuntime's session.create →
+                // session.prompt → agents/event streaming chain instead of
+                // falling through to agent_loader's placeholder AgentDef.
+                //
+                // Flow-id-bearing runs are bypassed for now: the flow runtime
+                // has its own per-step provider lookup path (P8) and the
+                // dispatch helper is currently scoped to direct chat.
+                let extension_dispatch: Option<crate::extensions::api::agents::ProviderEntry> =
+                    if flow_id_opt.is_none() {
+                        self.services
+                            .extensions
+                            .as_ref()
+                            .and_then(|ext| ext.providers().get(resolved_agent_id))
+                    } else {
+                        None
+                    };
+                if let Some(ref provider) = extension_dispatch {
+                    // Refuse upfront if the extension isn't activated — the
+                    // chat panel would otherwise see a misleading session
+                    // failure after RunStarted. Lazy activation is its own
+                    // slice (TODO P4-T05 lazy-activate); for now the user
+                    // must trigger activation via the extensions UI before
+                    // their first chat turn.
+                    let extensions = self.services.extensions.as_ref().expect("checked above");
+                    if !extensions.is_activated(&provider.owning_ext) {
+                        return ControlResponse::Err {
+                            error: ControlError::InvalidState {
+                                message: format!(
+                                    "extension `{}` (owning provider `{}`) is not activated; activate it before chatting",
+                                    provider.owning_ext, provider.provider_id
+                                ),
+                            },
+                        };
                     }
                 }
                 let preloaded_chat_agent_def: Option<crate::capability::agent_loader::AgentDef> =
@@ -556,6 +565,48 @@ impl Handler for RuntimeHandler {
                             self.fanout.lock().insert(sub_id, task);
                         } else {
                             info!("start_run: no sink available, fan-out task NOT spawned");
+                        }
+
+                        // Extension-provider dispatch path: bypass the
+                        // legacy ReactLoop + agent_loader scaffold below
+                        // entirely and drive the session through
+                        // `runtime::ext_dispatch`. Reply RunStarted
+                        // immediately so the chat panel transitions out
+                        // of "pending"; the dispatcher emits Token /
+                        // ThinkingToken / Trace events directly onto the
+                        // run's topic via the authority.
+                        if let Some(provider) = extension_dispatch.clone() {
+                            let extensions = self
+                                .services
+                                .extensions
+                                .as_ref()
+                                .expect("checked when computing extension_dispatch")
+                                .clone();
+                            let authority = self.authority.clone();
+                            let params = crate::runtime::ext_dispatch::ExtensionRunParams {
+                                provider,
+                                run_id,
+                                workspace_root: workspace_root.clone(),
+                                user_input: user_input.clone(),
+                                system_prompt: system_prompt.clone(),
+                                model: if model.is_empty() {
+                                    None
+                                } else {
+                                    Some(model.clone())
+                                },
+                                mode: None,
+                                allowed_tools: None,
+                            };
+                            tokio::spawn(async move {
+                                crate::runtime::ext_dispatch::drive_extension_session(
+                                    authority, extensions, params,
+                                )
+                                .await;
+                            });
+                            return ControlResponse::RunStarted {
+                                run_id: run_id.to_string(),
+                                subscription: sub_id,
+                            };
                         }
 
                         // Build doc-submission channel shared across all
@@ -3267,7 +3318,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_run_with_extension_provider_agent_id_returns_invalid_state() {
+    async fn start_run_with_inactive_extension_provider_returns_invalid_state() {
         let auth = RuntimeAuthority::in_memory();
         let space = Space {
             id: SpaceId::new(),
@@ -3324,13 +3375,17 @@ mod tests {
             } => {
                 assert!(message.contains("alice.agent"), "message: {message}");
                 assert!(message.contains("alice.ext"), "message: {message}");
+                assert!(
+                    message.contains("not activated"),
+                    "expected activation-related message, got: {message}",
+                );
             }
             other => panic!("expected InvalidState error, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn start_run_for_flow_skips_extension_provider_guard() {
+    async fn start_run_for_flow_skips_extension_provider_dispatch() {
         let auth = RuntimeAuthority::in_memory();
         let space = Space {
             id: SpaceId::new(),

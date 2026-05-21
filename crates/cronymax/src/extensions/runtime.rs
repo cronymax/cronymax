@@ -827,7 +827,7 @@ fn extract_str_field(params: &Value, field: &str) -> ExtensionResult<String> {
 /// the dispatcher gets to see the bad shape in the resulting JSON, and
 /// `serde_json::from_value` on a downstream typed deserialize will
 /// report a precise field-level error.
-fn rmpv_to_json(v: &Value) -> serde_json::Value {
+pub(crate) fn rmpv_to_json(v: &Value) -> serde_json::Value {
     use serde_json::Value as J;
     match v {
         Value::Nil => J::Null,
@@ -870,6 +870,43 @@ fn rmpv_to_json(v: &Value) -> serde_json::Value {
             J::Object(m)
         }
         Value::Ext(tag, data) => serde_json::json!({ "__ext_tag": tag, "__ext_data": data }),
+    }
+}
+
+/// Inverse of [`rmpv_to_json`] — used by dispatchers to package
+/// `agents/session.create` and `agents/session.prompt` request params
+/// (constructed as `serde_json::Value` for readability) into the
+/// `rmpv::Value` shape the RPC connection expects on the wire. Integers
+/// preserve signedness via the i64/u64 fallback ladder. Lossy on
+/// `Number::is_f64() && !is_finite()` — those become `Nil`, matching the
+/// rmpv_to_json behavior in the reverse direction.
+pub(crate) fn json_to_rmpv(v: &serde_json::Value) -> Value {
+    use serde_json::Value as J;
+    match v {
+        J::Null => Value::Nil,
+        J::Bool(b) => Value::Boolean(*b),
+        J::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Integer(i.into())
+            } else if let Some(u) = n.as_u64() {
+                Value::Integer(u.into())
+            } else if let Some(f) = n.as_f64() {
+                if f.is_finite() {
+                    Value::F64(f)
+                } else {
+                    Value::Nil
+                }
+            } else {
+                Value::Nil
+            }
+        }
+        J::String(s) => Value::String(s.clone().into()),
+        J::Array(arr) => Value::Array(arr.iter().map(json_to_rmpv).collect()),
+        J::Object(map) => Value::Map(
+            map.iter()
+                .map(|(k, val)| (Value::String(k.clone().into()), json_to_rmpv(val)))
+                .collect(),
+        ),
     }
 }
 
@@ -1336,6 +1373,22 @@ mod tests {
             ),
             other => panic!("expected array, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn json_to_rmpv_and_back_round_trips_dispatcher_params() {
+        let original = serde_json::json!({
+            "sessionId": "s-1",
+            "message": {
+                "text": "hello",
+                "attachments": []
+            },
+            "model": null,
+            "n": 42,
+        });
+        let rmpv = json_to_rmpv(&original);
+        let back = rmpv_to_json(&rmpv);
+        assert_eq!(back, original);
     }
 
     #[tokio::test]
