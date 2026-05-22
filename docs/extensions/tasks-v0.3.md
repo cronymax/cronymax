@@ -684,3 +684,52 @@ P4 重点是 wiring：Phase 0–3 已把每个 L2 EP 的 typed registry 建好�
 - `cargo fmt --check` → clean
 
 合计 **235 tests pass**。
+
+---
+
+## Phase 4.5 执行进度（2026-05-22 · chat-provider 接通）
+
+P4 把六个 L2 EP 的 typed registry 接通到 RPC,但 `AgentProviderRegistry` 仍是"列得出、用不了"——聊天面板没列、`StartRun` 不路由。本批把「聊天面板 → 扩展 AgentProvider」整条链路打通并测过,对应 P4-T05 验收项「聊天面板列扩展贡献的 provider」。分 4 个 commit 落在 `feat/plugins`(`ba92601` / `2ca97aa` / `7050120` / `121fedb`)。
+
+| 子项 | 状态 | 备注 |
+|---|---|---|
+| 聊天面板列 provider | ✅ 完成 | `AgentRegistryList` 控制响应追加 `kind:"extension_provider"` 条目;`RuntimeServices` 启动时从 `~/.cronymax/extensions/` 自建 `ExtensionRuntime`(与 CLI 共用 `default_registry_root()`);web `AgentSummary` schema + `agentPickerDescription()` 渲染 |
+| dispatch 安全护栏 | ✅ 完成 | `StartRun` 命中扩展 provider 时不再 silent fallback 到 `load_agent_with_builtin` 占位 AgentDef |
+| bootstrap.js session 生命周期 | ✅ 完成 | `session.create` 暂存 session 到 map;新增 `session.prompt`(迭代 + 发 `agents/event` + done 兜底 + 错误 trap)/ `session.dispose` / `session.cancel` / `session.resolvePermission` 四个 handler;`$/cancel` 标志桥接成 IDL `CancellationToken` |
+| 入站事件路由层 | ✅ 完成 | `AgentSessionEvent` 类型化枚举(IDL §AgentEvent 1:1)+ `AgentSessionRouter`(session_id → mpsc sink)+ 每扩展 RPC server 注册 `agents/event` / `agents/turn.done` 入站 notify handler;`rmpv_to_json` / `json_to_rmpv` 互转 helper |
+| chat dispatcher | ✅ 完成 | `runtime/ext_dispatch.rs::drive_extension_session`:session.create → 注册 sink → 后台 session.prompt → 事件循环译成 `RuntimeEventPayload`(text→Token / thinking→ThinkingToken / toolCall→Trace / done→run 状态)→ session.dispose → complete/fail run;`StartRun` 命中扩展 provider 时 spawn 它,绕过 legacy ReactLoop |
+| 端到端联调测试 | ✅ 完成 | duplex 假扩展 peer 跑通 happy path(text→Token、turn.done→Succeeded、sink 清理)+ session.create 出错→run Failed |
+
+### Phase 4.5 关键设计选择
+
+1. **激活前置条件,不做懒激活**:`StartRun` 命中未激活扩展的 provider 时返回 `ControlError::InvalidState`(消息点名 provider + owning_ext),而非自动 spawn。懒激活需要 bundled Node 路径解析 + `build_node_flags` 生产接线,是独立一刀,且夹着"打包后 Node 放哪"的打包决策。
+2. **session.prompt 走后台 task**:bootstrap.js 的 `session.prompt` handler 迭代抽干后才返回,若与事件循环同 task await 会死锁——入站 notify 需要并发 pump。dispatcher 先 `register` sink 再发 prompt,关掉"事件先于 await 恢复到达"的竞态。
+3. **`AgentSessionRouter` 挂 runtime 作用域**:wire 格式按 sessionId 路由(不是 owning_ext),所以 router 是跨扩展共享的单例;sink 缺失(取消竞态 / 陈旧 dispatcher)按 debug 日志丢弃,不报错。
+4. **flow 路径暂不接**:带 `flow_id` 的 run 跳过扩展 dispatch——flow runtime 有自己的 per-step provider 查找路径(P8)。
+
+### Phase 4.5 遗留(各自独立一刀)
+
+- **懒激活**:`ExtensionRuntime::activate()` 需完整 `SpawnConfig`(bundled Node 路径 / bootstrap.js 路径 / `build_node_flags` / storage 目录);生产侧零 spawn 接线。建议「打包后 Node 放哪」定了再开。
+- **`cancel.run` → `$/cancel`**:需给每个 run 存 cancellation handle。
+- **`permissionRequest` → 审批子系统**:目前先用 `Trace` 事件透出,未接 review。对应 P4-T08。
+
+### Phase 4.5 验证
+
+- `cargo test -p cronymax --lib` → **448 passed**(1 个 pre-existing 无关失败 `crony::tests::crony_def_prompt_is_sealed`,origin/HEAD 上同样挂)
+- `cargo test -p cronymax --test agent_runner_test` → **2 passed**
+- `cargo clippy -p cronymax --lib --tests` → 0 warnings
+- `cargo fmt --check` → clean
+- `node --check bundled/extension-host-bootstrap.js` → OK
+- web:`npm --prefix web test -- --run chat_store` → **28 passed**
+
+### Phase 完成度(Phase 4.5 接入后)
+
+| Phase | 完成 / 总数 | 状态 |
+|---|---|---|
+| Phase 0 基础 + spike | 7 / 7 | ✅ 完成 |
+| Phase 1 manifest + registry + activation | 6 / 6 | ✅ 完成 |
+| Phase 2 Node host + L1 第一切片 | 11 / 12 | T09 perf / T10 安全冒烟 |
+| Phase 3 其余 L1 Kernel | 8 / 9 | T09 验收扩展 待做 |
+| Phase 4 L2 EP × 6 wiring | 7 / 8 | T08 permissionRequest 待做 |
+| Phase 4.5 chat-provider 接通 | 主体 ✅ | dispatch 链路打通且有测试;遗留懒激活 / cancel / permission 桥接 |
+| Phase 5-10 | 未启动 | 同 |
