@@ -15,7 +15,7 @@ use crate::capability::submit_document::DocumentSubmitted;
 use crate::capability::tier::SandboxTier;
 use crate::flow::runtime::FlowRuntime;
 use crate::llm::config::LlmConfig;
-use crate::runtime::state::SpaceId;
+use crate::runtime::state::{SessionId, SpaceId};
 
 /// Per-run context for one agent or chat-turn invocation.
 ///
@@ -31,6 +31,9 @@ pub struct RunContext {
     pub flow_id: Option<String>,
     /// Flow run ID, present when this is a flow-driven invocation.
     pub flow_run_id: Option<String>,
+    /// Session that owns this run; when set, GIPS events are also routed to
+    /// `session:{session_id}` so the frontend subscription sees them.
+    pub session_id: Option<SessionId>,
     /// Channel for document submissions produced during this run.
     pub doc_tx: tokio::sync::mpsc::Sender<DocumentSubmitted>,
     /// Shared `FlowRuntime` for the workspace, when operating within a flow.

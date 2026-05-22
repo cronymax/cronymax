@@ -50,6 +50,10 @@ export function ModelSelect({
     }
   }, [provider.kind, provider.base_url, provider.api_key]);
 
+  // Always include the currently-selected value so it remains visible in the
+  // list even if it was set manually or the live fetch returned a shorter list.
+  const displayModels = value && !models.includes(value) ? [value, ...models] : models;
+
   useEffect(() => {
     if (provider.base_url) void doFetch();
   }, [provider.kind, provider.base_url]);
@@ -70,7 +74,7 @@ export function ModelSelect({
               <CommandList>
                 <CommandEmpty>No models found.</CommandEmpty>
                 <CommandGroup>
-                  {models.map((m) => (
+                  {displayModels.map((m) => (
                     <CommandItem
                       key={m}
                       value={m}

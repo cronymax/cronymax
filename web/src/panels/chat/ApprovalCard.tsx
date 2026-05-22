@@ -70,12 +70,12 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
   }, [category]);
 
   const handleAllow = () => {
-    shells.review.approve({ review_id: reviewId }).catch(() => undefined);
+    shells.review.approve({ run_id: runId, review_id: reviewId }).catch(() => undefined);
     onAllow();
   };
 
   const handleDeny = () => {
-    shells.review.request_changes({ review_id: reviewId }).catch(() => undefined);
+    shells.review.request_changes({ run_id: runId, review_id: reviewId }).catch(() => undefined);
     onDeny();
   };
 
@@ -86,7 +86,7 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
       map[category] = "autopilot";
       saveTrustMap(map);
       setTrust("autopilot");
-      await shells.review.approve({ review_id: reviewId });
+      await shells.review.approve({ run_id: runId, review_id: reviewId });
     } catch {
       /* ignore */
     } finally {
@@ -95,8 +95,7 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
     onAllow();
   };
 
-  // Suppress unused variable warning
-  void runId;
+  // No need to suppress: runId is now used above.
 
   return (
     <Alert className="mx-3 mb-1 text-xs">
@@ -120,15 +119,16 @@ export function ApprovalCard({ runId, reviewId, toolName, args, onAllow, onDeny 
         </div>
 
         <div className="flex items-center gap-2">
-          <Button size="sm" onClick={handleAllow}>
+          <Button type="button" size="sm" onClick={handleAllow}>
             <Check data-icon="inline-start" />
             Allow
           </Button>
-          <Button size="sm" variant="destructive" onClick={handleDeny}>
+          <Button type="button" size="sm" variant="destructive" onClick={handleDeny}>
             <X data-icon="inline-start" />
             Deny
           </Button>
           <Button
+            type="button"
             size="sm"
             variant="outline"
             className="ml-auto"

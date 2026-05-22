@@ -28,7 +28,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { FlowInstancesBar } from "@/components/FlowInstancesBar";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,13 +40,16 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Heading } from "@/components/ui/typography";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { cn } from "@/lib/utils";
-import { browser, shells } from "@/shells/bridge";
+import { FlowDocReviewPanel } from "@/panels/chat/FlowDocReviewPanel";
+import { FlowInstancesBar } from "@/panels/chat/FlowInstancesBar";
+import { browser, runtime, shells } from "@/shells/bridge";
 import { listProviderModels } from "@/shells/llm";
 import { agentRegistry, agentRun, b64ToUtf8, flowRun, terminal as rt_terminal } from "@/shells/runtime";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
 import { ContentStreamView } from "./ContentStreamView";
 import { resolveContextLimit } from "./contextLimits";
 import { FileChangesView } from "./FileChangesView";
+import { FlowTrajectoryDiagram } from "./FlowTrajectoryDiagram";
 import { LiveTasksView } from "./LiveTasksView";
 import { PromptPopover } from "./PromptPopover";
 import { ReviewsPanel } from "./ReviewsPanel";
@@ -60,6 +62,7 @@ import {
   chatNameFor,
   ensureChat,
   type FileChange,
+  type FlowNotificationBlock,
   loadAnthropicEffort,
   loadChatData,
   loadChatsList,
@@ -71,6 +74,7 @@ import {
   persistReasoningEffort,
   persistSelectedFlow,
   persistSelectedModel,
+  persistSelectedModelProvider,
   type ReasoningEffort,
   type ShellBlock,
   type Thread,
@@ -507,6 +511,23 @@ function ShellBlockView({
   );
 }
 
+// ── FlowNotificationBlockView ──────────────────────────────────────────
+
+function FlowNotificationBlockView({ block }: { block: FlowNotificationBlock }) {
+  return (
+    <div
+      className={`flex items-start gap-2.5 px-3 py-2 rounded-md border text-sm ${
+        block.variant === "success"
+          ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
+          : "border-blue-500/30 bg-blue-500/5 text-blue-700 dark:text-blue-400"
+      }`}
+    >
+      <span className="mt-0.5 shrink-0 text-base leading-none">{block.variant === "success" ? "✅" : "ℹ️"}</span>
+      <span className="leading-snug">{block.message}</span>
+    </div>
+  );
+}
+
 function BlockView({
   block,
   isStreaming,
@@ -535,6 +556,9 @@ function BlockView({
         onFork={onForkBlock}
       />
     );
+  }
+  if (block.kind === "flow-notification") {
+    return <FlowNotificationBlockView block={block} />;
   }
   return <ShellBlockView block={block} onAction={onShellAction} isHighlighted={isHighlighted} />;
 }
@@ -943,6 +967,36 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Persistent flow-activity notification listener ─────────────────────
+  // Receives `flow.agent.notify` Raw events emitted on the original agent-run
+  // subscription (which stays alive for the life of the flow), converts them
+  // to FlowNotificationBlocks in the chat timeline regardless of whether an
+  // onRun listener is currently active.
+  useEffect(() => {
+    const off = browser.on("event", (raw: unknown) => {
+      const ev = raw as Record<string, unknown> | null;
+      if (!ev || ev.tag !== "event") return;
+      const inner = (ev.event as Record<string, unknown> | undefined) ?? {};
+      const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
+      if (pl.kind !== "raw") return;
+      const data = pl.data as Record<string, unknown> | undefined;
+      if (data?.event !== "flow.agent.notify") return;
+      const message = data.message as string | undefined;
+      if (!message) return;
+      const kind = data.kind as string | undefined;
+      const variant: "success" | "info" = kind === "success" ? "success" : "info";
+      dispatch({
+        type: "createFlowNotification",
+        id: crypto.randomUUID(),
+        message,
+        variant,
+      });
+    });
+    return () => off();
+    // dispatch is stable; re-mount only if the reference changes (never in practice)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Use refs so the listener always reads latest values without re-subscribing.
   const runningBlockIdRef = useRef<string | null>(null);
   runningBlockIdRef.current = state.runningBlockId;
@@ -1279,8 +1333,15 @@ export function App() {
     // Track pending review info from awaiting_review status so we can
     // pair it with the arriving PermissionRequest event.
     let pendingReviewId: string | null = null;
+    let runtimeOff: (() => void) | null = null;
+    // Placeholder — replaced by the real browser.on unsub below.
+    let off: () => void = () => {};
+    const teardown = () => {
+      off();
+      runtimeOff?.();
+    };
 
-    const off = browser.on("event", (raw: unknown) => {
+    off = browser.on("event", (raw: unknown) => {
       const ev = raw as Record<string, unknown> | null;
       if (!ev) return;
 
@@ -1369,11 +1430,7 @@ export function App() {
               agentName: speaker || undefined,
             });
 
-            // Persist
-            const { data } = loadChatData(chatId);
-            persistChatData(chatId, { ...data, blocks: [...data.blocks] });
-
-            off();
+            teardown();
             dispatch({ type: "setCurrentRunId", runId: null });
             dispatch({ type: "setRunning", running: false });
             dispatch({ type: "setRunningBlockId", id: null });
@@ -1408,9 +1465,9 @@ export function App() {
           }
 
           if (effectiveTrust === "autopilot") {
-            browser.send("review.approve", { review_id: reviewId }).catch(() => undefined);
+            browser.send("review.approve", { run_id: runId, review_id: reviewId }).catch(() => undefined);
           } else if (effectiveTrust === "bypass") {
-            browser.send("review.request_changes", { review_id: reviewId }).catch(() => undefined);
+            browser.send("review.request_changes", { run_id: runId, review_id: reviewId }).catch(() => undefined);
           } else {
             // "ask" — show the approval card
             dispatch({
@@ -1514,6 +1571,8 @@ export function App() {
                 result,
                 terminal: (trace.terminal as boolean | undefined) ?? false,
                 ts: Date.now(),
+                ...(durationMs != null ? { durationMs } : {}),
+                ...(isError ? { isError: true } : {}),
               },
             });
             // Update the tool_call segment in the content stream
@@ -1631,6 +1690,249 @@ export function App() {
       }
     });
 
+    // processRuntimeEvent — handles GIPS events from runtime.on("run:{id}", cb).
+    // The callback receives the inner event directly: { sequence, emitted_at_ms, payload:{...} }.
+    // This mirrors the ev.tag==="event" branch above but for the targeted subscription path.
+    const processRuntimeEvent = (raw: unknown) => {
+      const inner = raw as Record<string, unknown> | null;
+      if (!inner) return;
+      const pl = (inner.payload as Record<string, unknown> | undefined) ?? {};
+      const seq = inner.sequence as number | undefined;
+      if (typeof seq === "number") {
+        if (seenSeqs.has(String(seq))) return;
+        seenSeqs.add(String(seq));
+      }
+      const kind = pl.kind as string | undefined;
+
+      if (kind === "thinking_token") {
+        const delta = pl.delta as string | undefined;
+        if (delta) {
+          if (thinkingStartedAt === null) {
+            thinkingStartedAt = Date.now();
+          }
+          dispatch({ type: "appendThinkingSegment", id: blockId, delta });
+        }
+      } else if (kind === "token") {
+        if (thinkingStartedAt !== null && !thinkingSealed) {
+          thinkingSealed = true;
+          const elapsedMs = Date.now() - thinkingStartedAt;
+          dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
+        }
+        const content = (pl.delta ?? pl.content) as string | undefined;
+        if (content) {
+          hasContent = true;
+          dispatch({ type: "appendContentText", id: blockId, delta: content });
+        }
+      } else if (kind === "run_status") {
+        const status = pl.status as string | undefined;
+        if (status === "succeeded" || status === "failed" || status === "cancelled") {
+          dispatch({ type: "clearAwaitingApproval" });
+          if (thinkingStartedAt !== null && !thinkingSealed) {
+            thinkingSealed = true;
+            const elapsedMs = Date.now() - thinkingStartedAt;
+            dispatch({ type: "sealThinkingSegment", id: blockId, elapsedMs });
+          }
+          if (!hasContent) {
+            const detail = (pl.detail as Record<string, unknown> | undefined) ?? {};
+            const detailMsg = typeof detail.message === "string" ? detail.message : "";
+            let fallback: string;
+            if (status === "succeeded") {
+              fallback = "(completed)";
+            } else if (detailMsg) {
+              fallback = `(${status}) ${detailMsg}`;
+            } else if (lastErrorMessage) {
+              fallback = `(${status}) ${lastErrorMessage}`;
+            } else {
+              fallback = "(no output)";
+            }
+            dispatch({ type: "appendContentText", id: blockId, delta: fallback });
+            hasContent = true;
+          }
+          dispatch({
+            type: "finalizeBlock",
+            id: blockId,
+            status: status === "succeeded" ? "ok" : "fail",
+            agentName: speaker || undefined,
+          });
+          teardown();
+          dispatch({ type: "setCurrentRunId", runId: null });
+          dispatch({ type: "setRunning", running: false });
+          dispatch({ type: "setRunningBlockId", id: null });
+          inputRef.current?.focus();
+        } else if (status === "awaiting_review") {
+          const rid = pl.review_id as string | undefined;
+          if (rid) pendingReviewId = rid;
+        } else if (status === "running") {
+          dispatch({ type: "clearAwaitingApproval" });
+        }
+      } else if (kind === "permission_request") {
+        const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
+        const req = (pl.request as Record<string, unknown> | undefined) ?? {};
+        const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
+        const args = req.args ?? pl.args ?? {};
+        const category = toolName.split("_")[0] ?? toolName;
+        let effectiveTrust: "autopilot" | "bypass" | "ask";
+        if (globalApprovalMode === "autopilot") {
+          effectiveTrust = "autopilot";
+        } else if (globalApprovalMode === "bypass") {
+          effectiveTrust = "bypass";
+        } else {
+          const trustMap = loadTrustMap();
+          effectiveTrust = (trustMap[category] ?? "ask") as "autopilot" | "bypass" | "ask";
+        }
+        if (effectiveTrust === "autopilot") {
+          browser.send("review.approve", { run_id: runId, review_id: reviewId }).catch(() => undefined);
+        } else if (effectiveTrust === "bypass") {
+          browser.send("review.request_changes", { run_id: runId, review_id: reviewId }).catch(() => undefined);
+        } else {
+          dispatch({ type: "setAwaitingApproval", runId, reviewId, toolName, args });
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: { kind: "approval_request", reviewId, tool: toolName, args, ts: Date.now() },
+          });
+        }
+      } else if (kind === "trace") {
+        const trace = (pl.trace as Record<string, unknown> | undefined) ?? pl;
+        const traceKind = trace.kind as string | undefined;
+        if (traceKind === "run_start") {
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "run_start",
+              model: (trace.model as string | undefined) ?? "",
+              systemPrompt: (trace.system_prompt as string | undefined) ?? "",
+              userInput: (trace.user_input as string | undefined) ?? "",
+              tools: (trace.tools as string[] | undefined) ?? [],
+              turnsLimit: (trace.turns_limit as number | undefined) ?? 0,
+              ts: Date.now(),
+            },
+          });
+        } else if (traceKind === "assistant_turn") {
+          const usageRaw = trace.usage as Record<string, number> | undefined;
+          const usage = usageRaw
+            ? {
+                inputTokens: (usageRaw.input_tokens as number) ?? 0,
+                outputTokens: (usageRaw.output_tokens as number) ?? 0,
+              }
+            : undefined;
+          const turnDurationMs = trace.duration_ms as number | undefined;
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "assistant_turn",
+              turnId: (trace.turn as number | undefined) ?? (trace.turn_id as number | undefined) ?? 0,
+              text: (trace.text as string | undefined) ?? "",
+              finishReason: (trace.finish_reason as string | undefined) ?? "",
+              ts: Date.now(),
+              ...(usage ? { usage } : {}),
+              ...(turnDurationMs != null ? { durationMs: turnDurationMs } : {}),
+            },
+          });
+        } else if (traceKind === "tool_start") {
+          const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+          const tool = (trace.tool as string | undefined) ?? "";
+          const args = trace.arguments ?? trace.args ?? {};
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: { kind: "tool_start", toolCallId, tool, args, ts: Date.now() },
+          });
+          dispatch({ type: "appendToolCallSegment", id: blockId, toolCallId, tool, args });
+        } else if (traceKind === "tool_done") {
+          const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+          const tool = (trace.tool as string | undefined) ?? "";
+          const result = trace.result ?? {};
+          const isError = (trace.is_error as boolean | undefined) ?? false;
+          const durationMs = trace.duration_ms as number | undefined;
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "tool_done",
+              toolCallId,
+              tool,
+              result,
+              terminal: (trace.terminal as boolean | undefined) ?? false,
+              ts: Date.now(),
+              ...(durationMs != null ? { durationMs } : {}),
+              ...(isError ? { isError: true } : {}),
+            },
+          });
+          dispatch({
+            type: "updateToolCallSegment",
+            id: blockId,
+            toolCallId,
+            status: isError ? "error" : "done",
+            result,
+            ...(durationMs != null ? { durationMs } : {}),
+          });
+          if (!isError) {
+            const fileChange = detectFileChange(tool, trace.args);
+            if (fileChange) {
+              dispatch({ type: "appendFileChange", id: blockId, change: { ...fileChange, blockId, ts: Date.now() } });
+            }
+          }
+        } else if (traceKind === "error") {
+          const msg = (trace.message as string | undefined) ?? "";
+          if (msg) lastErrorMessage = msg;
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "tool_start",
+              toolCallId: "",
+              tool: "error",
+              args: { where: (trace.where as string | undefined) ?? "", message: msg || "error" },
+              ts: Date.now(),
+            },
+          });
+        } else if (traceKind === "review_resolved") {
+          const resolvedId = (trace.review_id as string | undefined) ?? "";
+          const decision = (trace.decision as string | undefined) === "approve" ? "approve" : "reject";
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: { kind: "approval_resolved", reviewId: resolvedId, decision, ts: Date.now() },
+          });
+        } else if (traceKind === "reflection") {
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "reflection",
+              turn: (trace.turn as number | undefined) ?? 0,
+              text: (trace.text as string | undefined) ?? "",
+              ts: Date.now(),
+            },
+          });
+        } else if (traceKind === "memory_write") {
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: {
+              kind: "memory_write",
+              namespace: (trace.namespace as string | undefined) ?? "",
+              key: (trace.key as string | undefined) ?? "",
+              source: (trace.source as string | undefined) ?? "",
+              ts: Date.now(),
+            },
+          });
+        }
+      } else if (kind === "log") {
+        const message = (pl.message as string | undefined) ?? "";
+        if (message) {
+          dispatch({
+            type: "appendTraceEntry",
+            id: blockId,
+            entry: { kind: "tool_start", toolCallId: "", tool: "log", args: { message }, ts: Date.now() },
+          });
+        }
+      }
+    };
+
     try {
       // Inject pinned selection comments into the task body
       const commentAtts = block.attachments.filter((a) => a.kind === "comment");
@@ -1656,17 +1958,18 @@ export function App() {
       };
       if (reasoningEffortRef.current) runOpts.reasoning_effort = reasoningEffortRef.current;
       if (anthropicEffortRef.current) runOpts.anthropic_effort = anthropicEffortRef.current;
-      // For flow runs, don't forward the UI session-model: flow agents
-      // declare their own llm: overrides in YAML; if empty they fall back
-      // to the provider's default_model. Sending the UI model here would
-      // cause every agent in the flow to use the chat model picker's value,
-      // which may be invalid for the active provider.
-      if (state.model && !state.selectedFlow) runOpts.model = state.model;
+      // Forward the session model for all runs (direct and flow alike). For flow
+      // runs this becomes the base LLM config; agents with an explicit `llm:` in
+      // their YAML still override it per-agent inside the Rust runtime. Without
+      // forwarding it here, the C++ enricher falls back to the active provider's
+      // stored `default_model` which may be stale, mismatched, or from a different
+      // provider than what the user currently has selected.
+      if (state.model) runOpts.model = state.model;
       // If the picked model belongs to a non-active provider group, send
       // that provider's wire config alongside so the request actually
       // routes there instead of being sent to the active provider's
       // endpoint with a model name it doesn't recognise.
-      if (state.model && !state.selectedFlow) {
+      if (state.model) {
         const owner = modelGroups.find((g) => g.models.includes(state.model));
         if (owner && owner.id !== activeProviderId) {
           runOpts.provider_kind = owner.kind;
@@ -1677,11 +1980,12 @@ export function App() {
       runId = await agentRun(body, runOpts);
       if (!runId) throw new Error("runtime did not return run_id");
       dispatch({ type: "setCurrentRunId", runId });
+      runtimeOff = runtime.on(`run:${runId}`, processRuntimeEvent);
       await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
         /* ignore */
       });
     } catch (err) {
-      off();
+      teardown();
       const errMsg = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
       const isBridgeError = errMsg.includes("bridge invoke failed") || errMsg.includes("send_failed");
       dispatch({
@@ -1715,7 +2019,7 @@ export function App() {
 
     setTimeout(
       () => {
-        off();
+        teardown();
         if (state.running) {
           dispatch({ type: "setRunning", running: false });
           dispatch({ type: "setRunningBlockId", id: null });
@@ -2218,12 +2522,6 @@ export function App() {
           </Popover>
         )}
 
-        {/* ── Flow instances bar — visible when session has active flow runs ── */}
-        <FlowInstancesBar sessionId={state.activeChatId} />
-
-        {/* ── File changes summary ─────────────────────────────────────────── */}
-        <FileChangesView changes={sessionFileChanges} />
-
         {/* ── Copilot-like composer ──────────────────────────────────── */}
         <form onSubmit={onSubmit} className="px-3 pb-1 pt-1">
           {/* Approval card — shown when agent awaits tool review */}
@@ -2248,7 +2546,18 @@ export function App() {
           {/* Picker + editor wrapper — relative so the picker floats above */}
           <div className="relative">
             {/* ── Reviews panel — floats above editor when pending approvals exist ── */}
-            <div className="absolute bottom-full left-0 right-0 z-40 mb-1">
+            <div className="absolute bottom-full left-0 right-0 z-40 mb-1 flex flex-col gap-1">
+              {/* ── Flow instances bar — visible when session has active flow runs ── */}
+              <FlowInstancesBar sessionId={state.activeChatId} />
+
+              {/* ── File changes summary ─────────────────────────────────────────── */}
+              <FileChangesView changes={sessionFileChanges} />
+
+              {/* Flow trajectory diagram — shown when a flow is selected and has runs */}
+              {state.selectedFlow && (
+                <FlowTrajectoryDiagram selectedFlow={state.selectedFlow} sessionId={state.activeChatId} />
+              )}
+              <FlowDocReviewPanel sessionId={state.activeChatId} />
               <ReviewsPanel sessionId={state.activeChatId} />
             </div>
 
@@ -2437,6 +2746,7 @@ export function App() {
                             onSelect={() => {
                               dispatch({ type: "setModel", model: "" });
                               persistSelectedModel("");
+                              persistSelectedModelProvider(null);
                               setModelComboOpen(false);
                             }}
                             className="text-xs"
@@ -2454,6 +2764,12 @@ export function App() {
                                 onSelect={(v) => {
                                   dispatch({ type: "setModel", model: v });
                                   persistSelectedModel(v);
+                                  persistSelectedModelProvider({
+                                    id: g.id,
+                                    kind: g.kind,
+                                    base_url: g.base_url,
+                                    api_key: g.api_key,
+                                  });
                                   setModelComboOpen(false);
                                 }}
                                 className="text-xs"

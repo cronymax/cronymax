@@ -317,15 +317,7 @@ async fn pump(response: reqwest::Response, tx: mpsc::UnboundedSender<LlmEvent>) 
                 return;
             }
         };
-        match std::str::from_utf8(&chunk) {
-            Ok(s) => buf.push_str(s),
-            Err(_) => {
-                let _ = tx.send(LlmEvent::Error {
-                    message: "non-utf8 chunk from anthropic".into(),
-                });
-                return;
-            }
-        }
+        buf.push_str(&String::from_utf8_lossy(&chunk));
 
         // Parse complete lines.
         while let Some(idx) = buf.find('\n') {

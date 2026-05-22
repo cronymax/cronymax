@@ -143,6 +143,11 @@ struct ShellCallbacks {
   // space.open_folder bridge channel.
   std::function<void(std::function<void(const std::string& path)> callback)>
       run_file_dialog;
+
+  // Close the OVERLAY slot (z2 — Settings modal). Called by the renderer
+  // when the user dismisses the overlay from within its page (e.g. pressing
+  // Escape or clicking a "Close" button inside the overlay HTML).
+  std::function<void()> close_overlay;
 };
 
 // refine-ui-theme-layout: theme.* bridge callbacks. Read/write the

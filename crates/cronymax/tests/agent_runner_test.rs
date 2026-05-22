@@ -43,6 +43,7 @@ fn run_ctx_no_flow(space_id: SpaceId, workspace_root: std::path::PathBuf) -> Run
         workspace_root,
         flow_id: None,
         flow_run_id: None,
+        session_id: None,
         flow_runtime: None,
         doc_tx,
         llm_config: cronymax::llm::LlmConfig::OpenAi {
@@ -147,6 +148,7 @@ async fn spawn_chat_binds_session_in_authority() {
         workspace_root: dir.path().to_path_buf(),
         flow_id: Some("my-flow".into()),
         flow_run_id: Some(flow_run_id.clone()),
+        session_id: None,
         flow_runtime: None,
         doc_tx,
         llm_config: cronymax::llm::LlmConfig::OpenAi {

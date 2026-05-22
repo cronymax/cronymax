@@ -103,20 +103,14 @@ class OverlayActionContext {
   virtual void OpenPanelWindow(const std::string& url,
                                const std::string& title) = 0;
 
+  // Open `url` in the OVERLAY slot (z2): a centered, modal BrowserView
+  // layered above the main content. Replaces the Settings PanelWindow.
+  virtual void OpenOverlay(const std::string& url) = 0;
+  // Hide the OVERLAY slot and clear its content.
+  virtual void CloseOverlay() = 0;
+
  protected:
   virtual ~OverlayActionContext() = default;
-};
-
-// ---------------------------------------------------------------------------
-// ResourceContext
-// ---------------------------------------------------------------------------
-
-class ResourceContext {
- public:
-  virtual std::string ResourceUrl(const std::string& relative) const = 0;
-
- protected:
-  virtual ~ResourceContext() = default;
 };
 
 }  // namespace cronymax

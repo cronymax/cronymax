@@ -9,11 +9,14 @@
 #pragma once
 
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "browser/models/resource_context.h"
 #include "browser/models/view_context.h"
 #include "browser/tab/tab.h"
 #include "include/cef_request_context.h"
@@ -55,7 +58,7 @@ class TabBehavior;
 
 class TabManager {
  public:
-  TabManager(ThemeContext* theme_ctx);
+  TabManager(ThemeContext* theme_ctx, ResourceContext* resource_ctx);
   ~TabManager();
 
   TabManager(const TabManager&) = delete;
@@ -82,11 +85,12 @@ class TabManager {
   // shell.tab_open_singleton calls for multi-instance kinds.
   bool IsSingletonKind(TabKind kind) const;
 
-  // Bind the content URL used when opening a singleton tab of `kind` (or
-  // any non-web kind opened with empty params.url). Required for
-  // SimpleTabBehavior-backed kinds (terminal/chat/agent/graph).
-  void SetKindContentUrl(TabKind kind, std::string url) {
-    kind_content_urls_[kind] = std::move(url);
+  // Mark one or more kinds as hidden from Snapshot() output. These tabs
+  // still exist (and can be activated), but will not appear in the tab list
+  // broadcast to renderers.
+  void SetHiddenFromList(std::initializer_list<TabKind> kinds) {
+    for (TabKind k : kinds)
+      hidden_from_list_.insert(k);
   }
 
   // Create a new tab of `kind`. Returns the new tab's id. Phase 1 returns
@@ -145,11 +149,12 @@ class TabManager {
   TabId active_tab_id_;
   std::map<TabKind, TabId> singletons_;
   std::map<TabKind, bool> singleton_kinds_registered_;
-  std::map<TabKind, std::string> kind_content_urls_;
+  std::set<TabKind> hidden_from_list_;
   uint64_t next_id_seq_ = 1;
   ChangeCallback on_change_;
   ClientHandler* client_handler_ = nullptr;
   ThemeContext* theme_ctx_ = nullptr;
+  ResourceContext* resource_ctx_ = nullptr;
   CefRefPtr<CefRequestContext> request_context_;
 };
 

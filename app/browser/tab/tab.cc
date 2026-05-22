@@ -22,6 +22,8 @@ const char* TabKindToString(TabKind kind) {
       return "terminal";
     case TabKind::kFlows:
       return "flows";
+    case TabKind::kActivity:
+      return "activity";
     case TabKind::kSettings:
       return "settings";
   }

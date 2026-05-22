@@ -372,9 +372,9 @@ void RuntimeProxy::HandleEvent(const nlohmann::json& msg) {
   {
     const auto& ev = *ev_it;
     const auto& pl = ev.value("payload", nlohmann::json::object());
-    fprintf(stderr, "[RuntimeProxy::HandleEvent] kind=%s subs=%zu\n",
-            pl.value("kind", "?").c_str(), subs.size());
-    fflush(stderr);
+    // fprintf(stderr, "[RuntimeProxy::HandleEvent] kind=%s subs=%zu\n",
+    //         pl.value("kind", "?").c_str(), subs.size());
+    // fflush(stderr);
   }
   // Pass the full outer envelope (tag, subscription, event) so
   // subscribers can forward it verbatim to the frontend which expects

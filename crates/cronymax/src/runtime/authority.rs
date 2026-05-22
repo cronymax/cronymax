@@ -188,6 +188,14 @@ impl RuntimeAuthority {
         self.inner.lock().snapshot.clone()
     }
 
+    /// Return the `SpaceId` of the session that owns `session_id`, or `None`
+    /// if the session does not exist. Used by the post-restart approval path
+    /// to recover the space without requiring the caller to pass it explicitly.
+    pub fn space_id_for_session(&self, session_id: &SessionId) -> Option<SpaceId> {
+        let inner = self.inner.lock();
+        inner.snapshot.sessions.get(session_id).map(|s| s.space_id)
+    }
+
     /// Return all runs and pending reviews belonging to `space_id`.
     ///
     /// Used by the `GetSpaceSnapshot` control request so the Activity
@@ -260,6 +268,9 @@ impl RuntimeAuthority {
                 agent_id: None,
                 thread: Vec::new(),
                 run_ids: Vec::new(),
+                flow_run_ids: Vec::new(),
+                parent_session_id: None,
+                fork_point: None,
                 read_namespace: None,
                 write_namespace: None,
                 created_at_ms: now,
@@ -289,6 +300,22 @@ impl RuntimeAuthority {
         }
         self.persistence.save(&inner.snapshot)?;
         Ok(())
+    }
+
+    /// Append `flow_run_id` to the session's `flow_run_ids` list.
+    /// Flow run IDs use the format `"run-<uuid_simple>"` and are stored
+    /// separately from agent `run_ids`. Best-effort — silently no-ops
+    /// when the session does not exist.
+    pub fn attach_flow_run_to_session(&self, session_id: &SessionId, flow_run_id: String) {
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        if let Some(session) = inner.snapshot.sessions.get_mut(session_id) {
+            if !session.flow_run_ids.contains(&flow_run_id) {
+                session.flow_run_ids.push(flow_run_id);
+                session.updated_at_ms = now;
+                let _ = self.persistence.save(&inner.snapshot);
+            }
+        }
     }
 
     /// Flush the final LLM context window back into `Session.thread`.
@@ -416,9 +443,10 @@ impl RuntimeAuthority {
         }
         inner.snapshot.runs.insert(id, run);
         self.persistence.save(&inner.snapshot)?;
-        Self::emit_locked(
+        let topics = run_topics(id, session_id.as_ref());
+        Self::emit_scoped(
             &mut inner,
-            run_topic(id),
+            &topics,
             RuntimeEventPayload::RunStatus {
                 run_id: id.to_string(),
                 status: "pending".into(),
@@ -488,11 +516,13 @@ impl RuntimeAuthority {
             recorded_at_ms: now,
             payload: payload.clone(),
         });
+        let session_id = run.session_id.clone();
         run.updated_at_ms = now;
         self.persistence.save(&inner.snapshot)?;
-        Self::emit_locked(
+        let topics = run_topics(run_id, session_id.as_ref());
+        Self::emit_scoped(
             &mut inner,
-            run_topic(run_id),
+            &topics,
             RuntimeEventPayload::Trace {
                 run_id: run_id.to_string(),
                 trace: serde_json::json!({
@@ -528,6 +558,7 @@ impl RuntimeAuthority {
                 action: "open_review",
             });
         }
+        let session_id = run.session_id.clone();
         run.status = RunStatus::AwaitingReview;
         run.updated_at_ms = now;
         let review = PendingReview {
@@ -542,19 +573,19 @@ impl RuntimeAuthority {
         let review_id = review.id;
         inner.snapshot.reviews.insert(review_id, review);
         self.persistence.save(&inner.snapshot)?;
-        let topic = run_topic(run_id);
-        Self::emit_locked(
+        let topics = run_topics(run_id, session_id.as_ref());
+        Self::emit_scoped(
             &mut inner,
-            topic.clone(),
+            &topics,
             RuntimeEventPayload::RunStatus {
                 run_id: run_id.to_string(),
                 status: "awaiting_review".into(),
                 detail: None,
             },
         );
-        Self::emit_locked(
+        Self::emit_scoped(
             &mut inner,
-            topic,
+            &topics,
             RuntimeEventPayload::PermissionRequest {
                 run_id: run_id.to_string(),
                 review_id: review_id.to_string(),
@@ -602,6 +633,7 @@ impl RuntimeAuthority {
             .runs
             .get_mut(&run_id)
             .ok_or(AuthorityError::UnknownRun(run_id))?;
+        let session_id = run.session_id.clone();
         if matches!(decision, PermissionState::Approved) {
             run.status = RunStatus::Running;
             run.updated_at_ms = now;
@@ -609,9 +641,10 @@ impl RuntimeAuthority {
             run.updated_at_ms = now;
         }
         self.persistence.save(&inner.snapshot)?;
-        Self::emit_locked(
+        let topics = run_topics(run_id, session_id.as_ref());
+        Self::emit_scoped(
             &mut inner,
-            run_topic(run_id),
+            &topics,
             RuntimeEventPayload::Trace {
                 run_id: run_id.to_string(),
                 trace: serde_json::json!({
@@ -631,6 +664,13 @@ impl RuntimeAuthority {
             });
         }
         Ok(())
+    }
+
+    /// Look up the `RunId` for a given review. Returns `None` if the
+    /// review is not found (e.g., already garbage-collected after resolve).
+    pub fn run_id_for_review(&self, review_id: ReviewId) -> Option<RunId> {
+        let inner = self.inner.lock();
+        inner.snapshot.reviews.get(&review_id).map(|r| r.run_id)
     }
 
     /// Like [`open_review`] but returns a [`ReviewHandle`] whose
@@ -702,15 +742,29 @@ impl RuntimeAuthority {
 
     /// Emit an arbitrary [`RuntimeEventPayload`] keyed at this run's
     /// topic. Used by the agent loop to surface tokens, traces, etc.
+    /// Also fans out to `session:{id}` when the run has a session.
     pub fn emit_for_run(&self, run_id: RunId, payload: RuntimeEventPayload) {
         let mut inner = self.inner.lock();
-        Self::emit_locked(&mut inner, run_topic(run_id), payload);
+        let session_id = inner
+            .snapshot
+            .runs
+            .get(&run_id)
+            .and_then(|r| r.session_id.clone());
+        let topics = run_topics(run_id, session_id.as_ref());
+        Self::emit_scoped(&mut inner, &topics, payload);
     }
 
     /// Emit a payload on an arbitrary topic (e.g. `"terminal:<id>"`).
     pub fn emit(&self, topic: impl Into<String>, payload: RuntimeEventPayload) {
         let mut inner = self.inner.lock();
         Self::emit_locked(&mut inner, topic.into(), payload);
+    }
+
+    /// Emit a payload to multiple topics in a single subscription walk.
+    /// Used by the flow event emitter to fan out to `["flow:{event}", "flow_run:{id}", "session:{sid}"]`.
+    pub fn emit_many(&self, topics: &[String], payload: RuntimeEventPayload) {
+        let mut inner = self.inner.lock();
+        Self::emit_scoped(&mut inner, topics, payload);
     }
 
     // ── Session routing ───────────────────────────────────────────────────
@@ -735,6 +789,19 @@ impl RuntimeAuthority {
     /// Replaces `FlowRuntime::lookup_chat_session`.
     pub fn resolve_session(&self, flow_run_id: &str) -> Option<String> {
         self.inner.lock().flow_sessions.get(flow_run_id).cloned()
+    }
+
+    /// Seed `flow_sessions` from a set of `(flow_run_id, session_id)` pairs.
+    ///
+    /// Called on the first access to a `FlowRuntime` after a process restart
+    /// (when `is_new == true` in the handler) to restore session-routing for
+    /// tool-approval reviews. Existing live bindings are NOT overwritten so
+    /// any session registered in the current process lifetime takes precedence.
+    pub fn seed_flow_sessions(&self, pairs: impl IntoIterator<Item = (String, String)>) {
+        let mut inner = self.inner.lock();
+        for (flow_run_id, session_id) in pairs {
+            inner.flow_sessions.entry(flow_run_id).or_insert(session_id);
+        }
     }
 
     /// Append a payload to a run's persistent history (task 7.3). The
@@ -880,12 +947,14 @@ impl RuntimeAuthority {
             }
             _ => None,
         };
+        let session_id = run.session_id.clone();
         run.status = next;
         run.updated_at_ms = now;
         self.persistence.save(&inner.snapshot)?;
-        Self::emit_locked(
+        let topics = run_topics(run_id, session_id.as_ref());
+        Self::emit_scoped(
             &mut inner,
-            run_topic(run_id),
+            &topics,
             RuntimeEventPayload::RunStatus {
                 run_id: run_id.to_string(),
                 status: label.into(),
@@ -922,6 +991,34 @@ impl RuntimeAuthority {
             inner.subscriptions.remove(&id);
         }
     }
+
+    /// Like `emit_locked` but matches any subscription whose topic is
+    /// `"*"` or appears in `topics`. Single subscription walk — no
+    /// duplicate delivery even if the same sub matches multiple topics.
+    fn emit_scoped(inner: &mut AuthorityInner, topics: &[String], payload: RuntimeEventPayload) {
+        let emitted_at_ms = now_ms();
+        let mut dead = Vec::new();
+        for (id, sub) in inner.subscriptions.iter_mut() {
+            if sub.topic != "*" && !topics.contains(&sub.topic) {
+                continue;
+            }
+            let event = RuntimeEvent {
+                sequence: sub.next_seq,
+                emitted_at_ms,
+                payload: payload.clone(),
+            };
+            match sub.tx.send(event) {
+                Ok(()) => sub.next_seq += 1,
+                Err(_) => {
+                    warn!(%id, "subscription receiver dropped; reaping");
+                    dead.push(*id);
+                }
+            }
+        }
+        for id in dead {
+            inner.subscriptions.remove(&id);
+        }
+    }
 }
 
 fn status_label(s: &RunStatus) -> &'static str {
@@ -938,6 +1035,26 @@ fn status_label(s: &RunStatus) -> &'static str {
 
 fn run_topic(id: RunId) -> String {
     format!("run:{id}")
+}
+
+/// Returns the topics an agent run event should be delivered to.
+/// Includes `run:{id}` always, and `session:{sid}` when the run has a session.
+fn run_topics(run_id: RunId, session_id: Option<&SessionId>) -> Vec<String> {
+    let mut topics = vec![run_topic(run_id)];
+    if let Some(sid) = session_id {
+        topics.push(format!("session:{sid}"));
+    }
+    topics
+}
+
+/// Returns the topics a flow run event should be delivered to.
+/// Includes `flow_run:{id}` always, and `session:{sid}` when a session is present.
+pub(crate) fn flow_run_topics(flow_run_id: &str, session_id: Option<&str>) -> Vec<String> {
+    let mut topics = vec![format!("flow_run:{flow_run_id}")];
+    if let Some(sid) = session_id {
+        topics.push(format!("session:{sid}"));
+    }
+    topics
 }
 
 pub(crate) fn now_ms() -> i64 {

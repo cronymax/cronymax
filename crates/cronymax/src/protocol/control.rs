@@ -307,6 +307,90 @@ pub enum ControlRequest {
         workspace_root: String,
         session_id: String,
     },
+
+    /// List models available from a provider endpoint.
+    ///
+    /// For `github_copilot` kind, the `api_key` is treated as a GitHub
+    /// OAuth token that is automatically exchanged for a short-lived Copilot
+    /// API token before the models request is made. Returns
+    /// `ControlResponse::Data { payload: { "models": [...] } }`.
+    ListProviderModels {
+        provider_kind: String,
+        base_url: String,
+        api_key: String,
+    },
+
+    // ── Flow run document review ──────────────────────────────────────────
+    /// Return all ports in `InReview` state for the given flow run.
+    /// For each port the response includes the document path and content.
+    /// Returns `ControlResponse::Data { payload: { "pending_reviews": [...] } }`.
+    FlowRunGetPendingReviews {
+        workspace_root: String,
+        /// If empty, scans all runs in the workspace; otherwise scans
+        /// only the specified run.
+        #[serde(default)]
+        flow_run_id: String,
+    },
+
+    /// Return all pending doc reviews AND tool-approval reviews for a single
+    /// chat session. Doc reviews are flow-run InReview ports whose
+    /// `originating_session_id` matches; approvals are `PendingReview`
+    /// entries for runs associated with the session.
+    /// The `workspace_root` is injected by the C++ enricher.
+    /// Returns `ControlResponse::Data { payload: { "doc_reviews": [...], "approvals": [...] } }`.
+    GetSessionPendingActions {
+        session_id: String,
+        workspace_root: String,
+    },
+
+    /// Approve a pending document review in a flow run.
+    /// Calls `FlowRuntime::on_document_approved` and spawns downstream
+    /// agent nodes.  LLM config fields are injected by the C++ enricher
+    /// so that a `RunContext` can be reconstructed post-restart.
+    FlowRunApprove {
+        workspace_root: String,
+        flow_run_id: String,
+        node_id: String,
+        port: String,
+        /// Provider kind injected by LlmConfigEnricher (e.g. `"openai_compat"`).
+        #[serde(default)]
+        provider_kind: String,
+        /// Provider base URL injected by LlmConfigEnricher.
+        #[serde(default)]
+        base_url: String,
+        /// API key injected by LlmConfigEnricher.
+        #[serde(default)]
+        api_key: String,
+        /// Model name injected by LlmConfigEnricher.
+        #[serde(default)]
+        model: String,
+    },
+
+    /// Request changes on a pending document review in a flow run.
+    /// Calls `FlowRuntime::write_review_comments` +
+    /// `FlowRuntime::on_rejected_requeue` and re-spawns the producing node.
+    FlowRunRequestChanges {
+        workspace_root: String,
+        flow_run_id: String,
+        node_id: String,
+        port: String,
+        /// Free-form review comments.  Each entry should have at least a
+        /// `"message"` field; `"severity"` and `"suggestion"` are optional.
+        #[serde(default)]
+        comments: Vec<serde_json::Value>,
+        /// Provider kind injected by LlmConfigEnricher.
+        #[serde(default)]
+        provider_kind: String,
+        /// Provider base URL injected by LlmConfigEnricher.
+        #[serde(default)]
+        base_url: String,
+        /// API key injected by LlmConfigEnricher.
+        #[serde(default)]
+        api_key: String,
+        /// Model name injected by LlmConfigEnricher.
+        #[serde(default)]
+        model: String,
+    },
 }
 
 /// Reply to a [`ControlRequest`].

@@ -101,7 +101,15 @@ impl LlmProvider for OpenAiProvider {
             .base_url
             .trim_end_matches('/')
             .trim_end_matches("/v1");
-        let url = format!("{base}/v1/chat/completions");
+        // GitHub Copilot's API lives at `{base}/chat/completions` (no `/v1/`
+        // prefix), whereas every other OpenAI-compatible endpoint uses
+        // `{base}/v1/chat/completions`.  The models endpoint follows the same
+        // convention (see `handler.rs` `ListProviderModels`).
+        let url = if self.config.copilot_mode {
+            format!("{base}/chat/completions")
+        } else {
+            format!("{base}/v1/chat/completions")
+        };
         let body = WireRequest::from_request(&request, &self.config.default_model);
 
         let mut req = self
@@ -170,15 +178,9 @@ async fn pump(response: reqwest::Response, tx: mpsc::UnboundedSender<LlmEvent>) 
                 return;
             }
         };
-        match std::str::from_utf8(&chunk) {
-            Ok(s) => buf.push_str(s),
-            Err(_) => {
-                let _ = tx.send(LlmEvent::Error {
-                    message: "non-utf8 chunk from provider".into(),
-                });
-                return;
-            }
-        }
+        // Use lossy conversion so a single invalid byte (e.g. a partially-
+        // compressed chunk or a BOM) doesn't abort the whole stream.
+        buf.push_str(&String::from_utf8_lossy(&chunk));
         // Parse complete lines out of the rolling buffer.
         while let Some(idx) = buf.find('\n') {
             let line: String = buf.drain(..=idx).collect();

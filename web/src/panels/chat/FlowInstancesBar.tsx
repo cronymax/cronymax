@@ -10,7 +10,10 @@
  * grouped under that flow run.
  */
 
+import { AlertCircle, Check, ChevronDown, ChevronUp, Clock, Loader2, ShieldAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { browser, shells } from "@/shells/bridge";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -44,72 +47,29 @@ function computeStatus(subRuns: SubRunEntry[]): AggregateStatus {
 }
 
 function StatusIcon({ status }: { status: AggregateStatus }) {
-  if (status === "human_review_pending") {
-    return (
-      <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-400 animate-pulse" title="Human review pending" />
-    );
-  }
-  if (status === "running") {
-    return (
-      <svg
-        className="inline-block h-3 w-3 animate-spin text-cronymax-primary"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={2}
-        aria-label="Running"
-      >
-        <path strokeLinecap="round" strokeLinejoin="round" d="M4 12a8 8 0 018-8v4m8 4a8 8 0 01-8 8v-4" />
-      </svg>
-    );
-  }
-  if (status === "completed") {
-    return (
-      <svg
-        className="inline-block h-3 w-3 text-green-400"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={2.5}
-        aria-label="Completed"
-      >
-        <polyline points="20 6 9 17 4 12" />
-      </svg>
-    );
-  }
-  // failed / default
-  return (
-    <svg
-      className="inline-block h-3 w-3 text-red-400"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.5}
-      aria-label="Failed"
-    >
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
-  );
+  if (status === "human_review_pending") return <ShieldAlert className="h-3.5 w-3.5 text-amber-400 animate-pulse" />;
+  if (status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />;
+  if (status === "completed") return <Check className="h-3.5 w-3.5 text-green-500" />;
+  return <AlertCircle className="h-3.5 w-3.5 text-destructive" />;
+}
+
+function SubRunStatusIcon({ status }: { status: string }) {
+  if (status === "awaiting_review") return <Clock className="h-3 w-3 text-amber-400" />;
+  if (status === "running" || status === "pending") return <Loader2 className="h-3 w-3 animate-spin text-primary" />;
+  if (status === "succeeded") return <Check className="h-3 w-3 text-green-500" />;
+  if (status === "failed" || status === "cancelled") return <AlertCircle className="h-3 w-3 text-destructive" />;
+  return <div className="h-3 w-3 rounded-full bg-muted-foreground/40" />;
 }
 
 function SubRunRow({ run }: { run: SubRunEntry }) {
   const label = run.agent_id ?? run.id.slice(0, 8);
-  const statusColor =
-    run.status === "succeeded"
-      ? "text-green-400"
-      : run.status === "failed" || run.status === "cancelled"
-        ? "text-red-400"
-        : run.status === "awaiting_review"
-          ? "text-amber-400"
-          : run.status === "running"
-            ? "text-cronymax-primary"
-            : "text-cronymax-caption";
-
   return (
     <div className="flex items-center gap-2 px-3 py-0.5">
-      <span className="truncate text-xs text-cronymax-title font-mono w-28">{label}</span>
-      <span className={`text-xs ${statusColor}`}>{run.status}</span>
+      <SubRunStatusIcon status={run.status} />
+      <span className="truncate font-mono text-xs text-foreground w-28">{label}</span>
+      <Badge variant="outline" className="ml-auto text-xs px-1.5 py-0 h-4 font-normal">
+        {run.status}
+      </Badge>
     </div>
   );
 }
@@ -142,7 +102,6 @@ export function FlowInstancesBar({ sessionId }: Props) {
         subRuns,
       });
     }
-    // Sort by insertion order (index)
     entries.sort((a, b) => a.index - b.index);
     setFlowRuns(entries);
   }, []);
@@ -198,9 +157,6 @@ export function FlowInstancesBar({ sessionId }: Props) {
         const agentId = (pl.agent_id as string | undefined) ?? null;
         const evSessionId = (pl.session_id as string | undefined) ?? null;
 
-        // We only care about runs for our session that belong to a flow run.
-        // If the event doesn't carry session_id, we can't filter — include it
-        // only if we already track this run.
         if (flowRunId) {
           const alreadyTracked = subRunsRef.current.has(flowRunId);
           const sessionMatch = evSessionId ? evSessionId === sessionId : alreadyTracked;
@@ -212,11 +168,7 @@ export function FlowInstancesBar({ sessionId }: Props) {
             subRunsRef.current.set(flowRunId, new Map());
           }
           const runsMap = subRunsRef.current.get(flowRunId)!;
-          runsMap.set(runId, {
-            id: runId,
-            agent_id: agentId,
-            status,
-          });
+          runsMap.set(runId, { id: runId, agent_id: agentId, status });
           rebuildFlowRuns();
         }
       }
@@ -225,59 +177,46 @@ export function FlowInstancesBar({ sessionId }: Props) {
     return () => off();
   }, [sessionId, rebuildFlowRuns]);
 
-  // Don't render if there are no flow runs for this session.
   if (flowRuns.length === 0) return null;
 
   return (
-    <div className="border-b border-cronymax-border bg-cronymax-float">
+    <div className="rounded-lg border border-border bg-card shadow-sm overflow-hidden">
       {flowRuns.map((run) => (
-        <div key={run.flow_run_id}>
-          {/* Single-line run entry */}
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 px-3 py-1 text-left transition hover:bg-cronymax-hover"
-            onClick={() => setExpandedId((prev) => (prev === run.flow_run_id ? null : run.flow_run_id))}
-          >
+        <Collapsible
+          key={run.flow_run_id}
+          open={expandedId === run.flow_run_id}
+          onOpenChange={(open) => setExpandedId(open ? run.flow_run_id : null)}
+        >
+          <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-accent/50">
             <StatusIcon status={run.status} />
-            <span className="text-xs font-mono text-cronymax-caption">{run.flow_run_id.slice(0, 8)}</span>
-            <span className="text-xs text-cronymax-caption">#{run.index}</span>
-            <span
+            <span className="font-mono text-xs text-muted-foreground">{run.flow_run_id.slice(0, 8)}</span>
+            <Badge variant="outline" className="text-xs px-1.5 py-0 h-4 font-normal">
+              #{run.index}
+            </Badge>
+            <Badge
+              variant="outline"
               className={
-                "ml-auto text-xs " +
+                "ml-auto text-xs px-1.5 py-0 h-4 font-medium " +
                 (run.status === "human_review_pending"
-                  ? "text-amber-400 font-semibold"
+                  ? "border-amber-500/50 text-amber-400"
                   : run.status === "completed"
-                    ? "text-green-400"
+                    ? "border-green-500/50 text-green-500"
                     : run.status === "failed"
-                      ? "text-red-400"
-                      : "text-cronymax-caption")
+                      ? "border-destructive/50 text-destructive"
+                      : "text-muted-foreground")
               }
             >
               {statusLabel(run.status)}
-            </span>
-            <svg
-              className={
-                "h-3 w-3 shrink-0 text-cronymax-caption transition-transform " +
-                (expandedId === run.flow_run_id ? "rotate-180" : "")
-              }
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
-          </button>
+            </Badge>
+            {expandedId === run.flow_run_id ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </CollapsibleTrigger>
 
-          {/* Expanded sub-run list */}
-          {expandedId === run.flow_run_id && run.subRuns.length > 0 && (
-            <div className="border-t border-cronymax-border/50 bg-cronymax-base pb-1">
-              {run.subRuns.map((sub) => (
-                <SubRunRow key={sub.id} run={sub} />
-              ))}
-            </div>
-          )}
-        </div>
+          <CollapsibleContent className="border-t border-border/50 bg-background pb-1">
+            {run.subRuns.map((sub) => (
+              <SubRunRow key={sub.id} run={sub} />
+            ))}
+          </CollapsibleContent>
+        </Collapsible>
       ))}
     </div>
   );

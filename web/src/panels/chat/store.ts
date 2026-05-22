@@ -118,6 +118,10 @@ export type TraceEntry =
       result: unknown;
       terminal: boolean;
       ts: number;
+      /** Actual wall-clock duration from the Rust runtime (ms). */
+      durationMs?: number;
+      /** True when the tool returned an error outcome. */
+      isError?: boolean;
     }
   | {
       kind: "approval_request";
@@ -200,7 +204,19 @@ export interface ShellBlock {
   thread?: Thread;
 }
 
-export type Block = ConversationBlock | ShellBlock;
+/** Lightweight flow-activity notification shown inline in the chat timeline. */
+export interface FlowNotificationBlock {
+  kind: "flow-notification";
+  id: string;
+  message: string;
+  /** "success" = approval/completion, "info" = status update */
+  variant: "success" | "info";
+  ts: number;
+  /** Kept for type compatibility with block iterators that access comments. */
+  comments: Comment[];
+}
+
+export type Block = ConversationBlock | ShellBlock | FlowNotificationBlock;
 
 export type ActiveView = { kind: "main" } | { kind: "thread"; blockId: string; threadId: string };
 
@@ -329,6 +345,12 @@ export type Action =
   | { type: "setCurrentRunId"; runId: string | null }
   | { type: "appendFileChange"; id: string; change: FileChange }
   | { type: "restoreToBlock"; blockId: string }
+  | {
+      type: "createFlowNotification";
+      id: string;
+      message: string;
+      variant: "success" | "info";
+    }
   | { type: "_unused"; _placeholder?: never };
 
 // ── Shell output processor ────────────────────────────────────────────
@@ -726,6 +748,18 @@ function reducer(state: State, action: Action): State {
       const idx = state.blocks.findIndex((b) => b.id === action.blockId);
       if (idx < 0) return state;
       return { ...state, blocks: state.blocks.slice(0, idx + 1), activeView: { kind: "main" } };
+    }
+
+    case "createFlowNotification": {
+      const notifBlock: FlowNotificationBlock = {
+        kind: "flow-notification",
+        id: action.id,
+        message: action.message,
+        variant: action.variant,
+        ts: Date.now(),
+        comments: [],
+      };
+      return { ...state, blocks: [...state.blocks, notifBlock] };
     }
 
     default:
@@ -1150,6 +1184,34 @@ export function loadSelectedModel(): string {
 export function persistSelectedModel(model: string): void {
   try {
     localStorage.setItem("chat_model", model);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Provider config stored alongside the selected model so run-time routing
+ *  doesn't have to depend on the async-loaded modelGroups. */
+export interface StoredModelProvider {
+  id: string;
+  kind: string;
+  base_url: string;
+  api_key: string;
+}
+
+export function loadSelectedModelProvider(): StoredModelProvider | null {
+  try {
+    const raw = localStorage.getItem("chat_model_provider");
+    if (!raw) return null;
+    return JSON.parse(raw) as StoredModelProvider;
+  } catch {
+    return null;
+  }
+}
+
+export function persistSelectedModelProvider(p: StoredModelProvider | null): void {
+  try {
+    if (p) localStorage.setItem("chat_model_provider", JSON.stringify(p));
+    else localStorage.removeItem("chat_model_provider");
   } catch {
     /* ignore */
   }

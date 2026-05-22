@@ -104,8 +104,8 @@ void RegisterSpaceHandlers(BridgeRegistry& r, BridgeHandler* h) {
 int64_t BridgeHandler::WireSpaceEventCallback(const std::string& space_id) {
   return runtime_proxy_->SubscribeEvents(
       [this, space_id](const nlohmann::json& event) {
-        if (shell_cbs_.broadcast_event)
-          shell_cbs_.broadcast_event("event", event.dump());
+        // NOTE: broadcast_event("event", ...) removed — sessions subscribe via
+        // targeted runtime.on("session:{id}", cb) instead of the wildcard path.
 
         // For file_edited, git_commit_created, git_pushed: also write to the
         // AppEvent bus so events.list/subscribe picks them up in the channel

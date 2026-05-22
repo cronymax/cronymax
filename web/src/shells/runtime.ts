@@ -121,6 +121,33 @@ export const docType = {
 // Flow run helpers
 // ---------------------------------------------------------------------------
 
+/** A pending human document review from a flow run. */
+export interface FlowDocReview {
+  flow_run_id: string;
+  node_id: string;
+  port: string;
+  doc_path: string;
+  /** Document markdown content (null if file not yet readable). */
+  content: string | null;
+  /** Chat session that originated the flow run; null for legacy runs. */
+  originating_session_id?: string | null;
+}
+
+/** Response from getSessionPendingActions. */
+export interface SessionPendingActionsResponse {
+  /** Pending doc reviews for flow runs bound to this session. */
+  doc_reviews: FlowDocReview[];
+  /** Pending tool-approval reviews for agent runs in this session. */
+  approvals: unknown[];
+}
+
+/** A structured reviewer comment for request-changes. */
+export interface FlowReviewComment {
+  severity?: "error" | "warn" | "info";
+  message: string;
+  suggestion?: string;
+}
+
 export const flowRun = {
   async start(flow_id: string, initial_input?: string): Promise<{ run_id: string; subscription?: string }> {
     const pl: Record<string, unknown> = { flow_id };
@@ -138,6 +165,45 @@ export const flowRun = {
   },
   async postInput(run_id: string, input: unknown): Promise<{ ok: boolean }> {
     return (await runtimeSend("post.input", { run_id, payload: input })) as { ok: boolean };
+  },
+  /** Return all document ports in InReview state for the given flow run. */
+  async getPendingReviews(flow_run_id: string): Promise<{ pending_reviews: FlowDocReview[] }> {
+    return (await runtimeSend("flow.run.get_pending_reviews", { flow_run_id })) as {
+      pending_reviews: FlowDocReview[];
+    };
+  },
+  /**
+   * Scan ALL runs in the active workspace for pending reviews.
+   * Safe to call on startup without knowing any flow_run_id.
+   * Each returned item includes `flow_run_id` so approve/requestChanges work.
+   */
+  async getWorkspacePendingReviews(): Promise<{ pending_reviews: FlowDocReview[] }> {
+    return (await runtimeSend("flow.run.get_pending_reviews", { flow_run_id: "" })) as {
+      pending_reviews: FlowDocReview[];
+    };
+  },
+  /**
+   * Return all pending doc reviews AND tool-approval reviews that belong to
+   * the given session in a single round-trip. workspace_root is injected by
+   * the C++ enricher.
+   */
+  async getSessionPendingActions(sessionId: string): Promise<SessionPendingActionsResponse> {
+    return (await runtimeSend("get.session.pending.actions", {
+      session_id: sessionId,
+    })) as SessionPendingActionsResponse;
+  },
+  /** Approve a pending document review, triggering downstream agents. */
+  async approve(flow_run_id: string, node_id: string, port: string): Promise<void> {
+    await runtimeSend("flow.run.approve", { flow_run_id, node_id, port });
+  },
+  /** Request changes on a pending document, re-queuing the producing agent. */
+  async requestChanges(
+    flow_run_id: string,
+    node_id: string,
+    port: string,
+    comments: FlowReviewComment[],
+  ): Promise<void> {
+    await runtimeSend("flow.run.request_changes", { flow_run_id, node_id, port, comments });
   },
 };
 

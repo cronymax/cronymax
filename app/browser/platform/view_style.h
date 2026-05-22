@@ -212,6 +212,27 @@ void StyleOverlayPanel(void* nsview,
 // `nsview` is any NSView inside the overlay (e.g. from CaptureLastChildNSView).
 void SetOverlayWindowBackground(void* nsview, cef_color_t argb);
 
+// Install a local NSEvent monitor for left/right mouse-down events. If a
+// click lands outside `exclude_rect` (in CefWindow coordinates — origin at
+// top-left, y down), `callback(user)` is called. The event is always passed
+// through (non-consuming). Returns an opaque token; pass it to
+// RemoveClickOutsideMonitor() when done.
+// `nswindow` is the value returned by CefWindow::GetWindowHandle()
+// (the NSView, not the NSWindow; the implementation ascends to the NSWindow
+// internally).
+void* InstallClickOutsideMonitor(void* nswindow,
+                                 CefRect exclude_rect,
+                                 void (*callback)(void* user),
+                                 void* user);
+void RemoveClickOutsideMonitor(void* token);
+
+// Raise the overlay NSWindow hosting `browser_nsview` to the front of all
+// child NSWindows of the main window. Call after SetVisible(true) to ensure
+// the overlay stays above any subsequently-opened popover child windows.
+// `browser_nsview` is the CefWindowHandle returned by
+// CefBrowserHost::GetWindowHandle() for the overlay BrowserView.
+void RaiseOverlayWindow(void* browser_nsview);
+
 #else  // !defined(__APPLE__)
 
 // ── Non-Apple no-op stubs ─────────────────────────────────────────────────
@@ -250,6 +271,14 @@ inline void* CaptureLastChildNSView(void*) {
 }
 inline void StyleOverlayPanel(void*, double, int, cef_color_t) {}
 inline void SetOverlayWindowBackground(void*, cef_color_t) {}
+inline void* InstallClickOutsideMonitor(void*,
+                                        CefRect,
+                                        void (*)(void*),
+                                        void*) {
+  return nullptr;
+}
+inline void RemoveClickOutsideMonitor(void*) {}
+inline void RaiseOverlayWindow(void*) {}
 
 #endif  // defined(__APPLE__)
 

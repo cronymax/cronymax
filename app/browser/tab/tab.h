@@ -35,6 +35,7 @@ enum class TabKind {
   kChat,
   kTerminal,
   kFlows,
+  kActivity,
   kSettings,
 };
 

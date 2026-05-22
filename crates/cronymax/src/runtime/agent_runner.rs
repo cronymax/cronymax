@@ -46,7 +46,12 @@ impl AgentRunner {
         let services = Arc::clone(&self.services);
         let authority = services.authority.clone();
 
-        let run_id = match authority.start_run(run_ctx.space_id, None, serde_json::json!({})) {
+        let run_id = match authority.start_run_with_session(
+            run_ctx.space_id,
+            None,
+            serde_json::json!({}),
+            run_ctx.session_id.clone(),
+        ) {
             Ok(id) => id,
             Err(e) => {
                 warn!(agent_id, error = %e, "agent_runner: authority.start_run failed");
@@ -112,8 +117,9 @@ impl AgentRunner {
                 run_ctx.workspace_root.clone(),
                 flow_id.clone(),
                 flow_run_id.clone(),
-                agent_id.clone(),
+                inv_ctx.node_id.clone(), // node_id (e.g. "pm-design"), not agent owner
                 run_ctx.doc_tx.clone(),
+                run_ctx.workspace_cache_dir.clone(),
             );
             cap_builder.register_search(run_ctx.workspace_root.clone());
             cap_builder.register_git(run_ctx.workspace_root.clone());
@@ -213,8 +219,12 @@ impl AgentRunner {
 
             let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
             info!(agent_id, %run_id, ok = result.is_ok(), "agent_runner: agent loop finished");
-            if let Err(e) = result {
+            if let Err(ref e) = result {
                 info!(agent_id, %run_id, error = %e, "agent_runner: agent loop failed");
+                // Safety net: ensure the run is terminal even if ReactLoop::run()
+                // returned early without calling fail_run() (e.g. mark_run_running
+                // failure).  fail_run() is idempotent for already-terminal runs.
+                let _ = authority.fail_run(run_id, e.to_string());
             }
         });
     }
@@ -340,8 +350,14 @@ impl AgentRunner {
             };
 
             let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
-            if let Err(e) = result {
+            if let Err(ref e) = result {
                 warn!(error = %e, "agent_runner: chat loop failed");
+                // Safety net: ReactLoop::run() calls fail_run() internally for
+                // most errors, but if it returned early (e.g. mark_run_running
+                // failed) without calling fail_run(), the run stays open and the
+                // frontend gets stuck.  fail_run() is a no-op for runs already in
+                // a terminal state, so calling it unconditionally is safe.
+                let _ = authority.fail_run(run_id, e.to_string());
             }
 
             // Flush updated thread.

@@ -106,6 +106,7 @@
 
 static char kPopoverShadowOwnerKey;
 static char kPopoverScrimKey;
+static char kDragMonitorKey;
 
 namespace cronymax {
 
@@ -917,10 +918,12 @@ void ApplyDraggableRegions(void* nsview_ptr,
 }  // namespace cronymax
 
 // native-title-bar: dedicated drag-handle NSView for the title-bar.
-// mouseDownCanMoveWindow=YES so AppKit treats clicks here as window drags.
-// hitTest: returns nil for points inside any `noDragRects` (the title-bar
-// buttons) so clicks pass through to the CEF browser view that paints them.
-// One singleton per contentView identified by tag.
+// Installed in the window's contentView (so AppKit's contentView-rooted
+// hitTest path finds it). Uses mouseDownCanMoveWindow=NO + explicit
+// performWindowDragWithEvent: so the drag works even when the window's
+// `movable` flag is NO (which CEF-Alloy sets by default). hitTest: returns
+// nil for noDragRects (button hit areas) so those clicks fall through to the
+// underlying CEF panel. One singleton per contentView identified by tag.
 @interface CronymaxTitleBarDragView : NSView
 @property(nonatomic, assign)
     CGFloat barHeight;  // top strip height (AppKit pts)
@@ -937,28 +940,37 @@ void ApplyDraggableRegions(void* nsview_ptr,
 - (NSInteger)tag {
   return _tag;
 }
-// Return NO so AppKit delivers mouseDown: to us; we then explicitly call
-// performWindowDragWithEvent:. (Returning YES would let AppKit consume the
-// click, but inside an NSTitlebarAccessoryViewController it does not actually
-// initiate a window drag.)
 - (BOOL)mouseDownCanMoveWindow {
-  return NO;
+  return YES;
 }
 - (BOOL)acceptsFirstMouse:(NSEvent*)event {
   (void)event;
   return YES;
 }
 - (NSView*)hitTest:(NSPoint)pointInSuperview {
-  NSPoint local = [self convertPoint:pointInSuperview fromView:self.superview];
+  NSView* sv = self.superview;
+  // fprintf(stderr,
+  //         "[drag] hitTest entry sv=%s bounds={%.0f,%.0f,%.0f,%.0f} "
+  //         "pt={%.0f,%.0f}\n",
+  //         sv ? "ok" : "NIL", self.bounds.origin.x, self.bounds.origin.y,
+  //         self.bounds.size.width, self.bounds.size.height,
+  //         pointInSuperview.x, pointInSuperview.y);
+  NSPoint local = [self convertPoint:pointInSuperview fromView:sv];
   if (!NSPointInRect(local, self.bounds))
     return nil;
   for (NSValue* v in self.noDragRects) {
-    if (NSPointInRect(local, v.rectValue))
+    if (NSPointInRect(local, v.rectValue)) {
+      // fprintf(stderr, "[drag] hitTest passthrough at {%.0f,%.0f}\n", local.x,
+      //         local.y);
       return nil;
+    }
   }
+  // fprintf(stderr, "[drag] hitTest intercept at {%.0f,%.0f}\n", local.x,
+  //         local.y);
   return self;
 }
 - (void)mouseDown:(NSEvent*)event {
+  // fprintf(stderr, "[drag] mouseDown: performing window drag\n");
   NSWindow* w = self.window;
   if (w)
     [w performWindowDragWithEvent:event];
@@ -1016,6 +1028,13 @@ void ApplyDraggableRegions(void* nsview_ptr,
   [self release];
 }
 - (void)dealloc {
+  // Remove the NSEvent drag monitor stored by InstallTitleBarDragOverlay.
+  id monitor = objc_getAssociatedObject(self, &kDragMonitorKey);
+  if (monitor) {
+    [NSEvent removeMonitor:monitor];
+    objc_setAssociatedObject(self, &kDragMonitorKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
   if (self.superview) {
     @try {
       [self.superview removeObserver:self forKeyPath:@"subviews"];
@@ -1037,20 +1056,19 @@ void InstallTitleBarDragOverlay(void* nswindow_handle,
                                 size_t nodrag_count) {
   if (!nswindow_handle)
     return;
+  // nswindow_handle is CefWindow::GetWindowHandle() which returns the
+  // NSWindow's contentView NSView. Install the drag overlay directly in
+  // contentView so that AppKit's standard hit-test path (which starts from
+  // contentView, not themeFrame) finds it. With mouseDownCanMoveWindow=YES,
+  // pixels outside noDragRects trigger a window drag; pixels inside noDragRects
+  // fall through to CEF buttons below.
   NSView* content = (__bridge NSView*)nswindow_handle;
   NSWindow* window = content.window;
   if (!window)
     return;
-  // The window's contentView.superview is the AppKit "themeFrame". Subviews
-  // installed there sit ABOVE the contentView (and therefore above any
-  // CefBrowserView/CefPanel NSViews) and receive titlebar clicks even with
-  // NSWindowStyleMaskFullSizeContentView + titlebarAppearsTransparent.
-  NSView* themeFrame = content.superview;
-  if (!themeFrame)
-    return;
 
   CronymaxTitleBarDragView* overlay = nil;
-  for (NSView* sv in themeFrame.subviews) {
+  for (NSView* sv in content.subviews) {
     if (sv.tag == kTitleBarDragTag &&
         [sv isKindOfClass:[CronymaxTitleBarDragView class]]) {
       overlay = (CronymaxTitleBarDragView*)sv;
@@ -1058,27 +1076,28 @@ void InstallTitleBarDragOverlay(void* nswindow_handle,
     }
   }
 
-  const CGFloat W = themeFrame.bounds.size.width;
-  const CGFloat H = themeFrame.bounds.size.height;
+  const CGFloat W = content.bounds.size.width;
+  const CGFloat H = content.bounds.size.height;
   const CGFloat barH = (CGFloat)bar_rect_window_coords.height;
-  // themeFrame is NOT flipped (AppKit bottom-up). Title bar occupies top.
+  // contentView is NOT flipped (AppKit bottom-up). Titlebar occupies the top.
   const NSRect frame = NSMakeRect(0, H - barH, W, barH);
 
   if (!overlay) {
     overlay = [[CronymaxTitleBarDragView alloc] initWithFrame:frame];
     overlay.tag = kTitleBarDragTag;
     overlay.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-    [themeFrame addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
+    [content addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
   } else {
     overlay.frame = frame;
     [overlay removeFromSuperview];
-    [themeFrame addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
+    [content addSubview:overlay positioned:NSWindowAbove relativeTo:nil];
   }
   overlay.barHeight = barH;
 
-  // Button rects come in window top-down coords. Convert to overlay-local
-  // (also flipped relative to AppKit, but since the overlay is non-flipped,
-  // local.y = barH - window.y - h).
+  // Button rects are in titlebar-panel top-down coords (r.y = 0 at the top
+  // of the CEF titlebar panel, which coincides with the drag overlay top).
+  // Convert to overlay-local AppKit coords (y-up):
+  //   local.y = barH - r.y - r.height
   NSMutableArray<NSValue*>* nodrag =
       [NSMutableArray arrayWithCapacity:nodrag_count];
   for (size_t i = 0; i < nodrag_count; ++i) {
@@ -1089,6 +1108,52 @@ void InstallTitleBarDragOverlay(void* nswindow_handle,
                           valueWithRect:NSMakeRect(lx, ly, r.width, r.height)]];
   }
   overlay.noDragRects = nodrag;
+
+  // NSEvent local monitor: intercept titlebar mouseDown before CEF's content
+  // view processes it.  CEF's contentView overrides hitTest in the titlebar
+  // zone, so CronymaxTitleBarDragView.mouseDown is never reached there.
+  // Remove any monitor installed by a previous RefreshDragRegion call.
+  {
+    id prevMonitor = objc_getAssociatedObject(overlay, &kDragMonitorKey);
+    if (prevMonitor) {
+      [NSEvent removeMonitor:prevMonitor];
+      objc_setAssociatedObject(overlay, &kDragMonitorKey, nil,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+  }
+  NSWindow* capturedWindow = window;
+  const CGFloat monBarH = (CGFloat)bar_rect_window_coords.height;
+  // __unsafe_unretained breaks the retain cycle:
+  //   overlay ← [assocObj] dragMonitor ← [block] ← overlay
+  CronymaxTitleBarDragView* __unsafe_unretained capturedOverlay = overlay;
+  id dragMonitor = [NSEvent
+      addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown
+                                   handler:^NSEvent*(NSEvent* ev) {
+                                     if (!capturedWindow ||
+                                         ev.window != capturedWindow)
+                                       return ev;
+                                     NSView* cv = capturedWindow.contentView;
+                                     CGFloat cvH =
+                                         cv ? cv.bounds.size.height
+                                            : capturedWindow.frame.size.height;
+                                     NSPoint loc = ev.locationInWindow;
+                                     if (loc.y < cvH - monBarH)
+                                       return ev;  // below titlebar
+                                     // Check noDragRects (button areas) to
+                                     // avoid consuming button clicks.
+                                     NSPoint localPt = NSMakePoint(
+                                         loc.x, loc.y - (cvH - monBarH));
+                                     for (NSValue* v in capturedOverlay
+                                              .noDragRects) {
+                                       if (NSPointInRect(localPt, v.rectValue))
+                                         return ev;
+                                     }
+                                     [capturedWindow
+                                         performWindowDragWithEvent:ev];
+                                     return nil;
+                                   }];
+  objc_setAssociatedObject(overlay, &kDragMonitorKey, dragMonitor,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 // ---------------------------------------------------------------------------
@@ -1235,6 +1300,106 @@ void RemoveSystemAppearanceObserver(void* token) {
     return;
   id obs = (__bridge_transfer id)token;
   [[NSDistributedNotificationCenter defaultCenter] removeObserver:obs];
+}
+
+// ---------------------------------------------------------------------------
+// Click-outside monitor
+// ---------------------------------------------------------------------------
+
+void* InstallClickOutsideMonitor(void* nswindow_ptr,
+                                 CefRect exclude_rect,
+                                 void (*callback)(void* user),
+                                 void* user) {
+  if (!nswindow_ptr || !callback)
+    return nullptr;
+
+  NSView* rootView = (__bridge NSView*)nswindow_ptr;
+  NSWindow* win = rootView.window;
+  if (!win)
+    return nullptr;
+
+  // Capture the exclude rect by value; convert to NSRect for comparison.
+  // CefRect uses top-left origin with y-down; NSWindow content coords use
+  // bottom-left origin with y-up.  We convert on each event.
+  __block const CefRect ex = exclude_rect;
+  __block void (*cb)(void*) = callback;
+  __block void* usr = user;
+  // Non-ARC: the block retains `win` automatically. The caller must always
+  // call RemoveClickOutsideMonitor before the window is deallocated.
+  NSWindow* capturedWin = win;
+
+  id monitor = [NSEvent
+      addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown |
+                                           NSEventMaskRightMouseDown
+                                   handler:^NSEvent*(NSEvent* event) {
+                                     NSWindow* w = capturedWin;
+                                     if (!w)
+                                       return event;
+                                     // Convert screen coords → window
+                                     // content-view coords (y-up).
+                                     NSPoint screenPt;
+                                     if (event.window == w) {
+                                       screenPt = event.locationInWindow;
+                                     } else if (event.window != nil) {
+                                       screenPt = [w
+                                           convertPointFromScreen:
+                                               [event.window
+                                                   convertPointToScreen:
+                                                       event.locationInWindow]];
+                                     } else {
+                                       // event.window is nil: locationInWindow
+                                       // is in screen coords.
+                                       screenPt =
+                                           [w convertPointFromScreen:
+                                                   event.locationInWindow];
+                                     }
+                                     // Convert y-up → y-down (CEF coords).
+                                     CGFloat viewH =
+                                         w.contentView.bounds.size.height;
+                                     NSPoint cefPt = NSMakePoint(
+                                         screenPt.x, viewH - screenPt.y);
+                                     if (cefPt.x < ex.x ||
+                                         cefPt.x > ex.x + ex.width ||
+                                         cefPt.y < ex.y ||
+                                         cefPt.y > ex.y + ex.height) {
+                                       cb(usr);
+                                     }
+                                     return event;
+                                   }];
+  if (!monitor)
+    return nullptr;
+  return (__bridge_retained void*)monitor;
+}
+
+void RemoveClickOutsideMonitor(void* token) {
+  if (!token)
+    return;
+  id monitor = (__bridge_transfer id)token;
+  [NSEvent removeMonitor:monitor];
+}
+
+void RaiseOverlayWindow(void* nsview_ptr) {
+  if (!nsview_ptr)
+    return;
+  NSView* view = (__bridge NSView*)nsview_ptr;
+  NSWindow* w = view.window;
+  if (!w)
+    return;
+  NSWindow* parent = w.parentWindow;
+  // Re-apply rounded-corner mask with the actual open-time bounds.  The
+  // deferred startup call in BuildOverlaySlots ran before SetBounds, so the
+  // view had zero-size bounds and the mask clipped all content to nothing.
+  // This mirrors what Popover::ApplyCornerMasks() does on every Show().
+  StyleOverlayBrowserView(nsview_ptr, 12.0, kCornerAll, /*with_shadow=*/true);
+  // Re-insert as the topmost child window so it appears above float_bv_ and
+  // profile-picker overlays that were added after this slot (higher z-order).
+  if (parent) {
+    [parent removeChildWindow:w];
+    [parent addChildWindow:w ordered:NSWindowAbove];
+    [parent orderFront:nil];
+  } else {
+    [w orderFront:nil];
+  }
 }
 
 }  // namespace cronymax
