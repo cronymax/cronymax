@@ -6,11 +6,22 @@
 //! local in-process tools, scripted mocks) plug in via `Arc<dyn ...>`.
 
 use async_trait::async_trait;
+use tokio::sync::oneshot;
 
 use crate::llm::{ToolCall, ToolDef};
 
-/// Outcome of dispatching a single tool call.
+/// Result delivered to a Supervisor loop when a child agent or flow completes.
 #[derive(Clone, Debug)]
+pub struct AgentResult {
+    /// `true` if the child completed successfully.
+    pub success: bool,
+    /// Terminal output JSON from the child (may be `null` if none was produced).
+    pub output: serde_json::Value,
+    /// Human-readable error description when `success == false`.
+    pub error: Option<String>,
+}
+
+/// Outcome of dispatching a single tool call.
 pub enum ToolOutcome {
     /// Tool ran and produced a structured result. Serialized into the
     /// `role: tool` message for the next LLM turn.
@@ -25,6 +36,33 @@ pub enum ToolOutcome {
     /// Terminal tool (e.g. `submit_document`): record the result and
     /// stop the loop with `Succeeded`.
     Terminal(serde_json::Value),
+    /// Tool spawned a child agent or flow run. The `ReactLoop` must
+    /// await the `completion` receiver and use its [`AgentResult`] as the
+    /// tool message before continuing to the next LLM turn.
+    SpawnsAgent {
+        /// TaskId (as string) recorded in the TaskTree for this child.
+        task_id: String,
+        /// Fires exactly once when the child terminates (success or failure).
+        completion: oneshot::Receiver<AgentResult>,
+    },
+}
+
+impl std::fmt::Debug for ToolOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Output(v) => f.debug_tuple("Output").field(v).finish(),
+            Self::Error(e) => f.debug_tuple("Error").field(e).finish(),
+            Self::NeedsApproval { request } => f
+                .debug_struct("NeedsApproval")
+                .field("request", request)
+                .finish(),
+            Self::Terminal(v) => f.debug_tuple("Terminal").field(v).finish(),
+            Self::SpawnsAgent { task_id, .. } => f
+                .debug_struct("SpawnsAgent")
+                .field("task_id", task_id)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 /// What the loop sees through. Implementations are expected to be

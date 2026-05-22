@@ -178,6 +178,8 @@ export interface ConversationBlock {
   status: "running" | "ok" | "fail";
   comments: Comment[];
   thread?: Thread;
+  /** Attached flow thread when this block triggered a flow run. */
+  flowThread?: FlowThread;
   createdAt: number;
   /** Accumulated thinking/reasoning content from an extended-thinking model. */
   thinkingText: string;
@@ -216,9 +218,129 @@ export interface FlowNotificationBlock {
   comments: Comment[];
 }
 
-export type Block = ConversationBlock | ShellBlock | FlowNotificationBlock;
+// ── Thread card blocks ─────────────────────────────────────────────────────
+// Added by supervisor-session-ux: standalone top-level timeline blocks that
+// represent an in-flight or completed agent / flow thread. Clicking the card
+// navigates into the thread view (two-level navigation).
+
+/** Status of a supervisor-dispatched child task. */
+export type TaskStatus = "running" | "succeeded" | "failed" | "pending" | "cancelled" | "awaiting_review";
+
+/** Inline card block for a supervisor-dispatched agent sub-task. */
+export interface AgentThreadBlock {
+  kind: "agent_thread";
+  id: string;
+  /** Task id from the `TaskStarted` runtime event, used for navigation. */
+  taskId: string;
+  /** The parent run_id that spawned this agent task. */
+  parentRunId: string;
+  agentName: string;
+  status: TaskStatus;
+  /** First line summary of the task prompt. */
+  summary: string;
+  startedAt: number;
+  endedAt: number | null;
+  /** Kept for type compatibility with block iterators. */
+  comments: Comment[];
+  /** Child run_id once the sub-agent starts. Used to correlate critic_result events. */
+  subRunId: string | null;
+  /** Critic pass results received while the sub-agent was running (task 9.3). */
+  criticResults: Array<{
+    passed: boolean;
+    summary: string;
+    revision: number;
+    maxRevisions: number;
+    ts: number;
+  }>;
+}
+
+/** Inline card block for a supervisor-dispatched flow sub-task. */
+export interface FlowThreadBlock {
+  kind: "flow_thread";
+  id: string;
+  /** Task id used for navigation. */
+  taskId: string;
+  /** The parent run_id that triggered the flow invocation. */
+  parentRunId: string;
+  flowId: string;
+  /** Backend-generated flow run id (filled in once run starts). */
+  flowRunId: string;
+  /** Frontend-generated child session id for subscribing to flow events. */
+  childSessionId: string;
+  status: TaskStatus;
+  /** Plain-English description of what the flow does (from invoke_flow context). */
+  description: string;
+  startedAt: number;
+  endedAt: number | null;
+  /** Kept for type compatibility with block iterators. */
+  comments: Comment[];
+}
+
+export type Block = ConversationBlock | ShellBlock | FlowNotificationBlock | AgentThreadBlock | FlowThreadBlock;
+
+// ── NodeConversation ──────────────────────────────────────────────────
+// Represents the per-node agent conversation stream for a flow sub-run.
+// Keyed by agentId (node name, e.g. "pm-design") in the conversations Map.
+
+export type StatusKind = "pending" | "running" | "awaiting_review" | "succeeded" | "failed";
+
+export interface NodeConversation {
+  /** Authority run_id for this sub-run. */
+  runId: string;
+  /** Node agent name, e.g. "pm-design". */
+  agentId: string;
+  /** Flow run this sub-run belongs to. */
+  flowRunId: string;
+  status: StatusKind;
+  contentStream: ContentSegment[];
+  traceEntries: TraceEntry[];
+  startedAt: number | null;
+  /** Wall-clock timestamp (Date.now()) when the agent reached a terminal state. */
+  endedAt: number | null;
+}
+
+// ── FlowThread ──────────────────────────────────────────────────────────────
+// Inline thread attached to the ConversationBlock that triggered a flow run.
+// Populated as flow node sub-runs stream events into the child session.
+
+/** A single event from any flow node agent, keyed by sequence number. */
+export interface FlowThreadEvent {
+  agentId: string;
+  kind: "token" | "tool_call" | "trace" | "status";
+  segment?: ContentSegment;
+  entry?: TraceEntry;
+  /** Monotonically increasing within the child session. */
+  seqNum: number;
+  ts: number;
+}
+
+/** The flow thread attached to a fork block. */
+export interface FlowThread {
+  /** Backend-generated flow run id ("run-<uuid>"). Empty string until the first run_status event confirms it. */
+  flowRunId: string;
+  /** Frontend-generated child session id (crypto.randomUUID()). Known before any event arrives. */
+  childSessionId: string;
+  /** The flow name / flow_id (e.g. "feature-pipeline"). Known at dispatch time from state.selectedFlow. */
+  flowId?: string;
+  /** Chronologically ordered events from all node agents in this flow run. */
+  events: FlowThreadEvent[];
+  /**
+   * Per-agent-run conversation streams, keyed by the authority run_id
+   * (e.g. "run:79c5ac83-…"). Populated as token/trace/status events
+   * arrive via the child-session subscription.
+   */
+  nodeConversations: Record<string, NodeConversation>;
+  /**
+   * Blackboard keys that were human-injected in this flow run (task 8.7).
+   * Populated when the user manually injects a blackboard entry via the UI.
+   */
+  humanInjectedKeys: string[];
+}
 
 export type ActiveView = { kind: "main" } | { kind: "thread"; blockId: string; threadId: string };
+
+/** Thread navigation destination for the two-level supervisor-session-ux nav. */
+export type ThreadViewTarget = { taskId: string; kind: "agent" | "flow" };
 
 export interface AgentSummary {
   name: string;
@@ -241,6 +363,10 @@ export interface State {
   attachments: Attachment[];
   /** Navigation state: main timeline or a specific thread */
   activeView: ActiveView;
+  /** Supervisor-session-ux: thread view navigation (agent or flow sub-task). */
+  threadView: ThreadViewTarget | null;
+  /** Supervisor-session-ux: block id to keep pinned in the sticky active-thread bar. */
+  pinnedBlockId: string | null;
   /** Selected model for new runs */
   model: string;
   /** Selected agent id for new runs */
@@ -312,6 +438,8 @@ export type Action =
   | { type: "setModel"; model: string }
   | { type: "setAgentId"; agentId: string }
   | { type: "setActiveView"; view: ActiveView }
+  | { type: "setThreadView"; target: ThreadViewTarget | null }
+  | { type: "setPinnedBlockId"; blockId: string | null }
   | { type: "setAgents"; agents: AgentSummary[] }
   | { type: "setFlows"; flows: string[]; selected: string }
   | { type: "setSelectedFlow"; name: string }
@@ -337,6 +465,56 @@ export type Action =
       message: string;
       variant: "success" | "info";
     }
+  /** Attach a new FlowThread to a ConversationBlock (called when flow starts). */
+  | { type: "attachFlowThread"; id: string; flowThread: FlowThread }
+  /** Fill in the flowRunId once the first run_status event reveals it. */
+  | { type: "setFlowThreadRunId"; id: string; flowRunId: string }
+  /** Append an event from a flow node agent into the block's flowThread. */
+  | { type: "appendFlowThreadEvent"; id: string; event: FlowThreadEvent }
+  /** Create or update the status of a node conversation in the block's flowThread. */
+  | {
+      type: "flowNodeStatus";
+      blockId: string;
+      runId: string;
+      agentId: string;
+      status: StatusKind;
+      flowRunId?: string;
+      startedAt?: number;
+    }
+  /** Append a text token to a node conversation's content stream. */
+  | { type: "flowNodeToken"; blockId: string; runId: string; delta: string }
+  /** Append a thinking delta to a node conversation's content stream. */
+  | { type: "flowNodeThinkingDelta"; blockId: string; runId: string; delta: string }
+  /** Seal the open thinking segment of a node conversation. */
+  | { type: "flowNodeSealThinking"; blockId: string; runId: string; elapsedMs: number }
+  /** Add a tool_call segment to a node conversation's content stream. */
+  | { type: "flowNodeToolCall"; blockId: string; runId: string; toolCallId: string; tool: string; args: unknown }
+  /** Update the result/status of a tool_call in a node conversation. */
+  | {
+      type: "flowNodeToolDone";
+      blockId: string;
+      runId: string;
+      toolCallId: string;
+      status: "done" | "error";
+      result: unknown;
+      durationMs?: number;
+    }
+  /** Append a trace entry to a node conversation. */
+  | { type: "flowNodeTrace"; blockId: string; runId: string; entry: TraceEntry }
+  /** Update the status of an AgentThreadBlock or FlowThreadBlock. */
+  | { type: "updateThreadBlockStatus"; id: string; status: TaskStatus; endedAt?: number }
+  /** Fill in the flowRunId on a FlowThreadBlock once the run starts. */
+  | { type: "setFlowThreadBlockRunId"; id: string; flowRunId: string }
+  /** Insert a new AgentThreadBlock when invoke_agent fires (task 5.6). */
+  | { type: "insertAgentThreadBlock"; block: AgentThreadBlock }
+  /** Insert a new FlowThreadBlock when invoke_flow fires (task 5.6). */
+  | { type: "insertFlowThreadBlock"; block: FlowThreadBlock }
+  /** Record a human-injected blackboard key for a flow thread block (task 8.7). */
+  | { type: "recordBlackboardInjection"; blockId: string; key: string }
+  /** Link an agent thread block to its sub-run id (task 9.3). */
+  | { type: "setAgentSubRunId"; agentName: string; subRunId: string }
+  /** Append a critic result to a specific agent thread block (task 9.3). */
+  | { type: "appendAgentCriticResult"; subRunId: string; result: AgentThreadBlock["criticResults"][number] }
   | { type: "_unused"; _placeholder?: never };
 
 // ── Shell output processor ────────────────────────────────────────────
@@ -363,6 +541,8 @@ const initial: State = {
   terminalTid: null,
   attachments: [],
   activeView: { kind: "main" },
+  threadView: null,
+  pinnedBlockId: null,
   model: "",
   agentId: "",
   agents: [],
@@ -406,6 +586,11 @@ function reducer(state: State, action: Action): State {
         }
         if (b.kind === "shell" && b.status === "running") {
           return { ...b, status: "fail" as const, endedAt: Date.now() };
+        }
+        if (b.kind === "agent_thread") {
+          // Ensure criticResults exists — field was added later; old persisted
+          // blocks won't have it, causing `.length` to crash on render.
+          return { ...b, criticResults: b.criticResults ?? [] };
         }
         return b;
       });
@@ -657,6 +842,12 @@ function reducer(state: State, action: Action): State {
     case "setActiveView":
       return { ...state, activeView: action.view };
 
+    case "setThreadView":
+      return { ...state, threadView: action.target };
+
+    case "setPinnedBlockId":
+      return { ...state, pinnedBlockId: action.blockId };
+
     case "setAgents":
       return {
         ...state,
@@ -746,6 +937,332 @@ function reducer(state: State, action: Action): State {
         comments: [],
       };
       return { ...state, blocks: [...state.blocks, notifBlock] };
+    }
+
+    case "attachFlowThread": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) =>
+          b.id === action.id && b.kind === "conversation" ? { ...b, flowThread: action.flowThread } : b,
+        ),
+      };
+    }
+
+    case "setFlowThreadRunId": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.id || b.kind !== "conversation" || !b.flowThread) return b;
+          return { ...b, flowThread: { ...b.flowThread, flowRunId: action.flowRunId } };
+        }),
+      };
+    }
+
+    case "appendFlowThreadEvent": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.id || b.kind !== "conversation" || !b.flowThread) return b;
+          return {
+            ...b,
+            flowThread: {
+              ...b.flowThread,
+              events: [...b.flowThread.events, action.event],
+            },
+          };
+        }),
+      };
+    }
+
+    // ── Per-node-conversation helpers ──────────────────────────────────
+
+    case "flowNodeStatus": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.blockId || b.kind !== "conversation" || !b.flowThread) return b;
+          const existing = b.flowThread.nodeConversations[action.runId];
+          const isTerminal = action.status === "succeeded" || action.status === "failed";
+          const updated: NodeConversation = existing
+            ? {
+                ...existing,
+                status: action.status,
+                endedAt: isTerminal ? (existing.endedAt ?? Date.now()) : existing.endedAt,
+              }
+            : {
+                runId: action.runId,
+                agentId: action.agentId,
+                flowRunId: action.flowRunId ?? b.flowThread.flowRunId,
+                status: action.status,
+                contentStream: [],
+                traceEntries: [],
+                startedAt: action.startedAt ?? Date.now(),
+                endedAt: isTerminal ? Date.now() : null,
+              };
+          return {
+            ...b,
+            flowThread: {
+              ...b.flowThread,
+              nodeConversations: { ...b.flowThread.nodeConversations, [action.runId]: updated },
+            },
+          };
+        }),
+      };
+    }
+
+    case "flowNodeToken": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.blockId || b.kind !== "conversation" || !b.flowThread) return b;
+          const nc = b.flowThread.nodeConversations[action.runId];
+          if (!nc) return b;
+          const stream = nc.contentStream.slice();
+          const last = stream[stream.length - 1];
+          if (last?.kind === "text") {
+            stream[stream.length - 1] = { ...last, content: last.content + action.delta };
+          } else {
+            stream.push({ kind: "text", content: action.delta });
+          }
+          return {
+            ...b,
+            flowThread: {
+              ...b.flowThread,
+              nodeConversations: {
+                ...b.flowThread.nodeConversations,
+                [action.runId]: { ...nc, contentStream: stream },
+              },
+            },
+          };
+        }),
+      };
+    }
+
+    case "flowNodeThinkingDelta": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.blockId || b.kind !== "conversation" || !b.flowThread) return b;
+          const nc = b.flowThread.nodeConversations[action.runId];
+          if (!nc) return b;
+          const stream = nc.contentStream.slice();
+          const last = stream[stream.length - 1];
+          if (last?.kind === "thinking" && !last.sealed) {
+            stream[stream.length - 1] = { ...last, content: last.content + action.delta };
+          } else {
+            stream.push({ kind: "thinking", content: action.delta, sealed: false, elapsedMs: 0 });
+          }
+          return {
+            ...b,
+            flowThread: {
+              ...b.flowThread,
+              nodeConversations: {
+                ...b.flowThread.nodeConversations,
+                [action.runId]: { ...nc, contentStream: stream },
+              },
+            },
+          };
+        }),
+      };
+    }
+
+    case "flowNodeSealThinking": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.blockId || b.kind !== "conversation" || !b.flowThread) return b;
+          const nc = b.flowThread.nodeConversations[action.runId];
+          if (!nc) return b;
+          let found = false;
+          const stream = nc.contentStream
+            .slice()
+            .reverse()
+            .map((s) => {
+              if (!found && s.kind === "thinking" && !s.sealed) {
+                found = true;
+                return { ...s, sealed: true, elapsedMs: action.elapsedMs };
+              }
+              return s;
+            })
+            .reverse();
+          return {
+            ...b,
+            flowThread: {
+              ...b.flowThread,
+              nodeConversations: {
+                ...b.flowThread.nodeConversations,
+                [action.runId]: { ...nc, contentStream: stream },
+              },
+            },
+          };
+        }),
+      };
+    }
+
+    case "flowNodeToolCall": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.blockId || b.kind !== "conversation" || !b.flowThread) return b;
+          const nc = b.flowThread.nodeConversations[action.runId];
+          if (!nc) return b;
+          const seg: ContentSegment = {
+            kind: "tool_call",
+            toolCallId: action.toolCallId,
+            tool: action.tool,
+            args: action.args,
+            status: "running",
+          };
+          return {
+            ...b,
+            flowThread: {
+              ...b.flowThread,
+              nodeConversations: {
+                ...b.flowThread.nodeConversations,
+                [action.runId]: { ...nc, contentStream: [...nc.contentStream, seg] },
+              },
+            },
+          };
+        }),
+      };
+    }
+
+    case "flowNodeToolDone": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.blockId || b.kind !== "conversation" || !b.flowThread) return b;
+          const nc = b.flowThread.nodeConversations[action.runId];
+          if (!nc) return b;
+          const stream = nc.contentStream.map((s) => {
+            if (s.kind === "tool_call" && s.toolCallId === action.toolCallId) {
+              return {
+                ...s,
+                status: action.status,
+                result: action.result,
+                ...(action.durationMs != null ? { durationMs: action.durationMs } : {}),
+              };
+            }
+            return s;
+          });
+          return {
+            ...b,
+            flowThread: {
+              ...b.flowThread,
+              nodeConversations: {
+                ...b.flowThread.nodeConversations,
+                [action.runId]: { ...nc, contentStream: stream },
+              },
+            },
+          };
+        }),
+      };
+    }
+
+    case "flowNodeTrace": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.blockId || b.kind !== "conversation" || !b.flowThread) return b;
+          const nc = b.flowThread.nodeConversations[action.runId];
+          if (!nc) return b;
+          return {
+            ...b,
+            flowThread: {
+              ...b.flowThread,
+              nodeConversations: {
+                ...b.flowThread.nodeConversations,
+                [action.runId]: { ...nc, traceEntries: [...nc.traceEntries, action.entry] },
+              },
+            },
+          };
+        }),
+      };
+    }
+
+    case "updateThreadBlockStatus": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.id) return b;
+          if (b.kind !== "agent_thread" && b.kind !== "flow_thread") return b;
+          return {
+            ...b,
+            status: action.status,
+            endedAt: action.endedAt ?? b.endedAt,
+          };
+        }),
+      };
+    }
+
+    case "setFlowThreadBlockRunId": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.id !== action.id || b.kind !== "flow_thread") return b;
+          return { ...b, flowRunId: action.flowRunId };
+        }),
+      };
+    }
+
+    case "insertAgentThreadBlock": {
+      // Deduplicate by taskId — only insert if not already present.
+      if (state.blocks.some((b) => b.kind === "agent_thread" && b.taskId === action.block.taskId)) {
+        return state;
+      }
+      // Ensure new fields are initialised even if caller didn't set them.
+      const block: AgentThreadBlock = {
+        ...action.block,
+        subRunId: action.block.subRunId ?? null,
+        criticResults: action.block.criticResults ?? [],
+      };
+      return { ...state, blocks: [...state.blocks, block] };
+    }
+
+    case "insertFlowThreadBlock": {
+      // Deduplicate by taskId — only insert if not already present.
+      if (state.blocks.some((b) => b.kind === "flow_thread" && b.taskId === action.block.taskId)) {
+        return state;
+      }
+      return { ...state, blocks: [...state.blocks, action.block] };
+    }
+
+    case "recordBlackboardInjection": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.kind !== "conversation" || b.id !== action.blockId || !b.flowThread) return b;
+          const existing = b.flowThread.humanInjectedKeys;
+          if (existing.includes(action.key)) return b;
+          return {
+            ...b,
+            flowThread: {
+              ...b.flowThread,
+              humanInjectedKeys: [...existing, action.key],
+            },
+          };
+        }),
+      };
+    }
+
+    case "setAgentSubRunId": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.kind !== "agent_thread" || b.agentName !== action.agentName || b.subRunId !== null) return b;
+          return { ...b, subRunId: action.subRunId };
+        }),
+      };
+    }
+
+    case "appendAgentCriticResult": {
+      return {
+        ...state,
+        blocks: state.blocks.map((b) => {
+          if (b.kind !== "agent_thread" || b.subRunId !== action.subRunId) return b;
+          return { ...b, criticResults: [...b.criticResults, action.result] };
+        }),
+      };
     }
 
     default:

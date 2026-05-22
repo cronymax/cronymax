@@ -388,10 +388,17 @@ bool App::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
         bin->GetData(err_bytes.data(), err_bytes.size(), 0);
         auto j = nlohmann::json::from_msgpack(err_bytes, true, false);
         if (!j.is_discarded()) {
-          if (j.is_object() && j.contains("error"))
-            err_msg = j["error"].value("message", j.dump());
-          else
+          if (j.is_object() && j.contains("error")) {
+            const auto& err_val = j["error"];
+            if (err_val.is_object())
+              err_msg = err_val.value("message", j.dump());
+            else if (err_val.is_string())
+              err_msg = err_val.get<std::string>();
+            else
+              err_msg = j.dump();
+          } else {
             err_msg = j.dump();
+          }
         }
       }
       promise->RejectPromise(err_msg);
@@ -425,10 +432,17 @@ bool App::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
         bin->GetData(err_bytes.data(), err_bytes.size(), 0);
         auto j = nlohmann::json::from_msgpack(err_bytes, true, false);
         if (!j.is_discarded()) {
-          if (j.is_object() && j.contains("error"))
-            err_msg = j["error"].value("message", j.dump());
-          else
+          if (j.is_object() && j.contains("error")) {
+            const auto& err_val = j["error"];
+            if (err_val.is_object())
+              err_msg = err_val.value("message", j.dump());
+            else if (err_val.is_string())
+              err_msg = err_val.get<std::string>();
+            else
+              err_msg = j.dump();
+          } else {
             err_msg = j.dump();
+          }
         }
       }
       promise->RejectPromise(err_msg);

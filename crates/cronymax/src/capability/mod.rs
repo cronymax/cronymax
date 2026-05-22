@@ -25,6 +25,8 @@ pub mod factory;
 pub mod filesystem;
 pub mod flow_tools;
 pub mod git;
+pub mod invoke_agent;
+pub mod invoke_flow;
 pub mod notify;
 pub mod shell;
 pub mod submit_document;
@@ -42,6 +44,8 @@ pub use filesystem::{
     WriteFileRequest,
 };
 pub use flow_tools::{register_flow_tools, register_submit_review, SpawnAgentFn};
+pub use invoke_agent::register_invoke_agent;
+pub use invoke_flow::register_invoke_flow;
 pub use notify::{ApprovalRequest, ApprovalResponse, NotifyCapability};
 pub use shell::{
     classify_command, ExitStatus, LocalShell, RiskLevel, ShellCapability, ShellRequest, ShellResult,

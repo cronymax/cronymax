@@ -172,7 +172,7 @@ export function ReviewsPanel({ sessionId }: Props) {
   };
 
   return (
-    <Alert className="mx-3 mb-1 text-xs">
+    <Alert className="mb-1 text-xs">
       <ShieldAlert />
       <AlertTitle className="flex items-center gap-2">
         <span>Pending reviews</span>

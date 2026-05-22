@@ -9,6 +9,7 @@ export interface RunEntry {
   session_id: string | null;
   flow_run_id: string | null;
   agent_id: string | null;
+  parent_run_id: string | null;
   status: string;
   created_at_ms: number;
   updated_at_ms: number;
@@ -19,6 +20,11 @@ export interface RunEntry {
   total_duration_ms: number;
   // Pending review (set when status = awaiting_review)
   pending_review_id: string | null;
+  // Outcome fields (task 16.2)
+  goal: string | null;
+  produces_count: number;
+  file_change_additions: number;
+  file_change_deletions: number;
 }
 
 export interface ReviewEntry {
@@ -42,6 +48,7 @@ export interface ActivityState {
 type Action =
   | { type: "SET_SPACE"; spaceId: string }
   | { type: "HYDRATE"; runs: RunEntry[]; reviews: ReviewEntry[] }
+  | { type: "UPSERT_RUN"; run: RunEntry }
   | { type: "UPDATE_RUN_STATUS"; runId: string; status: string }
   | {
       type: "UPDATE_RUN_TRACE";
@@ -60,11 +67,45 @@ function reducer(state: ActivityState, action: Action): ActivityState {
       return { ...state, activeSpaceId: action.spaceId };
 
     case "HYDRATE": {
-      const runs = new Map<string, RunEntry>();
-      for (const r of action.runs) runs.set(r.id, r);
-      const reviews = new Map<string, ReviewEntry>();
+      // Merge incoming runs with existing ones, preserving live trace stats
+      // for runs already tracked (so a periodic re-hydration doesn't reset
+      // turn/token counters that arrived via runtime events).
+      const runs = new Map<string, RunEntry>(state.runs);
+      for (const r of action.runs) {
+        const existing = runs.get(r.id);
+        if (existing) {
+          // Keep live stats; only update fields that come from the snapshot.
+          runs.set(r.id, {
+            ...r,
+            turn_count: existing.turn_count,
+            input_tokens: existing.input_tokens,
+            output_tokens: existing.output_tokens,
+            total_duration_ms: existing.total_duration_ms,
+            pending_review_id: existing.pending_review_id,
+            // Outcome fields: prefer fresh snapshot data but keep existing if new is empty
+            goal: r.goal ?? existing.goal,
+            produces_count: r.produces_count > 0 ? r.produces_count : existing.produces_count,
+            file_change_additions:
+              r.file_change_additions > 0 ? r.file_change_additions : existing.file_change_additions,
+            file_change_deletions:
+              r.file_change_deletions > 0 ? r.file_change_deletions : existing.file_change_deletions,
+          });
+        } else {
+          runs.set(r.id, r);
+        }
+      }
+      const reviews = new Map<string, ReviewEntry>(state.reviews);
       for (const rv of action.reviews) reviews.set(rv.id, rv);
       return { ...state, runs, reviews };
+    }
+
+    case "UPSERT_RUN": {
+      // Insert a brand-new run discovered via periodic re-hydration.
+      // Skip if we already know this run (avoid clobbering live stats).
+      if (state.runs.has(action.run.id)) return state;
+      const next = new Map(state.runs);
+      next.set(action.run.id, action.run);
+      return { ...state, runs: next };
     }
 
     case "UPDATE_RUN_STATUS": {
@@ -142,6 +183,7 @@ function parseRunFromSnapshot(raw: Record<string, unknown>): RunEntry {
     session_id: (raw.session_id as string | null) ?? null,
     flow_run_id: (raw.flow_run_id as string | null) ?? null,
     agent_id: (raw.agent_id as string | null) ?? null,
+    parent_run_id: (raw.parent_run_id as string | null) ?? null,
     status: parseRunStatus(raw.status),
     created_at_ms: (raw.created_at_ms as number) ?? 0,
     updated_at_ms: (raw.updated_at_ms as number) ?? 0,
@@ -150,6 +192,14 @@ function parseRunFromSnapshot(raw: Record<string, unknown>): RunEntry {
     output_tokens: 0,
     total_duration_ms: 0,
     pending_review_id: null,
+    goal: (raw.goal as string | null) ?? null,
+    produces_count: Array.isArray(raw.produces) ? (raw.produces as unknown[]).length : 0,
+    file_change_additions: Array.isArray(raw.file_changes)
+      ? (raw.file_changes as Array<{ additions?: number }>).reduce((s, fc) => s + (fc.additions ?? 0), 0)
+      : 0,
+    file_change_deletions: Array.isArray(raw.file_changes)
+      ? (raw.file_changes as Array<{ deletions?: number }>).reduce((s, fc) => s + (fc.deletions ?? 0), 0)
+      : 0,
   };
 }
 
@@ -170,15 +220,68 @@ const initialState: ActivityState = {
   activeSpaceId: null,
 };
 
+// ── Tree types ─────────────────────────────────────────────────────────────
+
+export interface RunTreeNode {
+  run: RunEntry;
+  children: RunTreeNode[];
+}
+
 export interface ActivityGroups {
-  chatGroups: Map<string, RunEntry[]>; // session_id → runs
-  flowGroups: Map<string, RunEntry[]>; // flow_run_id → runs
+  /** Root-level chat/session runs (no flow_run_id) with children nested. */
+  chatRoots: RunTreeNode[];
+  /** flow_run_id → root nodes for that flow run. */
+  flowRoots: Map<string, RunTreeNode[]>;
   pendingCount: number;
 }
 
+function buildTree(runs: RunEntry[]): { chatRoots: RunTreeNode[]; flowRoots: Map<string, RunTreeNode[]> } {
+  // 1. Create a node for every run.
+  const nodeMap = new Map<string, RunTreeNode>();
+  for (const run of runs) {
+    nodeMap.set(run.id, { run, children: [] });
+  }
+
+  const chatRoots: RunTreeNode[] = [];
+  const flowRoots = new Map<string, RunTreeNode[]>();
+
+  // 2. Wire up parent→child relationships.
+  for (const node of nodeMap.values()) {
+    const { run } = node;
+    const parentNode = run.parent_run_id ? nodeMap.get(run.parent_run_id) : undefined;
+
+    if (parentNode) {
+      // Has a known parent within the visible set → attach as child.
+      parentNode.children.push(node);
+    } else if (run.flow_run_id) {
+      // Root of a flow run.
+      const arr = flowRoots.get(run.flow_run_id) ?? [];
+      arr.push(node);
+      flowRoots.set(run.flow_run_id, arr);
+    } else {
+      // Root of a chat/session group.
+      chatRoots.push(node);
+    }
+  }
+
+  // 3. Sort children by creation time within each node.
+  function sortChildren(node: RunTreeNode) {
+    node.children.sort((a, b) => a.run.created_at_ms - b.run.created_at_ms);
+    for (const child of node.children) sortChildren(child);
+  }
+  for (const node of nodeMap.values()) sortChildren(node);
+
+  // Sort roots by creation time too.
+  chatRoots.sort((a, b) => a.run.created_at_ms - b.run.created_at_ms);
+  for (const arr of flowRoots.values()) {
+    arr.sort((a, b) => a.run.created_at_ms - b.run.created_at_ms);
+  }
+
+  return { chatRoots, flowRoots };
+}
+
 function computeGroups(state: ActivityState, filter: "all" | "live" | "needs_review"): ActivityGroups {
-  const chatGroups = new Map<string, RunEntry[]>();
-  const flowGroups = new Map<string, RunEntry[]>();
+  const visible: RunEntry[] = [];
   let pendingCount = 0;
 
   for (const run of state.runs.values()) {
@@ -193,21 +296,15 @@ function computeGroups(state: ActivityState, filter: "all" | "live" | "needs_rev
       (filter === "needs_review" && run.status === "awaiting_review");
 
     if (!show) continue;
-
-    if (run.flow_run_id) {
-      const arr = flowGroups.get(run.flow_run_id) ?? [];
-      arr.push(run);
-      flowGroups.set(run.flow_run_id, arr);
-    } else {
-      const key = run.session_id ?? run.id;
-      const arr = chatGroups.get(key) ?? [];
-      arr.push(run);
-      chatGroups.set(key, arr);
-    }
+    visible.push(run);
   }
 
-  return { chatGroups, flowGroups, pendingCount };
+  const { chatRoots, flowRoots } = buildTree(visible);
+  return { chatRoots, flowRoots, pendingCount };
 }
+
+/** Interval (ms) between periodic snapshot re-hydrations. */
+const REFRESH_INTERVAL_MS = 30_000;
 
 export function useActivityFeed(filter: "all" | "live" | "needs_review") {
   const [state, dispatch] = useReducer(reducer, initialState);
@@ -223,9 +320,8 @@ export function useActivityFeed(filter: "all" | "live" | "needs_review") {
       .catch(() => undefined);
   }, []);
 
-  // Hydrate from snapshot once we have the space ID.
-  useEffect(() => {
-    if (!state.activeSpaceId) return;
+  // Helper: fetch snapshot and merge into state.
+  const fetchSnapshot = useCallback(() => {
     shells.browser.activity
       .snapshot()
       .then((resp: { runs?: unknown[]; pending_reviews?: unknown[] }) => {
@@ -234,7 +330,20 @@ export function useActivityFeed(filter: "all" | "live" | "needs_review") {
         dispatch({ type: "HYDRATE", runs, reviews });
       })
       .catch(() => undefined);
-  }, [state.activeSpaceId]);
+  }, []);
+
+  // Initial hydration once we have the space ID.
+  useEffect(() => {
+    if (!state.activeSpaceId) return;
+    fetchSnapshot();
+  }, [state.activeSpaceId, fetchSnapshot]);
+
+  // Periodic re-hydration to pick up newly started runs.
+  useEffect(() => {
+    if (!state.activeSpaceId) return;
+    const id = setInterval(fetchSnapshot, REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [state.activeSpaceId, fetchSnapshot]);
 
   // Stable event handler for runtime events on individual run topics.
   const handleRuntimeEvent = useCallback((event: unknown) => {

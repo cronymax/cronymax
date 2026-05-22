@@ -24,11 +24,15 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::flow::definition::{FlowDefinition, FlowGraph};
+use cronygraph::graph::NodeId;
+use cronygraph::orchestration::{Orchestrator, Step, StepLimits, TerminalReason, Transition};
+
+use crate::flow::definition::{BlackboardWriter, FlowDefinition, FlowGraph};
 use crate::flow::trace::{TraceEvent, TraceKind, TraceWriter};
 use crate::workspace::Workspace;
 
@@ -84,13 +88,17 @@ pub enum PortStatus {
     AwaitingOwner,
     /// The document has been approved (review passed or auto-approved).
     Approved,
+    /// The output was pre-seeded from a prior run (task 2.6). Treated as
+    /// `Approved` for AND-join gating; node is skipped (not invoked).
+    Seeded,
 }
 
 /// Trigger that caused a node invocation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InvocationTrigger {
     /// `"initial"` | `"and_join"` | `"cycle_retrigger"` | `"implicit_reinvoke"` |
-    /// `"rejected_requeue"` | `"human_submit"` | `"reviewer_invocation"`
+    /// `"rejected_requeue"` | `"human_submit"` | `"reviewer_invocation"` |
+    /// `"human_feedback"` (human typed message in thread view directed at a node)
     pub kind: String,
     /// Port that was approved, triggering this invocation (absent for initial).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,6 +154,16 @@ pub struct AvailableDoc {
     pub revision: u32,
 }
 
+/// An entry in the per-run Blackboard, carrying the document reference and
+/// provenance information about who wrote it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlackboardEntry {
+    pub doc: AvailableDoc,
+    /// How this entry was written — agent task, human injection, or auto-seeding.
+    #[serde(default)]
+    pub written_by: BlackboardWriter,
+}
+
 /// Context envelope injected as the first system message when FlowRuntime
 /// invokes a node's agent.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -163,6 +181,10 @@ pub struct InvocationContext {
     /// trigger kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_comments: Option<Vec<ReviewComment>>,
+    /// Blackboard keys whose entries were written by a human (task 2.5).
+    /// `render_system_message` uses this to prepend a `[HUMAN-PROVIDED]` banner.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub human_provided_keys: Vec<String>,
 }
 
 impl InvocationContext {
@@ -191,6 +213,7 @@ impl InvocationContext {
             available_docs,
             pending_ports,
             review_comments,
+            human_provided_keys: Vec::new(),
         }
     }
 }
@@ -231,6 +254,13 @@ pub struct FlowRunState {
     /// app restart (i.e. when the in-memory `chat_sessions` map is empty).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub originating_session_id: Option<String>,
+
+    /// Per-run Blackboard: maps a `blackboard_key` to the approved document
+    /// with provenance. Written when an output with `blackboard_key` is approved,
+    /// or when injected by a human via `InjectBlackboard`.
+    /// Used to filter `available_docs` for nodes that declare `reads`.
+    #[serde(default)]
+    pub blackboard: HashMap<String, BlackboardEntry>,
 }
 
 impl FlowRunState {
@@ -248,7 +278,103 @@ impl FlowRunState {
             node_states: HashMap::new(),
             reviewer_verdicts: HashMap::new(),
             originating_session_id: None,
+            blackboard: HashMap::new(),
         }
+    }
+}
+
+// ── Activation orchestration ──────────────────────────────────────────────────
+
+/// Shared state threaded through an activation-orchestration pass.
+///
+/// All clones created by [`Orchestrator`]'s `Branch` fan-out share the same
+/// `to_activate` accumulator through the inner `Arc<Mutex<…>>`.
+#[derive(Clone)]
+pub struct FlowState {
+    run_state: FlowRunState,
+    graph: Arc<FlowGraph>,
+    /// Nodes that passed the AND-join precondition and need to be activated.
+    to_activate: Arc<parking_lot::Mutex<Vec<(String, InvocationTrigger)>>>,
+}
+
+/// Single-node activation step.
+///
+/// Implements the AND-join gate as a **step precondition**: if not all
+/// required inputs are `Approved`, the step returns
+/// `Terminal(Custom("awaiting-inputs"))` without scheduling the node.
+/// Only when all inputs are satisfied does it push the node into
+/// `FlowState::to_activate`.
+pub struct FlowStep {
+    node_id: String,
+    trigger: InvocationTrigger,
+}
+
+#[async_trait]
+impl Step<FlowState, anyhow::Error> for FlowStep {
+    fn label(&self) -> &str {
+        &self.node_id
+    }
+
+    async fn execute(&self, state: FlowState) -> Result<Transition<FlowState>, anyhow::Error> {
+        // AND-join precondition — expressed as a step precondition per the design.
+        let ready =
+            state
+                .graph
+                .required_inputs_for(&self.node_id)
+                .iter()
+                .all(|(from_node, port)| {
+                    state
+                        .run_state
+                        .node_states
+                        .get(from_node.as_str())
+                        .and_then(|ns| ns.ports.get(port.as_str()))
+                        .copied()
+                        .unwrap_or_default()
+                        == PortStatus::Approved
+                });
+
+        if !ready {
+            // AND-join not yet satisfied — yield without activating.
+            return Ok(Transition::Terminal {
+                state,
+                reason: TerminalReason::Custom("awaiting-inputs".into()),
+            });
+        }
+
+        state
+            .to_activate
+            .lock()
+            .push((self.node_id.clone(), self.trigger.clone()));
+        Ok(Transition::Terminal {
+            state,
+            reason: TerminalReason::Completed,
+        })
+    }
+}
+
+/// Entry step for an activation pass: fans out to all candidate node steps
+/// via a single `Branch` transition.
+struct AndJoinDispatch {
+    next: Vec<NodeId>,
+}
+
+#[async_trait]
+impl Step<FlowState, anyhow::Error> for AndJoinDispatch {
+    fn label(&self) -> &str {
+        "__dispatch__"
+    }
+
+    async fn execute(&self, state: FlowState) -> Result<Transition<FlowState>, anyhow::Error> {
+        if self.next.is_empty() {
+            return Ok(Transition::Terminal {
+                state,
+                reason: TerminalReason::Completed,
+            });
+        }
+        Ok(Transition::Branch {
+            state,
+            next: self.next.clone(),
+        })
     }
 }
 
@@ -432,13 +558,14 @@ impl FlowRuntime {
             .required_inputs_for(node_id)
             .iter()
             .all(|(from_node, port)| {
-                state
+                let s = state
                     .node_states
                     .get(from_node.as_str())
                     .and_then(|ns| ns.ports.get(port.as_str()))
                     .copied()
-                    .unwrap_or_default()
-                    == PortStatus::Approved
+                    .unwrap_or_default();
+                // Seeded ports satisfy the AND-join just like Approved (task 2.6).
+                s == PortStatus::Approved || s == PortStatus::Seeded
             })
     }
 
@@ -452,44 +579,89 @@ impl FlowRuntime {
         flow: &FlowDefinition,
         graph: &FlowGraph,
     ) -> anyhow::Result<Vec<InvocationContext>> {
-        let mut contexts = Vec::new();
         let awaiting = graph.nodes_awaiting(producing_node, port);
-        for candidate_id in awaiting {
-            let state = match self.get_run(run_id) {
-                Some(s) => s,
-                None => continue,
+        if awaiting.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let trigger = InvocationTrigger {
+            kind: "and_join".into(),
+            approved_port: Some(port.to_owned()),
+            from_node: Some(producing_node.to_owned()),
+            reviewer_doc_path: None,
+        };
+
+        // Snapshot current run state for the AND-join precondition checks
+        // inside the Orchestrator. The snapshot is taken once; activations
+        // that happen later (cycle-retrigger, implicit re-invocation) use the
+        // live state through the normal event handlers.
+        let run_state = match self.get_run(run_id) {
+            Some(s) => s,
+            None => return Ok(vec![]),
+        };
+
+        let to_activate = Arc::new(parking_lot::Mutex::new(
+            Vec::<(String, InvocationTrigger)>::new(),
+        ));
+
+        // Build the activation orchestrator:
+        //   entry (AndJoinDispatch) → Branch → [FlowStep(A), FlowStep(B), …]
+        // Each FlowStep checks the AND-join precondition and records the node
+        // in `to_activate` when ready.
+        let mut orchestrator = Orchestrator::<FlowState, anyhow::Error>::new();
+        let mut candidate_nids: Vec<NodeId> = Vec::new();
+        for candidate_id in &awaiting {
+            let step = FlowStep {
+                node_id: (*candidate_id).to_string(),
+                trigger: trigger.clone(),
             };
-            if !self.is_node_ready(candidate_id, &state, graph) {
-                continue;
-            }
-            // Node is ready.
-            let node = match flow.node(candidate_id) {
+            candidate_nids.push(orchestrator.add_step(step));
+        }
+        let entry_nid = orchestrator.add_step(AndJoinDispatch {
+            next: candidate_nids.clone(),
+        });
+        orchestrator.set_entry(entry_nid);
+        for &nid in &candidate_nids {
+            orchestrator
+                .allow_transition(entry_nid, nid)
+                .map_err(|e| anyhow::anyhow!("orchestrator edge: {e}"))?;
+        }
+
+        let state = FlowState {
+            run_state,
+            graph: Arc::new(graph.clone()),
+            to_activate: Arc::clone(&to_activate),
+        };
+        orchestrator
+            .run(state, StepLimits { max_steps: None })
+            .await
+            .map_err(|e| anyhow::anyhow!("activation orchestrator: {e}"))?;
+
+        // Perform the actual activations determined by the Orchestrator.
+        let mut contexts = Vec::new();
+        let nodes_to_activate = to_activate.lock().clone();
+        for (node_id, node_trigger) in nodes_to_activate {
+            let node = match flow.node(&node_id) {
                 Some(n) => n,
                 None => continue,
-            };
-            let trigger = InvocationTrigger {
-                kind: "and_join".into(),
-                approved_port: Some(port.to_owned()),
-                from_node: Some(producing_node.to_owned()),
-                reviewer_doc_path: None,
             };
             if node.owner == "human" {
                 // Human-owner node: set all output ports to AwaitingOwner.
                 for output in &node.outputs {
                     self.mark_port_status_unchecked(
                         run_id,
-                        candidate_id,
+                        &node_id,
                         &output.port,
                         PortStatus::AwaitingOwner,
                     )
                     .await?;
                 }
                 self.emit("flow.run.human_input_required", run_id);
-                tracing::info!(run_id, node_id = candidate_id, "human node activated");
+                tracing::info!(run_id, node_id = %node_id, "human node activated");
             } else {
                 // Agent node: schedule via ReactLoop.
                 if let Some(ctx) = self
-                    .schedule_node_with_context(run_id, candidate_id, trigger, flow)
+                    .schedule_node_with_context(run_id, &node_id, node_trigger, flow)
                     .await?
                 {
                     contexts.push(ctx);
@@ -620,6 +792,7 @@ impl FlowRuntime {
                 available_docs: vec![],
                 pending_ports: vec![],
                 review_comments: None,
+                human_provided_keys: Vec::new(),
             });
         }
 
@@ -656,6 +829,32 @@ impl FlowRuntime {
         // 2. Mark Approved.
         self.mark_port_status(run_id, node_id, port, PortStatus::Approved)
             .await?;
+
+        // 2b. If this output declares a blackboard_key, write to the run Blackboard.
+        if let Some(output) = flow.output(node_id, port) {
+            if let Some(key) = &output.blackboard_key {
+                let doc = self.get_run(run_id).and_then(|s| {
+                    s.documents
+                        .iter()
+                        .find(|d| d.producer_node == node_id && d.doc_type == port)
+                        .map(|d| AvailableDoc {
+                            path: format!(".cronymax/specs/{}/{}.md", s.run_id, d.name),
+                            doc_type: d.doc_type.clone(),
+                            revision: d.current_revision,
+                        })
+                });
+                if let Some(doc) = doc {
+                    self.write_blackboard_entry(
+                        run_id,
+                        key,
+                        doc,
+                        BlackboardWriter::AgentGenerated {
+                            task_id: Some(node_id.to_owned()),
+                        },
+                    );
+                }
+            }
+        }
 
         // Update reviews.json.
         if let Some(flow_id) = self.get_run(run_id).map(|s| s.flow_id.clone()) {
@@ -891,6 +1090,7 @@ impl FlowRuntime {
                 available_docs: vec![],
                 pending_ports: vec![],
                 review_comments: None,
+                human_provided_keys: Vec::new(),
             }]));
         }
 
@@ -950,14 +1150,37 @@ impl FlowRuntime {
         let state = self.get_run(run_id)?;
         let node = flow.node(node_id)?;
 
-        let available_docs: Vec<AvailableDoc> = state
-            .documents
+        let available_docs: Vec<AvailableDoc> = if !node.reads.is_empty() {
+            // 5.7: filter to only the Blackboard keys declared in `reads`.
+            node.reads
+                .iter()
+                .filter_map(|key| state.blackboard.get(key).map(|e| e.doc.clone()))
+                .collect()
+        } else {
+            state
+                .documents
+                .iter()
+                .map(|d| AvailableDoc {
+                    path: format!(".cronymax/specs/{}/{}.md", state.run_id, d.name),
+                    doc_type: d.doc_type.clone(),
+                    revision: d.current_revision,
+                })
+                .collect()
+        };
+
+        // Task 2.5: collect blackboard keys that were human-injected so the
+        // system message can surface a [HUMAN-PROVIDED] banner.
+        let human_provided_keys: Vec<String> = node
+            .reads
             .iter()
-            .map(|d| AvailableDoc {
-                path: format!(".cronymax/specs/{}/{}.md", state.run_id, d.name),
-                doc_type: d.doc_type.clone(),
-                revision: d.current_revision,
+            .filter(|key| {
+                state
+                    .blackboard
+                    .get(*key)
+                    .map(|e| e.written_by == BlackboardWriter::HumanInjected)
+                    .unwrap_or(false)
             })
+            .cloned()
             .collect();
 
         let node_state = state.node_states.get(node_id);
@@ -965,7 +1188,7 @@ impl FlowRuntime {
             .map(|ns| {
                 ns.ports
                     .iter()
-                    .filter(|(_, &s)| s == PortStatus::Approved)
+                    .filter(|(_, &s)| s == PortStatus::Approved || s == PortStatus::Seeded)
                     .map(|(p, _)| p.clone())
                     .collect()
             })
@@ -992,14 +1215,16 @@ impl FlowRuntime {
             None
         };
 
-        Some(InvocationContext::build_with_feedback(
+        let mut ctx = InvocationContext::build_with_feedback(
             node_id,
             &node.owner,
             trigger,
             available_docs,
             pending_ports,
             review_comments,
-        ))
+        );
+        ctx.human_provided_keys = human_provided_keys;
+        Some(ctx)
     }
 
     pub async fn schedule_node_with_context(
@@ -1030,6 +1255,57 @@ impl FlowRuntime {
     }
 
     // ── Port-completion state ─────────────────────────────────────────────
+
+    /// Write a document to the run Blackboard under the given key with provenance.
+    pub fn write_blackboard_entry(
+        &self,
+        run_id: &str,
+        key: &str,
+        doc: AvailableDoc,
+        written_by: BlackboardWriter,
+    ) {
+        let runs = self.runs.read();
+        if let Some(state_lock) = runs.get(run_id) {
+            let mut state = state_lock.write();
+            state
+                .blackboard
+                .insert(key.to_owned(), BlackboardEntry { doc, written_by });
+        }
+    }
+
+    /// Pre-seed a new flow run's blackboard with entries from prior completed
+    /// runs, then fire AND-join for any downstream nodes that are now ready.
+    ///
+    /// For each `(key, entry)` pair:
+    /// 1. Write the entry to the run blackboard.
+    /// 2. Find the node+port that produces this key in `flow`.
+    /// 3. Mark that port as `PortStatus::Seeded` (skips re-invocation of the
+    ///    node; treated as Approved for AND-join gating).
+    /// 4. Fire AND-join for downstream nodes that are now ready.
+    ///
+    /// Returns invocation contexts for newly activated downstream nodes so the
+    /// caller can spawn their agents.  Task 2.3 + 2.6.
+    pub async fn apply_seeded_entries(
+        &self,
+        run_id: &str,
+        flow: &FlowDefinition,
+        seeds: Vec<(String, BlackboardEntry)>,
+    ) -> anyhow::Result<Vec<InvocationContext>> {
+        let mut all_contexts = Vec::new();
+        let graph = flow.graph();
+        for (key, entry) in seeds {
+            self.write_blackboard_entry(run_id, &key, entry.doc, entry.written_by);
+            if let Some((node_id, port)) = flow.find_output_by_blackboard_key(&key) {
+                self.mark_port_status_unchecked(run_id, &node_id, &port, PortStatus::Seeded)
+                    .await?;
+                let mut ctxs = self
+                    .fire_and_join_for(&node_id, &port, run_id, flow, graph)
+                    .await?;
+                all_contexts.append(&mut ctxs);
+            }
+        }
+        Ok(all_contexts)
+    }
 
     /// Atomically update a port's status for a node and persist.
     /// Prevents downgrade from `Approved`.

@@ -88,7 +88,14 @@ export const TabSummarySchema = z.discriminatedUnion("kind", [
     favicon: z.string().optional(),
   }),
   z.object({ kind: z.literal("terminal"), ...tabSummaryBase }),
-  z.object({ kind: z.literal("chat"), ...tabSummaryBase }),
+  z.object({
+    kind: z.literal("chat"),
+    ...tabSummaryBase,
+    /** Supervisor-session-ux: user-visible session title (may differ from displayName). */
+    sessionTitle: z.string().optional(),
+    /** Supervisor-session-ux: first user message excerpt for sidebar preview. */
+    firstMessageExcerpt: z.string().optional(),
+  }),
   z.object({ kind: z.literal("agent"), ...tabSummaryBase }),
   z.object({ kind: z.literal("graph"), ...tabSummaryBase }),
 ]);

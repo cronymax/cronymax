@@ -224,7 +224,17 @@ export function Flows() {
     </Provider>
   );
 }
-export function FlowEditor() {
+export function FlowEditor({
+  mode = "authoring",
+  nodeStatuses,
+  initialFlowId,
+}: {
+  mode?: "authoring" | "execution";
+  /** In execution mode: keyed by node name → status string (e.g. "seeded", "running", "done"). */
+  nodeStatuses?: Record<string, string>;
+  /** When set, this flow is loaded on mount (execution mode). Does not change localStorage active key. */
+  initialFlowId?: string;
+}) {
   const [state, dispatch] = useStore();
   const [traceOpen, setTraceOpen] = useState(true);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
@@ -261,14 +271,16 @@ export function FlowEditor() {
     }
     if (needsSave) saveAllFlows(flows);
     const names = Object.keys(flows).sort();
-    let active = getActiveFlowName();
+    let active = initialFlowId || getActiveFlowName();
     if (active && !flows[active]) active = "";
     if (!active && names.length > 0) active = names[0]!;
     dispatch({ type: "setFlowNames", names, active });
     dispatch({ type: "setFlowNameInput", value: active });
     if (active && flows[active]) {
       dispatch({ type: "setFlow", spec: flows[active]! });
-      setActiveFlowName(active);
+      // Only update the global active-flow key in authoring mode to avoid
+      // clobbering the user's selected flow when execution canvas opens.
+      if (!initialFlowId) setActiveFlowName(active);
     } else {
       dispatch({ type: "setFlow", spec: { nodes: [], edges: [] } });
     }
@@ -384,6 +396,17 @@ export function FlowEditor() {
           x: pos.x,
           y: pos.y,
         });
+        // Auto-save layout after drag (task 11.3)
+        if (mode === "authoring" && state.activeFlowName) {
+          const updatedNodes = state.nodes.map((n) => {
+            const lp = livePosRef.current.get(n.id);
+            return lp ? { ...n, x: lp.x, y: lp.y } : n;
+          });
+          const layoutJson = JSON.stringify(updatedNodes.map((n) => ({ id: n.id, x: n.x, y: n.y })));
+          flow.saveLayout(state.activeFlowName, layoutJson).catch(() => {
+            // Silently ignore — auto-save is best-effort
+          });
+        }
       }
       dragRef.current = null;
       setLivePos(new Map());
@@ -460,6 +483,7 @@ export function FlowEditor() {
       if (target.dataset.role === "delete") return;
       e.preventDefault();
       dispatch({ type: "select", id: n.id });
+      if (mode !== "authoring") return;
       dragRef.current = {
         nodeId: n.id,
         startX: e.clientX,
@@ -468,7 +492,7 @@ export function FlowEditor() {
         origY: n.y,
       };
     },
-    [dispatch],
+    [dispatch, mode],
   );
 
   // ── flows (localStorage; backend persistence not yet wired) ─────────────
@@ -568,17 +592,21 @@ export function FlowEditor() {
           className="h-6 w-[120px] text-xs"
         />
         <div className="ml-auto flex items-center gap-1.5">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 text-xs"
-            onClick={() => setAgentPickerOpen(true)}
-            title="Add a node"
-          >
-            + Node
-          </Button>
-          <span className="mx-1 h-4 w-px bg-border" />
+          {mode === "authoring" && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setAgentPickerOpen(true)}
+                title="Add a node"
+              >
+                + Node
+              </Button>
+              <span className="mx-1 h-4 w-px bg-border" />
+            </>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -588,17 +616,19 @@ export function FlowEditor() {
           >
             <Icon name="save" size={12} aria-hidden="true" /> Save
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={onDeleteFlow}
-            title="Delete this flow"
-            aria-label="Delete this flow"
-          >
-            <Icon name="trash" size={12} aria-hidden="true" />
-          </Button>
+          {mode === "authoring" && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onDeleteFlow}
+              title="Delete this flow"
+              aria-label="Delete this flow"
+            >
+              <Icon name="trash" size={12} aria-hidden="true" />
+            </Button>
+          )}
           <Button type="button" variant="destructive" size="sm" className="h-7 text-xs" onClick={onClear}>
             Clear
           </Button>
@@ -738,6 +768,8 @@ export function FlowEditor() {
               const isSelected = state.selectedId === n.id;
               const isRunning = state.runningId === n.id;
               const isDone = state.doneId === n.id;
+              const execStatus = mode === "execution" ? (nodeStatuses?.[n.name] ?? null) : null;
+              const isSeeded = execStatus === "seeded";
               const style: CSSProperties = {
                 position: "absolute",
                 left: n.x,
@@ -762,9 +794,18 @@ export function FlowEditor() {
                     "cursor-move select-none rounded-md border p-2 text-xs shadow-sm transition " +
                     NODE_BG_CLS +
                     " " +
-                    ring
+                    ring +
+                    (isSeeded ? " opacity-50" : "")
                   }
                 >
+                  {/* Execution-mode status overlay for seeded nodes */}
+                  {isSeeded && (
+                    <div className="absolute inset-0 flex items-center justify-center rounded-md bg-background/70 backdrop-blur-[1px]">
+                      <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                        ⊘ skip
+                      </span>
+                    </div>
+                  )}
                   <div className="mb-1 flex items-center gap-1.5">
                     <span className="rounded bg-black/30 px-1.5 py-0.5 text-xs uppercase tracking-wide">Agent</span>
                     {isLead && (

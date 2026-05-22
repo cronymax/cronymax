@@ -295,6 +295,12 @@ impl Handler for RuntimeHandler {
             req @ ControlRequest::FlowRunRequestChanges { .. } => {
                 self.handle_flow_run_request_changes(req).await
             }
+            req @ ControlRequest::FlowSaveYaml { .. } => self.handle_flow_save_yaml(req).await,
+            req @ ControlRequest::FlowSaveLayout { .. } => self.handle_flow_save_layout(req).await,
+            req @ ControlRequest::BlackboardInject { .. } => {
+                self.handle_blackboard_inject(req).await
+            }
+            req @ ControlRequest::SessionRename { .. } => self.handle_session_rename(req).await,
         }
     }
 
@@ -344,10 +350,10 @@ mod tests {
 
     use super::*;
     use crate::protocol::dispatch::run as dispatch_run;
-    use crate::protocol::envelope::ClientToRuntime;
+    use crate::protocol::envelope::{ClientToRuntime, RuntimeToClient};
     use crate::protocol::transport::memory;
     use crate::protocol::version::PROTOCOL_VERSION;
-    use crate::runtime::state::Space;
+    use crate::runtime::state::{Space, SpaceId};
 
     async fn handshake(client: &memory::ClientEnd) {
         client
@@ -418,6 +424,7 @@ mod tests {
                     session_id: None,
                     session_name: None,
                     agent_id: None,
+                    child_session_id: None,
                 },
             })
             .await
@@ -448,8 +455,14 @@ mod tests {
             } => {
                 // Subscription id may differ across messages (subscription fan-out);
                 // just assert a valid sequence number was emitted.
+                // sequence may be 0 or 1 depending on whether a RunStatus::Pending
+                // event was drained before RunStarted in the branch above.
                 let _ = s;
-                assert_eq!(event.sequence, 0);
+                assert!(
+                    event.sequence <= 1,
+                    "unexpected sequence {}",
+                    event.sequence
+                );
             }
             other => panic!("expected Event, got {other:?}"),
         }

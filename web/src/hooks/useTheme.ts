@@ -63,9 +63,17 @@ export function useTheme(): UseThemeResult {
   });
 
   function setMode(next: ThemeMode) {
-    shells.browser.theme.set({ mode: next }).catch(() => {
-      // Ignore — the broadcast is the authoritative update.
-    });
+    shells.browser.theme
+      .set({ mode: next })
+      .then(() => shells.browser.theme.get())
+      .then((res) => {
+        setModeState(res.mode);
+        setResolved(res.resolved);
+        applyAttribute(res.mode, res.resolved);
+      })
+      .catch(() => {
+        // Best-effort; if the host is unavailable the broadcast (if received) will still update state.
+      });
   }
 
   return { mode, resolved, setMode };

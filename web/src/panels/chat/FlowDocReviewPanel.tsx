@@ -17,6 +17,7 @@
 
 import { Check, ChevronDown, Clock, MessageSquare, Plus, Send, ShieldAlert, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Streamdown } from "streamdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -65,8 +66,9 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
   const [comments, setComments] = useState<SelectionComment[]>([]);
   const [generalComment, setGeneralComment] = useState("");
   const [busy, setBusy] = useState(false);
-  const [pendingSelection, setPendingSelection] = useState<{ text: string; range: [number, number] } | null>(null);
-  const preRef = useRef<HTMLPreElement>(null);
+  const [pendingSelection, setPendingSelection] = useState<{ text: string; range: [number, number] | null } | null>(
+    null,
+  );
   const selectionTooltipRef = useRef<HTMLDivElement>(null);
 
   const docName = item.port || item.node_id;
@@ -109,42 +111,10 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
 
   function handleMouseUp() {
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !preRef.current) return;
+    if (!sel || sel.isCollapsed) return;
     const selStr = sel.toString().trim();
     if (!selStr) return;
-
-    // Compute character offsets relative to the pre element's text content
-    const range = sel.getRangeAt(0);
-    const preText = preRef.current.textContent ?? "";
-
-    // Walk DOM to find the start/end offsets within preText
-    let startOffset = 0;
-    let endOffset = 0;
-    let found = false;
-
-    function walkNode(node: Node, offset: number): number {
-      if (node.nodeType === Node.TEXT_NODE) {
-        const len = (node.textContent ?? "").length;
-        if (!found && node === range.startContainer) {
-          startOffset = offset + range.startOffset;
-        }
-        if (node === range.endContainer) {
-          endOffset = offset + range.endOffset;
-          found = true;
-        }
-        return offset + len;
-      }
-      let cur = offset;
-      for (const child of Array.from(node.childNodes)) {
-        cur = walkNode(child, cur);
-      }
-      return cur;
-    }
-    walkNode(preRef.current, 0);
-
-    if (startOffset >= 0 && endOffset > startOffset && endOffset <= preText.length) {
-      setPendingSelection({ text: selStr, range: [startOffset, endOffset] });
-    }
+    setPendingSelection({ text: selStr, range: null });
   }
 
   function addSelectionComment() {
@@ -176,7 +146,7 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
   useEffect(() => {
     if (!pendingSelection) return;
     function onMouseDown(e: MouseEvent) {
-      if (selectionTooltipRef.current && selectionTooltipRef.current.contains(e.target as Node)) {
+      if (selectionTooltipRef.current?.contains(e.target as Node)) {
         return;
       }
       setPendingSelection(null);
@@ -184,33 +154,6 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [pendingSelection]);
-
-  // ── Highlighted ranges ───────────────────────────────────────────────────
-
-  /** Render document content with commented ranges highlighted. */
-  function renderContent(text: string) {
-    // Gather all selection ranges
-    const ranges: Array<{ start: number; end: number }> = comments
-      .filter((c) => c.range !== null)
-      .map((c) => ({ start: c.range![0], end: c.range![1] }))
-      .sort((a, b) => a.start - b.start);
-
-    if (ranges.length === 0) return text;
-
-    const parts: React.ReactNode[] = [];
-    let cursor = 0;
-    for (const r of ranges) {
-      if (r.start > cursor) parts.push(text.slice(cursor, r.start));
-      parts.push(
-        <mark key={`${r.start}-${r.end}`} className="bg-amber-400/25 text-inherit rounded-sm">
-          {text.slice(r.start, r.end)}
-        </mark>,
-      );
-      cursor = r.end;
-    }
-    if (cursor < text.length) parts.push(text.slice(cursor));
-    return parts;
-  }
 
   const hasCommentContent = comments.length > 0 || generalComment.trim().length > 0;
 
@@ -254,14 +197,11 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
                 </Button>
               </div>
             )}
-            <div className="max-h-72 overflow-y-auto">
-              <pre
-                ref={preRef}
-                className="whitespace-pre-wrap break-words text-sm text-foreground/90 font-mono leading-relaxed px-4 py-3 select-text cursor-text"
-                onMouseUp={handleMouseUp}
-              >
-                {renderContent(item.content)}
-              </pre>
+            <div
+              className="max-h-72 overflow-y-auto px-4 py-3 select-text cursor-text prose prose-sm dark:prose-invert max-w-none"
+              onMouseUp={handleMouseUp}
+            >
+              <Streamdown mode="static">{item.content}</Streamdown>
             </div>
             {comments.length > 0 && (
               <p className="px-4 pb-2 text-xs text-muted-foreground">
@@ -388,9 +328,11 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
 
 interface Props {
   sessionId: string | null | undefined;
+  /** When false, the resolved-review history section is hidden (default: true). */
+  showHistory?: boolean;
 }
 
-export function FlowDocReviewPanel({ sessionId }: Props) {
+export function FlowDocReviewPanel({ sessionId, showHistory = true }: Props) {
   // Set of flow_run_ids we know about for this session
   const flowRunIdsRef = useRef<Set<string>>(new Set());
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
@@ -495,7 +437,7 @@ export function FlowDocReviewPanel({ sessionId }: Props) {
     refreshAll();
   }, [sessionId, refreshAll]);
 
-  if (reviews.length === 0 && resolvedReviews.length === 0) return null;
+  if (reviews.length === 0 && (resolvedReviews.length === 0 || !showHistory)) return null;
 
   return (
     <div className="flex flex-col gap-2 px-3 py-2">
@@ -513,7 +455,7 @@ export function FlowDocReviewPanel({ sessionId }: Props) {
         </>
       )}
 
-      {resolvedReviews.length > 0 && (
+      {showHistory && resolvedReviews.length > 0 && (
         <Collapsible
           open={historyOpen}
           onOpenChange={setHistoryOpen}
@@ -530,7 +472,7 @@ export function FlowDocReviewPanel({ sessionId }: Props) {
               }`}
             />
           </CollapsibleTrigger>
-          <CollapsibleContent className="flex flex-col gap-1.5 pt-1">
+          <CollapsibleContent className="flex flex-col gap-1.5 pt-1 border-t border-border/50 bg-background pb-1">
             {resolvedReviews.map((entry, idx) => {
               const docName = entry.item.port || entry.item.node_id;
               const approved = entry.verdict === "approved";

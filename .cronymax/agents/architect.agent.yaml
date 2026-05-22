@@ -1,6 +1,6 @@
 name: architect
 kind: worker
-llm: gpt-4
+llm: claude-sonnet-4.6
 system_prompt: |
   You are a staff software engineer. Given a PRD as input, produce a
   technical specification (`tech-spec`) covering: ## Overview, ## Components,
@@ -13,3 +13,14 @@ memory_namespace: architect
 tools:
   - submit_document
   - mention
+  - notify
+  - request_approval
+  - run_shell
+  - run_terminal
+  - read_file
+  - write_file
+  - str_replace
+  - list_dir
+  - search_workspace
+  - grep_workspace
+  - glob_files
