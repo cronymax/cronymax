@@ -169,3 +169,111 @@ async fn spawn_chat_binds_session_in_authority() {
         "resolve_session should return the session_id bound by spawn_chat"
     );
 }
+
+/// 4.9 — Supervisor loop calls `invoke_agent`, child completes, result appears
+/// in Supervisor history.
+///
+/// Strategy:
+/// * Push a script for the Supervisor's first turn that emits a tool call to
+///   `invoke_agent`.
+/// * Push a script for the Supervisor's second turn (after child completes)
+///   that stops cleanly.
+/// * For the child agent, push a single-turn script that stops cleanly.
+/// * After `spawn_chat` completes, verify:
+///   - at least 2 LLM calls from the Supervisor (tool call + final answer),
+///   - the Supervisor's history contains a `tool` message with the child result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervisor_invoke_agent_result_appears_in_history() {
+    use cronymax::llm::messages::FinishReason;
+
+    let dir = tempdir().expect("tempdir");
+
+    // Create a __chat__.agent.yaml with kind: supervisor so the Supervisor
+    // tools are registered by spawn_chat.
+    let agents_dir = dir.path().join(".cronymax").join("agents");
+    std::fs::create_dir_all(&agents_dir).expect("agents dir");
+    std::fs::write(
+        agents_dir.join("__chat__.agent.yaml"),
+        "name: __chat__\nkind: supervisor\n",
+    )
+    .expect("write chat agent yaml");
+
+    let (space_id, auth) = make_authority_with_space();
+
+    let mock_llm = MockLlmFactory::new();
+
+    // Supervisor turn 1: calls invoke_agent
+    mock_llm.provider().push(
+        MockScript::new()
+            .tool_call(
+                0,
+                "call-1",
+                "invoke_agent",
+                r#"{"agent_id":"worker","goal":"do the work"}"#,
+            )
+            .done(FinishReason::ToolCalls),
+    );
+    // Child agent: single stop turn
+    mock_llm.provider().push(
+        MockScript::new()
+            .delta("Child output done")
+            .done(FinishReason::Stop),
+    );
+    // Supervisor turn 2: sees tool result, stops
+    mock_llm
+        .provider()
+        .push(MockScript::new().delta("All done").done(FinishReason::Stop));
+
+    let services = Arc::new(RuntimeServices {
+        authority: auth.clone(),
+        flow_registry: Arc::new(FlowRuntimeRegistry::default()),
+        llm_factory: Arc::new(mock_llm.clone()),
+        capability_factory: Arc::new(FakeCapabilityFactory),
+        terminal_managers: Arc::new(Mutex::new(HashMap::new())),
+        memory_manager: None,
+    });
+
+    let runner = AgentRunner::new(services);
+    let (doc_tx, _doc_rx) = tokio::sync::mpsc::channel(1);
+    let run_ctx = RunContext {
+        space_id,
+        workspace_root: dir.path().to_path_buf(),
+        flow_id: None,
+        flow_run_id: Some("sup-flow-run".into()),
+        session_id: None,
+        flow_runtime: None,
+        doc_tx,
+        llm_config: cronymax::llm::LlmConfig::OpenAi {
+            base_url: "http://localhost".into(),
+            api_key: Some("mock-key".into()),
+            model: "mock-model".into(),
+        },
+        sandbox_tier: SandboxTier::Trusted,
+        workspace_cache_dir: None,
+    };
+
+    let session_id = "sup-session".to_owned();
+    runner.spawn_chat(run_ctx, session_id.clone(), "Delegate task".into());
+
+    // Wait enough time for Supervisor + child to complete.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // The Supervisor should have made at least 2 LLM calls (tool call + final).
+    // The child should have made 1 call.
+    let requests = mock_llm.provider().requests();
+    assert!(
+        requests.len() >= 2,
+        "expected at least 2 LLM requests (supervisor tool-call + final), got {}",
+        requests.len()
+    );
+
+    // The second supervisor turn (index >= 2) must have a tool result message.
+    let has_tool_result = requests
+        .iter()
+        .skip(1)
+        .any(|req| req.messages.iter().any(|m| m.tool_call_id.is_some()));
+    assert!(
+        has_tool_result,
+        "expected a tool result message in a subsequent supervisor turn"
+    );
+}

@@ -344,10 +344,10 @@ mod tests {
 
     use super::*;
     use crate::protocol::dispatch::run as dispatch_run;
-    use crate::protocol::envelope::ClientToRuntime;
+    use crate::protocol::envelope::{ClientToRuntime, RuntimeToClient};
     use crate::protocol::transport::memory;
     use crate::protocol::version::PROTOCOL_VERSION;
-    use crate::runtime::state::Space;
+    use crate::runtime::state::{Space, SpaceId};
 
     async fn handshake(client: &memory::ClientEnd) {
         client
@@ -418,6 +418,7 @@ mod tests {
                     session_id: None,
                     session_name: None,
                     agent_id: None,
+                    child_session_id: None,
                 },
             })
             .await

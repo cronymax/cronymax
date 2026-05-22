@@ -1098,6 +1098,7 @@ impl RuntimeHandler {
                             maybe_session_id.clone()
                         },
                         reflection: chat_agent_def.as_ref().and_then(|d| d.reflection.clone()),
+                        critic: chat_agent_def.as_ref().and_then(|d| d.critic.clone()),
                         write_namespace: chat_agent_def
                             .as_ref()
                             .filter(|d| !d.memory_namespace.is_empty())

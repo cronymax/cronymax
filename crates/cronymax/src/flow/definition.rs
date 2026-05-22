@@ -84,6 +84,12 @@ pub struct FlowNodeOutput {
     /// Defaults to `"halt"` when `max_cycles` is set but this field is absent.
     #[serde(default)]
     pub on_cycle_exhausted: Option<String>,
+
+    /// Blackboard key under which this output document is stored on approval.
+    /// When present, the approved document is written to the run Blackboard
+    /// under this key so downstream nodes can declare it in their `reads` list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blackboard_key: Option<String>,
 }
 
 // ── FlowNode ──────────────────────────────────────────────────────────────────
@@ -101,6 +107,11 @@ pub struct FlowNode {
     pub owner: String,
     #[serde(default)]
     pub outputs: Vec<FlowNodeOutput>,
+    /// Explicit AND-join gate: Blackboard keys that must ALL be present before
+    /// this node activates. When non-empty, replaces the inputs derived from
+    /// upstream `routes_to` declarations.
+    #[serde(default)]
+    pub reads: Vec<String>,
 }
 
 // ── FlowGraph ─────────────────────────────────────────────────────────────────
@@ -190,6 +201,26 @@ impl FlowGraph {
             }
         }
 
+        // 2b. Build blackboard key → producer mapping and validate `reads` keys.
+        let mut key_to_producer: HashMap<&str, (&str, &str)> = HashMap::new();
+        for node in nodes {
+            for output in &node.outputs {
+                if let Some(key) = &output.blackboard_key {
+                    key_to_producer.insert(key.as_str(), (node.id.as_str(), output.port.as_str()));
+                }
+            }
+        }
+        for node in nodes {
+            for key in &node.reads {
+                if !key_to_producer.contains_key(key.as_str()) {
+                    return Err(FlowLoadError::UnresolvedBlackboardKey {
+                        node: node.id.clone(),
+                        key: key.clone(),
+                    });
+                }
+            }
+        }
+
         // 3. Build incoming adjacency: for each declared target, track which
         //    (source_node, port) edges point to it.
         let mut incoming: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
@@ -230,6 +261,23 @@ impl FlowGraph {
 
             required_inputs.insert(node.id.clone(), req);
             cycle_inputs.insert(node.id.clone(), cyc);
+        }
+
+        // 4b. Override required_inputs for nodes with an explicit `reads` list.
+        //     Reads-based nodes use Blackboard-key-derived (producer, port) pairs
+        //     instead of routes_to-inverted edges.
+        for node in nodes {
+            if !node.reads.is_empty() {
+                let reads_inputs: Vec<(String, String)> = node
+                    .reads
+                    .iter()
+                    .filter_map(|key| key_to_producer.get(key.as_str()))
+                    .map(|&(n, p)| (n.to_string(), p.to_string()))
+                    .collect();
+                required_inputs.insert(node.id.clone(), reads_inputs);
+                // Reads-based nodes don't participate in cycle classification.
+                cycle_inputs.insert(node.id.clone(), vec![]);
+            }
         }
 
         // 5. Entry nodes: declared nodes with empty required_inputs.
@@ -464,6 +512,9 @@ pub enum FlowLoadError {
 
     #[error("flow.yaml uses legacy 'edges:' schema in {path}; migrate to 'nodes:'")]
     LegacyEdgesSchema { path: PathBuf },
+
+    #[error("node '{node}' reads key '{key}' has no producer (no output declares blackboard_key: \"{key}\")")]
+    UnresolvedBlackboardKey { node: String, key: String },
 }
 
 // ── impl FlowDefinition ───────────────────────────────────────────────────────
@@ -861,5 +912,110 @@ reviewer_enabled: true
             bug_output.on_cycle_exhausted.as_deref(),
             Some("escalate_to_human")
         );
+    }
+
+    // ── Phase 5: reads / blackboard_key tests (task 5.8) ──────────────────
+
+    /// 5.8a — A node with `reads` uses those keys as its AND-join gate.
+    #[test]
+    fn reads_based_node_uses_blackboard_producer_as_required_input() {
+        let yaml = r#"
+name: reads-test
+agents:
+  pm: agents/pm.agent.yaml
+  rd: agents/rd.agent.yaml
+
+nodes:
+  - id: pm-design
+    owner: pm
+    outputs:
+      - port: prd
+        blackboard_key: prd
+
+  - id: rd-design
+    owner: rd
+    reads: [prd]
+    outputs:
+      - port: tech-spec
+"#;
+        let def = FlowDefinition::load_from_str(yaml, Path::new("t.yaml")).unwrap();
+        let graph = def.graph();
+
+        // pm-design is an entry node; rd-design is not.
+        assert!(graph.entry_nodes.contains(&"pm-design".to_string()));
+        assert!(!graph.entry_nodes.contains(&"rd-design".to_string()));
+
+        // rd-design's required inputs come from the reads list, not routes_to.
+        let rd_req = graph.required_inputs_for("rd-design");
+        assert!(
+            rd_req.iter().any(|(n, p)| n == "pm-design" && p == "prd"),
+            "expected (pm-design, prd) as required input, got {rd_req:?}"
+        );
+        // nodes_awaiting should find rd-design.
+        assert!(graph
+            .nodes_awaiting("pm-design", "prd")
+            .contains(&"rd-design"));
+    }
+
+    /// 5.8b — A node without `reads` still uses routes_to inversion.
+    #[test]
+    fn node_without_reads_uses_routes_to_inversion() {
+        // Re-use the SAMPLE_YAML which has routes_to but no reads.
+        let def = FlowDefinition::load_from_str(SAMPLE_YAML, Path::new("t.yaml")).unwrap();
+        let graph = def.graph();
+        let rd_req = graph.required_inputs_for("rd-design");
+        assert!(
+            rd_req.iter().any(|(n, p)| n == "pm-design" && p == "prd"),
+            "expected routes_to-derived input (pm-design, prd), got {rd_req:?}"
+        );
+    }
+
+    /// 5.8c — Static analysis: unresolved reads key causes load-time error.
+    #[test]
+    fn unresolved_reads_key_rejected() {
+        let yaml = r#"
+name: bad-reads
+agents:
+  pm: agents/pm.agent.yaml
+  rd: agents/rd.agent.yaml
+
+nodes:
+  - id: pm-design
+    owner: pm
+    outputs:
+      - port: prd
+
+  - id: rd-design
+    owner: rd
+    reads: [prd]
+    outputs:
+      - port: tech-spec
+"#;
+        let err = FlowDefinition::load_from_str(yaml, Path::new("bad.yaml")).unwrap_err();
+        assert!(
+            matches!(err, FlowLoadError::UnresolvedBlackboardKey { ref node, ref key }
+                if node == "rd-design" && key == "prd"),
+            "expected UnresolvedBlackboardKey, got {err:?}"
+        );
+    }
+
+    /// 5.8d — blackboard_key field is parsed correctly from YAML.
+    #[test]
+    fn blackboard_key_field_parsed() {
+        let yaml = r#"
+name: bk-test
+agents:
+  pm: agents/pm.agent.yaml
+
+nodes:
+  - id: pm-design
+    owner: pm
+    outputs:
+      - port: prd
+        blackboard_key: prd
+"#;
+        let def = FlowDefinition::load_from_str(yaml, Path::new("t.yaml")).unwrap();
+        let output = def.output("pm-design", "prd").unwrap();
+        assert_eq!(output.blackboard_key.as_deref(), Some("prd"));
     }
 }

@@ -11,7 +11,11 @@ description = "Multi-agent orchestration primitives. Host-agnostic and product-p
 path = "src/lib.rs"
 
 [dependencies]
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

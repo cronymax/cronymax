@@ -121,6 +121,16 @@ pub enum RuntimeEventPayload {
         branch: String,
         commits_pushed: usize,
     },
+
+    /// A Supervisor-dispatched child task has started running.
+    TaskStarted { run_id: String, task_id: String },
+
+    /// A Supervisor-dispatched child task has finished (succeeded or failed).
+    TaskCompleted {
+        run_id: String,
+        task_id: String,
+        success: bool,
+    },
 }
 
 /// Severity for `RuntimeEventPayload::Log`.

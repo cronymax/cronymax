@@ -45,6 +45,7 @@ use super::persistence::{Persistence, PersistenceError};
 use super::state::{
     Agent, AgentId, ForkPoint, MemoryEntry, MemoryNamespace, MemoryNamespaceId, PendingReview,
     PermissionState, ReviewId, Run, RunId, RunStatus, Session, SessionId, Snapshot, Space, SpaceId,
+    Task, TaskId, TaskStatus, TaskTree,
 };
 use crate::llm::ChatMessage;
 
@@ -124,6 +125,9 @@ struct AuthorityInner {
     /// Not persisted; re-populated from `FlowRunState.originating_session_id`
     /// during rehydration (see `FlowRuntimeRegistry::get_or_create`).
     flow_sessions: HashMap<String, String>,
+    /// In-memory per-run task trees. Mirrors `Snapshot::task_trees` but
+    /// is also written on every mutation so the snapshot stays consistent.
+    task_trees: HashMap<RunId, TaskTree>,
 }
 
 /// The runtime authority. Cheap to clone — wraps an `Arc`.
@@ -167,6 +171,7 @@ impl RuntimeAuthority {
                 subscriptions: HashMap::new(),
                 pending_resolutions: HashMap::new(),
                 flow_sessions: HashMap::new(),
+                task_trees: HashMap::new(),
             })),
             persistence,
         })
@@ -936,6 +941,122 @@ impl RuntimeAuthority {
     }
 
     // -- Diagnostic logging -------------------------------------------------
+
+    // -- Task tree (Supervisor child-dispatch tracking) --------------------
+
+    /// Create a new [`Task`] entry for a Supervisor-dispatched child run.
+    ///
+    /// The task is inserted into `task_trees[run_id]`, the snapshot is
+    /// persisted, and a `TaskStarted` event is emitted on the run topic.
+    /// Returns the new [`TaskId`].
+    pub fn start_child_task(
+        &self,
+        run_id: RunId,
+        parent_id: Option<TaskId>,
+        label: String,
+        agent_id: Option<AgentId>,
+        flow_id: Option<String>,
+    ) -> Result<TaskId, AuthorityError> {
+        let task_id = TaskId::new();
+        let task = Task {
+            id: task_id,
+            parent_id,
+            label,
+            agent_id,
+            flow_id,
+            status: TaskStatus::Running,
+            output: None,
+            created_at_ms: now_ms(),
+        };
+        let mut inner = self.inner.lock();
+        inner
+            .task_trees
+            .entry(run_id)
+            .or_default()
+            .tasks
+            .insert(task_id, task.clone());
+        inner
+            .snapshot
+            .task_trees
+            .entry(run_id)
+            .or_default()
+            .tasks
+            .insert(task_id, task);
+        self.persistence.save(&inner.snapshot)?;
+        let topics = run_topics(
+            run_id,
+            inner
+                .snapshot
+                .runs
+                .get(&run_id)
+                .and_then(|r| r.session_id.as_ref()),
+        );
+        Self::emit_scoped(
+            &mut inner,
+            &topics,
+            RuntimeEventPayload::TaskStarted {
+                run_id: run_id.to_string(),
+                task_id: task_id.to_string(),
+            },
+        );
+        Ok(task_id)
+    }
+
+    /// Mark an existing [`Task`] as completed or failed. Updates the
+    /// in-memory tree and the persisted snapshot, then emits a
+    /// `TaskCompleted` event.
+    pub fn complete_child_task(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        output: Option<serde_json::Value>,
+        success: bool,
+    ) -> Result<(), AuthorityError> {
+        let new_status = if success {
+            TaskStatus::Completed
+        } else {
+            TaskStatus::Failed
+        };
+        let mut inner = self.inner.lock();
+        // Update in-memory tree.
+        if let Some(tree) = inner.task_trees.get_mut(&run_id) {
+            if let Some(task) = tree.tasks.get_mut(&task_id) {
+                task.status = new_status.clone();
+                task.output = output.clone();
+            }
+        }
+        // Update snapshot tree (keeps persistence consistent).
+        if let Some(tree) = inner.snapshot.task_trees.get_mut(&run_id) {
+            if let Some(task) = tree.tasks.get_mut(&task_id) {
+                task.status = new_status.clone();
+                task.output = output;
+            }
+        }
+        self.persistence.save(&inner.snapshot)?;
+        let topics = run_topics(
+            run_id,
+            inner
+                .snapshot
+                .runs
+                .get(&run_id)
+                .and_then(|r| r.session_id.as_ref()),
+        );
+        Self::emit_scoped(
+            &mut inner,
+            &topics,
+            RuntimeEventPayload::TaskCompleted {
+                run_id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                success,
+            },
+        );
+        Ok(())
+    }
+
+    /// Return a snapshot clone of the [`TaskTree`] for `run_id`, if any.
+    pub fn get_task_tree(&self, run_id: RunId) -> Option<TaskTree> {
+        self.inner.lock().task_trees.get(&run_id).cloned()
+    }
 
     /// Emit a runtime log event to all matching subscribers. Used by
     /// the dispatch layer / handler to surface diagnostic messages

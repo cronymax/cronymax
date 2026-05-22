@@ -55,6 +55,7 @@ uuid_newtype!(SpaceId);
 uuid_newtype!(RunId);
 uuid_newtype!(AgentId);
 uuid_newtype!(ReviewId);
+uuid_newtype!(TaskId);
 
 /// Session identity is a caller-supplied string (the frontend's
 /// `cronymax_chat_tab_id`) so no UUID generation is needed on the
@@ -329,6 +330,57 @@ pub struct PendingReview {
     pub updated_at_ms: i64,
 }
 
+/// Status of a dispatched child task.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    /// Task has been created but the child has not started yet.
+    Pending,
+    /// Child is actively running.
+    Running,
+    /// Child completed successfully.
+    Completed,
+    /// Child failed.
+    Failed,
+}
+
+/// A single entry in a [`TaskTree`]. Records one dispatched child agent
+/// or flow invocation from a Supervisor run.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Task {
+    pub id: TaskId,
+    /// The parent task, or `None` if this is the root task for the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<TaskId>,
+    /// Human-readable goal / label supplied by the Supervisor.
+    pub label: String,
+    /// Set when the task dispatches an agent invocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<AgentId>,
+    /// Set when the task dispatches a flow invocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_id: Option<String>,
+    pub status: TaskStatus,
+    /// Terminal output from the child, set on completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    pub created_at_ms: i64,
+}
+
+/// Per-run collection of dispatched [`Task`]s forming a parent/child tree.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct TaskTree {
+    /// Tasks keyed by their id, in creation order (BTreeMap for stable
+    /// serialisation across runs).
+    pub tasks: BTreeMap<TaskId, Task>,
+}
+
+impl TaskTree {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// The full authoritative snapshot the runtime owns. `RuntimeAuthority`
 /// keeps one of these inside a Mutex; persistence serializes it as a
 /// single JSON document.
@@ -363,6 +415,10 @@ pub struct Snapshot {
     pub memory: BTreeMap<MemoryNamespaceId, MemoryNamespace>,
     #[serde(default)]
     pub reviews: BTreeMap<ReviewId, PendingReview>,
+    /// Per-run task trees for Supervisor-dispatched child tasks.
+    /// Added in schema v4. Old snapshots deserialise with an empty map.
+    #[serde(default)]
+    pub task_trees: BTreeMap<RunId, TaskTree>,
 }
 
 impl Default for Snapshot {
@@ -375,6 +431,7 @@ impl Default for Snapshot {
             runs: BTreeMap::new(),
             memory: BTreeMap::new(),
             reviews: BTreeMap::new(),
+            task_trees: BTreeMap::new(),
         }
     }
 }
@@ -382,7 +439,7 @@ impl Default for Snapshot {
 /// Current authoritative on-disk schema version. Bump this on any
 /// breaking change to [`Snapshot`] and add a migration arm to
 /// [`migrate_snapshot`].
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 
 /// Migrate a freshly-loaded [`Snapshot`] from its on-disk
 /// `schema_version` up to [`SNAPSHOT_SCHEMA_VERSION`]. Returns an
@@ -421,6 +478,12 @@ pub fn migrate_snapshot(mut snap: Snapshot) -> Result<Snapshot, SnapshotMigratio
     // next save once the authority's flush_thread writes nothing back.
     if snap.schema_version == 2 {
         snap.schema_version = 3;
+    }
+    // 3 → 4: `task_trees` field added. Old snapshots have no `task_trees` key;
+    // `#[serde(default)]` ensures they deserialise with an empty BTreeMap.
+    // No structural migration required — just stamp the new version.
+    if snap.schema_version == 3 {
+        snap.schema_version = 4;
     }
     Ok(snap)
 }
@@ -472,5 +535,61 @@ mod tests {
             decoded.flow_run_id, None,
             "missing field must default to None"
         );
+    }
+
+    /// Old snapshot JSON without `task_trees` key deserialises without error.
+    #[test]
+    fn snapshot_without_task_trees_deserialises_cleanly() {
+        let snap = Snapshot::default();
+        let mut value: serde_json::Value = serde_json::to_value(&snap).unwrap();
+        value.as_object_mut().unwrap().remove("task_trees");
+        let decoded: Snapshot =
+            serde_json::from_value(value).expect("snapshot without task_trees must deserialise");
+        assert!(decoded.task_trees.is_empty());
+    }
+
+    /// TaskTree survives a JSON round-trip with all fields intact.
+    #[test]
+    fn task_tree_roundtrip() {
+        let run_id = RunId::new();
+        let task_id = TaskId::new();
+        let agent_id = AgentId::new();
+
+        let mut tree = TaskTree::new();
+        tree.tasks.insert(
+            task_id,
+            Task {
+                id: task_id,
+                parent_id: None,
+                label: "Write a tech spec".to_string(),
+                agent_id: Some(agent_id),
+                flow_id: None,
+                status: TaskStatus::Completed,
+                output: Some(serde_json::json!({ "result": "done" })),
+                created_at_ms: 0,
+            },
+        );
+
+        let mut snap = Snapshot::default();
+        snap.task_trees.insert(run_id, tree);
+
+        let json = serde_json::to_string(&snap).unwrap();
+        let decoded: Snapshot = serde_json::from_str(&json).unwrap();
+        let decoded_task = &decoded.task_trees[&run_id].tasks[&task_id];
+        assert_eq!(decoded_task.label, "Write a tech spec");
+        assert_eq!(decoded_task.status, TaskStatus::Completed);
+        assert_eq!(decoded_task.agent_id, Some(agent_id));
+    }
+
+    /// migrate_snapshot upgrades v3 → v4 in place.
+    #[test]
+    fn migrate_v3_to_v4() {
+        let snap = Snapshot {
+            schema_version: 3,
+            ..Snapshot::default()
+        };
+        let migrated = migrate_snapshot(snap).unwrap();
+        assert_eq!(migrated.schema_version, SNAPSHOT_SCHEMA_VERSION);
+        assert!(migrated.task_trees.is_empty());
     }
 }

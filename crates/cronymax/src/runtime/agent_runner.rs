@@ -10,8 +10,10 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::agent_loop::{LoopConfig, ReactLoop, ToolDispatcher};
-use crate::capability::agent_loader;
+use crate::capability::agent_loader::{self, AgentKind};
 use crate::capability::flow_tools::{register_flow_tools, register_submit_review, SpawnAgentFn};
+use crate::capability::invoke_agent::register_invoke_agent;
+use crate::capability::invoke_flow::register_invoke_flow;
 use crate::flow::runtime::InvocationContext;
 use crate::llm::{CapabilityResolver, LlmConfig};
 use crate::runtime::middleware::{
@@ -212,6 +214,7 @@ impl AgentRunner {
                 initial_thread: None,
                 session_id: None,
                 reflection: None,
+                critic: None,
                 write_namespace: None,
                 memory_manager: None,
                 middleware: build_middleware_chain(authority.clone()),
@@ -303,6 +306,235 @@ impl AgentRunner {
                 );
             }
 
+            // ── Supervisor tools ─────────────────────────────────────────
+            // Register invoke_agent / invoke_flow when the chat agent is a Supervisor.
+            if chat_agent_def.kind == AgentKind::Supervisor {
+                let services_sup = Arc::clone(&services);
+                let run_ctx_sup = run_ctx.clone();
+                let authority_sup = authority.clone();
+
+                // invoke_agent spawn fn: spawns child, fires oneshot on completion.
+                let invoke_agent_spawn: Arc<
+                    dyn Fn(
+                            crate::runtime::run_context::RunContext,
+                            String,
+                            tokio::sync::oneshot::Sender<crate::agent_loop::tools::AgentResult>,
+                        ) + Send
+                        + Sync
+                        + 'static,
+                > = Arc::new(move |child_ctx, agent_id, tx| {
+                    let runner = AgentRunner::new(Arc::clone(&services_sup));
+                    let authority_clone = authority_sup.clone();
+                    tokio::spawn(async move {
+                        // Create an authority run for the child agent.
+                        let child_run_id = match authority_clone.start_run_with_session(
+                            child_ctx.space_id,
+                            None,
+                            serde_json::json!({ "agent_name": &agent_id }),
+                            child_ctx.session_id.clone(),
+                        ) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                    success: false,
+                                    output: serde_json::Value::Null,
+                                    error: Some(format!("failed to start child run: {e}")),
+                                });
+                                return;
+                            }
+                        };
+
+                        let inv_ctx = crate::flow::runtime::InvocationContext::build(
+                            &agent_id,
+                            &agent_id,
+                            crate::flow::runtime::InvocationTrigger {
+                                kind: "supervisor_invoke".into(),
+                                from_node: None,
+                                approved_port: None,
+                                reviewer_doc_path: None,
+                            },
+                            vec![],
+                            vec![],
+                        );
+
+                        // We re-use spawn_agent for the actual run but we need the
+                        // oneshot — so we run the loop inline here.
+                        let run_ctx_inner = child_ctx;
+                        let agent_def = crate::capability::agent_loader::load_agent(
+                            &run_ctx_inner.workspace_root,
+                            &agent_id,
+                        )
+                        .await;
+
+                        let system_message =
+                            crate::runtime::agent_runner::render_system_message(&inv_ctx);
+                        let system_message = if agent_def.system_prompt.is_empty() {
+                            system_message
+                        } else {
+                            format!("{}\n\n---\n\n{}", agent_def.system_prompt, system_message)
+                        };
+
+                        let model = match &run_ctx_inner.llm_config {
+                            crate::llm::LlmConfig::OpenAi { model, .. }
+                            | crate::llm::LlmConfig::Anthropic { model, .. }
+                            | crate::llm::LlmConfig::Copilot { model, .. } => {
+                                if agent_def.llm_model.is_empty() {
+                                    model.clone()
+                                } else {
+                                    agent_def.llm_model.clone()
+                                }
+                            }
+                        };
+
+                        let effective_llm_config =
+                            apply_model_override(run_ctx_inner.llm_config.clone(), &model);
+                        let llm = match runner
+                            .services
+                            .llm_factory
+                            .build(&effective_llm_config)
+                            .await
+                        {
+                            Ok(p) => p,
+                            Err(e) => {
+                                let _ = authority_clone.fail_run(child_run_id, e.to_string());
+                                let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                    success: false,
+                                    output: serde_json::Value::Null,
+                                    error: Some(format!("llm build failed: {e}")),
+                                });
+                                return;
+                            }
+                        };
+
+                        let cap_builder = runner.services.capability_factory.build(
+                            &run_ctx_inner.workspace_root,
+                            run_ctx_inner.sandbox_tier.clone(),
+                        );
+                        let tools = Arc::new(cap_builder.build());
+
+                        let cfg = crate::agent_loop::LoopConfig {
+                            model: model.clone(),
+                            system_prompt: Some(system_message),
+                            user_input: "Continue with your assigned task as described above."
+                                .to_owned(),
+                            max_turns: 99999,
+                            temperature: None,
+                            reasoning_effort: None,
+                            llm,
+                            tools,
+                            thinking: None,
+                            initial_thread: None,
+                            session_id: None,
+                            reflection: None,
+                            critic: None,
+                            write_namespace: None,
+                            memory_manager: None,
+                            middleware: build_middleware_chain(authority_clone.clone()),
+                        };
+
+                        let result = crate::agent_loop::ReactLoop::new(
+                            authority_clone.clone(),
+                            child_run_id,
+                            cfg,
+                        )
+                        .run()
+                        .await;
+
+                        let agent_result = match result {
+                            Ok(()) => crate::agent_loop::tools::AgentResult {
+                                success: true,
+                                output: serde_json::json!({ "run_id": child_run_id.to_string() }),
+                                error: None,
+                            },
+                            Err(e) => crate::agent_loop::tools::AgentResult {
+                                success: false,
+                                output: serde_json::Value::Null,
+                                error: Some(e.to_string()),
+                            },
+                        };
+                        let _ = tx.send(agent_result);
+                    });
+                });
+
+                register_invoke_agent(
+                    &mut cap_builder,
+                    authority.clone(),
+                    run_id,
+                    run_ctx_sup.clone(),
+                    invoke_agent_spawn,
+                );
+
+                // invoke_flow: use existing FlowRuntime and a polling-based
+                // completion hook that fires when the run reaches terminal state.
+                if let Some(flow_rt) = &run_ctx.flow_runtime {
+                    let services_flow = Arc::clone(&services);
+                    let run_ctx_flow = run_ctx.clone();
+                    let flow_rt_inv = Arc::clone(flow_rt);
+                    let authority_flow = authority.clone();
+
+                    let spawn_flow_fn: SpawnAgentFn =
+                        Arc::new(move |_flow_run_id, agent_id2, inv_ctx2| {
+                            let runner2 = AgentRunner::new(Arc::clone(&services_flow));
+                            runner2.spawn_agent(run_ctx_flow.clone(), agent_id2, inv_ctx2);
+                        });
+
+                    // Completion fn: poll run status in background, fire tx when terminal.
+                    let flow_rt_poll = Arc::clone(flow_rt);
+                    let flow_completion_fn: Arc<
+                        dyn Fn(
+                                String,
+                                tokio::sync::oneshot::Sender<crate::agent_loop::tools::AgentResult>,
+                            ) + Send
+                            + Sync
+                            + 'static,
+                    > = Arc::new(move |flow_run_id, tx| {
+                        let rt = Arc::clone(&flow_rt_poll);
+                        tokio::spawn(async move {
+                            // Poll every 500ms until terminal.
+                            loop {
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                if let Some(state) = rt.get_run(&flow_run_id) {
+                                    if state.status.is_terminal() {
+                                        let success = state.status
+                                            == crate::flow::runtime::FlowRunStatus::Completed;
+                                        let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                            success,
+                                            output: serde_json::json!({
+                                                "flow_run_id": flow_run_id,
+                                                "status": format!("{:?}", state.status),
+                                            }),
+                                            error: if success {
+                                                None
+                                            } else {
+                                                state.failure_reason.clone()
+                                            },
+                                        });
+                                        return;
+                                    }
+                                } else {
+                                    let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                        success: false,
+                                        output: serde_json::Value::Null,
+                                        error: Some(format!("flow run '{flow_run_id}' not found")),
+                                    });
+                                    return;
+                                }
+                            }
+                        });
+                    });
+
+                    register_invoke_flow(
+                        &mut cap_builder,
+                        authority_flow,
+                        run_id,
+                        flow_rt_inv,
+                        run_ctx.workspace_root.clone(),
+                        spawn_flow_fn,
+                        flow_completion_fn,
+                    );
+                }
+            }
+
             if !chat_agent_def.tools.is_empty() {
                 cap_builder.set_allowed_tools(chat_agent_def.tools.clone());
             }
@@ -344,6 +576,7 @@ impl AgentRunner {
                 initial_thread: Some(thread),
                 session_id: Some(sid.clone()),
                 reflection: None,
+                critic: None,
                 write_namespace: None,
                 memory_manager: None,
                 middleware: build_middleware_chain(authority.clone()),
