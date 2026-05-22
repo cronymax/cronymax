@@ -187,7 +187,6 @@ CefRefPtr<CefPanel> TitleBarView::Build() {
   {
     btn_settings_ = MakeIconLabelButton(
         new FnButtonDelegate([this]() {
-          fprintf(stderr, "[diag] Settings btn pressed\n");
           CefPostTask(TID_UI, base::BindOnce(
                                   [](TitleBarView* self) {
                                     self->overlay_ctx_->OpenOverlay(

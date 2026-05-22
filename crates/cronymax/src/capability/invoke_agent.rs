@@ -7,7 +7,6 @@
 //!
 //! Task 4.3 + 4.7
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -21,7 +20,6 @@ use crate::runtime::run_context::RunContext;
 use crate::runtime::state::RunId;
 
 use super::dispatcher::DispatcherBuilder;
-use super::flow_tools::SpawnAgentFn;
 
 /// Register the `invoke_agent` tool on `builder`.
 ///
@@ -35,7 +33,9 @@ pub fn register_invoke_agent(
     authority: RuntimeAuthority,
     run_id: RunId,
     run_ctx: RunContext,
-    spawn_fn: Arc<dyn Fn(RunContext, String, oneshot::Sender<AgentResult>) + Send + Sync + 'static>,
+    spawn_fn: Arc<
+        dyn Fn(RunContext, String, String, oneshot::Sender<AgentResult>) + Send + Sync + 'static,
+    >,
 ) {
     builder.register(
         ToolDef {
@@ -67,6 +67,7 @@ pub fn register_invoke_agent(
         },
         false,
         move |args| {
+            #[allow(unused)]
             #[derive(Deserialize)]
             struct Args {
                 agent_id: String,
@@ -133,9 +134,9 @@ pub fn register_invoke_agent(
                 };
 
                 // Wire: spawn_fn fires the sender on completion.
-                spawn_fn(child_ctx, a.agent_id.clone(), tx);
+                spawn_fn(child_ctx, a.agent_id.clone(), a.goal.clone(), tx);
 
-                // Drop inv_ctx (not yet wired into spawn_fn; kept for future extension)
+                // Drop inv_ctx (kept for future extension)
                 let _ = inv_ctx;
                 let _ = a.reads; // future: filter available_docs by reads
 

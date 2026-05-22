@@ -145,6 +145,11 @@ pub struct Session {
     pub fork_point: Option<ForkPoint>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// Set to `true` the first time the user explicitly renames this session
+    /// from the sidebar. When `true`, auto-naming events (from the first
+    /// invocation completion) are ignored so the user's choice is preserved.
+    #[serde(default)]
+    pub manually_named: bool,
 }
 
 /// Memory namespace ids are caller-supplied strings (e.g. a
@@ -275,6 +280,42 @@ pub struct HistoryEntry {
     pub payload: serde_json::Value,
 }
 
+/// A document produced by a run via `submit_document`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProducedDoc {
+    /// Document type / port name (e.g. `"prd"`, `"tech-spec"`).
+    pub doc_type: String,
+    /// Workspace-relative path the doc was written to (empty if not saved).
+    pub path: String,
+    /// Revision number within this run (monotonically increasing, 1-based).
+    pub revision: u32,
+}
+
+/// A resolved review / permission decision recorded on the run for
+/// historical display in the receipt mode card.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolvedReview {
+    pub review_id: ReviewId,
+    /// The original approval request payload (tool name, args, etc.).
+    pub request: serde_json::Value,
+    pub decision: PermissionState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    pub resolved_at_ms: i64,
+}
+
+/// A workspace file mutation recorded during a run.
+/// Phase D: populated once the filesystem capability emits fine-grained
+/// change events with line-count diffs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileChange {
+    pub path: String,
+    /// Net added lines (approximate; 0 when unavailable).
+    pub additions: i64,
+    /// Net removed lines (approximate; 0 when unavailable).
+    pub deletions: i64,
+}
+
 /// A run — the unit of execution authority the runtime owns end to end.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Run {
@@ -300,6 +341,29 @@ pub struct Run {
     pub history: Vec<HistoryEntry>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// Human-readable goal for this run. Resolved in priority order:
+    /// `StartRun.goal` > flow definition name (when `flow_id` present) >
+    /// first user message. Displayed as the primary label in the
+    /// Activity Panel and receipt card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    /// The `RunId` of the run that spawned this one. Set when a Supervisor
+    /// run calls `invoke_agent` or `invoke_flow`. Used by the Activity
+    /// Panel to build the `parent_run_id`-based task tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<RunId>,
+    /// Documents produced by this run via `submit_document`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub produces: Vec<ProducedDoc>,
+    /// Approval decisions resolved during this run (historical record for
+    /// receipt mode display).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_reviews: Vec<ResolvedReview>,
+    /// Workspace file mutations recorded during this run.
+    /// Populated in Phase D once the filesystem capability emits
+    /// fine-grained change events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_changes: Vec<FileChange>,
 }
 
 /// Permission decision state for a [`PendingReview`]. The runtime is
@@ -439,7 +503,7 @@ impl Default for Snapshot {
 /// Current authoritative on-disk schema version. Bump this on any
 /// breaking change to [`Snapshot`] and add a migration arm to
 /// [`migrate_snapshot`].
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
 /// Migrate a freshly-loaded [`Snapshot`] from its on-disk
 /// `schema_version` up to [`SNAPSHOT_SCHEMA_VERSION`]. Returns an
@@ -485,6 +549,13 @@ pub fn migrate_snapshot(mut snap: Snapshot) -> Result<Snapshot, SnapshotMigratio
     if snap.schema_version == 3 {
         snap.schema_version = 4;
     }
+    // 4 → 5: `goal`, `parent_run_id`, `produces`, `resolved_reviews`, and
+    // `file_changes` fields added to `Run`. All carry `#[serde(default)]` so
+    // old snapshots deserialise with empty / None values automatically.
+    // No structural migration required — just stamp the new version.
+    if snap.schema_version == 4 {
+        snap.schema_version = 5;
+    }
     Ok(snap)
 }
 
@@ -511,6 +582,11 @@ mod tests {
             history: vec![],
             created_at_ms: 0,
             updated_at_ms: 0,
+            goal: None,
+            parent_run_id: None,
+            produces: vec![],
+            resolved_reviews: vec![],
+            file_changes: vec![],
         }
     }
 

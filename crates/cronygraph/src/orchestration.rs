@@ -37,6 +37,10 @@ use crate::graph::{Graph, GraphError, NodeId};
 /// Convenience alias for a heap-allocated, `Send`-safe future.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Async step function type.
+pub type AsyncStepFn<S, E> =
+    dyn Fn(S) -> BoxFuture<'static, Result<Transition<S>, E>> + Send + Sync;
+
 /// What a step decided to do once it finished executing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transition<S> {
@@ -142,7 +146,7 @@ where
 /// ```
 pub struct AsyncFnStep<S, E> {
     label: String,
-    f: Arc<dyn Fn(S) -> BoxFuture<'static, Result<Transition<S>, E>> + Send + Sync>,
+    f: Arc<AsyncStepFn<S, E>>,
     _state: std::marker::PhantomData<fn(S) -> S>,
     _err: std::marker::PhantomData<fn() -> E>,
 }

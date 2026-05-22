@@ -44,7 +44,7 @@ export function FileChangesView({ changes }: Props) {
   const unique = [...deduped.values()];
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="mx-3 mb-1 rounded-md border border-border bg-muted/30">
+    <Collapsible open={open} onOpenChange={setOpen} className="mb-1 rounded-md border border-border bg-muted/30">
       <CollapsibleTrigger asChild>
         <Button
           variant="ghost"

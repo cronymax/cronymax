@@ -472,6 +472,7 @@ export function useFlowNodeConversations(
                 contentStream: [],
                 traceEntries: [],
                 startedAt: null,
+                endedAt: null,
               });
             }
           }
@@ -494,6 +495,7 @@ export function useFlowNodeConversations(
             contentStream: existing?.contentStream ?? [],
             traceEntries: existing?.traceEntries ?? [],
             startedAt: existing?.startedAt ?? (snapshotStatus === "running" ? Date.now() : null),
+            endedAt: existing?.endedAt ?? null,
           });
           return next;
         });
@@ -524,6 +526,7 @@ export function useFlowNodeConversations(
           contentStream: existing?.contentStream ?? [],
           traceEntries: existing?.traceEntries ?? [],
           startedAt: null,
+          endedAt: null,
         });
         return next;
       });

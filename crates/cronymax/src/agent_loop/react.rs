@@ -183,6 +183,8 @@ pub struct LoopConfig {
     /// Middleware chain executed at each loop lifecycle point. Defaults to
     /// an empty (no-op) chain when not configured.
     pub middleware: Arc<MiddlewareChain>,
+    /// Optional agent name used for telemetry / event attribution (task 9.3).
+    pub agent_name: Option<String>,
 }
 
 impl std::fmt::Debug for LoopConfig {
@@ -213,6 +215,7 @@ impl std::fmt::Debug for LoopConfig {
             )
             .field("has_memory_manager", &self.memory_manager.is_some())
             .field("middleware_count", &self.middleware.0.len())
+            .field("agent_name", &self.agent_name)
             .finish()
     }
 }
@@ -233,6 +236,8 @@ pub struct ReactLoop {
     /// critic requests a revision; the loop stops re-entering when this
     /// reaches zero.
     critic_revisions_remaining: usize,
+    /// Agent name for event attribution (task 9.3).
+    agent_name: String,
 }
 
 impl ReactLoop {
@@ -257,6 +262,7 @@ impl ReactLoop {
         };
         let critic_revisions_remaining =
             config.critic.as_ref().map(|c| c.max_revisions).unwrap_or(0);
+        let agent_name = config.agent_name.clone().unwrap_or_default();
         Self {
             authority,
             run_id,
@@ -265,6 +271,7 @@ impl ReactLoop {
             turn: 0,
             consecutive_failures: 0,
             critic_revisions_remaining,
+            agent_name,
         }
     }
 
@@ -535,9 +542,23 @@ impl ReactLoop {
                     // ── Critic phase ─────────────────────────────────────
                     if let Some(ccfg) = self.config.critic.clone() {
                         if self.critic_revisions_remaining > 0 {
+                            let max_rev = ccfg.max_revisions as u32;
                             match self.run_critic_pass(&ccfg).await {
                                 CriticDecision::Passed => {
                                     debug!(run = %self.run_id, "critic passed; accepting output");
+                                    let revision =
+                                        (max_rev - self.critic_revisions_remaining as u32) + 1;
+                                    self.authority.emit_for_run(
+                                        self.run_id,
+                                        RuntimeEventPayload::CriticResult {
+                                            run_id: self.run_id.to_string(),
+                                            agent_name: self.agent_name.clone(),
+                                            passed: true,
+                                            summary: String::new(),
+                                            revision,
+                                            max_revisions: max_rev,
+                                        },
+                                    );
                                 }
                                 CriticDecision::NeedsRevision(issues) => {
                                     self.critic_revisions_remaining -= 1;
@@ -545,6 +566,18 @@ impl ReactLoop {
                                         run = %self.run_id,
                                         remaining = self.critic_revisions_remaining,
                                         "critic requested revision"
+                                    );
+                                    let revision = max_rev - self.critic_revisions_remaining as u32;
+                                    self.authority.emit_for_run(
+                                        self.run_id,
+                                        RuntimeEventPayload::CriticResult {
+                                            run_id: self.run_id.to_string(),
+                                            agent_name: self.agent_name.clone(),
+                                            passed: false,
+                                            summary: issues.join("; "),
+                                            revision,
+                                            max_revisions: max_rev,
+                                        },
                                     );
                                     // Format issues as a user message and
                                     // continue the loop.
@@ -1031,6 +1064,7 @@ mod tests {
             write_namespace: None,
             memory_manager: None,
             middleware: Arc::new(MiddlewareChain::empty()),
+            agent_name: None,
         }
     }
 

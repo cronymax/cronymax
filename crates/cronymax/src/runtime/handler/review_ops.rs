@@ -58,6 +58,11 @@ impl RuntimeHandler {
 
         let mut pending = vec![];
         for state in &states {
+            // Skip terminal runs — any InReview ports they hold are stale
+            // (the run ended before the reviewer acted on them).
+            if state.status.is_terminal() {
+                continue;
+            }
             for (node_id, ns) in &state.node_states {
                 for (port, &status) in &ns.ports {
                     if status == PortStatus::InReview {
@@ -119,6 +124,10 @@ impl RuntimeHandler {
         let mut doc_reviews: Vec<serde_json::Value> = vec![];
         for state in flow_rt.list_runs() {
             if state.originating_session_id.as_deref() != Some(session_id.as_str()) {
+                continue;
+            }
+            // Skip terminal runs — their InReview ports are stale.
+            if state.status.is_terminal() {
                 continue;
             }
             for (node_id, ns) in &state.node_states {

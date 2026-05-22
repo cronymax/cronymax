@@ -6,21 +6,29 @@ name: bug-fix-loop
 description: Product describes a bug; Architect plans the fix; Coder writes the patch (and may @-mention @product for clarification).
 
 agents:
-  - product
-  - architect
-  - coder
+  product: agents/product.agent.yaml
+  architect: agents/architect.agent.yaml
+  coder: agents/coder.agent.yaml
 
-edges:
-  - from: product
-    to: architect
-    port: prd
-  - from: architect
-    to: coder
-    port: tech-spec
-  - from: coder
-    to: product
-    port: code-patch
-    requires_human_approval: true
+nodes:
+  - id: product
+    owner: product
+    outputs:
+      - port: prd
+        routes_to: architect
+
+  - id: architect
+    owner: architect
+    outputs:
+      - port: tech-spec
+        routes_to: coder
+
+  - id: coder
+    owner: coder
+    outputs:
+      - port: code-patch
+        routes_to: product
+        reviewers: [human]
 
 max_review_rounds: 2
 on_review_exhausted: approve

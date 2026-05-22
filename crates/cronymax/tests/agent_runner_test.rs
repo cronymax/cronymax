@@ -188,16 +188,7 @@ async fn supervisor_invoke_agent_result_appears_in_history() {
 
     let dir = tempdir().expect("tempdir");
 
-    // Create a __chat__.agent.yaml with kind: supervisor so the Supervisor
-    // tools are registered by spawn_chat.
-    let agents_dir = dir.path().join(".cronymax").join("agents");
-    std::fs::create_dir_all(&agents_dir).expect("agents dir");
-    std::fs::write(
-        agents_dir.join("__chat__.agent.yaml"),
-        "name: __chat__\nkind: supervisor\n",
-    )
-    .expect("write chat agent yaml");
-
+    // Crony is the builtin supervisor agent — no on-disk YAML needed.
     let (space_id, auth) = make_authority_with_space();
 
     let mock_llm = MockLlmFactory::new();

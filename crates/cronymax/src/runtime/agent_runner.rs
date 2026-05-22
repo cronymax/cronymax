@@ -7,15 +7,16 @@
 
 use std::sync::Arc;
 
+use futures_util::StreamExt as _;
 use tracing::{info, warn};
 
 use crate::agent_loop::{LoopConfig, ReactLoop, ToolDispatcher};
 use crate::capability::agent_loader::{self, AgentKind};
 use crate::capability::flow_tools::{register_flow_tools, register_submit_review, SpawnAgentFn};
 use crate::capability::invoke_agent::register_invoke_agent;
-use crate::capability::invoke_flow::register_invoke_flow;
+use crate::capability::invoke_flow::{build_invoke_flow_description, register_invoke_flow};
 use crate::flow::runtime::InvocationContext;
-use crate::llm::{CapabilityResolver, LlmConfig};
+use crate::llm::{CapabilityResolver, ChatMessage, LlmConfig, LlmEvent, LlmRequest};
 use crate::runtime::middleware::{
     LlmDurationStore, MiddlewareChain, TimingMiddleware, TokenAccumulatorMiddleware,
     ToolDurationStore, TraceEmitterMiddleware,
@@ -218,6 +219,7 @@ impl AgentRunner {
                 write_namespace: None,
                 memory_manager: None,
                 middleware: build_middleware_chain(authority.clone()),
+                agent_name: None,
             };
 
             let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
@@ -274,8 +276,11 @@ impl AgentRunner {
             };
             let prior_thread_len = thread.len();
 
-            let chat_agent_def =
-                agent_loader::load_agent(&run_ctx.workspace_root, "__chat__").await;
+            let chat_agent_def = agent_loader::load_agent_with_builtin(
+                &run_ctx.workspace_root,
+                crate::crony::CronyBuiltin::ID,
+            )
+            .await;
 
             let system_prompt = if chat_agent_def.system_prompt.is_empty() {
                 None
@@ -318,11 +323,12 @@ impl AgentRunner {
                     dyn Fn(
                             crate::runtime::run_context::RunContext,
                             String,
+                            String,
                             tokio::sync::oneshot::Sender<crate::agent_loop::tools::AgentResult>,
                         ) + Send
                         + Sync
                         + 'static,
-                > = Arc::new(move |child_ctx, agent_id, tx| {
+                > = Arc::new(move |child_ctx, agent_id, goal, tx| {
                     let runner = AgentRunner::new(Arc::clone(&services_sup));
                     let authority_clone = authority_sup.clone();
                     tokio::spawn(async move {
@@ -415,8 +421,7 @@ impl AgentRunner {
                         let cfg = crate::agent_loop::LoopConfig {
                             model: model.clone(),
                             system_prompt: Some(system_message),
-                            user_input: "Continue with your assigned task as described above."
-                                .to_owned(),
+                            user_input: goal,
                             max_turns: 99999,
                             temperature: None,
                             reasoning_effort: None,
@@ -430,6 +435,7 @@ impl AgentRunner {
                             write_namespace: None,
                             memory_manager: None,
                             middleware: build_middleware_chain(authority_clone.clone()),
+                            agent_name: Some(agent_id.clone()),
                         };
 
                         let result = crate::agent_loop::ReactLoop::new(
@@ -523,14 +529,19 @@ impl AgentRunner {
                         });
                     });
 
+                    let invoke_flow_desc =
+                        build_invoke_flow_description(&run_ctx.workspace_root).await;
                     register_invoke_flow(
                         &mut cap_builder,
+                        invoke_flow_desc,
                         authority_flow,
                         run_id,
                         flow_rt_inv,
                         run_ctx.workspace_root.clone(),
                         spawn_flow_fn,
                         flow_completion_fn,
+                        // Reviewer agents don't have a child session to bind to.
+                        None,
                     );
                 }
             }
@@ -580,6 +591,7 @@ impl AgentRunner {
                 write_namespace: None,
                 memory_manager: None,
                 middleware: build_middleware_chain(authority.clone()),
+                agent_name: None,
             };
 
             let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
@@ -602,6 +614,17 @@ impl AgentRunner {
                         let _ = store.append_turns(&sid, &updated_thread[prior_thread_len..]);
                     }
                 }
+            }
+
+            // Auto-name the session after the first run completes, if not yet named.
+            {
+                let naming_services = Arc::clone(&services);
+                let naming_sid = sid.clone();
+                let naming_llm_config = effective_llm_config.clone();
+                tokio::spawn(async move {
+                    auto_name_session_if_needed(&naming_services, &naming_sid, &naming_llm_config)
+                        .await;
+                });
             }
         });
     }
@@ -711,6 +734,24 @@ pub fn render_system_message(inv_ctx: &InvocationContext) -> String {
         None => String::new(),
     };
 
+    // Task 2.5: HUMAN-PROVIDED banner for keys that were manually supplied.
+    let human_provided_section = if inv_ctx.human_provided_keys.is_empty() {
+        String::new()
+    } else {
+        let items = inv_ctx
+            .human_provided_keys
+            .iter()
+            .map(|k| {
+                format!(
+                    "  - [HUMAN-PROVIDED: `{k}` was manually supplied by the user, \
+                     not generated by an agent]"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\n\n### Human-Provided Inputs\n{items}")
+    };
+
     format!(
         "## FlowRuntime: Invocation Context\n\n\
          {trigger_context}\n\n\
@@ -719,7 +760,7 @@ pub fn render_system_message(inv_ctx: &InvocationContext) -> String {
          ### Your Pending Ports (in order)\n\
          {pending_summary}\n\n\
          ### Available Approved Documents\n\
-         {available_summary}{feedback_section}\n\n\
+         {available_summary}{human_provided_section}{feedback_section}\n\n\
          Proceed with your next task. Use the `submit_document` tool when ready."
     )
 }
@@ -781,6 +822,77 @@ pub(crate) fn build_middleware_chain(
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+/// After a run completes, auto-name the session if it hasn't been named yet.
+///
+/// Makes a lightweight single-turn LLM call to generate a 2–4 word title from
+/// the first user message. Skips silently if the session is already named,
+/// manually named, or if the LLM call fails for any reason.
+async fn auto_name_session_if_needed(
+    services: &RuntimeServices,
+    sid: &crate::runtime::state::SessionId,
+    llm_config: &LlmConfig,
+) {
+    let first_user_msg = match services.authority.session_needs_naming(sid) {
+        Some(msg) => msg,
+        None => return,
+    };
+
+    let prompt = if first_user_msg.is_empty() {
+        "Generate a 2–4 word project title in Title Case with no punctuation. Reply with only the title.".to_owned()
+    } else {
+        let excerpt: String = first_user_msg.chars().take(300).collect();
+        format!(
+            "Generate a 2–4 word project title in Title Case with no punctuation for: \"{excerpt}\"\nReply with only the title."
+        )
+    };
+
+    let llm = match services.llm_factory.build(llm_config).await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "auto_name_session: llm_factory.build failed");
+            return;
+        }
+    };
+
+    let req = LlmRequest {
+        model: match llm_config {
+            LlmConfig::OpenAi { model, .. } => model.clone(),
+            LlmConfig::Anthropic { model, .. } => model.clone(),
+            LlmConfig::Copilot { model, .. } => model.clone(),
+        },
+        messages: vec![ChatMessage::user(prompt)],
+        tools: vec![],
+        temperature: Some(0.3),
+        reasoning_effort: None,
+        thinking: None,
+    };
+
+    let mut stream = match llm.stream(req).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "auto_name_session: stream failed");
+            return;
+        }
+    };
+
+    let mut text = String::new();
+    while let Some(event) = stream.next().await {
+        match event {
+            LlmEvent::Delta { content } => text.push_str(&content),
+            LlmEvent::Done { .. } | LlmEvent::Error { .. } => break,
+            _ => {}
+        }
+    }
+
+    let name = text.trim().to_owned();
+    if name.is_empty() || name.len() > 60 {
+        return;
+    }
+
+    info!(session_id = %sid.0, name = %name, "auto_name_session: naming session");
+    services.authority.auto_name_session(sid, &name);
+}
 
 #[cfg(test)]
 mod tests {

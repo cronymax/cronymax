@@ -1,0 +1,306 @@
+<!doctype html>
+<!--
+  file-view.html — thin Monaco read-only source viewer
+  supervisor-session-ux task 15.5
+
+  URL params:
+    ?run_id=<id>   — the run that owns the file (used for sandboxed path resolution)
+    ?path=<path>   — workspace-relative file path to display
+    ?mode=diff     — (Phase 2) show before/after diff view
+
+  File content is fetched via the `file.read` bridge channel.
+  Language is auto-detected from the file extension.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>File View</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+        background: #1e1e1e;
+        color: #d4d4d4;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      #header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        background: #252526;
+        border-bottom: 1px solid #3c3c3c;
+        font-size: 12px;
+        color: #cccccc;
+        min-height: 32px;
+        flex-shrink: 0;
+      }
+
+      #header .path {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #9cdcfe;
+        font-family: "SF Mono", "Fira Code", monospace;
+      }
+
+      #header .badge {
+        background: #3c3c3c;
+        border-radius: 3px;
+        padding: 1px 6px;
+        font-size: 11px;
+        color: #888;
+      }
+
+      #container {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+
+      #editor-container {
+        flex: 1;
+        overflow: hidden;
+      }
+
+      #loading,
+      #error {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        font-size: 13px;
+        color: #888;
+      }
+
+      #error {
+        color: #f48771;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      #error .detail {
+        font-size: 11px;
+        color: #888;
+        font-family: monospace;
+        max-width: 500px;
+        text-align: center;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="header">
+        <span class="path" id="header-path">Loading…</span>
+        <span class="badge" id="header-lang"></span>
+        <span class="badge" id="header-size"></span>
+      </div>
+      <div id="editor-container">
+        <div id="loading">Loading file…</div>
+      </div>
+    </div>
+
+    <!-- Monaco from CDN — adjust version as needed -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs/loader.min.js"></script>
+    <script>
+      // ── URL params ──────────────────────────────────────────────────────
+      const params = new URLSearchParams(location.search);
+      const runId = params.get("run_id") ?? "";
+      const filePath = params.get("path") ?? "";
+      const mode = params.get("mode") ?? "view"; // "view" | "diff" (Phase 2)
+
+      // ── Header ──────────────────────────────────────────────────────────
+      document.getElementById("header-path").textContent =
+        filePath || "(no path)";
+      document.title = filePath
+        ? `${filePath.split("/").pop()} — File View`
+        : "File View";
+
+      // ── Language detection from extension ───────────────────────────────
+      function detectLanguage(path) {
+        const ext = path.split(".").pop()?.toLowerCase() ?? "";
+        const map = {
+          js: "javascript",
+          jsx: "javascript",
+          ts: "typescript",
+          tsx: "typescript",
+          rs: "rust",
+          py: "python",
+          go: "go",
+          cpp: "cpp",
+          cc: "cpp",
+          cxx: "cpp",
+          c: "c",
+          h: "c",
+          hpp: "cpp",
+          hxx: "cpp",
+          java: "java",
+          cs: "csharp",
+          rb: "ruby",
+          sh: "shell",
+          bash: "shell",
+          zsh: "shell",
+          fish: "shell",
+          yaml: "yaml",
+          yml: "yaml",
+          toml: "ini",
+          json: "json",
+          jsonl: "json",
+          md: "markdown",
+          html: "html",
+          css: "css",
+          scss: "scss",
+          svg: "xml",
+          xml: "xml",
+          sql: "sql",
+          graphql: "graphql",
+          proto: "protobuf",
+          dockerfile: "dockerfile",
+          makefile: "makefile",
+          cmake: "cmake",
+        };
+        // Special case: Dockerfile (no extension)
+        const basename = path.split("/").pop()?.toLowerCase() ?? "";
+        if (basename === "dockerfile" || basename.startsWith("dockerfile."))
+          return "dockerfile";
+        if (basename === "makefile" || basename === "gnumakefile")
+          return "makefile";
+        return map[ext] ?? "plaintext";
+      }
+
+      // ── Bridge call via window.cronymax.browser.query ───────────────────
+      function bridgeRead(runId, path) {
+        return new Promise((resolve, reject) => {
+          const payload = JSON.stringify({
+            channel: "file.read",
+            payload: { run_id: runId, path },
+          });
+          if (!window.cronymax?.browser?.query) {
+            reject(
+              new Error(
+                "bridge not available (cronymax.browser.query not found)",
+              ),
+            );
+            return;
+          }
+          window.cronymax.browser.query({
+            request: payload,
+            persistent: false,
+            onSuccess(response) {
+              try {
+                const parsed = JSON.parse(response);
+                resolve(parsed.content ?? parsed);
+              } catch {
+                resolve(response);
+              }
+            },
+            onFailure(code, msg) {
+              reject(new Error(`bridge error ${code}: ${msg}`));
+            },
+          });
+        });
+      }
+
+      // ── Monaco setup ────────────────────────────────────────────────────
+      require.config({
+        paths: {
+          vs: "https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs",
+        },
+      });
+
+      let monacoEditor = null;
+
+      function showError(msg, detail) {
+        const container = document.getElementById("editor-container");
+        container.innerHTML = `
+          <div id="error">
+            <div>${escapeHtml(msg)}</div>
+            ${detail ? `<div class="detail">${escapeHtml(detail)}</div>` : ""}
+          </div>
+        `;
+      }
+
+      function escapeHtml(str) {
+        return str
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      require(["vs/editor/editor.main"], function (monaco) {
+        if (!filePath) {
+          showError("No file path provided", "Add ?path=<path> to the URL.");
+          return;
+        }
+
+        const lang = detectLanguage(filePath);
+        document.getElementById("header-lang").textContent = lang;
+
+        const container = document.getElementById("editor-container");
+        container.innerHTML = ""; // remove loading indicator
+
+        monacoEditor = monaco.editor.create(container, {
+          value: "",
+          language: lang,
+          theme: "vs-dark",
+          readOnly: true,
+          minimap: { enabled: false },
+          scrollBeyondLastLine: false,
+          fontSize: 13,
+          lineNumbers: "on",
+          wordWrap: "off",
+          automaticLayout: true,
+          renderLineHighlight: "none",
+          overviewRulerLanes: 0,
+          hideCursorInOverviewRuler: true,
+          scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+        });
+
+        bridgeRead(runId, filePath)
+          .then((content) => {
+            const text =
+              typeof content === "string"
+                ? content
+                : JSON.stringify(content, null, 2);
+            const model = monacoEditor.getModel();
+            if (model) {
+              monaco.editor.setModelLanguage(model, lang);
+              model.setValue(text);
+            }
+            // Update size badge
+            const lines = text.split("\n").length;
+            const bytes = new TextEncoder().encode(text).length;
+            document.getElementById("header-size").textContent =
+              `${lines} lines · ${formatBytes(bytes)}`;
+          })
+          .catch((err) => {
+            showError("Failed to load file", err.message);
+          });
+      });
+
+      function formatBytes(n) {
+        if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+        if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+        return `${n} B`;
+      }
+
+      // ── Resize ──────────────────────────────────────────────────────────
+      window.addEventListener("resize", () => {
+        monacoEditor?.layout();
+      });
+    </script>
+  </body>
+</html>

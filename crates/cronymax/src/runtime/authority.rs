@@ -44,8 +44,8 @@ use crate::protocol::SubscriptionId;
 use super::persistence::{Persistence, PersistenceError};
 use super::state::{
     Agent, AgentId, ForkPoint, MemoryEntry, MemoryNamespace, MemoryNamespaceId, PendingReview,
-    PermissionState, ReviewId, Run, RunId, RunStatus, Session, SessionId, Snapshot, Space, SpaceId,
-    Task, TaskId, TaskStatus, TaskTree,
+    PermissionState, ProducedDoc, ResolvedReview, ReviewId, Run, RunId, RunStatus, Session,
+    SessionId, Snapshot, Space, SpaceId, Task, TaskId, TaskStatus, TaskTree,
 };
 use crate::llm::ChatMessage;
 
@@ -76,6 +76,8 @@ pub enum AuthorityError {
     UnknownRun(RunId),
     #[error("unknown review: {0}")]
     UnknownReview(ReviewId),
+    #[error("unknown session: {0}")]
+    UnknownSession(SessionId),
     #[error("invalid state transition: run {run} is in state {state:?} and cannot {action}")]
     InvalidTransition {
         run: RunId,
@@ -280,6 +282,7 @@ impl RuntimeAuthority {
                 write_namespace: None,
                 created_at_ms: now,
                 updated_at_ms: now,
+                manually_named: false,
             })
             .thread
             .clone();
@@ -321,6 +324,92 @@ impl RuntimeAuthority {
                 let _ = self.persistence.save(&inner.snapshot);
             }
         }
+    }
+
+    /// Rename a session. Sets `manually_named = true` so auto-naming never
+    /// overrides the user's choice. Returns an error if the session is not found.
+    /// Emits `SessionRenamed` with `manually_named: true` so the sidebar updates.
+    pub fn rename_session(&self, session_id: &SessionId, name: &str) -> Result<(), AuthorityError> {
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        let session = inner
+            .snapshot
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| AuthorityError::UnknownSession(session_id.clone()))?;
+        session.name = Some(name.to_owned());
+        session.manually_named = true;
+        session.updated_at_ms = now;
+        self.persistence.save(&inner.snapshot)?;
+        let session_id_str = session_id.0.clone();
+        let name_str = name.to_owned();
+        Self::emit_locked(
+            &mut inner,
+            "*".into(),
+            crate::protocol::events::RuntimeEventPayload::SessionRenamed {
+                session_id: session_id_str,
+                name: name_str,
+                manually_named: true,
+            },
+        );
+        Ok(())
+    }
+
+    /// Apply an auto-generated name to a session.  Unlike `rename_session`,
+    /// this does **not** set `manually_named = true`, so subsequent auto-naming
+    /// calls are still honoured.  Emits `SessionRenamed` with
+    /// `manually_named: false` so the sidebar can update its label.
+    ///
+    /// Returns `Ok(())` if the session exists; silently no-ops when the session
+    /// is not found or already has a manually-assigned name.
+    pub fn auto_name_session(&self, session_id: &SessionId, name: &str) {
+        let now = now_ms();
+        let mut inner = self.inner.lock();
+        let Some(session) = inner.snapshot.sessions.get_mut(session_id) else {
+            return;
+        };
+        // Never override a name set manually by the user.
+        if session.manually_named {
+            return;
+        }
+        session.name = Some(name.to_owned());
+        session.updated_at_ms = now;
+        let _ = self.persistence.save(&inner.snapshot);
+        let session_id_str = session_id.0.clone();
+        let name_str = name.to_owned();
+        Self::emit_locked(
+            &mut inner,
+            "*".into(),
+            crate::protocol::events::RuntimeEventPayload::SessionRenamed {
+                session_id: session_id_str,
+                name: name_str,
+                manually_named: false,
+            },
+        );
+    }
+
+    /// Returns the first user message in the session's thread if the session
+    /// has not yet been named and `manually_named` is false, or `None` if
+    /// naming is not needed.  Used by the auto-naming path in `AgentRunner`.
+    pub fn session_needs_naming(&self, session_id: &SessionId) -> Option<String> {
+        let inner = self.inner.lock();
+        let session = inner.snapshot.sessions.get(session_id)?;
+        if session.name.is_some() || session.manually_named {
+            return None;
+        }
+        // Return the first user turn as context for the LLM naming call.
+        for msg in &session.thread {
+            if msg.role == crate::llm::ChatRole::User {
+                if let Some(text) = &msg.content {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_owned());
+                    }
+                }
+            }
+        }
+        // Session has no user message yet — still return an empty marker.
+        Some(String::new())
     }
 
     /// Set the parent session and fork point on a child session.
@@ -454,6 +543,11 @@ impl RuntimeAuthority {
             history: Vec::new(),
             created_at_ms: now,
             updated_at_ms: now,
+            goal: None,
+            parent_run_id: None,
+            produces: Vec::new(),
+            resolved_reviews: Vec::new(),
+            file_changes: Vec::new(),
         };
         let id = run.id;
         // Enrich initial pending event with agent identity from spec (populated
@@ -498,6 +592,33 @@ impl RuntimeAuthority {
             run.flow_run_id = Some(flow_run_id);
             run.updated_at_ms = now_ms();
             // Best-effort persist; failure is non-fatal (field is display-only).
+            let _ = self.persistence.save(&inner.snapshot);
+        }
+    }
+
+    /// Set the human-readable goal on an existing run.  Called immediately
+    /// after `start_run_with_session` from the `StartRun` handler once the
+    /// goal has been resolved from the request payload.
+    pub fn set_run_goal(&self, run_id: RunId, goal: Option<String>) -> Result<(), AuthorityError> {
+        let mut inner = self.inner.lock();
+        let run = inner
+            .snapshot
+            .runs
+            .get_mut(&run_id)
+            .ok_or(AuthorityError::UnknownRun(run_id))?;
+        run.goal = goal;
+        run.updated_at_ms = now_ms();
+        self.persistence.save(&inner.snapshot)?;
+        Ok(())
+    }
+
+    /// Append a produced document record to a run after a successful
+    /// `submit_document` tool call (task 14.5).
+    pub fn append_produced_doc(&self, run_id: RunId, doc: ProducedDoc) {
+        let mut inner = self.inner.lock();
+        if let Some(run) = inner.snapshot.runs.get_mut(&run_id) {
+            run.produces.push(doc);
+            run.updated_at_ms = now_ms();
             let _ = self.persistence.save(&inner.snapshot);
         }
     }
@@ -665,8 +786,10 @@ impl RuntimeAuthority {
         if !matches!(review.state, PermissionState::Pending) {
             return Err(AuthorityError::ReviewAlreadyResolved);
         }
+        // Capture the original request payload before we mutate the review entry.
+        let original_request = review.request.clone();
         review.state = decision;
-        review.notes = notes;
+        review.notes = notes.clone();
         review.updated_at_ms = now;
         // Move the run back to Running on Approve, leave it
         // AwaitingReview otherwise — the agent loop decides what to
@@ -677,12 +800,28 @@ impl RuntimeAuthority {
             .get_mut(&run_id)
             .ok_or(AuthorityError::UnknownRun(run_id))?;
         let session_id = run.session_id.clone();
+        let agent_id_str: Option<String> = run.agent_id.map(|id| id.to_string()).or_else(|| {
+            run.spec
+                .get("agent_name")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+        let flow_run_id_str = run.flow_run_id.clone();
         if matches!(decision, PermissionState::Approved) {
             run.status = RunStatus::Running;
             run.updated_at_ms = now;
         } else {
             run.updated_at_ms = now;
         }
+        // Append the resolution to the run's historical record so receipt
+        // mode can display the full approval trail.
+        run.resolved_reviews.push(ResolvedReview {
+            review_id,
+            request: original_request,
+            decision,
+            notes,
+            resolved_at_ms: now,
+        });
         self.persistence.save(&inner.snapshot)?;
         let topics = run_topics(run_id, session_id.as_ref());
         Self::emit_scoped(
@@ -697,6 +836,23 @@ impl RuntimeAuthority {
                 }),
             },
         );
+        // Emit run_status="running" on approval so the UI clears any
+        // inline approval prompt. Without this event the host never
+        // learns the run resumed, because `resolve_review` changes the
+        // internal status without going through `transition_run`.
+        if matches!(decision, PermissionState::Approved) {
+            Self::emit_scoped(
+                &mut inner,
+                &topics,
+                RuntimeEventPayload::RunStatus {
+                    run_id: run_id.to_string(),
+                    status: "running".into(),
+                    agent_id: agent_id_str,
+                    flow_run_id: flow_run_id_str,
+                    detail: None,
+                },
+            );
+        }
         // If a ReactLoop (or other awaiter) is parked on this review,
         // fire its completion oneshot. Drop happens after we release
         // the lock by virtue of `take()`.

@@ -224,6 +224,8 @@ bool ClientHandler::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
   if (!frame || !frame->IsMain())
     return false;
   const std::string current_url = frame->GetURL().ToString();
+  const int bid = browser ? browser->GetIdentifier() : 0;
+  const std::string target_url = request->GetURL().ToString();
   // Skip in-app chrome panels (file:// resources).
   if (current_url.rfind("file://", 0) == 0)
     return false;
@@ -240,18 +242,16 @@ bool ClientHandler::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
   constexpr unsigned kForwardBackFlag = 0x01000000u;  // CEF_TT_FORWARD_BACK
   if (src != kTtLink || (tt_raw & kForwardBackFlag))
     return false;
-  const std::string target = request->GetURL().ToString();
-  if (target.empty() || target == current_url)
+  if (target_url.empty() || target_url == current_url)
     return false;
   // Intercept external link navigations (Arc-style: opens in an in-app
   // popover instead of navigating in the current tab). This handles both
   // regular link clicks AND shift+click, which in CEF Alloy runtime routes
   // through OnBeforeBrowse rather than OnBeforePopup.
   // Skip file:// navigations (in-app chrome panels navigate themselves).
-  if (target.rfind("file://", 0) == 0)
+  if (target_url.rfind("file://", 0) == 0)
     return false;
-  const int bid = browser ? browser->GetIdentifier() : 0;
-  if (on_popup_request && on_popup_request(bid, target)) {
+  if (on_popup_request && on_popup_request(bid, target_url)) {
     return true;  // cancel in-tab navigation; popover took ownership.
   }
   return false;

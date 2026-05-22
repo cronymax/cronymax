@@ -57,6 +57,30 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+// ── BlackboardWriter ─────────────────────────────────────────────────────────
+
+/// Records how a [`BlackboardEntry`] was written so the UI can surface
+/// provenance ("agent-generated", "human-provided", "auto-seeded").
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BlackboardWriter {
+    /// Written by an agent task completing a port with `blackboard_key`.
+    AgentGenerated {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+    },
+    /// Written by a human via `InjectBlackboard` from the UI.
+    HumanInjected,
+    /// Pre-seeded from session history via `use_outputs` in `invoke_flow`.
+    AutoSeeded { from_task_id: String },
+}
+
+impl Default for BlackboardWriter {
+    fn default() -> Self {
+        BlackboardWriter::AgentGenerated { task_id: None }
+    }
+}
+
 // ── FlowNodeOutput ────────────────────────────────────────────────────────────
 
 /// One typed output port on a [`FlowNode`].
@@ -105,6 +129,10 @@ pub struct FlowNodeOutput {
 pub struct FlowNode {
     pub id: String,
     pub owner: String,
+    /// Human-readable description of what this node does. Optional; surfaced
+    /// in the plain-English flow preview generated at Supervisor spawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(default)]
     pub outputs: Vec<FlowNodeOutput>,
     /// Explicit AND-join gate: Blackboard keys that must ALL be present before
@@ -584,6 +612,22 @@ impl FlowDefinition {
     /// Return the [`FlowNodeOutput`] for a specific node + port, if present.
     pub fn output(&self, node_id: &str, port: &str) -> Option<&FlowNodeOutput> {
         self.node(node_id)?.outputs.iter().find(|o| o.port == port)
+    }
+
+    /// Find the `(node_id, port)` pair that declares the given `blackboard_key`
+    /// on an output. Returns `None` if no output declares that key.
+    ///
+    /// Used by auto-seeding (task 2.3 + 2.6) to locate the node whose port
+    /// should be marked `Seeded` when a prior-run entry is injected.
+    pub fn find_output_by_blackboard_key(&self, key: &str) -> Option<(String, String)> {
+        for node in &self.nodes {
+            for output in &node.outputs {
+                if output.blackboard_key.as_deref() == Some(key) {
+                    return Some((node.id.clone(), output.port.clone()));
+                }
+            }
+        }
+        None
     }
 
     /// Returns the pending output ports for a node (those not yet in

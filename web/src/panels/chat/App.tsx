@@ -23,15 +23,17 @@ import {
   type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -41,27 +43,29 @@ import { Heading } from "@/components/ui/typography";
 import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { cn } from "@/lib/utils";
 import { FlowDocReviewPanel } from "@/panels/chat/FlowDocReviewPanel";
-import { FlowInstancesBar } from "@/panels/chat/FlowInstancesBar";
 import { browser, runtime, shells } from "@/shells/bridge";
 import { listProviderModels } from "@/shells/llm";
 import { agentRegistry, agentRun, b64ToUtf8, flowRun, terminal as rt_terminal } from "@/shells/runtime";
+import { AgentThreadCard } from "./AgentThreadCard";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
 import { ContentStreamView } from "./ContentStreamView";
 import { resolveContextLimit } from "./contextLimits";
 import { FileChangesView } from "./FileChangesView";
-import { FlowTrajectoryDiagram } from "./FlowTrajectoryDiagram";
+import { FlowGanttChart, FlowTaskTree } from "./FlowGanttChart";
+import { FlowThreadCard } from "./FlowThreadCard";
 import { LiveTasksView } from "./LiveTasksView";
 import { PromptPopover } from "./PromptPopover";
 import { ReviewsPanel } from "./ReviewsPanel";
+import { StickyActiveThread } from "./StickyActiveThread";
 import {
   type AnthropicEffort,
   type Attachment,
   type Block,
   type ConversationBlock,
-  chatNameFor,
   ensureChat,
   type FileChange,
   type FlowNotificationBlock,
+  type FlowThread,
   loadAnthropicEffort,
   loadChatData,
   loadChatsList,
@@ -71,7 +75,6 @@ import {
   persistAnthropicEffort,
   persistChatData,
   persistReasoningEffort,
-  persistSelectedFlow,
   persistSelectedModel,
   persistSelectedModelProvider,
   type ReasoningEffort,
@@ -79,6 +82,7 @@ import {
   type Thread,
   useStore,
 } from "./store";
+import { ThreadView } from "./ThreadView";
 import { TraceViewer } from "./TraceViewer";
 import { useSelectionTooltip } from "./useSelectionTooltip";
 
@@ -279,32 +283,242 @@ function ThreadSummary({ thread, onExpand }: { thread: Thread; onExpand: () => v
   );
 }
 
-import type { FlowThread } from "./store";
-
 function FlowThreadSummary({ thread, onExpand }: { thread: FlowThread; onExpand: () => void }) {
+  const [runs, setRuns] = useState<Array<{ id: string; agentId: string | null; goal: string | null; status: string }>>(
+    [],
+  );
+  const [produces, setProduces] = useState<Array<{ doc_type: string; path: string; revision: number }>>([]);
+  const [fileChanges, setFileChanges] = useState<Array<{ path: string; additions: number; deletions: number }>>([]);
+  const [resolved, setResolved] = useState<Array<{ review_id: string; decision: string; tool_name: string }>>([]);
+  const [pending, setPending] = useState<Array<{ reviewId: string; runId: string; toolName: string; args: unknown }>>(
+    [],
+  );
+
+  const refresh = useCallback(() => {
+    if (!thread.flowRunId) return;
+    shells.browser.activity
+      .snapshot()
+      .then((resp: { runs?: unknown[]; pending_reviews?: unknown[] }) => {
+        const rawRuns = (resp.runs ?? []) as Array<Record<string, unknown>>;
+        const children = rawRuns.filter((r) => r.flow_run_id === thread.flowRunId);
+        const parseStatus = (raw: unknown): string => {
+          if (typeof raw === "string") return raw;
+          if (typeof raw === "object" && raw !== null) {
+            const s = (raw as Record<string, unknown>).status;
+            if (typeof s === "string") return s;
+          }
+          return "pending";
+        };
+        setRuns(
+          children.map((r) => ({
+            id: (r.id as string) ?? "",
+            agentId: (r.agent_id as string | null) ?? null,
+            goal: (r.goal as string | null) ?? null,
+            status: parseStatus(r.status),
+          })),
+        );
+        const newProduces: Array<{ doc_type: string; path: string; revision: number }> = [];
+        const newFiles: Array<{ path: string; additions: number; deletions: number }> = [];
+        const newResolved: Array<{ review_id: string; decision: string; tool_name: string }> = [];
+        for (const r of children) {
+          if (Array.isArray(r.produces)) {
+            for (const p of r.produces as Array<Record<string, unknown>>) {
+              newProduces.push({
+                doc_type: (p.doc_type as string) ?? "doc",
+                path: (p.path as string) ?? "",
+                revision: (p.revision as number) ?? 1,
+              });
+            }
+          }
+          if (Array.isArray(r.file_changes)) {
+            for (const fc of r.file_changes as Array<Record<string, unknown>>) {
+              newFiles.push({
+                path: (fc.path as string) ?? "",
+                additions: (fc.additions as number) ?? 0,
+                deletions: (fc.deletions as number) ?? 0,
+              });
+            }
+          }
+          if (Array.isArray(r.resolved_reviews)) {
+            for (const rv of r.resolved_reviews as Array<Record<string, unknown>>) {
+              const req = (rv.request as Record<string, unknown>) ?? {};
+              newResolved.push({
+                review_id: (rv.review_id as string) ?? "",
+                decision: (rv.decision as string) ?? "approved",
+                tool_name: (req.tool_name as string) ?? "",
+              });
+            }
+          }
+        }
+        setProduces(newProduces);
+        setFileChanges(newFiles);
+        setResolved(newResolved);
+        const childIds = new Set(children.map((r) => r.id as string));
+        const newPending: Array<{ reviewId: string; runId: string; toolName: string; args: unknown }> = [];
+        for (const rv of (resp.pending_reviews ?? []) as Array<Record<string, unknown>>) {
+          const runId = (rv.run_id as string) ?? "";
+          if (childIds.has(runId)) {
+            const req = (rv.request as Record<string, unknown>) ?? {};
+            newPending.push({
+              reviewId: (rv.id as string) ?? "",
+              runId,
+              toolName: (req.tool_name as string) ?? "unknown_tool",
+              args: req.arguments,
+            });
+          }
+        }
+        setPending(newPending);
+      })
+      .catch(() => undefined);
+  }, [thread.flowRunId]);
+
+  // Re-fetch when new events arrive (run is actively streaming).
+  useEffect(() => {
+    refresh();
+  }, [refresh, thread.events.length]);
+
   const eventCount = thread.events.length;
   const isLive = thread.flowRunId === "";
+  const totalAdds = fileChanges.reduce((s, fc) => s + fc.additions, 0);
+  const totalDeletions = fileChanges.reduce((s, fc) => s + fc.deletions, 0);
+
+  const STATUS_COLOR: Record<string, string> = {
+    running: "text-amber-400",
+    succeeded: "text-green-400",
+    failed: "text-red-400",
+    cancelled: "text-muted-foreground",
+    awaiting_review: "text-purple-400",
+  };
+  const STATUS_ICON: Record<string, string> = {
+    running: "●",
+    succeeded: "✓",
+    failed: "✗",
+    cancelled: "⊘",
+    awaiting_review: "⏸",
+  };
+
   return (
     <Card size="sm" className="mt-2 text-xs">
-      <CardContent className="flex flex-col gap-1">
-        <div className="flex items-center gap-2">
-          <span className="font-semibold text-primary">Flow thread</span>
-          {eventCount > 0 && (
-            <span className="text-muted-foreground">
-              {eventCount} event{eventCount !== 1 ? "s" : ""}
-            </span>
-          )}
-          {isLive && <span className="italic text-muted-foreground">running…</span>}
+      <CardHeader>
+        <CardTitle className="font-semibold text-primary">Flow thread</CardTitle>
+        <CardDescription>{isLive && <span className="italic text-muted-foreground">running…</span>}</CardDescription>
+        <CardAction>
           <Button variant="link" size="sm" onClick={onExpand} className="ml-auto h-auto p-0">
-            View thread
+            {eventCount > 0 && (
+              <span className="text-muted-foreground">
+                {eventCount} event{eventCount !== 1 ? "s" : ""}
+              </span>
+            )}
+            <ChevronRight className="size-3 shrink-0 text-muted-foreground opacity-40" />
           </Button>
-        </div>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-1 w-full ">
+        <Accordion type="multiple" className="max-w-lg">
+          <AccordionItem value="TASKS">
+            <AccordionTrigger>
+              <span className="text-[10px] uppercase tracking-wider">TASKS</span>
+              <span className="ml-1 rounded-full bg-muted px-1.5 text-[10px]">{runs.length}</span>
+            </AccordionTrigger>
+            <AccordionContent className="mt-0.5 space-y-0.5 pl-4">
+              {runs.map((r) => {
+                const label = r.goal
+                  ? r.goal.length > 55
+                    ? `${r.goal.slice(0, 55)}…`
+                    : r.goal
+                  : (r.agentId ?? r.id.slice(0, 8));
+                return (
+                  <div key={r.id} className="flex items-center gap-1.5">
+                    <span className={`shrink-0 font-mono ${STATUS_COLOR[r.status] ?? "text-muted-foreground"}`}>
+                      {STATUS_ICON[r.status] ?? "○"}
+                    </span>
+                    <span className="flex-1 truncate text-foreground/80">{label}</span>
+                    {r.agentId && (
+                      <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{r.agentId}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </AccordionContent>
+          </AccordionItem>
+
+          <AccordionItem value="PRODUCES">
+            <AccordionTrigger>
+              <span className="text-[10px] uppercase tracking-wider">PRODUCES</span>
+              <span className="ml-1 rounded-full bg-muted px-1.5 text-[10px]">{runs.length}</span>
+            </AccordionTrigger>
+            <AccordionContent className="mt-0.5 space-y-0.5 pl-4">
+              {produces.map((doc, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className="flex-1 truncate text-foreground/80">{doc.path}</span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {doc.doc_type}
+                    {doc.revision > 1 ? ` v${doc.revision}` : ""}
+                  </span>
+                </div>
+              ))}
+            </AccordionContent>
+          </AccordionItem>
+
+          <AccordionItem value="FILE CHANGES">
+            <AccordionTrigger>
+              <span className="text-[10px] uppercase tracking-wider">FILE CHANGES</span>
+              <span className="ml-1 text-[10px]">
+                <span className="text-green-400">+{totalAdds}</span>
+                {" / "}
+                <span className="text-red-400">−{totalDeletions}</span>
+              </span>
+              <span className="ml-1 rounded-full bg-muted px-1.5 text-[10px]">{fileChanges.length}</span>
+            </AccordionTrigger>
+            <AccordionContent className="mt-0.5 space-y-0.5 pl-4">
+              {fileChanges.map((fc, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className="flex-1 truncate text-foreground/80">{fc.path}</span>
+                  <span className="shrink-0 font-mono">
+                    {fc.additions > 0 && <span className="text-green-400">+{fc.additions}</span>}
+                    {fc.additions > 0 && fc.deletions > 0 && "/"}
+                    {fc.deletions > 0 && <span className="text-red-400">−{fc.deletions}</span>}
+                  </span>
+                </div>
+              ))}
+            </AccordionContent>
+          </AccordionItem>
+
+          <AccordionItem value="APPROVALS">
+            <AccordionTrigger>
+              <span className="text-[10px] uppercase tracking-wider">APPROVALS</span>{" "}
+              <span className="ml-1 rounded-full bg-muted px-1.5 text-[10px]">{resolved.length + pending.length}</span>
+            </AccordionTrigger>
+            <AccordionContent className="mt-0.5 space-y-0.5 pl-4">
+              {pending.map((pr) => (
+                <ApprovalCard
+                  key={pr.reviewId}
+                  runId={pr.runId}
+                  reviewId={pr.reviewId}
+                  toolName={pr.toolName}
+                  args={pr.args}
+                  onAllow={() => undefined}
+                  onDeny={() => undefined}
+                />
+              ))}
+              {resolved.map((rv, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className={rv.decision === "approved" ? "text-green-400" : "text-red-400"}>
+                    {rv.decision === "approved" ? "✓" : "✗"}
+                  </span>
+                  <span className="flex-1 truncate text-foreground/80">{rv.tool_name || rv.review_id.slice(0, 8)}</span>
+                  <span className="shrink-0 text-muted-foreground">{rv.decision}</span>
+                </div>
+              ))}
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
       </CardContent>
     </Card>
   );
 }
 
-function ConversationBlockView({
+export function ConversationBlockView({
   block,
   isStreaming,
   isHighlighted,
@@ -336,7 +550,7 @@ function ConversationBlockView({
       onMouseLeave={() => setHovered(false)}
     >
       {/* User message */}
-      <div className="flex flex-col gap-1 rounded-md bg-primary/10 px-3 py-2">
+      <div className="flex flex-col gap-1 rounded-md bg-primary/20 px-3 py-2">
         <Badge variant="secondary" className="self-start">
           You
         </Badge>
@@ -597,7 +811,19 @@ function BlockView({
   if (block.kind === "flow-notification") {
     return <FlowNotificationBlockView block={block} />;
   }
-  return <ShellBlockView block={block} onAction={onShellAction} isHighlighted={isHighlighted} />;
+  if (block.kind === "agent_thread") {
+    return <AgentThreadCard block={block} />;
+  }
+  if (block.kind === "shell") {
+    return <ShellBlockView block={block} onAction={onShellAction} isHighlighted={isHighlighted} />;
+  }
+  if (block.kind === "flow_thread") {
+    return <FlowThreadCard block={block} />;
+  }
+  // exhaustive check — ensures compiler errors if a new block kind is added without handling it
+  const _exhaustive: never = block;
+  void _exhaustive;
+  return null;
 }
 
 // ── Attachment tray ─────────────────────────────────────────────────────
@@ -674,6 +900,8 @@ export function App() {
   const [state, dispatch] = useStore();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+  // Persists the session timeline scroll position across thread-view navigation (task 7.5).
+  const timelineScrollRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [agentLoadError, setAgentLoadError] = useState<string | null>(null);
   const [inputMode, setInputMode] = useState<"chat" | "shell" | "command">("chat");
@@ -994,24 +1222,11 @@ export function App() {
           selected: refreshed.selected,
         });
       }
-      if (e.key === "chats") {
-        if (state.activeChatId) {
-          const { data: d, migrationNotice: mn } = loadChatData(state.activeChatId);
-          dispatch({
-            type: "loadChat",
-            id: state.activeChatId,
-            name: chatNameFor(state.activeChatId),
-            blocks: d.blocks,
-            terminalTid: d.terminalTid,
-            model: d.model || loadSelectedModel(),
-            agentId: d.agentId,
-            migrationNotice: mn,
-          });
-        }
-      }
     };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+    };
     // Run once on mount. refreshAgents/ensureChatTerminal are plain functions
     // (re-created each render); listing them here would re-fire init every
     // render and reset state.blocks via loadChat, making just-sent message
@@ -1141,6 +1356,35 @@ export function App() {
     });
     return () => cancelAnimationFrame(raf);
   }, [state.blocks, state.running]);
+
+  // ── thread-view scroll save + restore (task 7.5) ──────────────────────
+  // When the timeline is visible, track scroll position so it can be
+  // restored after returning from a thread view.
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      timelineScrollRef.current = el.scrollTop;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+    // Re-run when threadView changes because the div mounts/unmounts then.
+  }, [state.threadView]);
+
+  // When returning from thread view (threadView → null), restore position.
+  const prevThreadViewRef = useRef(state.threadView);
+  useEffect(() => {
+    const wasInThread = prevThreadViewRef.current !== null;
+    prevThreadViewRef.current = state.threadView;
+    if (wasInThread && state.threadView === null) {
+      const saved = timelineScrollRef.current;
+      requestAnimationFrame(() => {
+        if (timelineRef.current) {
+          timelineRef.current.scrollTop = saved;
+        }
+      });
+    }
+  }, [state.threadView]);
 
   // ── input mode detection + prefix auto-strip ─────────────────────────
   const onInputChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
@@ -1381,14 +1625,15 @@ export function App() {
     // (e.g. LLM HTTP failure). Used as the assistantText fallback when
     // the run terminates without producing any tokens.
     let lastErrorMessage = "";
-    // When a flow run is started, hold the frontend-generated child session id
-    // so processRuntimeEvent can dispatch setFlowThreadRunId when flow.run.changed arrives.
-    const flowChildSessionId: string | undefined = state.selectedFlow ? crypto.randomUUID() : undefined;
+    // Always generate a child session id so the Flow thread subscription is
+    // active for flows started by Crony via invoke_flow (not just bound flows).
+    const flowChildSessionId: string = crypto.randomUUID();
 
     // Track pending review info from awaiting_review status so we can
     // pair it with the arriving PermissionRequest event.
     let pendingReviewId: string | null = null;
     let runtimeOff: (() => void) | null = null;
+    let sessionOff: (() => void) | null = null;
     // Placeholder — replaced by the real browser.on unsub below.
     let off: () => void = () => {};
     // Child-session subscription for flow thread events — set up eagerly so
@@ -1398,14 +1643,21 @@ export function App() {
     // subscription outlives the parent run — the chat agent exits quickly
     // after kicking off the flow, but flow agents keep running.
     if (flowChildSessionId && !childSessionSubsRef.current.has(flowChildSessionId)) {
+      // Per-run-id thinking tracking: sealed/start-time live in closure only.
+      const nodeThinkingActive = new Map<string, boolean>();
+      const nodeThinkingStartMs = new Map<string, number>();
+
       const unsub = runtime.on(`session:${flowChildSessionId}`, (raw: unknown) => {
         const ev = raw as Record<string, unknown>;
         const pl = (ev.payload as Record<string, unknown> | undefined) ?? {};
         const evKind = pl.kind as string | undefined;
+        const evRunId = pl.run_id as string | undefined;
+
         if (evKind === "run_status") {
           const agentId = (pl.agent_id as string | undefined) ?? "";
           const runStatus = (pl.status as string | undefined) ?? "";
           if (runStatus === "running" || runStatus === "succeeded" || runStatus === "failed") {
+            // Legacy flat event list (used by FlowThreadSummary event count).
             dispatch({
               type: "appendFlowThreadEvent",
               id: blockId,
@@ -1415,6 +1667,123 @@ export function App() {
                 seqNum: (ev.sequence as number) ?? 0,
                 ts: Date.now(),
                 segment: { kind: "text", content: `${agentId}: ${runStatus}` },
+              },
+            });
+            // Rich per-agent conversation entry.
+            if (evRunId) {
+              dispatch({
+                type: "flowNodeStatus",
+                blockId,
+                runId: evRunId,
+                agentId,
+                status: runStatus as import("./store").StatusKind,
+                startedAt: runStatus === "running" ? Date.now() : undefined,
+              });
+            }
+          }
+        } else if (evKind === "token" && evRunId) {
+          const delta = (pl.delta as string | undefined) ?? "";
+          if (!delta) return;
+          // Seal any open thinking segment for this run.
+          if (nodeThinkingActive.get(evRunId)) {
+            const startMs = nodeThinkingStartMs.get(evRunId) ?? Date.now();
+            dispatch({ type: "flowNodeSealThinking", blockId, runId: evRunId, elapsedMs: Date.now() - startMs });
+            nodeThinkingActive.set(evRunId, false);
+          }
+          dispatch({ type: "flowNodeToken", blockId, runId: evRunId, delta });
+        } else if (evKind === "thinking_token" && evRunId) {
+          const delta = (pl.delta as string | undefined) ?? "";
+          if (!delta) return;
+          if (!nodeThinkingActive.get(evRunId)) {
+            nodeThinkingActive.set(evRunId, true);
+            nodeThinkingStartMs.set(evRunId, Date.now());
+          }
+          dispatch({ type: "flowNodeThinkingDelta", blockId, runId: evRunId, delta });
+        } else if (evKind === "trace" && evRunId) {
+          const trace = (pl.trace as Record<string, unknown> | undefined) ?? {};
+          const traceKind = trace.kind as string | undefined;
+          if (traceKind === "tool_start") {
+            const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+            const tool = (trace.tool as string | undefined) ?? "";
+            const args = trace.arguments ?? trace.args ?? {};
+            const durationMs = trace.duration_ms as number | undefined;
+            dispatch({ type: "flowNodeToolCall", blockId, runId: evRunId, toolCallId, tool, args });
+            dispatch({
+              type: "flowNodeTrace",
+              blockId,
+              runId: evRunId,
+              entry: {
+                kind: "tool_start",
+                toolCallId,
+                tool,
+                args,
+                ts: Date.now(),
+                ...(durationMs != null ? { durationMs } : {}),
+              },
+            });
+          } else if (traceKind === "tool_done") {
+            const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
+            const tool = (trace.tool as string | undefined) ?? "";
+            const result = trace.result ?? {};
+            const isError = (trace.is_error as boolean | undefined) ?? false;
+            const durationMs = trace.duration_ms as number | undefined;
+            dispatch({
+              type: "flowNodeToolDone",
+              blockId,
+              runId: evRunId,
+              toolCallId,
+              status: isError ? "error" : "done",
+              result,
+              ...(durationMs != null ? { durationMs } : {}),
+            });
+            dispatch({
+              type: "flowNodeTrace",
+              blockId,
+              runId: evRunId,
+              entry: {
+                kind: "tool_done",
+                toolCallId,
+                tool,
+                result,
+                terminal: (trace.terminal as boolean | undefined) ?? false,
+                ts: Date.now(),
+                ...(durationMs != null ? { durationMs } : {}),
+                ...(isError ? { isError: true } : {}),
+              },
+            });
+          } else if (traceKind === "assistant_turn") {
+            const usageRaw = trace.usage as Record<string, number> | undefined;
+            const usage = usageRaw
+              ? { inputTokens: usageRaw.input_tokens ?? 0, outputTokens: usageRaw.output_tokens ?? 0 }
+              : undefined;
+            const durationMs = trace.duration_ms as number | undefined;
+            dispatch({
+              type: "flowNodeTrace",
+              blockId,
+              runId: evRunId,
+              entry: {
+                kind: "assistant_turn",
+                turnId: (trace.turn as number | undefined) ?? (trace.turn_id as number | undefined) ?? 0,
+                text: (trace.text as string | undefined) ?? "",
+                finishReason: (trace.finish_reason as string | undefined) ?? "",
+                ts: Date.now(),
+                ...(usage ? { usage } : {}),
+                ...(durationMs != null ? { durationMs } : {}),
+              },
+            });
+          } else if (traceKind === "run_start") {
+            dispatch({
+              type: "flowNodeTrace",
+              blockId,
+              runId: evRunId,
+              entry: {
+                kind: "run_start",
+                model: (trace.model as string | undefined) ?? "",
+                systemPrompt: (trace.system_prompt as string | undefined) ?? "",
+                userInput: (trace.user_input as string | undefined) ?? "",
+                tools: (trace.tools as string[] | undefined) ?? [],
+                turnsLimit: (trace.turns_limit as number | undefined) ?? 0,
+                ts: Date.now(),
               },
             });
           }
@@ -1436,6 +1805,7 @@ export function App() {
     const teardown = () => {
       off();
       runtimeOff?.();
+      sessionOff?.();
       // NOTE: childSessionOff is intentionally NOT torn down here — the flow
       // agents continue running after the parent chat run completes.
     };
@@ -1728,6 +2098,9 @@ export function App() {
                 ts: Date.now(),
               },
             });
+            // Clear the inline ApprovalCard regardless of who resolved the review
+            // (ReviewsPanel uses browser.send which doesn't go through onAllow/onDeny).
+            dispatch({ type: "clearAwaitingApproval" });
           } else if (traceKind === "reflection") {
             dispatch({
               type: "appendTraceEntry",
@@ -1940,6 +2313,51 @@ export function App() {
             entry: { kind: "tool_start", toolCallId, tool, args, ts: Date.now() },
           });
           dispatch({ type: "appendToolCallSegment", id: blockId, toolCallId, tool, args });
+
+          // Task 5.6: insert thread blocks when supervisor dispatches a child task.
+          if (tool === "invoke_agent") {
+            const a = args as Record<string, unknown>;
+            const agentId = (a.agent_id as string | undefined) ?? "";
+            const goal = (a.goal as string | undefined) ?? "";
+            dispatch({
+              type: "insertAgentThreadBlock",
+              block: {
+                kind: "agent_thread",
+                id: `agent-thread-${toolCallId || Date.now()}`,
+                taskId: toolCallId || `invoke_agent:${agentId}:${Date.now()}`,
+                parentRunId: runId,
+                agentName: agentId,
+                status: "running",
+                summary: goal.slice(0, 120),
+                comments: [],
+                startedAt: Date.now(),
+                endedAt: null,
+                subRunId: null,
+                criticResults: [],
+              },
+            });
+          } else if (tool === "invoke_flow") {
+            const a = args as Record<string, unknown>;
+            const flowId = (a.flow_id as string | undefined) ?? "";
+            const description = (a.input as string | undefined) ?? "";
+            dispatch({
+              type: "insertFlowThreadBlock",
+              block: {
+                kind: "flow_thread",
+                id: `flow-thread-${toolCallId || Date.now()}`,
+                taskId: toolCallId || `invoke_flow:${flowId}:${Date.now()}`,
+                parentRunId: runId,
+                flowId,
+                flowRunId: "",
+                childSessionId: "",
+                status: "running",
+                description,
+                comments: [],
+                startedAt: Date.now(),
+                endedAt: null,
+              },
+            });
+          }
         } else if (traceKind === "tool_done") {
           const toolCallId = (trace.tool_call_id as string | undefined) ?? "";
           const tool = (trace.tool as string | undefined) ?? "";
@@ -1974,6 +2392,18 @@ export function App() {
               dispatch({ type: "appendFileChange", id: blockId, change: { ...fileChange, blockId, ts: Date.now() } });
             }
           }
+          // Task 6.3: update thread block status when invoke_agent/invoke_flow completes.
+          if (tool === "invoke_agent" || tool === "invoke_flow") {
+            const taskId = toolCallId || "";
+            if (taskId) {
+              dispatch({
+                type: "updateThreadBlockStatus",
+                id: taskId,
+                status: isError ? "failed" : "succeeded",
+                endedAt: Date.now(),
+              });
+            }
+          }
         } else if (traceKind === "error") {
           const msg = (trace.message as string | undefined) ?? "";
           if (msg) lastErrorMessage = msg;
@@ -1996,6 +2426,8 @@ export function App() {
             id: blockId,
             entry: { kind: "approval_resolved", reviewId: resolvedId, decision, ts: Date.now() },
           });
+          // Clear the inline ApprovalCard regardless of who resolved the review.
+          dispatch({ type: "clearAwaitingApproval" });
         } else if (traceKind === "reflection") {
           dispatch({
             type: "appendTraceEntry",
@@ -2102,10 +2534,52 @@ export function App() {
         dispatch({
           type: "attachFlowThread",
           id: blockId,
-          flowThread: { flowRunId: "", childSessionId: flowChildSessionId, events: [] },
+          flowThread: {
+            flowRunId: "",
+            childSessionId: flowChildSessionId,
+            events: [],
+            nodeConversations: {},
+            humanInjectedKeys: [],
+            flowId: state.selectedFlow || undefined,
+          },
         });
       }
       runtimeOff = runtime.on(`run:${runId}`, processRuntimeEvent);
+      // Subscribe to the session topic to receive sub-agent events (e.g. critic_result)
+      // that are fanned out to session:{chatId} by emit_for_run (task 9.3).
+      if (chatId) {
+        const sessionUnsub = runtime.on(`session:${chatId}`, (raw: unknown) => {
+          const ev = raw as Record<string, unknown> | null;
+          if (!ev) return;
+          const pl = (ev.payload as Record<string, unknown> | undefined) ?? {};
+          const evKind = pl.kind as string | undefined;
+
+          if (evKind === "run_status") {
+            // Map child run_id → agentName so we can correlate critic_result events.
+            const evRunId = pl.run_id as string | undefined;
+            const agentId = (pl.agent_id as string | undefined) ?? "";
+            const evStatus = (pl.status as string | undefined) ?? "";
+            if (evRunId && agentId && (evStatus === "pending" || evStatus === "running") && evRunId !== runId) {
+              dispatch({ type: "setAgentSubRunId", agentName: agentId, subRunId: evRunId });
+            }
+          } else if (evKind === "critic_result") {
+            const evRunId = (pl.run_id as string | undefined) ?? "";
+            if (!evRunId) return;
+            dispatch({
+              type: "appendAgentCriticResult",
+              subRunId: evRunId,
+              result: {
+                passed: (pl.passed as boolean | undefined) ?? false,
+                summary: (pl.summary as string | undefined) ?? "",
+                revision: (pl.revision as number | undefined) ?? 1,
+                maxRevisions: (pl.max_revisions as number | undefined) ?? 1,
+                ts: Date.now(),
+              },
+            });
+          }
+        });
+        sessionOff = sessionUnsub;
+      }
       await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
         /* ignore */
       });
@@ -2145,12 +2619,15 @@ export function App() {
     setTimeout(
       () => {
         teardown();
-        if (state.running) {
+        // Use the ref (not a captured state snapshot) so we see the live
+        // running block even after React re-renders since the closure
+        // was created.
+        if (runningBlockIdRef.current === blockId) {
           dispatch({ type: "setRunning", running: false });
           dispatch({ type: "setRunningBlockId", id: null });
         }
       },
-      5 * 60 * 1000,
+      30 * 60 * 1000,
     );
   };
 
@@ -2359,17 +2836,6 @@ export function App() {
     }
   };
 
-  const onClear = () => {
-    dispatch({ type: "clearHistory" });
-    if (state.activeChatId) {
-      persistChatData(state.activeChatId, {
-        blocks: [],
-        terminalTid: state.terminalTid,
-        model: state.model,
-      });
-    }
-  };
-
   const onRestoreBlock = (blockId: string) => {
     const warned = sessionStorage.getItem("cronymax.restore_warned");
     if (!warned) {
@@ -2420,6 +2886,7 @@ export function App() {
 
   const runningBlockId = state.runningBlockId;
   const activeView = state.activeView;
+  const threadView = state.threadView;
 
   const onViewThread = (blockId: string, threadId: string) => {
     dispatch({ type: "setActiveView", view: { kind: "thread", blockId, threadId } });
@@ -2441,34 +2908,6 @@ export function App() {
         {/* Header */}
         <header className="flex items-center gap-3 border-b border-border bg-card px-3 py-2">
           <Heading className="flex-1 truncate">{state.chatName}</Heading>
-
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            Flow:
-            <Select
-              value={state.selectedFlow}
-              onValueChange={(v) => {
-                dispatch({ type: "setSelectedFlow", name: v });
-                persistSelectedFlow(v);
-              }}
-            >
-              <SelectTrigger size="sm" className="max-w-[140px]">
-                <SelectValue placeholder="(no flows)" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {state.flows.map((n) => (
-                    <SelectItem key={n} value={n}>
-                      {n}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <Button type="button" variant="outline" size="sm" onClick={onClear}>
-            Clear
-          </Button>
         </header>
 
         {/* Migration notice */}
@@ -2525,22 +2964,35 @@ export function App() {
           </Alert>
         )}
 
-        {/* Block timeline — hidden when viewing a flow thread */}
-        {activeView.kind === "main" && (
-          <div ref={timelineRef} className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-2">
+        {/* Block timeline — hidden when viewing a thread or flow thread */}
+        {activeView.kind === "main" && !threadView && (
+          <div ref={timelineRef} className="flex flex-1 flex-col gap-2 overflow-y-auto px-4 py-2">
             {state.blocks.map((b) => (
-              <BlockView
+              <div
                 key={b.id}
-                block={b}
-                isStreaming={b.id === runningBlockId && b.kind === "conversation"}
-                onShellAction={onShellAction}
-                isHighlighted={b.id === highlightedBlockId}
-                workspacePrompts={workspacePrompts}
-                onRestoreBlock={!state.running ? onRestoreBlock : undefined}
-                onForkBlock={!state.running ? onForkBlock : undefined}
-                onViewThread={onViewThread}
-              />
+                className={cn("px-2 hover:rounded-md hover:ring-2 hover:ring-primary/40", {
+                  "rounded-md ring-2 ring-primary/40": b.id === highlightedBlockId,
+                })}
+              >
+                <BlockView
+                  block={b}
+                  isStreaming={b.id === runningBlockId && b.kind === "conversation"}
+                  onShellAction={onShellAction}
+                  isHighlighted={b.id === highlightedBlockId}
+                  workspacePrompts={workspacePrompts}
+                  onRestoreBlock={!state.running ? onRestoreBlock : undefined}
+                  onForkBlock={!state.running ? onForkBlock : undefined}
+                  onViewThread={onViewThread}
+                />
+              </div>
             ))}
+          </div>
+        )}
+
+        {/* Supervisor-session-ux: agent/flow thread view (two-level navigation) */}
+        {threadView && !activeView.kind.startsWith("thread") && (
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <ThreadView threadView={threadView} />
           </div>
         )}
 
@@ -2551,6 +3003,9 @@ export function App() {
               | import("./store").ConversationBlock
               | undefined;
             const ft = forkBlock?.flowThread;
+            const nodeConvs = ft ? Object.values(ft.nodeConversations) : [];
+            // Sort by startedAt ascending so agents appear in invocation order.
+            nodeConvs.sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0));
             return (
               <div className="flex flex-1 flex-col gap-0 overflow-hidden">
                 {/* Thread header */}
@@ -2564,31 +3019,66 @@ export function App() {
                   )}
                 </div>
                 {/* Thread body */}
-                <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
+                <div className="flex flex-1 flex-col gap-6 overflow-y-auto px-4 py-4">
+                  {/* Task tree — compact agent hierarchy with status + elapsed time */}
+                  {ft && <FlowTaskTree conversations={ft.nodeConversations} flowId={ft.flowId} />}
+
+                  {/* Gantt chart — x=time, y=agents */}
+                  {ft && <FlowGanttChart conversations={ft.nodeConversations} selectedFlow={ft.flowId} />}
+
                   {/* Document reviews for this flow run — use child session so we see the right reviews */}
                   <FlowDocReviewPanel sessionId={ft?.childSessionId ?? state.activeChatId} />
-                  {/* Trajectory diagram */}
-                  {ft?.flowRunId && state.selectedFlow && (
-                    <FlowTrajectoryDiagram
-                      selectedFlow={state.selectedFlow}
-                      sessionId={state.activeChatId}
-                      selectedNodeId={null}
-                      onSelectNode={() => void 0}
-                      onConversationsUpdate={() => void 0}
-                    />
-                  )}
-                  {/* Events */}
-                  {ft?.events.length === 0 && (
+
+                  {/* No data yet */}
+                  {nodeConvs.length === 0 && (
                     <div className="text-sm italic text-muted-foreground">
-                      {ft.flowRunId ? "No events yet." : "Flow starting…"}
+                      {ft?.flowRunId ? "No events yet." : "Flow starting…"}
                     </div>
                   )}
-                  {ft?.events.map((ev, i) => (
-                    <div key={i} className="flex flex-col gap-1 text-sm">
-                      <span className="text-xs font-medium text-muted-foreground">{ev.agentId}</span>
-                      {ev.segment?.kind === "text" && <div className="whitespace-pre-wrap">{ev.segment.content}</div>}
-                    </div>
-                  ))}
+
+                  {/* Per-agent conversations — each renders like a mini chat block */}
+                  {nodeConvs.map((nc) => {
+                    const isRunning = nc.status === "running" || nc.status === "pending";
+                    const statusColor =
+                      nc.status === "running" || nc.status === "pending"
+                        ? "text-amber-500"
+                        : nc.status === "succeeded"
+                          ? "text-green-500"
+                          : "text-destructive";
+                    return (
+                      <div key={nc.runId} className="flex flex-col gap-2 border-b border-border pb-6 last:border-0">
+                        {/* Agent header */}
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="font-normal">
+                            {nc.agentId || "agent"}
+                          </Badge>
+                          <span className={`text-xs ${statusColor}`}>{nc.status}</span>
+                        </div>
+
+                        {/* HUMAN-PROVIDED annotation — task 8.7 */}
+                        {ft && ft.humanInjectedKeys.length > 0 && (
+                          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                            [HUMAN-PROVIDED] The following blackboard key
+                            {ft.humanInjectedKeys.length > 1 ? "s were" : " was"} manually supplied by the user, not
+                            generated by the pipeline:{" "}
+                            <span className="font-mono">{ft.humanInjectedKeys.join(", ")}</span>
+                          </div>
+                        )}
+
+                        {/* Content stream (tokens + tool calls + thinking) */}
+                        {nc.contentStream.length > 0 && (
+                          <div className="px-1">
+                            <ContentStreamView segments={nc.contentStream} isStreaming={isRunning} />
+                          </div>
+                        )}
+
+                        {/* Trace (tool_start/tool_done/assistant_turn details) */}
+                        {nc.traceEntries.length > 0 && (
+                          <TraceViewer entries={nc.traceEntries} startExpanded={isRunning} />
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -2729,18 +3219,17 @@ export function App() {
             onCommentClick={onCommentAttachmentClick}
           />
 
+          {/* Sticky active thread — shows when a thread block is pinned */}
+          <StickyActiveThread />
+
           {/* Picker + editor wrapper — relative so the picker floats above */}
           <div className="relative">
             {/* ── Reviews panel — floats above editor when pending approvals exist ── */}
-            <div className="absolute bottom-full left-0 right-0 z-40 mb-1 flex flex-col gap-1">
-              {/* ── Flow instances bar — visible when session has active flow runs ── */}
-              <FlowInstancesBar sessionId={state.activeChatId} />
-
+            <div className="z-40 mb-1 flex flex-col gap-1">
               {/* ── File changes summary ─────────────────────────────────────────── */}
               <FileChangesView changes={sessionFileChanges} />
 
-              {/* Doc reviews shown in thread view; pending-only fallback in main view so nothing is missed */}
-              {activeView.kind === "main" && <FlowDocReviewPanel sessionId={state.activeChatId} showHistory={false} />}
+              {/* Doc reviews are shown in the flow thread view only (task 10.2). */}
               <ReviewsPanel sessionId={state.activeChatId} />
             </div>
 

@@ -809,16 +809,39 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   };
 
   // DevTools: F12 or Cmd+Option+I shows the DevTools inspector for the
-  // active web tab's browser. A new detached DevTools window opens.
-  client_handler_->on_devtools_requested = [this](int /*browser_id*/) {
+  // browser that received the key event (identified by browser_id).
+  // Works for all tab kinds (kChat, kWeb, kSettings, kActivity, kFlows,
+  // etc.) and panel windows.
+  client_handler_->on_devtools_requested = [this](int browser_id) {
     CefRefPtr<CefBrowser> target;
-    Tab* active = shell_model_.tabs_ ? shell_model_.tabs_->Active() : nullptr;
-    if (active && active->kind() == TabKind::kWeb) {
-      if (auto* wb = static_cast<WebTabBehavior*>(active->behavior())) {
-        if (auto bv = wb->browser_view())
+
+    // 1. Look up the browser by id in the tab manager (all tab kinds).
+    if (shell_model_.tabs_) {
+      if (Tab* t = shell_model_.tabs_->FindByBrowserId(browser_id)) {
+        CefRefPtr<CefBrowserView> bv;
+        if (t->kind() == TabKind::kWeb) {
+          if (auto* wb = static_cast<WebTabBehavior*>(t->behavior()))
+            bv = wb->browser_view();
+        } else {
+          if (auto* sb = static_cast<SimpleTabBehavior*>(t->behavior()))
+            bv = sb->browser_view();
+        }
+        if (bv)
           target = bv->GetBrowser();
       }
     }
+
+    // 2. Fall back to panel windows (settings, flows, activities).
+    if (!target) {
+      for (const auto& bv : PanelWindow::AllBrowserViews()) {
+        if (bv && bv->GetBrowser() &&
+            bv->GetBrowser()->GetIdentifier() == browser_id) {
+          target = bv->GetBrowser();
+          break;
+        }
+      }
+    }
+
     if (!target)
       return;
     CefWindowInfo wi;
@@ -1217,9 +1240,10 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
   if (!shell_model_.tabs_)
     return;
   const auto snap = shell_model_.tabs_->Snapshot();
-  fprintf(stderr, "[BroadcastToAllPanels] ev=%s tabs=%zu\n", event_name.c_str(),
-          snap.size());
-  fflush(stderr);
+  // fprintf(stderr, "[BroadcastToAllPanels] ev=%s tabs=%zu\n",
+  // event_name.c_str(),
+  //         snap.size());
+  // fflush(stderr);
   for (const auto& s : snap) {
     Tab* t = shell_model_.tabs_->Get(s.id);
     if (!t || !t->behavior()) {
