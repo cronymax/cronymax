@@ -350,7 +350,7 @@ mod tests {
     use crate::protocol::envelope::{ClientToRuntime, RuntimeToClient};
     use crate::protocol::transport::memory;
     use crate::protocol::version::PROTOCOL_VERSION;
-    use crate::runtime::state::{Space, SpaceId};
+    use crate::runtime::state::{RunStatus, Space, SpaceId};
 
     async fn handshake(client: &memory::ClientEnd) {
         client
@@ -728,5 +728,152 @@ mod tests {
                 "flow path should not hit the extension provider guard, got: {message}",
             );
         }
+    }
+
+    /// `handle_start_run` must mirror the resolved agent id into the run
+    /// spec so ResumeRun can recover it after a restart. Without this the
+    /// resume path always falls back to the Crony builtin.
+    #[tokio::test]
+    async fn start_run_persists_agent_id_into_run_spec() {
+        let auth = RuntimeAuthority::in_memory();
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
+        let space_id = space.id;
+        auth.upsert_space(space).unwrap();
+
+        let services = RuntimeServices {
+            authority: auth.clone(),
+            flow_registry: Arc::new(crate::flow::FlowRuntimeRegistry::default()),
+            llm_factory: Arc::new(crate::llm::factory::DefaultLlmProviderFactory::new()),
+            capability_factory: Arc::new(crate::capability::factory::DefaultCapabilityFactory),
+            terminal_managers: Arc::new(Mutex::new(HashMap::new())),
+            memory_manager: None,
+            extensions: None,
+        };
+        let handler =
+            RuntimeHandler::from_services(Arc::new(services), vec![], std::env::temp_dir(), None);
+
+        let resp = handler
+            .handle_control(
+                CorrelationId::new(),
+                ControlRequest::StartRun {
+                    space_id: space_id.to_string(),
+                    payload: serde_json::json!({ "task": "hi" }),
+                    session_id: None,
+                    session_name: None,
+                    agent_id: Some("my-agent".into()),
+                },
+            )
+            .await;
+        match resp {
+            ControlResponse::RunStarted { .. } => {}
+            other => panic!("expected RunStarted, got {other:?}"),
+        }
+
+        let snap = auth.snapshot();
+        let run = snap
+            .runs
+            .values()
+            .next()
+            .expect("the run should have been created");
+        assert_eq!(
+            run.spec.get("agent_id").and_then(|v| v.as_str()),
+            Some("my-agent"),
+            "resolved agent id must be mirrored into the run spec",
+        );
+    }
+
+    /// Resuming a run that was driven by an extension provider must be
+    /// rejected — symmetric to the StartRun guard. The extension's
+    /// AgentSession does not survive the run leaving `Running`, so the
+    /// native agent_loader reconstruction below would silently mis-run it.
+    #[tokio::test]
+    async fn resume_run_for_extension_provider_returns_invalid_state() {
+        let auth = RuntimeAuthority::in_memory();
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
+        let space_id = space.id;
+        auth.upsert_space(space).unwrap();
+
+        // Manufacture a Paused run whose spec names an extension provider —
+        // exactly the shape handle_start_run persists, then what
+        // RuntimeAuthority::rehydrate leaves behind after a restart.
+        let run_id = auth
+            .start_run_with_session(
+                space_id,
+                None,
+                serde_json::json!({ "agent_id": "alice.agent", "task": "hi" }),
+                None,
+            )
+            .unwrap();
+        auth.pause_run(run_id).unwrap();
+
+        let extensions = ExtensionRuntime::new(ExtensionRegistry::default());
+        extensions
+            .providers()
+            .register(ProviderEntry {
+                provider_id: "alice.agent".into(),
+                owning_ext: "alice.ext".into(),
+                label: "Alice Agent".into(),
+                icon: None,
+                description: None,
+                supports_models: false,
+                supports_modes: false,
+                supports_mcp: false,
+            })
+            .unwrap();
+
+        let services = RuntimeServices {
+            authority: auth.clone(),
+            flow_registry: Arc::new(crate::flow::FlowRuntimeRegistry::default()),
+            llm_factory: Arc::new(crate::llm::factory::DefaultLlmProviderFactory::new()),
+            capability_factory: Arc::new(crate::capability::factory::DefaultCapabilityFactory),
+            terminal_managers: Arc::new(Mutex::new(HashMap::new())),
+            memory_manager: None,
+            extensions: Some(extensions),
+        };
+        let handler =
+            RuntimeHandler::from_services(Arc::new(services), vec![], std::env::temp_dir(), None);
+
+        let resp = handler
+            .handle_control(
+                CorrelationId::new(),
+                ControlRequest::ResumeRun {
+                    run_id: run_id.to_string(),
+                },
+            )
+            .await;
+
+        match resp {
+            ControlResponse::Err {
+                error: ControlError::InvalidState { message },
+            } => {
+                assert!(message.contains("alice.agent"), "message: {message}");
+                assert!(message.contains("alice.ext"), "message: {message}");
+                assert!(
+                    message.contains("cannot be resumed"),
+                    "expected resume-rejection message, got: {message}",
+                );
+            }
+            other => panic!("expected InvalidState error, got {other:?}"),
+        }
+
+        // The rejected resume must leave the run Paused — never flipped to
+        // Running and orphaned.
+        assert!(
+            matches!(
+                auth.snapshot().runs.get(&run_id).map(|r| &r.status),
+                Some(RunStatus::Paused)
+            ),
+            "rejected resume must leave the run Paused",
+        );
     }
 }

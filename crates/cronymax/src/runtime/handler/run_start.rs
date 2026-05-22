@@ -40,7 +40,7 @@ impl RuntimeHandler {
     pub(super) async fn handle_start_run(&self, req: ControlRequest) -> ControlResponse {
         let ControlRequest::StartRun {
             space_id,
-            payload,
+            mut payload,
             session_id,
             session_name,
             agent_id,
@@ -138,6 +138,21 @@ impl RuntimeHandler {
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or(crate::crony::CronyBuiltin::ID);
+
+        // Persist the resolved agent id into the run spec. The StartRun
+        // control message carries `agent_id` as a sibling field of
+        // `payload`, and `start_run_with_session` is called with a `None`
+        // typed agent_id (the typed slot is for persisted Agent entities,
+        // not chat agents / extension providers). Without this line the
+        // run's identity is lost: ResumeRun reconstructs from the spec
+        // and would otherwise always fall back to the Crony builtin —
+        // and the extension-provider ResumeRun guard could never fire.
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "agent_id".to_string(),
+                serde_json::Value::String(resolved_agent_id.to_string()),
+            );
+        }
 
         // Extension-provider dispatch. The chat panel agent list now
         // includes `kind: "extension_provider"` entries (see
