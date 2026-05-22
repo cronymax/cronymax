@@ -699,6 +699,7 @@ P4 把六个 L2 EP 的 typed registry 接通到 RPC,但 `AgentProviderRegistry` 
 | 入站事件路由层 | ✅ 完成 | `AgentSessionEvent` 类型化枚举(IDL §AgentEvent 1:1)+ `AgentSessionRouter`(session_id → mpsc sink)+ 每扩展 RPC server 注册 `agents/event` / `agents/turn.done` 入站 notify handler;`rmpv_to_json` / `json_to_rmpv` 互转 helper |
 | chat dispatcher | ✅ 完成 | `runtime/ext_dispatch.rs::drive_extension_session`:session.create → 注册 sink → 后台 session.prompt → 事件循环译成 `RuntimeEventPayload`(text→Token / thinking→ThinkingToken / toolCall→Trace / done→run 状态)→ session.dispose → complete/fail run;`StartRun` 命中扩展 provider 时 spawn 它,绕过 legacy ReactLoop |
 | 端到端联调测试 | ✅ 完成 | duplex 假扩展 peer 跑通 happy path(text→Token、turn.done→Succeeded、sink 清理)+ session.create 出错→run Failed |
+| ResumeRun 护栏 + agent_id 持久化 | ✅ 完成 | code review 发现 `handle_resume_run` 无对称护栏:扩展 chat run 重启后被 `rehydrate` 转 `Paused`,resume 会走 native ReactLoop 静默串台。修复:`handle_start_run` 把 `resolved_agent_id` 镜像进 `Run.spec`(根因——agent 身份此前根本没持久化),`handle_resume_run` spec 优先解析 + 命中扩展 provider 时返回 `InvalidState`(在 `mark_run_running` 前,留 `Paused` 不变孤儿)|
 
 ### Phase 4.5 关键设计选择
 
@@ -706,6 +707,15 @@ P4 把六个 L2 EP 的 typed registry 接通到 RPC,但 `AgentProviderRegistry` 
 2. **session.prompt 走后台 task**:bootstrap.js 的 `session.prompt` handler 迭代抽干后才返回,若与事件循环同 task await 会死锁——入站 notify 需要并发 pump。dispatcher 先 `register` sink 再发 prompt,关掉"事件先于 await 恢复到达"的竞态。
 3. **`AgentSessionRouter` 挂 runtime 作用域**:wire 格式按 sessionId 路由(不是 owning_ext),所以 router 是跨扩展共享的单例;sink 缺失(取消竞态 / 陈旧 dispatcher)按 debug 日志丢弃,不报错。
 4. **flow 路径暂不接**:带 `flow_id` 的 run 跳过扩展 dispatch——flow runtime 有自己的 per-step provider 查找路径(P8)。
+5. **agent 身份必须持久化进 `Run.spec`**:`handle_start_run` 给 `start_run_with_session` 的 typed `agent_id` 传 `None`(那个槽位是给持久化 Agent 实体的),StartRun 控制字段又不进 payload——结果 `Run` 上没存 agent 身份,resume 永远回退 Crony。修复是把 `resolved_agent_id` 镜像进 `payload["agent_id"]`;这同时也修好了 native 非 Crony agent 的 resume 身份丢失。`handle_start_run` / `handle_resume_run` 两个入口都要有 extension-provider 护栏——dispatch 抽象只要有第二扇没上锁的门,silent 串台就会从那里漏进来。
+
+### Phase 4.5 后续:merge origin/main + ResumeRun 护栏(2026-05-22)
+
+`feat/plugins` 落后 `origin/main` 13 commit,已合并(merge commit `9fff00e`)。唯一真冲突是 `runtime/handler.rs` 的 modify/delete——main 把 3712 行的 `handler.rs` 拆成了 `runtime/handler/` 子模块目录,Phase 4.5 的三处改动(StartRun dispatch / AgentRegistryList 列表 / 3 个 handler 测试)重新移植到 `run_start.rs` / `registry_ops.rs` / `handler/mod.rs`;其余 4 个 both-modified 文件自动合并干净。
+
+main 这波对插件架构**净正面**:`emit_for_run` 升级成多 topic fan-out(`run:{id}` + `session:{sid}`),扩展 chat run 带 `session_id` 创建,流式事件经 `emit_for_run` 自动进 session topic,无需扩展侧改动;`dispatch.rs` 改有界 drain,修了大量 outbound 时 keepalive 被饿死的 bug(扩展流式 Token 正是这个负载)。
+
+review「main 对插件架构的影响」时挖出 Phase 4.5 自身的一个洞,已修(commit `e68d968`,见上表「ResumeRun 护栏」行):重启 → `rehydrate` 把 `Running` 扩展 run 转 `Paused` → resume 走 native 路径静默串台。根因比"加护栏"更深——agent 身份此前根本没落盘,见关键设计选择 #5。
 
 ### Phase 4.5 遗留(各自独立一刀)
 
@@ -715,12 +725,12 @@ P4 把六个 L2 EP 的 typed registry 接通到 RPC,但 `AgentProviderRegistry` 
 
 ### Phase 4.5 验证
 
-- `cargo test -p cronymax --lib` → **448 passed**(1 个 pre-existing 无关失败 `crony::tests::crony_def_prompt_is_sealed`,origin/HEAD 上同样挂)
+- `cargo test -p cronymax --lib` → **451 passed**(merge 后 main 已修原先 pre-existing 的 `crony_def_prompt_is_sealed`;含 ResumeRun 护栏 2 个新测试 `start_run_persists_agent_id_into_run_spec` / `resume_run_for_extension_provider_returns_invalid_state`)
 - `cargo test -p cronymax --test agent_runner_test` → **2 passed**
 - `cargo clippy -p cronymax --lib --tests` → 0 warnings
 - `cargo fmt --check` → clean
 - `node --check bundled/extension-host-bootstrap.js` → OK
-- web:`npm --prefix web test -- --run chat_store` → **28 passed**
+- web:`npm --prefix web typecheck` + `npm --prefix web test -- --run chat_store` → **28 passed**
 
 ### Phase 完成度(Phase 4.5 接入后)
 
