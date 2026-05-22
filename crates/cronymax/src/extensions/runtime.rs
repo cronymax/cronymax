@@ -259,6 +259,22 @@ impl ExtensionRuntime {
         self.build_rpc_server(ext_id.to_string(), manifest.clone())
     }
 
+    /// Test-only: install a `NodeHost`-less handle so cross-module tests
+    /// (e.g. `runtime::ext_dispatch`) can exercise the
+    /// `send_to_extension` → duplex-peer path without spawning a real
+    /// Node subprocess. Mirrors what `activate()` does after spawn, minus
+    /// the lifecycle bookkeeping.
+    #[cfg(test)]
+    pub(crate) fn install_test_handle(&self, ext_id: &str, conn: Arc<Connection>) {
+        self.state.handles.lock().insert(
+            ext_id.to_string(),
+            ExtensionHandle {
+                host: NodeHost::dummy_for_test(ext_id),
+                conn,
+            },
+        );
+    }
+
     // ── activate / deactivate ──────────────────────────────────────────
 
     /// Activate the installed extension `ext_id`. The Node host is
@@ -1064,16 +1080,11 @@ mod tests {
 
     // Adds a NodeHost-less handle to state.handles so unit tests can
     // exercise the register-notify path without a real subprocess.
-    // Uses NodeHost::dummy_for_test() defined in host/node.rs.
+    // Thin alias kept for the existing call sites in this module;
+    // delegates to the crate-visible `install_test_handle`.
     impl ExtensionRuntime {
         fn install_test_handle_conn_only(&self, ext_id: &str, conn: Arc<Connection>) {
-            self.state.handles.lock().insert(
-                ext_id.to_string(),
-                ExtensionHandle {
-                    host: NodeHost::dummy_for_test(ext_id),
-                    conn,
-                },
-            );
+            self.install_test_handle(ext_id, conn);
         }
     }
 

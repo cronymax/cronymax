@@ -564,4 +564,284 @@ mod tests {
             }
         }
     }
+
+    // ── end-to-end wired dispatch ───────────────────────────────────────
+
+    /// Drive a full chat turn through `drive_extension_session` against a
+    /// duplex-connected fake extension peer. The peer answers
+    /// `session.create` / `session.prompt` / `session.dispose` over RPC;
+    /// the test body plays the role of the extension's streaming
+    /// iterator by emitting `agents/event` + `agents/turn.done` notifies
+    /// once the dispatcher has registered its session sink.
+    #[tokio::test]
+    async fn drive_extension_session_streams_tokens_and_completes() {
+        use crate::extensions::api::agents::ProviderEntry;
+        use crate::extensions::manifest::Manifest;
+        use crate::extensions::registry::ExtensionRegistry;
+        use crate::extensions::rpc::{Connection, RpcServer};
+        use rmpv::Value;
+        use tokio::io::{duplex, split};
+
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let provider = ProviderEntry {
+            provider_id: "test.ext.gpt".into(),
+            owning_ext: "test.ext".into(),
+            label: "Test GPT".into(),
+            icon: None,
+            description: None,
+            supports_models: false,
+            supports_modes: false,
+            supports_mcp: false,
+        };
+        let manifest = Manifest::from_json(
+            r#"{
+                "id": "test.ext",
+                "name": "Test Ext",
+                "version": "0.1.0",
+                "publisher": "test",
+                "engines": { "cronymax": "^1.0" },
+                "main": "./m.js",
+                "activationEvents": [],
+                "contributes": {
+                    "cronymax.agents.provider": [
+                        { "id": "test.ext.gpt", "label": "Test GPT" }
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        // Peer side: answer the three session RPCs. session.create hands
+        // back a fixed sessionId so the test knows which session id to
+        // address its event notifies to.
+        let create_method = format!("{}:{}", agents_method::SESSION_CREATE, provider.provider_id);
+        let peer_server = RpcServer::builder()
+            .handle(create_method, |_p, _| async move {
+                Ok(Value::Map(vec![(
+                    Value::String("sessionId".into()),
+                    Value::String("sess-it".into()),
+                )]))
+            })
+            .handle(agents_method::SESSION_PROMPT, |_p, _| async move {
+                Ok(Value::Nil)
+            })
+            .handle(agents_method::SESSION_DISPOSE, |_p, _| async move {
+                Ok(Value::Nil)
+            })
+            .build();
+        let runtime_server = runtime.build_per_extension_handlers("test.ext", &manifest);
+
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (runtime_conn, _t1) = Connection::open(a_r, a_w, runtime_server);
+        let (peer_conn, _t2) = Connection::open(b_r, b_w, peer_server);
+        runtime.install_test_handle("test.ext", runtime_conn);
+
+        // The run the dispatcher drives.
+        let authority = RuntimeAuthority::in_memory();
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
+        authority.upsert_space(space.clone()).unwrap();
+        let run_id = authority
+            .start_run_with_session(space.id, None, serde_json::json!({}), None)
+            .unwrap();
+        let mut sub = authority.subscribe(format!("run:{run_id}")).receiver;
+
+        let params = ExtensionRunParams {
+            provider,
+            run_id,
+            workspace_root: std::env::temp_dir(),
+            user_input: "hello extension".into(),
+            system_prompt: None,
+            model: None,
+            mode: None,
+            allowed_tools: None,
+        };
+        let dispatch = tokio::spawn(drive_extension_session(
+            authority.clone(),
+            runtime.clone(),
+            params,
+        ));
+
+        // Wait until the dispatcher has registered its session sink —
+        // emitting before then would be dropped as an unknown session.
+        let registered = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.session_router().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(
+            registered.is_ok(),
+            "dispatcher should register a session sink within 2s",
+        );
+
+        // Play the extension's streaming iterator: one text event, then
+        // the turn-done marker.
+        peer_conn
+            .notify(
+                agents_method::EVENT,
+                Value::Map(vec![
+                    (
+                        Value::String("sessionId".into()),
+                        Value::String("sess-it".into()),
+                    ),
+                    (
+                        Value::String("event".into()),
+                        Value::Map(vec![
+                            (Value::String("kind".into()), Value::String("text".into())),
+                            (
+                                Value::String("text".into()),
+                                Value::String("streamed reply".into()),
+                            ),
+                        ]),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+        peer_conn
+            .notify(
+                agents_method::TURN_DONE,
+                Value::Map(vec![(
+                    Value::String("sessionId".into()),
+                    Value::String("sess-it".into()),
+                )]),
+            )
+            .await
+            .unwrap();
+
+        // Dispatcher should finish cleanly.
+        tokio::time::timeout(std::time::Duration::from_secs(2), dispatch)
+            .await
+            .expect("dispatcher task should finish within 2s")
+            .expect("dispatcher task should not panic");
+
+        // Run reached Succeeded (turn.done with no explicit done event
+        // synthesizes a success).
+        assert!(matches!(
+            authority.run_status(run_id).unwrap(),
+            crate::runtime::state::RunStatus::Succeeded
+        ));
+
+        // The text event was translated to a Token on the run topic.
+        let mut saw_token = false;
+        while let Ok(ev) = sub.try_recv() {
+            if let RuntimeEventPayload::Token { delta, .. } = ev.payload {
+                if delta == "streamed reply" {
+                    saw_token = true;
+                }
+            }
+        }
+        assert!(
+            saw_token,
+            "expected a Token event carrying the streamed delta"
+        );
+
+        // The session sink is unregistered during cleanup.
+        assert!(
+            runtime.session_router().is_empty(),
+            "session sink should be unregistered after the turn",
+        );
+    }
+
+    /// session.create failure (extension RPC error) fails the run rather
+    /// than hanging it.
+    #[tokio::test]
+    async fn drive_extension_session_fails_run_when_create_errors() {
+        use crate::extensions::api::agents::ProviderEntry;
+        use crate::extensions::error::ExtensionError;
+        use crate::extensions::manifest::Manifest;
+        use crate::extensions::registry::ExtensionRegistry;
+        use crate::extensions::rpc::{Connection, RpcServer};
+        use tokio::io::{duplex, split};
+
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let provider = ProviderEntry {
+            provider_id: "test.ext.gpt".into(),
+            owning_ext: "test.ext".into(),
+            label: "Test GPT".into(),
+            icon: None,
+            description: None,
+            supports_models: false,
+            supports_modes: false,
+            supports_mcp: false,
+        };
+        let manifest = Manifest::from_json(
+            r#"{
+                "id": "test.ext",
+                "name": "Test Ext",
+                "version": "0.1.0",
+                "publisher": "test",
+                "engines": { "cronymax": "^1.0" },
+                "main": "./m.js",
+                "activationEvents": [],
+                "contributes": {
+                    "cronymax.agents.provider": [
+                        { "id": "test.ext.gpt", "label": "Test GPT" }
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let create_method = format!("{}:{}", agents_method::SESSION_CREATE, provider.provider_id);
+        let peer_server = RpcServer::builder()
+            .handle(create_method, |_p, _| async move {
+                Err(ExtensionError::Rpc("provider not ready".into()))
+            })
+            .build();
+        let runtime_server = runtime.build_per_extension_handlers("test.ext", &manifest);
+
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (runtime_conn, _t1) = Connection::open(a_r, a_w, runtime_server);
+        let (_peer_conn, _t2) = Connection::open(b_r, b_w, peer_server);
+        runtime.install_test_handle("test.ext", runtime_conn);
+
+        let authority = RuntimeAuthority::in_memory();
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
+        authority.upsert_space(space.clone()).unwrap();
+        let run_id = authority
+            .start_run_with_session(space.id, None, serde_json::json!({}), None)
+            .unwrap();
+
+        let params = ExtensionRunParams {
+            provider,
+            run_id,
+            workspace_root: std::env::temp_dir(),
+            user_input: "hello".into(),
+            system_prompt: None,
+            model: None,
+            mode: None,
+            allowed_tools: None,
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            drive_extension_session(authority.clone(), runtime.clone(), params),
+        )
+        .await
+        .expect("dispatcher should not hang on session.create error");
+
+        match authority.run_status(run_id).unwrap() {
+            crate::runtime::state::RunStatus::Failed { message } => {
+                assert!(
+                    message.contains("session.create"),
+                    "fail message should mention session.create, got: {message}",
+                );
+            }
+            other => panic!("expected Failed run status, got {other:?}"),
+        }
+    }
 }
