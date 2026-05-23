@@ -154,45 +154,9 @@ impl RuntimeHandler {
             );
         }
 
-        // Extension-provider dispatch. The chat panel agent list now
-        // includes `kind: "extension_provider"` entries (see
-        // ControlRequest::AgentRegistryList), so the user can pick a
-        // provider whose owning_ext is an installed extension. When
-        // hit, route through ExtensionRuntime's session.create →
-        // session.prompt → agents/event streaming chain instead of
-        // falling through to agent_loader's placeholder AgentDef.
-        //
-        // Flow-id-bearing runs are bypassed for now: the flow runtime
-        // has its own per-step provider lookup path (P8) and the
-        // dispatch helper is currently scoped to direct chat.
-        let extension_dispatch: Option<crate::extensions::api::agents::ProviderEntry> =
-            if flow_id_opt.is_none() {
-                self.services
-                    .extensions
-                    .as_ref()
-                    .and_then(|ext| ext.providers().get(resolved_agent_id))
-            } else {
-                None
-            };
-        if let Some(ref provider) = extension_dispatch {
-            // Refuse upfront if the extension isn't activated — the
-            // chat panel would otherwise see a misleading session
-            // failure after RunStarted. Lazy activation is its own
-            // slice (TODO P4-T05 lazy-activate); for now the user
-            // must trigger activation via the extensions UI before
-            // their first chat turn.
-            let extensions = self.services.extensions.as_ref().expect("checked above");
-            if !extensions.is_activated(&provider.owning_ext) {
-                return ControlResponse::Err {
-                    error: ControlError::InvalidState {
-                        message: format!(
-                            "extension `{}` (owning provider `{}`) is not activated; activate it before chatting",
-                            provider.owning_ext, provider.provider_id
-                        ),
-                    },
-                };
-            }
-        }
+        // Pre-load the agent definition for direct-chat runs (no flow_id) —
+        // before `start_run_with_session` so no yield-points exist between
+        // run creation (RunStatus:pending) and the RunStarted reply.
         let preloaded_chat_agent_def: Option<crate::capability::agent_loader::AgentDef> =
             if flow_id_opt.is_none() {
                 Some(
@@ -201,6 +165,57 @@ impl RuntimeHandler {
             } else {
                 None
             };
+
+        // Extension-provider dispatch. A chat run routes to an extension
+        // instead of the native ReactLoop in two ways:
+        //   Case A — the picked agent id IS an extension provider id (the
+        //            agent picker lists raw providers as `extension_provider`).
+        //   Case B — the picked agent is a named workspace agent whose YAML
+        //            declares `agent_provider:` (P8). `extension_agent_ref`
+        //            marks this; the agent's persona and tool allow-list
+        //            become the session system prompt / allowedTools.
+        // Either way the result is a `ProviderEntry` driven through
+        // ExtensionRuntime's session.create → prompt → agents/event chain.
+        // Flow-id-bearing runs are bypassed — flow has its own provider path.
+        let mut extension_dispatch: Option<crate::extensions::api::agents::ProviderEntry> = None;
+        let mut extension_agent_ref: Option<crate::capability::agent_loader::AgentProviderRef> =
+            None;
+        if flow_id_opt.is_none() {
+            if let Some(ext) = self.services.extensions.as_ref() {
+                if let Some(provider) = ext.providers().get(resolved_agent_id) {
+                    // Case A. Refuse upfront if the extension isn't activated —
+                    // the chat panel would otherwise see a misleading session
+                    // failure after RunStarted.
+                    if !ext.is_activated(&provider.owning_ext) {
+                        return ControlResponse::Err {
+                            error: ControlError::InvalidState {
+                                message: format!(
+                                    "extension `{}` (owning provider `{}`) is not activated; activate it before chatting",
+                                    provider.owning_ext, provider.provider_id
+                                ),
+                            },
+                        };
+                    }
+                    extension_dispatch = Some(provider);
+                } else if let Some(ref agent_def) = preloaded_chat_agent_def {
+                    // Case B. `resolve_agent_provider` performs the same
+                    // activation check and reports a clear error otherwise.
+                    match crate::runtime::ext_dispatch::resolve_agent_provider(agent_def, Some(ext))
+                    {
+                        Ok(None) => {}
+                        Ok(Some((agent_ref, entry))) => {
+                            extension_dispatch = Some(entry);
+                            extension_agent_ref = Some(agent_ref);
+                        }
+                        Err(message) => {
+                            return ControlResponse::Err {
+                                error: ControlError::InvalidState { message },
+                            };
+                        }
+                    }
+                }
+            }
+        }
 
         // Resolve session: if session_id present, upsert the session
         // and retrieve the prior conversation thread from the ChatStore
@@ -316,19 +331,40 @@ impl RuntimeHandler {
                         .expect("checked when computing extension_dispatch")
                         .clone();
                     let authority = self.authority.clone();
+                    // The model is the chat panel's runtime pick (payload) for
+                    // both cases — matching native chat, which never consults
+                    // the agent YAML's model. `agent_provider.model` is a
+                    // flow-only default (flow has no runtime picker); `mode` is
+                    // likewise runtime-only and stays unset here.
+                    let payload_model = if model.is_empty() {
+                        None
+                    } else {
+                        Some(model.clone())
+                    };
+                    // Case B (a named workspace agent backed by a provider)
+                    // sources the persona + tool allow-list from the agent
+                    // definition; Case A (a raw provider pick) uses the chat
+                    // payload's system prompt and applies no tool filter.
+                    let (ext_system_prompt, ext_allowed_tools) = if extension_agent_ref.is_some() {
+                        let def = preloaded_chat_agent_def.as_ref();
+                        let sp = def
+                            .map(|d| d.system_prompt.clone())
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| system_prompt.clone());
+                        let tools = def.map(|d| d.tools.clone()).filter(|t| !t.is_empty());
+                        (sp, tools)
+                    } else {
+                        (system_prompt.clone(), None)
+                    };
                     let params = crate::runtime::ext_dispatch::ExtensionRunParams {
                         provider,
                         run_id,
                         workspace_root: workspace_root.clone(),
                         user_input: user_input.clone(),
-                        system_prompt: system_prompt.clone(),
-                        model: if model.is_empty() {
-                            None
-                        } else {
-                            Some(model.clone())
-                        },
+                        system_prompt: ext_system_prompt,
+                        model: payload_model,
                         mode: None,
-                        allowed_tools: None,
+                        allowed_tools: ext_allowed_tools,
                     };
                     tokio::spawn(async move {
                         crate::runtime::ext_dispatch::drive_extension_session(

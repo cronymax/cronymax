@@ -64,6 +64,7 @@ impl CronyBuiltin {
                 prompt_template: None,
                 enabled: true,
             }),
+            agent_provider: None,
         }
     }
 

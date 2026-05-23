@@ -34,6 +34,29 @@ pub enum PromptSource {
     UserYaml(PathBuf),
 }
 
+// ── AgentProviderRef ──────────────────────────────────────────────────────────
+
+/// Reference to an extension-contributed agent provider that backs an agent's
+/// engine.
+///
+/// When an [`AgentDef`] carries `Some(AgentProviderRef)`, the agent runs on the
+/// named provider's `AgentSession` (an extension host) instead of the built-in
+/// `ReactLoop`. `None` means the native engine.
+///
+/// Parsed from the `agent_provider:` YAML key, which mirrors `llm:` in being
+/// scalar-or-map: `agent_provider: bytedance.coco.agent` or
+/// `agent_provider: { id: ..., model: ... }`. The sentinel `builtin` (and an
+/// empty / absent value) resolves to `None`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentProviderRef {
+    /// Provider id, e.g. `bytedance.coco.agent`. Resolved against the
+    /// `AgentProviderRegistry` at run start.
+    pub id: String,
+    /// Optional provider-scoped model id — forwarded as `SessionOptions.model`.
+    /// A per-agent default; the chat panel may override it at runtime.
+    pub model: Option<String>,
+}
+
 // ── AgentDef ─────────────────────────────────────────────────────────────────
 
 /// Parsed subset of `<agent>.agent.yaml` that the Rust runtime cares about.
@@ -91,6 +114,11 @@ pub struct AgentDef {
     /// Optional in-loop reflection configuration. When `Some`, the
     /// `ReactLoop` fires a self-assessment pass at the trigger interval.
     pub reflection: Option<ReflectionConfig>,
+
+    /// When `Some`, this agent is backed by an extension-contributed agent
+    /// provider rather than the native `ReactLoop`. `None` = native engine.
+    /// Parsed from the `agent_provider:` YAML key.
+    pub agent_provider: Option<AgentProviderRef>,
 }
 
 /// The two legal agent kinds.
@@ -133,6 +161,10 @@ struct RawAgentDef {
     reasoning_effort: String,
     #[serde(default = "default_true")]
     inject_workspace: bool,
+    /// Engine selector: a scalar provider id, or a `{ id, model }` map.
+    /// Absent / `builtin` → native `ReactLoop`. See [`parse_agent_provider`].
+    #[serde(default)]
+    agent_provider: Option<serde_yml::Value>,
 }
 
 fn default_true() -> bool {
@@ -169,6 +201,7 @@ impl Default for AgentDef {
             inject_workspace: true,
             vars: HashMap::new(),
             reflection: None,
+            agent_provider: None,
         }
     }
 }
@@ -220,6 +253,9 @@ impl RawAgentDef {
             normalize_effort(&llm_reasoning)
         };
 
+        // `agent_provider:` selects the engine — see `parse_agent_provider`.
+        let agent_provider = parse_agent_provider(&self.agent_provider);
+
         AgentDef {
             name,
             kind,
@@ -233,6 +269,7 @@ impl RawAgentDef {
             inject_workspace: self.inject_workspace,
             vars: HashMap::new(),
             reflection: None,
+            agent_provider,
         }
     }
 }
@@ -248,6 +285,38 @@ fn normalize_effort(s: &str) -> String {
     match s.trim().to_ascii_lowercase().as_str() {
         "minimal" | "low" | "medium" | "high" | "xhigh" => s.trim().to_ascii_lowercase(),
         _ => String::new(),
+    }
+}
+
+/// Parse the `agent_provider:` YAML value into an optional [`AgentProviderRef`].
+///
+/// Accepts a bare string (the provider id) or a `{ id, model? }` map. An empty
+/// id, the literal `builtin`, or an absent value all resolve to `None` (the
+/// native `ReactLoop` engine). This mirrors the scalar-or-map handling of the
+/// `llm:` field.
+fn parse_agent_provider(value: &Option<serde_yml::Value>) -> Option<AgentProviderRef> {
+    let (id, model) = match value {
+        Some(serde_yml::Value::String(s)) => (s.trim().to_owned(), None),
+        Some(serde_yml::Value::Mapping(map)) => {
+            let id = map
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_owned();
+            let model = map
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            (id, model)
+        }
+        _ => return None,
+    };
+    if id.is_empty() || id.eq_ignore_ascii_case("builtin") {
+        None
+    } else {
+        Some(AgentProviderRef { id, model })
     }
 }
 
@@ -413,5 +482,61 @@ system_prompt: "Review the PRD for completeness."
         let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
         let def = raw.into_agent_def("critic", PathBuf::new());
         assert!(!def.inject_workspace);
+    }
+
+    #[test]
+    fn agent_provider_scalar_form() {
+        let yaml = "name: cr\nagent_provider: bytedance.coco.agent\n";
+        let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
+        let def = raw.into_agent_def("cr", PathBuf::new());
+        let ap = def.agent_provider.expect("agent_provider should be Some");
+        assert_eq!(ap.id, "bytedance.coco.agent");
+        assert_eq!(ap.model, None);
+    }
+
+    #[test]
+    fn agent_provider_map_form_with_model() {
+        let yaml = "name: cr\n\
+                    agent_provider:\n  \
+                      id: bytedance.coco.agent\n  \
+                      model: claude-opus-4-7\n";
+        let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
+        let def = raw.into_agent_def("cr", PathBuf::new());
+        let ap = def.agent_provider.expect("agent_provider should be Some");
+        assert_eq!(ap.id, "bytedance.coco.agent");
+        assert_eq!(ap.model.as_deref(), Some("claude-opus-4-7"));
+    }
+
+    #[test]
+    fn agent_provider_builtin_sentinel_is_native() {
+        let yaml = "name: cr\nagent_provider: builtin\n";
+        let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
+        let def = raw.into_agent_def("cr", PathBuf::new());
+        assert!(
+            def.agent_provider.is_none(),
+            "`builtin` must resolve to the native engine"
+        );
+    }
+
+    #[test]
+    fn agent_provider_absent_is_native() {
+        let yaml = "name: cr\nllm: gpt-4o\n";
+        let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
+        let def = raw.into_agent_def("cr", PathBuf::new());
+        assert!(
+            def.agent_provider.is_none(),
+            "an absent key must resolve to the native engine"
+        );
+    }
+
+    #[test]
+    fn agent_provider_map_without_id_is_native() {
+        let yaml = "name: cr\nagent_provider:\n  model: claude-opus-4-7\n";
+        let raw: RawAgentDef = serde_yml::from_str(yaml).unwrap();
+        let def = raw.into_agent_def("cr", PathBuf::new());
+        assert!(
+            def.agent_provider.is_none(),
+            "a map with no id must resolve to the native engine"
+        );
     }
 }

@@ -40,12 +40,60 @@ use std::path::PathBuf;
 
 use tracing::{info, warn};
 
+use crate::capability::agent_loader::{AgentDef, AgentProviderRef};
+use crate::capability::submit_document::persist_flow_document;
 use crate::extensions::api::agents::{AgentSessionEvent, AgentSessionMessage, ProviderEntry};
 use crate::extensions::rpc::codec::agents_method;
 use crate::extensions::runtime::{json_to_rmpv, rmpv_to_json, ExtensionRuntime};
+use crate::flow::runtime::InvocationContext;
 use crate::protocol::events::RuntimeEventPayload;
+use crate::runtime::agent_runner::{render_system_message_with, SubmitMode};
 use crate::runtime::authority::RuntimeAuthority;
+use crate::runtime::run_context::RunContext;
 use crate::runtime::state::RunId;
+
+/// Resolve an [`AgentDef`]'s declared engine against the live extension runtime.
+///
+/// * `Ok(None)` — the agent runs on the native `ReactLoop` (no `agent_provider`
+///   declared in its YAML).
+/// * `Ok(Some((provider_ref, entry)))` — the agent is backed by an installed,
+///   activated extension provider.
+/// * `Err(msg)` — the agent declares `agent_provider` but it cannot be used: no
+///   extension runtime, the provider is not registered, or its owning extension
+///   is not activated.
+///
+/// Callers MUST surface `Err` as a hard failure and MUST NOT fall through to
+/// the native engine — a silent fallback would re-task the run under the wrong
+/// agent (the same class of bug the Phase 4.5 ResumeRun guard closed).
+pub fn resolve_agent_provider(
+    agent_def: &AgentDef,
+    extensions: Option<&ExtensionRuntime>,
+) -> Result<Option<(AgentProviderRef, ProviderEntry)>, String> {
+    let Some(provider_ref) = agent_def.agent_provider.clone() else {
+        return Ok(None);
+    };
+    let Some(extensions) = extensions else {
+        return Err(format!(
+            "agent `{}` declares agent_provider `{}`, but the extension runtime is unavailable",
+            agent_def.name, provider_ref.id
+        ));
+    };
+    let Some(entry) = extensions.providers().get(&provider_ref.id) else {
+        return Err(format!(
+            "agent `{}` declares agent_provider `{}`, but no installed extension \
+             contributes it — install and activate the owning extension",
+            agent_def.name, provider_ref.id
+        ));
+    };
+    if !extensions.is_activated(&entry.owning_ext) {
+        return Err(format!(
+            "agent `{}` is backed by provider `{}` from extension `{}`, which is \
+             not activated — activate it first",
+            agent_def.name, provider_ref.id, entry.owning_ext
+        ));
+    }
+    Ok(Some((provider_ref, entry)))
+}
 
 /// Tunable inputs assembled by the StartRun arm. Owned values so the
 /// dispatcher can move them into the spawned task.
@@ -61,31 +109,52 @@ pub struct ExtensionRunParams {
     pub allowed_tools: Option<Vec<String>>,
 }
 
-/// Drive one chat turn through an extension-contributed AgentProvider.
+/// Inputs for one extension-provider turn — the configuration that is
+/// identical whether the caller is the chat panel or the flow runtime.
+struct ExtensionTurnInput {
+    workspace_root: PathBuf,
+    user_input: String,
+    system_prompt: Option<String>,
+    model: Option<String>,
+    mode: Option<String>,
+    allowed_tools: Option<Vec<String>>,
+}
+
+/// Outcome of [`run_extension_turn`].
+struct ExtensionTurnResult {
+    /// Terminal outcome of the turn (success, or failure with a message).
+    outcome: RunOutcome,
+    /// Every `text` delta concatenated — the assistant's visible reply. The
+    /// flow path submits this as the document body; the chat path ignores it
+    /// (the deltas were already streamed to the panel as `Token` events).
+    assistant_text: String,
+}
+
+/// Run one turn against an extension-contributed `AgentSession` and return its
+/// outcome: `session.create` → `session.prompt` → event loop → `dispose`.
 ///
-/// Designed to be spawned as a tokio task immediately after the
-/// `RunStarted` control reply has been sent. The function never returns
-/// `Result` — every failure path emits a `Log` or transitions the run
-/// to `Failed` via the authority, so the chat panel sees the outcome
-/// through its existing subscription rather than via an unhandled
-/// rejection.
-pub async fn drive_extension_session(
-    authority: RuntimeAuthority,
-    extensions: ExtensionRuntime,
-    params: ExtensionRunParams,
-) {
-    let ExtensionRunParams {
-        provider,
-        run_id,
+/// This is the engine shared by both entry points. It deliberately does **not**
+/// finalize the run (no `complete_run` / `fail_run`) — what a terminal turn
+/// *means* differs by caller: the chat wrapper completes/fails the run
+/// directly, the flow wrapper first submits a document. `mark_run_running` *is*
+/// done here since it is unconditional for both.
+async fn run_extension_turn(
+    authority: &RuntimeAuthority,
+    extensions: &ExtensionRuntime,
+    provider: &ProviderEntry,
+    run_id: RunId,
+    input: ExtensionTurnInput,
+) -> ExtensionTurnResult {
+    let ExtensionTurnInput {
         workspace_root,
         user_input,
         system_prompt,
         model,
         mode,
         allowed_tools,
-    } = params;
+    } = input;
 
-    // ── 0. Move to Running so the chat panel transitions out of "pending".
+    // ── 0. Move to Running so the panel transitions out of "pending".
     if let Err(e) = authority.mark_run_running(run_id) {
         warn!(%run_id, error = %e, "ext_dispatch: mark_run_running failed");
     }
@@ -140,15 +209,19 @@ pub async fn drive_extension_session(
                     provider.provider_id, v
                 );
                 warn!(%run_id, "{msg}");
-                let _ = authority.fail_run(run_id, msg);
-                return;
+                return ExtensionTurnResult {
+                    outcome: RunOutcome::Failed(msg),
+                    assistant_text: String::new(),
+                };
             }
         },
         Err(e) => {
             let msg = format!("session.create on `{}` failed: {e}", provider.provider_id);
             warn!(%run_id, "{msg}");
-            let _ = authority.fail_run(run_id, msg);
-            return;
+            return ExtensionTurnResult {
+                outcome: RunOutcome::Failed(msg),
+                assistant_text: String::new(),
+            };
         }
     };
     info!(%run_id, %session_id, provider = %provider.provider_id, "ext_dispatch: session created");
@@ -163,7 +236,6 @@ pub async fn drive_extension_session(
         Err(e) => {
             let msg = format!("router register for `{session_id}` failed: {e}");
             warn!(%run_id, "{msg}");
-            let _ = authority.fail_run(run_id, msg);
             // Best-effort dispose so the extension can clean up.
             let dispose_params = serde_json::json!({ "sessionId": session_id });
             let _ = extensions
@@ -173,7 +245,10 @@ pub async fn drive_extension_session(
                     json_to_rmpv(&dispose_params),
                 )
                 .await;
-            return;
+            return ExtensionTurnResult {
+                outcome: RunOutcome::Failed(msg),
+                assistant_text: String::new(),
+            };
         }
     };
 
@@ -196,13 +271,19 @@ pub async fn drive_extension_session(
         })
     };
 
-    // ── 4. Event loop ----------------------------------------------------
+    // ── 4. Event loop. Each `text` delta is both streamed (as a `Token`
+    // event, via translate_event) and accumulated into `assistant_text` so
+    // the flow caller can use the full reply as a document body.
     let turn_id = format!("ext-{run_id}");
     let mut final_status: Option<RunOutcome> = None;
+    let mut assistant_text = String::new();
     while let Some(msg) = sink.recv().await {
         match msg {
             AgentSessionMessage::Event(ev) => {
-                if let Some(outcome) = translate_event(&authority, run_id, &turn_id, ev) {
+                if let AgentSessionEvent::Text { text } = &ev {
+                    assistant_text.push_str(text);
+                }
+                if let Some(outcome) = translate_event(authority, run_id, &turn_id, ev) {
                     final_status = Some(outcome);
                 }
             }
@@ -234,9 +315,8 @@ pub async fn drive_extension_session(
     // Detach the sink so any late notifies are silently dropped.
     extensions.session_router().unregister(&session_id);
 
-    // ── 5. Best-effort dispose. We don't surface errors here as a run
-    // failure — the turn itself may have succeeded; dispose failures are
-    // logged for diagnostics but don't change run status.
+    // ── 5. Best-effort dispose. Dispose failures are logged for diagnostics
+    // but don't change the turn outcome — the turn itself may have succeeded.
     let dispose_params = serde_json::json!({ "sessionId": session_id });
     if let Err(e) = extensions
         .send_to_extension(
@@ -249,10 +329,55 @@ pub async fn drive_extension_session(
         warn!(%run_id, %session_id, error = %e, "ext_dispatch: session.dispose failed");
     }
 
-    // ── 6. Finalize. If no Done event arrived we synthesize a success;
-    // this matches the bootstrap.js fallback when an iterator returns
-    // without emitting `{kind:"done"}`.
-    match final_status.unwrap_or(RunOutcome::Succeeded) {
+    // If no `done` event arrived we synthesize success — matching the
+    // bootstrap.js fallback when an iterator returns without `{kind:"done"}`.
+    ExtensionTurnResult {
+        outcome: final_status.unwrap_or(RunOutcome::Succeeded),
+        assistant_text,
+    }
+}
+
+/// Drive one chat turn through an extension-contributed AgentProvider.
+///
+/// Spawned as a tokio task immediately after the `RunStarted` control reply
+/// has been sent. Never returns `Result` — the turn outcome is written onto
+/// the run via the authority, so the chat panel sees it through its existing
+/// subscription.
+pub async fn drive_extension_session(
+    authority: RuntimeAuthority,
+    extensions: ExtensionRuntime,
+    params: ExtensionRunParams,
+) {
+    let ExtensionRunParams {
+        provider,
+        run_id,
+        workspace_root,
+        user_input,
+        system_prompt,
+        model,
+        mode,
+        allowed_tools,
+    } = params;
+
+    let result = run_extension_turn(
+        &authority,
+        &extensions,
+        &provider,
+        run_id,
+        ExtensionTurnInput {
+            workspace_root,
+            user_input,
+            system_prompt,
+            model,
+            mode,
+            allowed_tools,
+        },
+    )
+    .await;
+
+    // Chat finalizes the run directly — the streamed deltas were already
+    // delivered as `Token` events, so `assistant_text` is unused here.
+    match result.outcome {
         RunOutcome::Succeeded => {
             if let Err(e) = authority.complete_run(run_id) {
                 warn!(%run_id, error = %e, "ext_dispatch: complete_run failed");
@@ -269,6 +394,150 @@ pub async fn drive_extension_session(
 enum RunOutcome {
     Succeeded,
     Failed(String),
+}
+
+/// Inputs for one flow-node turn driven through an extension AgentProvider.
+pub struct ExtensionFlowParams {
+    /// The resolved provider registry entry.
+    pub provider: ProviderEntry,
+    /// The parsed `agent_provider:` reference — carries the model override.
+    pub provider_ref: AgentProviderRef,
+    /// The agent run `AgentRunner::spawn_agent` created for this node.
+    pub run_id: RunId,
+    /// Per-invocation flow context (workspace, doc channel, flow ids).
+    pub run_ctx: RunContext,
+    /// The flow invocation context (trigger, pending ports, node id).
+    pub inv_ctx: InvocationContext,
+    /// The agent definition (persona, tools).
+    pub agent_def: AgentDef,
+}
+
+/// Drive one flow-node turn through an extension-contributed AgentProvider.
+///
+/// The flow analogue of [`drive_extension_session`]: it runs the same
+/// [`run_extension_turn`] core, but the terminal action differs. A flow worker
+/// agent must produce a document — and since an extension agent has no
+/// `submit_document` tool (the frozen IDL has no platform→extension tool
+/// channel), its accumulated turn output *is* the document. On success this
+/// persists that output via [`persist_flow_document`] and pushes the resulting
+/// `DocumentSubmitted` onto the run's `doc_tx`, exactly as the native
+/// `submit_document` tool would — the supervision loop downstream cannot tell
+/// the difference.
+///
+/// Spawned as a tokio task; never returns `Result` — the outcome is written
+/// onto the run via the authority.
+pub async fn drive_extension_flow_agent(
+    authority: RuntimeAuthority,
+    extensions: ExtensionRuntime,
+    params: ExtensionFlowParams,
+) {
+    let ExtensionFlowParams {
+        provider,
+        provider_ref,
+        run_id,
+        run_ctx,
+        inv_ctx,
+        agent_def,
+    } = params;
+
+    // The agent's own system_prompt (persona) becomes SessionOptions.systemPrompt;
+    // template vars are expanded the same way the native path expands them.
+    let system_prompt = if agent_def.system_prompt.is_empty() {
+        None
+    } else {
+        let var_ctx = crate::runtime::prompt::VarContext::builder()
+            .workspace_root(run_ctx.workspace_root.clone())
+            .agent_name(agent_def.name.clone())
+            .user_vars(agent_def.vars.clone())
+            .build();
+        Some(crate::runtime::prompt::render(
+            &agent_def.system_prompt,
+            &var_ctx,
+        ))
+    };
+    // The rendered invocation context becomes the prompt. TurnOutput mode tells
+    // the agent its reply *is* the document (it has no submit_document tool).
+    let user_input = render_system_message_with(&inv_ctx, SubmitMode::TurnOutput);
+    let allowed_tools = if agent_def.tools.is_empty() {
+        None
+    } else {
+        Some(agent_def.tools.clone())
+    };
+
+    let result = run_extension_turn(
+        &authority,
+        &extensions,
+        &provider,
+        run_id,
+        ExtensionTurnInput {
+            workspace_root: run_ctx.workspace_root.clone(),
+            user_input,
+            system_prompt,
+            model: provider_ref.model,
+            // mode is a runtime/chat-panel concern, not a per-agent default —
+            // flow has no runtime picker, so it stays unset (provider default).
+            mode: None,
+            allowed_tools,
+        },
+    )
+    .await;
+
+    // On failure, fail the agent run and stop — no document is produced.
+    let assistant_text = match result.outcome {
+        RunOutcome::Succeeded => result.assistant_text,
+        RunOutcome::Failed(msg) => {
+            if let Err(e) = authority.fail_run(run_id, msg) {
+                warn!(%run_id, error = %e, "ext_dispatch(flow): fail_run failed");
+            }
+            return;
+        }
+    };
+
+    // The submitted document's port is the agent's next pending port. With no
+    // pending port there is nothing to submit — the turn still succeeded.
+    let Some(doc_type) = inv_ctx.pending_ports.first().cloned() else {
+        info!(%run_id, "ext_dispatch(flow): no pending port; completing without a document");
+        if let Err(e) = authority.complete_run(run_id) {
+            warn!(%run_id, error = %e, "ext_dispatch(flow): complete_run failed");
+        }
+        return;
+    };
+
+    // Persist the turn output as the document, then push the event onto the
+    // run's doc channel — the supervision loop picks it up exactly as it would
+    // a native `submit_document` tool call. `agent_id` carries the node id to
+    // match `register_submit_document`'s convention.
+    let flow_id = run_ctx.flow_id.clone().unwrap_or_default();
+    let flow_run_id = run_ctx.flow_run_id.clone().unwrap_or_default();
+    match persist_flow_document(
+        run_ctx.workspace_root.clone(),
+        flow_id,
+        flow_run_id,
+        inv_ctx.node_id.clone(),
+        doc_type.clone(),
+        doc_type,
+        assistant_text,
+        run_ctx.workspace_cache_dir.clone(),
+    )
+    .await
+    {
+        Ok(evt) => {
+            if let Err(e) = run_ctx.doc_tx.send(evt).await {
+                let msg = format!("flow doc channel closed before submit: {e}");
+                warn!(%run_id, "{msg}");
+                let _ = authority.fail_run(run_id, msg);
+                return;
+            }
+            if let Err(e) = authority.complete_run(run_id) {
+                warn!(%run_id, error = %e, "ext_dispatch(flow): complete_run failed");
+            }
+        }
+        Err(e) => {
+            let msg = format!("persisting extension agent document failed: {e}");
+            warn!(%run_id, "{msg}");
+            let _ = authority.fail_run(run_id, msg);
+        }
+    }
 }
 
 /// Translate one `AgentSessionEvent` into a run-scoped
@@ -843,5 +1112,302 @@ mod tests {
             }
             other => panic!("expected Failed run status, got {other:?}"),
         }
+    }
+
+    /// Drive a flow-node turn through `drive_extension_flow_agent` against a
+    /// duplex fake extension peer. The peer answers the session RPCs; the test
+    /// plays the streaming iterator (one `text` event = the document body,
+    /// then `turn.done`). Asserts the turn output is persisted and a
+    /// `DocumentSubmitted` lands on the run's `doc_tx`.
+    #[tokio::test]
+    async fn drive_extension_flow_agent_submits_turn_output_as_document() {
+        use crate::capability::agent_loader::AgentDef;
+        use crate::extensions::manifest::Manifest;
+        use crate::extensions::registry::ExtensionRegistry;
+        use crate::extensions::rpc::{Connection, RpcServer};
+        use crate::flow::runtime::{InvocationContext, InvocationTrigger};
+        use crate::llm::LlmConfig;
+        use crate::runtime::run_context::RunContext;
+        use rmpv::Value;
+        use tokio::io::{duplex, split};
+
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let provider = ProviderEntry {
+            provider_id: "test.ext.gpt".into(),
+            owning_ext: "test.ext".into(),
+            label: "Test GPT".into(),
+            icon: None,
+            description: None,
+            supports_models: false,
+            supports_modes: false,
+            supports_mcp: false,
+        };
+        let manifest = Manifest::from_json(
+            r#"{
+                "id": "test.ext",
+                "name": "Test Ext",
+                "version": "0.1.0",
+                "publisher": "test",
+                "engines": { "cronymax": "^1.0" },
+                "main": "./m.js",
+                "activationEvents": [],
+                "contributes": {
+                    "cronymax.agents.provider": [
+                        { "id": "test.ext.gpt", "label": "Test GPT" }
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+
+        // Peer answers the three session RPCs; session.create hands back a
+        // fixed sessionId so the test knows which session to address.
+        let create_method = format!("{}:{}", agents_method::SESSION_CREATE, provider.provider_id);
+        let peer_server = RpcServer::builder()
+            .handle(create_method, |_p, _| async move {
+                Ok(Value::Map(vec![(
+                    Value::String("sessionId".into()),
+                    Value::String("sess-flow".into()),
+                )]))
+            })
+            .handle(agents_method::SESSION_PROMPT, |_p, _| async move {
+                Ok(Value::Nil)
+            })
+            .handle(agents_method::SESSION_DISPOSE, |_p, _| async move {
+                Ok(Value::Nil)
+            })
+            .build();
+        let runtime_server = runtime.build_per_extension_handlers("test.ext", &manifest);
+
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (runtime_conn, _t1) = Connection::open(a_r, a_w, runtime_server);
+        let (peer_conn, _t2) = Connection::open(b_r, b_w, peer_server);
+        runtime.install_test_handle("test.ext", runtime_conn);
+
+        // Authority + the agent run drive_extension_flow_agent operates on.
+        let authority = RuntimeAuthority::in_memory();
+        let space = Space {
+            id: SpaceId::new(),
+            name: "s".into(),
+            compaction_threshold_pct: 80,
+            compaction_recency_turns: 6,
+        };
+        authority.upsert_space(space.clone()).unwrap();
+        let run_id = authority
+            .start_run_with_session(space.id, None, serde_json::json!({}), None)
+            .unwrap();
+
+        // Unique temp workspace so persist_flow_document's writes are contained.
+        let workspace_root = std::env::temp_dir().join(format!("cronymax-p8-{run_id}"));
+        std::fs::create_dir_all(&workspace_root).unwrap();
+
+        let (doc_tx, mut doc_rx) =
+            tokio::sync::mpsc::channel::<crate::capability::submit_document::DocumentSubmitted>(64);
+
+        let run_ctx = RunContext {
+            space_id: space.id,
+            workspace_root: workspace_root.clone(),
+            flow_id: Some("demo-flow".into()),
+            flow_run_id: Some("demo-flow-run".into()),
+            session_id: None,
+            doc_tx,
+            flow_runtime: None,
+            llm_config: LlmConfig::OpenAi {
+                base_url: String::new(),
+                api_key: None,
+                model: String::new(),
+            },
+            sandbox_tier: crate::capability::SandboxTier::Trusted,
+            workspace_cache_dir: None,
+        };
+
+        let inv_ctx = InvocationContext {
+            node_id: "cr-node".into(),
+            owner: "code-reviewer".into(),
+            trigger: InvocationTrigger {
+                kind: "and_join".into(),
+                approved_port: Some("prd".into()),
+                from_node: Some("pm".into()),
+                reviewer_doc_path: None,
+            },
+            available_docs: vec![],
+            pending_ports: vec!["code-review".into()],
+            review_comments: None,
+        };
+
+        let params = ExtensionFlowParams {
+            provider,
+            provider_ref: AgentProviderRef {
+                id: "test.ext.gpt".into(),
+                model: None,
+            },
+            run_id,
+            run_ctx,
+            inv_ctx,
+            agent_def: AgentDef {
+                name: "code-reviewer".into(),
+                ..AgentDef::default()
+            },
+        };
+
+        let dispatch = tokio::spawn(drive_extension_flow_agent(
+            authority.clone(),
+            runtime.clone(),
+            params,
+        ));
+
+        // Wait for the dispatcher to register its session sink.
+        let registered = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.session_router().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(
+            registered.is_ok(),
+            "dispatcher should register a session sink within 2s",
+        );
+
+        // Play the extension's streaming iterator: the document body, then done.
+        peer_conn
+            .notify(
+                agents_method::EVENT,
+                Value::Map(vec![
+                    (
+                        Value::String("sessionId".into()),
+                        Value::String("sess-flow".into()),
+                    ),
+                    (
+                        Value::String("event".into()),
+                        Value::Map(vec![
+                            (Value::String("kind".into()), Value::String("text".into())),
+                            (
+                                Value::String("text".into()),
+                                Value::String("# Code Review\n\nLooks good.".into()),
+                            ),
+                        ]),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+        peer_conn
+            .notify(
+                agents_method::TURN_DONE,
+                Value::Map(vec![(
+                    Value::String("sessionId".into()),
+                    Value::String("sess-flow".into()),
+                )]),
+            )
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), dispatch)
+            .await
+            .expect("dispatcher should finish within 2s")
+            .expect("dispatcher task should not panic");
+
+        // The turn output was persisted and signalled on doc_tx.
+        let evt = doc_rx
+            .try_recv()
+            .expect("a DocumentSubmitted should have been sent");
+        assert_eq!(evt.body, "# Code Review\n\nLooks good.");
+        assert_eq!(evt.doc_type, "code-review");
+        assert_eq!(evt.document_id, "code-review");
+        assert_eq!(evt.agent_id, "cr-node", "agent_id carries the node id");
+        assert_eq!(evt.run_id, "demo-flow-run", "run_id is the flow run id");
+        assert_eq!(evt.flow_id, "demo-flow");
+        assert_eq!(evt.revision, 1);
+
+        // The agent run reached Succeeded.
+        assert!(matches!(
+            authority.run_status(run_id).unwrap(),
+            crate::runtime::state::RunStatus::Succeeded
+        ));
+
+        let _ = std::fs::remove_dir_all(&workspace_root);
+    }
+
+    // ── resolve_agent_provider ──────────────────────────────────────────
+
+    #[test]
+    fn resolve_agent_provider_native_when_unset() {
+        use crate::capability::agent_loader::AgentDef;
+        let def = AgentDef {
+            name: "rd".into(),
+            ..AgentDef::default()
+        };
+        assert!(
+            matches!(resolve_agent_provider(&def, None), Ok(None)),
+            "no agent_provider → native engine",
+        );
+    }
+
+    #[test]
+    fn resolve_agent_provider_errs_without_runtime() {
+        use crate::capability::agent_loader::{AgentDef, AgentProviderRef};
+        let def = AgentDef {
+            name: "cr".into(),
+            agent_provider: Some(AgentProviderRef {
+                id: "bytedance.coco.agent".into(),
+                model: None,
+            }),
+            ..AgentDef::default()
+        };
+        let err = resolve_agent_provider(&def, None).unwrap_err();
+        assert!(
+            err.contains("extension runtime is unavailable"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_provider_errs_when_not_registered() {
+        use crate::capability::agent_loader::{AgentDef, AgentProviderRef};
+        use crate::extensions::registry::ExtensionRegistry;
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let def = AgentDef {
+            name: "cr".into(),
+            agent_provider: Some(AgentProviderRef {
+                id: "bytedance.coco.agent".into(),
+                model: None,
+            }),
+            ..AgentDef::default()
+        };
+        let err = resolve_agent_provider(&def, Some(&runtime)).unwrap_err();
+        assert!(err.contains("no installed extension"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_agent_provider_errs_when_not_activated() {
+        use crate::capability::agent_loader::{AgentDef, AgentProviderRef};
+        use crate::extensions::registry::ExtensionRegistry;
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        // Register the provider but never activate its owning extension.
+        runtime
+            .providers()
+            .register(ProviderEntry {
+                provider_id: "bytedance.coco.agent".into(),
+                owning_ext: "bytedance.coco".into(),
+                label: "Coco".into(),
+                icon: None,
+                description: None,
+                supports_models: false,
+                supports_modes: false,
+                supports_mcp: false,
+            })
+            .unwrap();
+        let def = AgentDef {
+            name: "cr".into(),
+            agent_provider: Some(AgentProviderRef {
+                id: "bytedance.coco.agent".into(),
+                model: None,
+            }),
+            ..AgentDef::default()
+        };
+        let err = resolve_agent_provider(&def, Some(&runtime)).unwrap_err();
+        assert!(err.contains("not activated"), "got: {err}");
     }
 }
