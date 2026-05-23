@@ -743,3 +743,91 @@ review「main 对插件架构的影响」时挖出 Phase 4.5 自身的一个洞,
 | Phase 4 L2 EP × 6 wiring | 7 / 8 | T08 permissionRequest 待做 |
 | Phase 4.5 chat-provider 接通 | 主体 ✅ | dispatch 链路打通且有测试;遗留懒激活 / cancel / permission 桥接 |
 | Phase 5-10 | 未启动 | 同 |
+
+---
+
+## Phase 8 执行进度(2026-05-23 · agent_provider 接通 chat + flow)
+
+Phase 4.5 把扩展 AgentProvider 接到聊天面板,但只在用户**直接选 provider**(Case A)时生效。两条还没接通的路径:
+
+1. **命名 workspace agent 被扩展背书**(`.cronymax/agents/<name>.agent.yaml` 写 `agent_provider:`)。chat 选这种 agent → 应路由扩展(Case B)。
+2. **flow agent 接扩展**。flow 节点 owner 是命名 agent,`AgentRunner::spawn_agent` 之前硬走 `agent_loader → ReactLoop`,不认扩展。
+
+P8 把"哪个引擎跑这个 agent"做成 agent 定义自己的属性,**chat 和 flow 两个入口同样处理** —— 完成 spec invariant("chat 和 flow 共享一套 AgentProvider 表面")。
+
+### 决定性约束(reframes P8)
+
+`cep-idl/v1/agents.ts` **FROZEN**,无 platform→extension 的 tool-result 通道(`AgentSession` 只有 `prompt`/`resolvePermission`/`cancel`,`AgentEvent` 闭合)。意味着扩展 agent **无法调用 cronymax flow 工具**(`submit_document`)。所以 P8 v1 选 **设计 A:turn-level 适配器** —— 扩展 worker 的回合输出**就是**文档,cronymax 经抽出的 `persist_flow_document` 落盘并 push 到 `doc_tx`,下游 supervision 链路无感知。
+
+### YAML schema
+
+```yaml
+# 内置 agent —— 没有 agent_provider 键
+name: rd
+llm: { provider: copilot, model: claude-sonnet-4-6 }
+system_prompt: "..."
+
+# 扩展 agent —— scalar 或 map 形态
+agent_provider: bytedance.coco.agent                                  # 简单
+# 或:
+agent_provider: { id: bytedance.coco.agent, model: claude-opus-4-7 }  # 带 per-agent model 默认
+```
+
+判别规则:
+- 缺省 / `agent_provider: builtin` → native `ReactLoop`
+- 有键且解析得到 provider id → 扩展引擎
+- 解析后 provider 没装 / 未激活 → **硬错误**(chat: `InvalidState`,flow: `fail_run`),**绝不**静默回退 native(Phase 4.5 ResumeRun 护栏同源教训)
+
+`llm:` 与 `agent_provider:` **严格互斥** —— `llm:` 块对扩展 agent 整块忽略。
+
+### 关键决定
+
+- **`mode` 不入 yaml**:`mode` 是 runtime/聊天面板的概念(IDL `SessionOptions.mode` 是冻结字段,仍存在,P8 只是不从 yaml 取)。v1 不需要 per-agent 默认 mode;扩展用 provider 默认。"plan" 这种是聊天面板运行时选,不烧死在 yaml 里。
+- **model 优先级**(与 native 对称):
+  - **chat** → 运行时 payload model 赢,yaml `agent_provider.model` 忽略
+  - **flow** → yaml `agent_provider.model` 赢(flow 无运行时选择器)
+
+  跟 native 行为完全一致:`grep llm_model` 在 `run_start.rs` 零命中(native chat 不读 `chat_agent_def.llm_model`);native flow `spawn_agent`(`agent_runner.rs:140`)和 `spawn_chat`(`:364`)用 `if llm_model.is_empty() { payload } else { llm_model }` 的 yaml-first。
+- **Worker-only**:`kind: reviewer` + `agent_provider` → `fail_run("not supported in v1")`。reviewer-kind 扩展 agent 推后(需要从 turn 输出里解析 verdict,脆)。
+- **`effort` 不传给扩展**:`reasoning_effort` / `anthropic_effort` 是 cronymax 自己调 LLM 的参数,扩展 agent 自跑 loop、自调 LLM,IDL `SessionOptions` 无 effort 槽位 —— 设计上不传,不是缺口。
+
+### 改动(6 个文件,+1024/-170)
+
+| 文件 | 改动 |
+|---|---|
+| `capability/agent_loader.rs` | `AgentProviderRef { id, model }` + `parse_agent_provider`(scalar-or-map);`AgentDef.agent_provider` 字段 |
+| `crony/mod.rs` | `CronyBuiltin::def()` 加 `agent_provider: None`(Crony 永远 native) |
+| `runtime/ext_dispatch.rs` | 抽出 `run_extension_turn` 共享 core(chat+flow 复用);新增 `drive_extension_flow_agent`(flow 终态:`persist_flow_document` → `doc_tx`);新增 `resolve_agent_provider` helper(chat / flow 共用的解析,无 runtime 时 / 未注册 / 未激活均报错)|
+| `capability/submit_document.rs` | 抽出 `persist_flow_document` 核心 —— tool handler 委托,flow 扩展 dispatcher 也调,**下游不可见差别** |
+| `runtime/agent_runner.rs` | `spawn_agent` 加 engine fork;`render_system_message_with(SubmitMode)` 变体(扩展 worker 用 `TurnOutput` 告知其回复就是文档,无 `submit_document` 工具)|
+| `runtime/handler/run_start.rs` | Case B 接通:`preloaded_chat_agent_def` 早 load,`extension_dispatch` = Case A OR Case B;model 始终用 payload(与 native chat 一致)|
+
+下游 supervision / `on_document_submitted` / 节点激活 **一字未改** —— 扩展 agent 在 `doc_tx` 之后完全隐形。
+
+### 验证
+
+- `cargo test -p cronymax --lib` → **462 passed**(451 baseline + 11 新:5 agent_loader 解析 + 1 `render_system_message_with` TurnOutput + 1 `drive_extension_flow_agent_submits_turn_output_as_document` + 4 `resolve_agent_provider` 分支)
+- 集成:`p1_acceptance` 4 + `p2_node_host_e2e` 3(真实 Node 26)+ `p4_extension_runtime_e2e` 2(真实 Node 26)+ `agent_runner_test` 2 → **11 passed**
+- `cargo clippy -p cronymax --lib --tests -- -D warnings` → 0
+- `cargo fmt --check` → clean
+
+### 显式不做(范围外或推后)
+
+- **reviewer-kind 扩展 agent**:turn-output verdict 解析脆,等真实需要再做
+- **P8-T03**:`web/src/panels/flows/agents/` 4 步新建向导(web 工作)
+- **P8-T04**:真 `bytedance.coco` 端到端验收(需要 ACP + coco binary)
+- **`agent_provider:` + `llm:` 都写时的 validator 警告**:语义已正确(`llm:` 整块忽略),缺写错时的提示
+- **model 到达扩展 `session.create` payload 的测试断言**:链路接通,`drive_extension_flow_agent` 测试用 `model: None`,没真断言收到的 payload 含 `model`
+
+### Phase 完成度(Phase 8 接入后)
+
+| Phase | 完成 / 总数 | 状态 |
+|---|---|---|
+| Phase 0 基础 + spike | 7 / 7 | ✅ 完成 |
+| Phase 1 manifest + registry + activation | 6 / 6 | ✅ 完成 |
+| Phase 2 Node host + L1 第一切片 | 11 / 12 | T09 perf / T10 安全冒烟 |
+| Phase 3 其余 L1 Kernel | 8 / 9 | T09 验收扩展 待做 |
+| Phase 4 L2 EP × 6 wiring | 7 / 8 | T08 permissionRequest 待做 |
+| Phase 4.5 chat-provider 接通 | 主体 ✅ | 遗留懒激活 / cancel / permission |
+| **Phase 8 agent_provider 接通 chat+flow** | **主体 ✅** | **worker-only;reviewer / P8-T03 / P8-T04 推后** |
+| Phase 5–7, 9–10 | 未启动 | |
