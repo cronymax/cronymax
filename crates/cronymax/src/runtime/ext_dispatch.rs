@@ -51,6 +51,7 @@ use tracing::{info, warn};
 use crate::capability::agent_loader::{AgentDef, AgentProviderRef};
 use crate::capability::submit_document::persist_flow_document;
 use crate::extensions::api::agents::{AgentSessionEvent, AgentSessionMessage, ProviderEntry};
+use crate::extensions::events::PlatformTopic;
 use crate::extensions::rpc::codec::agents_method;
 use crate::extensions::runtime::{json_to_rmpv, rmpv_to_json, ExtensionRuntime};
 use crate::flow::runtime::InvocationContext;
@@ -256,6 +257,40 @@ async fn run_extension_turn(
     };
     info!(%run_id, %session_id, provider = %provider.provider_id, "ext_dispatch: session created");
 
+    // ── 1a. Platform event emit: `cronymax.session.started`. Subscribers
+    // installed `cronymax.events.on("cronymax.session.started", …)` get
+    // notified once per chat/flow turn. Topic-lookup short-circuit means
+    // no payload allocation if nobody's listening.
+    let provider_id_for_events = provider.provider_id.clone();
+    let session_id_for_events = session_id.clone();
+    let model_for_events = model.clone();
+    extensions
+        .events()
+        .emit_from_platform_if_subscribed(PlatformTopic::SessionStarted, || {
+            serde_json::json!({
+                "sessionId": session_id_for_events,
+                "providerId": provider_id_for_events,
+                "model": model_for_events,
+            })
+        });
+
+    // `cronymax.message.user.sent` — exactly one fire per turn carrying
+    // the user-visible prompt. `turnId` is the same id `assistant_turn`
+    // emits, so subscribers can pair user/assistant messages 1:1.
+    let turn_id = format!("ext-{run_id}");
+    let session_id_for_events = session_id.clone();
+    let turn_id_for_events = turn_id.clone();
+    let user_input_for_events = user_input.clone();
+    extensions
+        .events()
+        .emit_from_platform_if_subscribed(PlatformTopic::MessageUserSent, || {
+            serde_json::json!({
+                "sessionId": session_id_for_events,
+                "turnId": turn_id_for_events,
+                "text": user_input_for_events,
+            })
+        });
+
     // ── 2. Register the router sink before sending prompt. Race window
     // is real: the bootstrap-side handler starts iterating session.prompt
     // immediately, so the first `agents/event` notify can be on the wire
@@ -309,7 +344,6 @@ async fn run_extension_turn(
     // ToolCallUpdate boundaries; the IDL's update event carries only
     // the id, but the UI's `tool_done` trace needs the name to label
     // the row.
-    let turn_id = format!("ext-{run_id}");
     let mut final_status: Option<RunOutcome> = None;
     let mut assistant_text = String::new();
     let mut tool_names: HashMap<String, String> = HashMap::new();
@@ -318,6 +352,63 @@ async fn run_extension_turn(
             AgentSessionMessage::Event(ev) => {
                 if let AgentSessionEvent::Text { text } = &ev {
                     assistant_text.push_str(text);
+                    // `cronymax.message.assistant.delta` — one fire per
+                    // streamed chunk. Per-token rate makes this the only
+                    // emit site that's worth the subscriber-gated
+                    // payload build.
+                    let sid = session_id.clone();
+                    let tid = turn_id.clone();
+                    let delta = text.clone();
+                    extensions.events().emit_from_platform_if_subscribed(
+                        PlatformTopic::MessageAssistantDelta,
+                        || {
+                            serde_json::json!({
+                                "sessionId": sid,
+                                "turnId": tid,
+                                "textDelta": delta,
+                            })
+                        },
+                    );
+                }
+                if let AgentSessionEvent::ToolCall {
+                    id, name, input, ..
+                } = &ev
+                {
+                    let sid = session_id.clone();
+                    let tid = turn_id.clone();
+                    let cid = id.clone();
+                    let tn = name.clone();
+                    let input_v = input.clone();
+                    extensions.events().emit_from_platform_if_subscribed(
+                        PlatformTopic::ToolInvoked,
+                        || {
+                            serde_json::json!({
+                                "sessionId": sid,
+                                "turnId": tid,
+                                "toolCallId": cid,
+                                "name": tn,
+                                "input": input_v,
+                                "source": format!("agent:{}", provider.provider_id),
+                            })
+                        },
+                    );
+                }
+                if let AgentSessionEvent::ToolCallUpdate { id, status, output } = &ev {
+                    let sid = session_id.clone();
+                    let cid = id.clone();
+                    let st = status.clone();
+                    let out = output.clone();
+                    extensions.events().emit_from_platform_if_subscribed(
+                        PlatformTopic::ToolCompleted,
+                        || {
+                            serde_json::json!({
+                                "sessionId": sid,
+                                "toolCallId": cid,
+                                "status": st,
+                                "output": out,
+                            })
+                        },
+                    );
                 }
                 // PermissionRequest is bridged into the native review
                 // subsystem instead of being translated, so we get the
@@ -329,6 +420,24 @@ async fn run_extension_turn(
                     options,
                 } = ev
                 {
+                    // `cronymax.permission.requested` — fire BEFORE
+                    // bridging into the native review so subscribers see
+                    // the request even if the user's reply is fast.
+                    let sid = session_id.clone();
+                    let rid = request_id.clone();
+                    let t = tool.clone();
+                    let opts = options.clone();
+                    extensions.events().emit_from_platform_if_subscribed(
+                        PlatformTopic::PermissionRequested,
+                        || {
+                            serde_json::json!({
+                                "sessionId": sid,
+                                "requestId": rid,
+                                "target": t,
+                                "options": opts,
+                            })
+                        },
+                    );
                     bridge_permission_request(
                         authority.clone(),
                         extensions.clone(),
@@ -372,6 +481,26 @@ async fn run_extension_turn(
         },
     );
 
+    // `cronymax.message.assistant.done` — one final fire carrying the
+    // concatenated text and the same finish_reason the chat timeline
+    // sees. Subscribers (e.g. a logger extension writing JSONL) use this
+    // as the turn-boundary marker.
+    let sid = session_id.clone();
+    let tid = turn_id.clone();
+    let full = assistant_text.clone();
+    let fr = finish_reason.to_string();
+    extensions.events().emit_from_platform_if_subscribed(
+        PlatformTopic::MessageAssistantDone,
+        || {
+            serde_json::json!({
+                "sessionId": sid,
+                "turnId": tid,
+                "fullText": full,
+                "finishReason": fr,
+            })
+        },
+    );
+
     // Make sure session.prompt completed (it should have, since
     // bootstrap sends turn.done after the iterator drains). Surface any
     // error onto the run.
@@ -409,6 +538,24 @@ async fn run_extension_turn(
     {
         warn!(%run_id, %session_id, error = %e, "ext_dispatch: session.dispose failed");
     }
+
+    // `cronymax.session.ended` — fired after dispose. The `reason` is
+    // derived from final_status so subscribers can distinguish a clean
+    // turn from a user-cancelled or errored one.
+    let reason = match &final_status {
+        Some(RunOutcome::Failed(_)) => "error",
+        _ => "user",
+    };
+    let sid = session_id.clone();
+    let reason_s = reason.to_string();
+    extensions
+        .events()
+        .emit_from_platform_if_subscribed(PlatformTopic::SessionEnded, || {
+            serde_json::json!({
+                "sessionId": sid,
+                "reason": reason_s,
+            })
+        });
 
     // If no `done` event arrived we synthesize success — matching the
     // bootstrap.js fallback when an iterator returns without `{kind:"done"}`.

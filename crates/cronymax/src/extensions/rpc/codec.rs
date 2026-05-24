@@ -43,8 +43,28 @@ pub mod method {
     pub const COMMANDS_REGISTER: &str = "commands/register";
     pub const COMMANDS_UNREGISTER: &str = "commands/unregister";
     pub const COMMANDS_EXECUTE: &str = "commands/execute";
+    /// Platform → extension notify carrying one fired event. Payload
+    /// shape: `{ topic, publisher, data }`. The bootstrap.js dispatch
+    /// routes this to the user handler installed via
+    /// `cronymax.events.on(topic, handler)`.
     pub const EVENTS_PUBLISH: &str = "events/publish";
+    /// Extension → platform notify, requesting a forwarding subscription
+    /// for `topic`. The platform installs a listener that fires
+    /// [`Self::EVENTS_PUBLISH`] back over this extension's conn whenever
+    /// the topic emits.
     pub const EVENTS_SUBSCRIBE: &str = "events/subscribe";
+    /// Extension → platform notify, dropping every listener the
+    /// extension installed for the named topic. Issued by
+    /// `Disposable.dispose()` returned from `cronymax.events.on(...)`.
+    pub const EVENTS_UNSUBSCRIBE: &str = "events/unsubscribe";
+    /// Extension → platform **request**, fanning out one
+    /// extension-emitted event under its publisher namespace. Returns
+    /// `Nil` on success; rejects with a capability error if the topic
+    /// is not in `capabilities.events.emit` (or is a reserved
+    /// `cronymax.*` topic). Request, not notify, so the
+    /// `cronymax.events.emit(...): Promise<void>` SDK call rejects
+    /// instead of silently dropping.
+    pub const EVENTS_EMIT: &str = "events/emit";
     pub const LOG_CONSOLE: &str = "log/console";
     pub const LOG_CHANNEL: &str = "log/channel";
     pub const PING: &str = "$/ping";

@@ -249,6 +249,24 @@ impl EventBus {
         });
     }
 
+    /// Optimistic variant of [`Self::emit_from_platform`]: only build the
+    /// payload when at least one subscriber is listening. Useful at hot
+    /// emit sites (per-token deltas, tool start/end) where building the
+    /// JSON object is more expensive than the topic-lookup short-circuit.
+    pub fn emit_from_platform_if_subscribed<F>(&self, topic: PlatformTopic, build: F)
+    where
+        F: FnOnce() -> Value,
+    {
+        if self.subscriber_count(topic.as_str()) == 0 {
+            return;
+        }
+        self.fanout(&EventPayload {
+            topic: topic.as_str().to_string(),
+            publisher: "cronymax".into(),
+            data: build(),
+        });
+    }
+
     /// Emit from an extension. Subject to two checks:
     ///
     /// 1. `topic` must not start with `cronymax.` (reserved for platform)

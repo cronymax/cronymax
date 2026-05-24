@@ -63,12 +63,42 @@ pub struct Engines {
 /// v1 alpha dropped the OS-level capability gate. The `capabilities` field
 /// is still parsed for forward compatibility — older manifests with
 /// `fs / network / process / ...` keys still load — but the platform does
-/// not enforce any of it. Treat this as inert documentation.
+/// not enforce any of them.
+///
+/// The one capability the platform DOES enforce at the RPC layer is
+/// `events.subscribe` / `events.emit`: extensions can only subscribe to
+/// topics they declared and only emit under their publisher namespace
+/// (and only for declared patterns). See [`crate::extensions::events`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Capabilities {
-    /// Reserved for future use. Currently accepts any JSON; not enforced.
+    /// Topics this extension may subscribe to and emit on. Both arrays
+    /// default to empty; missing the whole `events` key in JSON behaves
+    /// the same as `{ "subscribe": [], "emit": [] }`.
+    #[serde(default)]
+    pub events: EventsCapability,
+
+    /// Anything else under `capabilities.*` is captured here for forward
+    /// compatibility but not enforced.
     #[serde(flatten)]
     pub _ignored: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// Per-extension event-bus capability whitelist. Mirrors
+/// `capabilities.events` in `cep-idl/v1/manifest.ts`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EventsCapability {
+    /// Topics this extension may `cronymax.events.on(topic, ...)`. Each
+    /// entry is an exact topic string; `cronymax.*` platform topics must
+    /// appear here verbatim.
+    #[serde(default)]
+    pub subscribe: Vec<String>,
+
+    /// Topics this extension may `cronymax.events.emit(topic, ...)`.
+    /// Patterns may end with `.*` for prefix matching; `*` alone matches
+    /// everything (under the publisher namespace — `cronymax.*` is
+    /// always rejected at emit time).
+    #[serde(default)]
+    pub emit: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

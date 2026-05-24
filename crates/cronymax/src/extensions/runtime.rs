@@ -90,6 +90,9 @@ use crate::extensions::api::renderers::{ContentRendererRegistry, RendererEntry};
 use crate::extensions::api::sidebar::{SidebarViewEntry, SidebarViewRegistry};
 use crate::extensions::contributions::ContributionRegistry;
 use crate::extensions::error::{ExtensionError, ExtensionResult};
+#[cfg(test)]
+use crate::extensions::events::PlatformTopic;
+use crate::extensions::events::{EventBus, EventPayload, SubscriptionGuard};
 use crate::extensions::host::node::{NodeHost, SpawnConfig};
 use crate::extensions::manifest::{
     AgentProviderContribution, ContentRendererContribution, Manifest, SidebarViewContribution,
@@ -108,6 +111,12 @@ struct ExtensionHandle {
     /// Looked up by [`ExtensionRuntime::send_to_extension`] and
     /// [`ExtensionRuntime::notify_extension`].
     conn: Arc<Connection>,
+    /// Per-extension event-bus subscription guards. Each guard
+    /// corresponds to one `cronymax.events.on(topic, …)` call from the
+    /// extension; dropping the vector on deactivate severs every
+    /// forwarding listener in one shot. Keyed by topic so duplicate
+    /// `on(topic, …)` calls compose instead of replace.
+    event_subscriptions: HashMap<String, Vec<SubscriptionGuard>>,
 }
 
 /// Top-level orchestrator. Cheap to clone (`Arc` internals).
@@ -136,6 +145,11 @@ struct RuntimeState {
     /// dispatcher on run completion. Shared across extensions because
     /// the wire format routes by sessionId, not by owning_ext.
     session_router: AgentSessionRouter,
+    /// L1.5 platform-event bus. Emit-from-platform sites in the chat
+    /// dispatcher / tool runtime fan out `cronymax.*` topics here;
+    /// extensions subscribe to topics they declared in
+    /// `capabilities.events.subscribe` via `events/subscribe` RPC.
+    events: EventBus,
 }
 
 impl ExtensionRuntime {
@@ -151,6 +165,7 @@ impl ExtensionRuntime {
                 sidebars: SidebarViewRegistry::new(),
                 handles: Mutex::new(HashMap::new()),
                 session_router: AgentSessionRouter::new(),
+                events: EventBus::new(),
             }),
         }
     }
@@ -167,6 +182,13 @@ impl ExtensionRuntime {
 
     pub fn sidebars(&self) -> &SidebarViewRegistry {
         &self.state.sidebars
+    }
+
+    /// L1.5 platform-event bus. Chat / tool dispatch sites call
+    /// [`EventBus::emit_from_platform`] on this to fan out
+    /// `cronymax.*` topics to subscribed extensions.
+    pub fn events(&self) -> &EventBus {
+        &self.state.events
     }
 
     /// Streaming session event router. Chat / flow dispatchers call
@@ -324,6 +346,7 @@ impl ExtensionRuntime {
             ExtensionHandle {
                 host: NodeHost::dummy_for_test(ext_id),
                 conn,
+                event_subscriptions: HashMap::new(),
             },
         );
     }
@@ -364,6 +387,23 @@ impl ExtensionRuntime {
         //    activate() throws, so the settings UI can still surface them.
         self.state.contributions.lock().ingest(&manifest);
 
+        // 1a. Register event-bus capability whitelist so any `events/subscribe`
+        //     notify the extension fires from activate() can pass capability
+        //     gating. Mirrors contributions: keep the cap registered even if
+        //     activate() throws — `deactivate()` is what tears it down. The
+        //     ingestion is cheap (a HashSet insert), so the cost is fine.
+        if let Err(e) = self.state.events.register_extension(
+            ext_id,
+            &manifest.capabilities.events.subscribe,
+            &manifest.capabilities.events.emit,
+        ) {
+            tracing::warn!(
+                ext_id = %ext_id,
+                error = %e,
+                "events bus register_extension failed; events.on/.emit will be denied",
+            );
+        }
+
         // 2. Build the per-extension RPC handler table.
         let rpc = self.build_rpc_server(ext_id.to_string(), manifest.clone());
 
@@ -396,6 +436,7 @@ impl ExtensionRuntime {
             ExtensionHandle {
                 host,
                 conn: conn.clone(),
+                event_subscriptions: HashMap::new(),
             },
         );
 
@@ -438,9 +479,19 @@ impl ExtensionRuntime {
         self.state.commands.lock().unregister_all_for(ext_id);
         self.state.renderers.unregister_all_for(ext_id);
         self.state.sidebars.unregister_all_for(ext_id);
+        let _ = self.state.events.unregister_extension(ext_id);
         let _ = self.state.lifecycle.lock().mark_deactivated(ext_id);
 
-        let _ = handle.host.shutdown().await;
+        // Destructure the handle so `event_subscriptions` drops here
+        // (severing every forwarding listener) while `host` survives long
+        // enough for the explicit shutdown await below.
+        let ExtensionHandle {
+            host,
+            conn: _,
+            event_subscriptions,
+        } = handle;
+        drop(event_subscriptions);
+        let _ = host.shutdown().await;
         Ok(())
     }
 
@@ -451,6 +502,7 @@ impl ExtensionRuntime {
         self.state.commands.lock().unregister_all_for(ext_id);
         self.state.renderers.unregister_all_for(ext_id);
         self.state.sidebars.unregister_all_for(ext_id);
+        let _ = self.state.events.unregister_extension(ext_id);
         if let Some(h) = handle {
             let _ = h.host.shutdown().await;
         }
@@ -736,6 +788,110 @@ impl ExtensionRuntime {
             });
         }
 
+        // ── events/subscribe ──────────────────────────────────────────
+        //
+        // The extension's `cronymax.events.on(topic, handler)` SDK call
+        // turns into this notify. We install a forwarding listener on the
+        // shared `EventBus` that, whenever the topic fires, sends a
+        // `events/publish` notify back over this extension's conn so the
+        // bootstrap.js shim can dispatch to the user handler.
+        //
+        // The `SubscriptionGuard` is parked inside the handle's
+        // `event_subscriptions` map; on deactivate the whole map drops at
+        // once, severing every listener. Duplicate `on(topic, …)` calls
+        // from the same extension stack: each yields its own guard so
+        // disposing one doesn't take the others down.
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.on_notify(method::EVENTS_SUBSCRIBE, move |params| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let topic = extract_str_field(&params, "topic")?;
+                    let conn_for_listener = {
+                        let handles = state.handles.lock();
+                        handles.get(&ext_id).map(|h| h.conn.clone())
+                    };
+                    let Some(conn) = conn_for_listener else {
+                        return Err(ExtensionError::NotActivated(ext_id.clone()));
+                    };
+                    let topic_for_listener = topic.clone();
+                    let guard = state.events.subscribe(&ext_id, &topic, move |payload| {
+                        let conn = conn.clone();
+                        let frame = build_publish_frame(&topic_for_listener, payload);
+                        // notify() is async; spawn so the bus emitter
+                        // stays non-blocking on its synchronous fanout.
+                        tokio::spawn(async move {
+                            if let Err(e) = conn.notify(method::EVENTS_PUBLISH, frame).await {
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to forward events/publish to extension",
+                                );
+                            }
+                        });
+                    })?;
+                    state
+                        .handles
+                        .lock()
+                        .get_mut(&ext_id)
+                        .ok_or_else(|| ExtensionError::NotActivated(ext_id.clone()))?
+                        .event_subscriptions
+                        .entry(topic)
+                        .or_default()
+                        .push(guard);
+                    Ok(())
+                }
+            });
+        }
+
+        // ── events/unsubscribe ────────────────────────────────────────
+        //
+        // Dropping the topic's guard vector severs every listener the
+        // extension installed for that topic. Bootstrap.js calls this on
+        // `Disposable.dispose()`; deactivate() also wipes everything
+        // implicitly via handle drop.
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.on_notify(method::EVENTS_UNSUBSCRIBE, move |params| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let topic = extract_str_field(&params, "topic")?;
+                    if let Some(handle) = state.handles.lock().get_mut(&ext_id) {
+                        handle.event_subscriptions.remove(&topic);
+                    }
+                    Ok(())
+                }
+            });
+        }
+
+        // ── events/emit (request) ─────────────────────────────────────
+        //
+        // Extension-side `cronymax.events.emit(topic, data): Promise<void>`.
+        // The bus applies the manifest's `events.emit` whitelist and refuses
+        // `cronymax.*` topics. Modeled as a request (not notify) so the
+        // returned Promise rejects with the capability error — silent
+        // drops on emit would hide capability misconfiguration.
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.handle(method::EVENTS_EMIT, move |params, _ctx| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let topic = extract_str_field(&params, "topic")?;
+                    let data_rmpv = lookup_field(&params, "data").unwrap_or(Value::Nil);
+                    let data_json = rmpv_to_json(&data_rmpv);
+                    state
+                        .events
+                        .emit_from_extension(&ext_id, &topic, data_json)?;
+                    Ok(Value::Nil)
+                }
+            });
+        }
+
         builder.build()
     }
 }
@@ -859,6 +1015,39 @@ async fn report_register_outcome(
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────
+
+/// Build the `events/publish` notify body. Wire shape:
+/// `{ topic, publisher, data }` — mirrors `EventPayload` field-for-field
+/// so the bootstrap.js dispatch can hand the JSON straight to the user
+/// handler without translation.
+fn build_publish_frame(_topic_for_listener: &str, payload: &EventPayload) -> Value {
+    let data_rmpv = json_to_rmpv(&payload.data);
+    Value::Map(vec![
+        (
+            Value::String("topic".into()),
+            Value::String(payload.topic.clone().into()),
+        ),
+        (
+            Value::String("publisher".into()),
+            Value::String(payload.publisher.clone().into()),
+        ),
+        (Value::String("data".into()), data_rmpv),
+    ])
+}
+
+/// Look up a field by name in a map-shaped params payload. Returns
+/// `None` if the params isn't a map or the key is absent. Used by handlers
+/// that want a generic-shaped value (e.g. `events/emit` `data`) instead of
+/// forcing a string-only extract.
+fn lookup_field(params: &Value, field: &str) -> Option<Value> {
+    let map = params.as_map()?;
+    for (k, v) in map {
+        if k.as_str() == Some(field) {
+            return Some(v.clone());
+        }
+    }
+    None
+}
 
 /// Extract a string field from a notify params payload. Accepts either
 /// `{ "field": "..." }` (the common bootstrap.js shape) or `["..."]`
@@ -1584,5 +1773,384 @@ mod tests {
         // down the duplex — we don't care about a reply, just that nothing
         // panicked.
         tokio::task::yield_now().await;
+    }
+
+    // ── P5 · platform-event bus integration ────────────────────────────
+
+    /// Build a wired pair where the runtime side has already had alice.x
+    /// registered with the event bus carrying the supplied subscribe /
+    /// emit caps. The peer side installs a capture for `events/publish`
+    /// so tests can assert on platform → extension fan-out.
+    async fn wired_pair_with_event_capture(
+        subscribe: &[&str],
+        emit: &[&str],
+    ) -> (
+        ExtensionRuntime,
+        Arc<Connection>,
+        Arc<StdMutex<Vec<(String, String, serde_json::Value)>>>,
+    ) {
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let manifest = alice_x_manifest_all_six();
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("alice.x", manifest.clone());
+        runtime
+            .state
+            .events
+            .register_extension(
+                "alice.x",
+                &subscribe.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                &emit.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            )
+            .expect("register_extension on a fresh bus must succeed");
+
+        let rpc_for_runtime_side = runtime.build_per_extension_handlers("alice.x", &manifest);
+
+        // Capture incoming events/publish on the peer side.
+        type Captured = Arc<StdMutex<Vec<(String, String, serde_json::Value)>>>;
+        let captured: Captured = Arc::new(StdMutex::new(Vec::new()));
+        let cap_c = captured.clone();
+        let peer_server = RpcServer::builder()
+            .on_notify(method::EVENTS_PUBLISH, move |params| {
+                let cap = cap_c.clone();
+                async move {
+                    let topic = extract_str_field(&params, "topic").unwrap_or_default();
+                    let publisher = extract_str_field(&params, "publisher").unwrap_or_default();
+                    let data = lookup_field(&params, "data")
+                        .map(|v| rmpv_to_json(&v))
+                        .unwrap_or(serde_json::Value::Null);
+                    cap.lock().unwrap().push((topic, publisher, data));
+                    Ok(())
+                }
+            })
+            .build();
+
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (runtime_conn, _t1) = Connection::open(a_r, a_w, rpc_for_runtime_side);
+        let (peer_conn, _t2) = Connection::open(b_r, b_w, peer_server);
+        runtime.install_test_handle_conn_only("alice.x", runtime_conn);
+        (runtime, peer_conn, captured)
+    }
+
+    async fn wait_until<F: Fn() -> bool>(pred: F) {
+        for _ in 0..100 {
+            if pred() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn platform_emit_reaches_subscribed_extension_via_publish_notify() {
+        let (runtime, peer_conn, captured) =
+            wired_pair_with_event_capture(&["cronymax.session.started"], &[]).await;
+
+        // Extension declares its intent to receive the topic.
+        peer_conn
+            .notify(
+                method::EVENTS_SUBSCRIBE,
+                Value::Map(vec![(
+                    Value::String("topic".into()),
+                    Value::String("cronymax.session.started".into()),
+                )]),
+            )
+            .await
+            .unwrap();
+
+        wait_until(|| {
+            runtime
+                .events()
+                .subscriber_count("cronymax.session.started")
+                == 1
+        })
+        .await;
+        assert_eq!(
+            runtime
+                .events()
+                .subscriber_count("cronymax.session.started"),
+            1,
+            "events/subscribe notify must install exactly one bus listener",
+        );
+
+        // Platform emits — must arrive over events/publish.
+        runtime.events().emit_from_platform(
+            PlatformTopic::SessionStarted,
+            serde_json::json!({ "sessionId": "s-1", "providerId": "coco" }),
+        );
+
+        wait_until(|| !captured.lock().unwrap().is_empty()).await;
+        let caps = captured.lock().unwrap().clone();
+        assert_eq!(caps.len(), 1, "exactly one events/publish notify");
+        let (topic, publisher, data) = &caps[0];
+        assert_eq!(topic, "cronymax.session.started");
+        assert_eq!(publisher, "cronymax");
+        assert_eq!(
+            data.get("providerId").and_then(|v| v.as_str()),
+            Some("coco"),
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_without_capability_does_not_install_listener() {
+        // Extension declared NO subscribe caps; events/subscribe should
+        // fail capability gating, the bus stays at zero subscribers, and
+        // the platform emit drops on the floor.
+        let (runtime, peer_conn, captured) = wired_pair_with_event_capture(&[], &[]).await;
+        peer_conn
+            .notify(
+                method::EVENTS_SUBSCRIBE,
+                Value::Map(vec![(
+                    Value::String("topic".into()),
+                    Value::String("cronymax.session.started".into()),
+                )]),
+            )
+            .await
+            .unwrap();
+
+        // Give the runtime time to process the notify (which should error).
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            runtime
+                .events()
+                .subscriber_count("cronymax.session.started"),
+            0,
+            "capability-denied subscribe must not install a listener",
+        );
+
+        runtime
+            .events()
+            .emit_from_platform(PlatformTopic::SessionStarted, serde_json::json!({}));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "extension without subscribe cap must not receive events/publish",
+        );
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_severs_the_forwarding_listener() {
+        let (runtime, peer_conn, captured) =
+            wired_pair_with_event_capture(&["cronymax.tool.invoked"], &[]).await;
+
+        peer_conn
+            .notify(
+                method::EVENTS_SUBSCRIBE,
+                Value::Map(vec![(
+                    Value::String("topic".into()),
+                    Value::String("cronymax.tool.invoked".into()),
+                )]),
+            )
+            .await
+            .unwrap();
+        wait_until(|| runtime.events().subscriber_count("cronymax.tool.invoked") == 1).await;
+
+        peer_conn
+            .notify(
+                method::EVENTS_UNSUBSCRIBE,
+                Value::Map(vec![(
+                    Value::String("topic".into()),
+                    Value::String("cronymax.tool.invoked".into()),
+                )]),
+            )
+            .await
+            .unwrap();
+        wait_until(|| runtime.events().subscriber_count("cronymax.tool.invoked") == 0).await;
+
+        runtime.events().emit_from_platform(
+            PlatformTopic::ToolInvoked,
+            serde_json::json!({ "name": "shell" }),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "unsubscribed listener must not receive forwarding notifies",
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_emit_request_succeeds_for_declared_topic() {
+        let (runtime, peer_conn, _captured) =
+            wired_pair_with_event_capture(&[], &["alice.x.heartbeat"]).await;
+        let _ = peer_conn
+            .request(
+                method::EVENTS_EMIT,
+                Value::Map(vec![
+                    (
+                        Value::String("topic".into()),
+                        Value::String("alice.x.heartbeat".into()),
+                    ),
+                    (
+                        Value::String("data".into()),
+                        Value::Map(vec![(
+                            Value::String("seq".into()),
+                            Value::Integer(7i64.into()),
+                        )]),
+                    ),
+                ]),
+            )
+            .await
+            .expect("emit on a declared topic must succeed");
+        // The bus has no subscribers, but the request itself must round-trip.
+        // Smoke-check: subscriber_count for the topic is still zero.
+        assert_eq!(runtime.events().subscriber_count("alice.x.heartbeat"), 0);
+    }
+
+    #[tokio::test]
+    async fn extension_emit_request_rejects_undeclared_topic() {
+        let (_runtime, peer_conn, _captured) = wired_pair_with_event_capture(&[], &[]).await;
+        let err = peer_conn
+            .request(
+                method::EVENTS_EMIT,
+                Value::Map(vec![(
+                    Value::String("topic".into()),
+                    Value::String("alice.x.unauthorized".into()),
+                )]),
+            )
+            .await
+            .expect_err("undeclared emit must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("did not declare events.emit") || msg.contains("CapabilityDenied"),
+            "expected capability-denied error, got `{msg}`",
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_emit_request_rejects_cronymax_topic() {
+        let (_runtime, peer_conn, _captured) = wired_pair_with_event_capture(&[], &["*"]).await;
+        let err = peer_conn
+            .request(
+                method::EVENTS_EMIT,
+                Value::Map(vec![(
+                    Value::String("topic".into()),
+                    Value::String("cronymax.message.user.sent".into()),
+                )]),
+            )
+            .await
+            .expect_err("emit on a reserved cronymax.* topic must reject");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("reserved") || msg.contains("NamespaceReserved"),
+            "expected namespace-reserved error, got `{msg}`",
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_extension_emit_reaches_other_subscribers() {
+        // Two extensions, both wired through the same EventBus instance:
+        // alice.x emits `alice.x.beat`, bob.y subscribes to it.
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let alice_manifest = alice_x_manifest_all_six();
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("alice.x", alice_manifest.clone());
+        runtime
+            .state
+            .events
+            .register_extension("alice.x", &[], &["alice.x.*".to_string()])
+            .unwrap();
+        runtime
+            .state
+            .events
+            .register_extension("bob.y", &["alice.x.beat".to_string()], &[])
+            .unwrap();
+
+        // Wire alice.x with its own RPC handler + a peer with no capture
+        // (we don't need to assert on alice).
+        let alice_rpc = runtime.build_per_extension_handlers("alice.x", &alice_manifest);
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (alice_conn, _t1) = Connection::open(a_r, a_w, alice_rpc);
+        let (alice_peer, _t2) = Connection::open(b_r, b_w, RpcServer::builder().build());
+        runtime.install_test_handle_conn_only("alice.x", alice_conn);
+
+        // Wire bob.y with a capture so we can see the forwarded notify.
+        let bob_manifest = Manifest::from_json(
+            r#"{
+                "id": "bob.y", "name": "Y", "version": "0.1.0",
+                "publisher": "bob",
+                "engines": { "cronymax": "^1.0" },
+                "main": "./m.js",
+                "activationEvents": [],
+                "contributes": {}
+            }"#,
+        )
+        .unwrap();
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("bob.y", bob_manifest.clone());
+        let bob_rpc = runtime.build_per_extension_handlers("bob.y", &bob_manifest);
+        type Captured = Arc<StdMutex<Vec<(String, String)>>>;
+        let captured: Captured = Arc::new(StdMutex::new(Vec::new()));
+        let cap_c = captured.clone();
+        let bob_peer_server = RpcServer::builder()
+            .on_notify(method::EVENTS_PUBLISH, move |params| {
+                let cap = cap_c.clone();
+                async move {
+                    let topic = extract_str_field(&params, "topic").unwrap_or_default();
+                    let publisher = extract_str_field(&params, "publisher").unwrap_or_default();
+                    cap.lock().unwrap().push((topic, publisher));
+                    Ok(())
+                }
+            })
+            .build();
+        let (c, d) = duplex(8192);
+        let (c_r, c_w) = split(c);
+        let (d_r, d_w) = split(d);
+        let (bob_conn, _t3) = Connection::open(c_r, c_w, bob_rpc);
+        let (bob_peer, _t4) = Connection::open(d_r, d_w, bob_peer_server);
+        runtime.install_test_handle_conn_only("bob.y", bob_conn);
+
+        // Bob subscribes to alice.x.beat.
+        bob_peer
+            .notify(
+                method::EVENTS_SUBSCRIBE,
+                Value::Map(vec![(
+                    Value::String("topic".into()),
+                    Value::String("alice.x.beat".into()),
+                )]),
+            )
+            .await
+            .unwrap();
+        wait_until(|| runtime.events().subscriber_count("alice.x.beat") == 1).await;
+
+        // Alice emits.
+        alice_peer
+            .request(
+                method::EVENTS_EMIT,
+                Value::Map(vec![
+                    (
+                        Value::String("topic".into()),
+                        Value::String("alice.x.beat".into()),
+                    ),
+                    (
+                        Value::String("data".into()),
+                        Value::Map(vec![(
+                            Value::String("n".into()),
+                            Value::Integer(42i64.into()),
+                        )]),
+                    ),
+                ]),
+            )
+            .await
+            .expect("alice's emit must succeed");
+
+        // Bob's peer should receive an events/publish whose publisher is
+        // alice.x (not cronymax).
+        wait_until(|| !captured.lock().unwrap().is_empty()).await;
+        let caps = captured.lock().unwrap().clone();
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0].0, "alice.x.beat");
+        assert_eq!(caps[0].1, "alice.x");
     }
 }

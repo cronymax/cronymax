@@ -268,6 +268,28 @@ const channels = new Map(); // name → OutputChannel
 // per-provider scope only matters for session creation.
 const agentSessions = new Map();
 
+// Per-topic local handler tables for `cronymax.events.on(topic, handler)`.
+// Each topic maps to a list of handler closures; `events/publish` notifies
+// from the platform get fan-out here. Per-extension capability gating
+// happens platform-side — by the time `events/publish` arrives the topic
+// was already validated.
+const eventHandlers = new Map(); // topic → Set<handler>
+registerRpcHandler("events/publish", (params) => {
+  // Wire: { topic, publisher, data }
+  const topic = params?.topic;
+  if (typeof topic !== "string") return;
+  const handlers = eventHandlers.get(topic);
+  if (!handlers || handlers.size === 0) return;
+  for (const h of handlers) {
+    Promise.resolve()
+      .then(() => h(params.data, { publisher: params.publisher, topic }))
+      .catch((err) => {
+        const msg = err?.message ? String(err.message) : String(err);
+        process.stderr.write(`[bootstrap] events handler for '${topic}' threw: ${msg}\n`);
+      });
+  }
+});
+
 function createOutputChannel(name, options) {
   const isLog = !!options?.log;
   // Server-side rpc to allocate the channel file lives in P2-T12 / the
@@ -363,6 +385,52 @@ const cronymax = {
   extensions: {
     getExtension(id) {
       return rpcRequest("extensions/getExtension", { id });
+    },
+  },
+  events: {
+    // Subscribe a handler to one topic. Local dispatch only — the
+    // `events/subscribe` notify tells the platform to start forwarding
+    // matching fires over `events/publish`. The first subscribe for a
+    // topic kicks off the platform subscription; later subscribes from
+    // the same extension stack into the local table (and the platform
+    // re-registers idempotently, but only one wire subscribe per topic
+    // is necessary).
+    on(topic, handler) {
+      if (typeof topic !== "string" || typeof handler !== "function") {
+        throw new TypeError("cronymax.events.on: (topic, handler) required");
+      }
+      let bucket = eventHandlers.get(topic);
+      const firstForTopic = !bucket || bucket.size === 0;
+      if (!bucket) {
+        bucket = new Set();
+        eventHandlers.set(topic, bucket);
+      }
+      bucket.add(handler);
+      if (firstForTopic) {
+        rpcNotify("events/subscribe", { topic });
+      }
+      const dispose = () => {
+        const b = eventHandlers.get(topic);
+        if (!b) return;
+        b.delete(handler);
+        if (b.size === 0) {
+          eventHandlers.delete(topic);
+          rpcNotify("events/unsubscribe", { topic });
+        }
+      };
+      const sub = { dispose };
+      subscriptions.push(sub);
+      return sub;
+    },
+    // Emit one event under the extension's publisher namespace. Modeled
+    // as a request (not notify) so the returned Promise rejects with
+    // capability errors — silent drops on emit would hide misconfigured
+    // `capabilities.events.emit` manifests.
+    emit(topic, data) {
+      if (typeof topic !== "string") {
+        return Promise.reject(new TypeError("cronymax.events.emit: topic must be a string"));
+      }
+      return rpcRequest("events/emit", { topic, data }).then(() => undefined);
     },
   },
   agents: {
