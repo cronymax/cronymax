@@ -831,3 +831,59 @@ agent_provider: { id: bytedance.coco.agent, model: claude-opus-4-7 }  # 带 per-
 | Phase 4.5 chat-provider 接通 | 主体 ✅ | 遗留懒激活 / cancel / permission |
 | **Phase 8 agent_provider 接通 chat+flow** | **主体 ✅** | **worker-only;reviewer / P8-T03 / P8-T04 推后** |
 | Phase 5–7, 9–10 | 未启动 | |
+
+---
+
+## Phase 5 执行进度(2026-05-24 · 平台事件总线接通 ext_dispatch)
+
+P5 把 P3-T01 留下的事件总线骨架接到 chat/flow 流上。`EventBus` 实现 + capability 校验早在 P3 时就写好了(`extensions/events.rs`,7 个单测),P5 做的是 **把它装回 `ExtensionRuntime`、暴露 RPC、给 ext_dispatch 加 emit 站点**,顺手把 SDK runtime 的 `cronymax.events` 名空间补齐。
+
+### 关键决定
+
+- **manifest schema**:`Capabilities` 之前是 `#[serde(flatten)] _ignored`,P5 拆出结构化 `events: EventsCapability { subscribe, emit }`。flatten 不冲突,旧 manifest 写 `events.subscribe`(带点的扁平键)依旧落到 `_ignored`(不再生效)。新 manifest 用 `capabilities.events.{subscribe,emit}: string[]`。
+- **`events/emit` 是 request,不是 notify**:IDL `emit(topic, payload): Promise<void>`,只有 request 能拒绝回 Promise。silent drop 比噪声糟糕(capability 配错就藏起来了),所以走 `handle()` 而非 `on_notify()`。`events/subscribe` / `events/unsubscribe` 仍是 notify(对应 `on()` 的同步表面)。
+- **per-extension `SubscriptionGuard` 保管在 `ExtensionHandle`**:每个 `events/subscribe` 调用产一个 guard,挂进 `event_subscriptions: HashMap<topic, Vec<Guard>>`。同 topic 多次订阅独立栈,各自 dispose;deactivate 时整张表掉,听器一次性断。注:deactivate 解构 handle 以保留 `host.shutdown().await`,event_subscriptions 在 host 关停前显式 drop。
+- **emit 仅在 ext_dispatch**:暂未在 native chat / native ReactLoop 加 emit。`run_extension_turn` 是 chat + flow **唯一**走扩展 provider 的路径,P5 主要落点这里。native 路径接入推后(scope 限定 + 风险:改 ReactLoop 链路面要测)。
+- **优化:`emit_from_platform_if_subscribed`**:hot 路径(per-token delta)走这个 helper,无订阅则不构造 JSON payload。topic-lookup short-circuit 不过是一次 HashMap::get,廉价。
+
+### 改动(6 个文件)
+
+| 文件 | 改动 |
+|---|---|
+| `extensions/manifest.rs` | 加 `EventsCapability { subscribe, emit }` + `Capabilities.events` 字段,保留 `_ignored` flatten |
+| `extensions/events.rs` | 加 `emit_from_platform_if_subscribed<F: FnOnce() -> Value>` 优化 helper |
+| `extensions/rpc/codec.rs` | 加 `EVENTS_UNSUBSCRIBE` / `EVENTS_EMIT` 方法常量(`EVENTS_PUBLISH` / `EVENTS_SUBSCRIBE` 已在 P3 占位)|
+| `extensions/runtime.rs` | `RuntimeState.events: EventBus` + `events()` 公开;`ExtensionHandle.event_subscriptions: HashMap<String, Vec<SubscriptionGuard>>`;activate/deactivate 注册/注销 bus caps;`build_rpc_server` 加 3 handler(events/subscribe / events/unsubscribe / events/emit);加 `build_publish_frame` + `lookup_field` helper |
+| `runtime/ext_dispatch.rs` | `run_extension_turn` 加 7 emit 站点:`SessionStarted`(创会后) / `MessageUserSent`(发 prompt 前) / `MessageAssistantDelta`(per `Text` 事件) / `ToolInvoked`(`ToolCall`) / `ToolCompleted`(`ToolCallUpdate`) / `PermissionRequested`(bridge 前 fire,不阻塞 review) / `MessageAssistantDone`(turn 结束) / `SessionEnded`(dispose 后) |
+| `bundled/extension-host-bootstrap.js` | 加 `cronymax.events.on/emit` 实现:本地 `eventHandlers` table + 顶层 `events/publish` notify handler 派发;首次 `on(topic)` 发 `events/subscribe`,最后一个 dispose 发 `events/unsubscribe`;`emit` 走 `rpcRequest` 返回 `Promise<void>` |
+
+### 验证
+
+- `cargo test -p cronymax extensions::` → **254 passed**(原 248 + 6 新:`platform_emit_reaches_subscribed_extension_via_publish_notify` / `subscribe_without_capability_does_not_install_listener` / `unsubscribe_severs_the_forwarding_listener` / `extension_emit_request_succeeds_for_declared_topic` / `extension_emit_request_rejects_undeclared_topic` / `extension_emit_request_rejects_cronymax_topic` / `cross_extension_emit_reaches_other_subscribers`)
+- `cargo build -p cronymax` → clean
+- `node --check bundled/extension-host-bootstrap.js` → OK
+- 注:`runtime_e2e::full_run_lifecycle_round_trips_through_persistence` 在 `feat/plugins` head 上**已经**红,与 P5 无关(`git stash; cargo test`确认)。
+
+### 显式不做(留作后续)
+
+- **native ReactLoop 路径 emit**:chat 走 native agent 时不会触发 `cronymax.*` 事件。等到 native 路径也需要给 dogfood 扩展暴露遥测时再做(可能 P7 验收 `logger` 扩展时浮上来)。
+- **`cronymax.tool.invoked`/`.completed` 在 native tool 调度处**:同上,目前只在扩展 agent 的 ToolCall/ToolCallUpdate 翻译时 emit。
+- **`logger` 测试扩展**:P5-T04 任务卡里的「订阅 `cronymax.message.assistant.done` 落盘」扩展,框架已具备(单测验过 publish 链路),实际扩展工程留给 P7 dogfood 一起做。
+- **SDK 类型补 `Capabilities.events`**:`@cronymax/extension` 当前 IDL ts 没有 `EventsCapability` interface 字段。codegen(P9-T01)落地时一并补。
+
+### Phase 完成度(Phase 5 接入后)
+
+| Phase | 完成 / 总数 | 状态 |
+|---|---|---|
+| Phase 0 基础 + spike | 7 / 7 | ✅ 完成 |
+| Phase 1 manifest + registry + activation | 6 / 6 | ✅ 完成 |
+| Phase 2 Node host + L1 第一切片 | 11 / 12 | T09 perf / T10 安全冒烟 |
+| Phase 3 其余 L1 Kernel | 8 / 9 | T09 验收扩展 待做 |
+| Phase 4 L2 EP × 6 wiring | 7 / 8 | T08 permissionRequest 桥 待做 |
+| Phase 4.5 chat-provider 接通 | 主体 ✅ | 遗留懒激活 / cancel / permission |
+| **Phase 5 L1.5 平台事件** | **主体 ✅** | **8 topic 从 ext_dispatch 接通;native 路径 emit + logger 测试扩展推后** |
+| Phase 6 Webview 基建 | 未启动 | |
+| Phase 7 coco dogfood | 未启动 | |
+| Phase 8 agent_provider 接通 chat+flow | 主体 ✅ | worker-only;reviewer / P8-T03 / P8-T04 推后 |
+| Phase 9 SDK + 扩展管理 UI | 部分(统一 ContributionDescriptor) | Settings UI / CLI ext package / 模板仓 待做 |
+| Phase 10 收尾 + Alpha | 未启动 | |
