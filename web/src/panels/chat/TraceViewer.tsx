@@ -14,7 +14,6 @@ import {
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Separator } from "@/components/ui/separator";
 import type { TraceEntry } from "./store";
 
 interface Props {
@@ -239,7 +238,7 @@ function TraceRow({ entry, base }: { entry: TraceEntry; base: number }) {
             </span>
           )}
           <ChevronRight
-            className="size-3 shrink-0 text-muted-foreground opacity-40 transition-transform data-[state=open]:rotate-90"
+            className="size-3 shrink-0 text-muted-foreground opacity-40 transition-transform data-[state=open]:rotate-270"
             data-state={open ? "open" : "closed"}
           />
         </Button>
@@ -286,6 +285,14 @@ export function TraceViewer({ entries, startExpanded }: Props) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="rounded border border-border bg-card text-xs">
+      <CollapsibleContent>
+        <div className="flex flex-col gap-0.5 px-1 py-1 border-b border-border">
+          {sortedEntries(entries).map((entry, i) => (
+            <TraceRow key={i} entry={entry} base={base} />
+          ))}
+        </div>
+      </CollapsibleContent>
+
       <CollapsibleTrigger asChild>
         <Button
           variant="ghost"
@@ -306,15 +313,6 @@ export function TraceViewer({ entries, startExpanded }: Props) {
           </span>
         </Button>
       </CollapsibleTrigger>
-
-      <CollapsibleContent>
-        <Separator />
-        <div className="flex flex-col gap-0.5 px-1 py-1">
-          {sortedEntries(entries).map((entry, i) => (
-            <TraceRow key={i} entry={entry} base={base} />
-          ))}
-        </div>
-      </CollapsibleContent>
     </Collapsible>
   );
 }

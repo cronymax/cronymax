@@ -7,13 +7,16 @@
 
 use std::sync::Arc;
 
+use futures_util::StreamExt as _;
 use tracing::{info, warn};
 
 use crate::agent_loop::{LoopConfig, ReactLoop, ToolDispatcher};
-use crate::capability::agent_loader;
+use crate::capability::agent_loader::{self, AgentKind};
 use crate::capability::flow_tools::{register_flow_tools, register_submit_review, SpawnAgentFn};
+use crate::capability::invoke_agent::register_invoke_agent;
+use crate::capability::invoke_flow::{build_invoke_flow_description, register_invoke_flow};
 use crate::flow::runtime::InvocationContext;
-use crate::llm::{CapabilityResolver, LlmConfig};
+use crate::llm::{CapabilityResolver, ChatMessage, LlmConfig, LlmEvent, LlmRequest};
 use crate::runtime::middleware::{
     LlmDurationStore, MiddlewareChain, TimingMiddleware, TokenAccumulatorMiddleware,
     ToolDurationStore, TraceEmitterMiddleware,
@@ -49,7 +52,7 @@ impl AgentRunner {
         let run_id = match authority.start_run_with_session(
             run_ctx.space_id,
             None,
-            serde_json::json!({}),
+            serde_json::json!({ "agent_name": &agent_id }),
             run_ctx.session_id.clone(),
         ) {
             Ok(id) => id,
@@ -260,9 +263,11 @@ impl AgentRunner {
                 initial_thread: None,
                 session_id: None,
                 reflection: None,
+                critic: None,
                 write_namespace: None,
                 memory_manager: None,
                 middleware: build_middleware_chain(authority.clone()),
+                agent_name: None,
             };
 
             let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
@@ -319,8 +324,11 @@ impl AgentRunner {
             };
             let prior_thread_len = thread.len();
 
-            let chat_agent_def =
-                agent_loader::load_agent(&run_ctx.workspace_root, "__chat__").await;
+            let chat_agent_def = agent_loader::load_agent_with_builtin(
+                &run_ctx.workspace_root,
+                crate::crony::CronyBuiltin::ID,
+            )
+            .await;
 
             let system_prompt = if chat_agent_def.system_prompt.is_empty() {
                 None
@@ -349,6 +357,241 @@ impl AgentRunner {
                     sid.0.clone(),
                     spawn_fn,
                 );
+            }
+
+            // ── Supervisor tools ─────────────────────────────────────────
+            // Register invoke_agent / invoke_flow when the chat agent is a Supervisor.
+            if chat_agent_def.kind == AgentKind::Supervisor {
+                let services_sup = Arc::clone(&services);
+                let run_ctx_sup = run_ctx.clone();
+                let authority_sup = authority.clone();
+
+                // invoke_agent spawn fn: spawns child, fires oneshot on completion.
+                let invoke_agent_spawn: Arc<
+                    dyn Fn(
+                            crate::runtime::run_context::RunContext,
+                            String,
+                            String,
+                            tokio::sync::oneshot::Sender<crate::agent_loop::tools::AgentResult>,
+                        ) + Send
+                        + Sync
+                        + 'static,
+                > = Arc::new(move |child_ctx, agent_id, goal, tx| {
+                    let runner = AgentRunner::new(Arc::clone(&services_sup));
+                    let authority_clone = authority_sup.clone();
+                    tokio::spawn(async move {
+                        // Create an authority run for the child agent.
+                        let child_run_id = match authority_clone.start_run_with_session(
+                            child_ctx.space_id,
+                            None,
+                            serde_json::json!({ "agent_name": &agent_id }),
+                            child_ctx.session_id.clone(),
+                        ) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                    success: false,
+                                    output: serde_json::Value::Null,
+                                    error: Some(format!("failed to start child run: {e}")),
+                                });
+                                return;
+                            }
+                        };
+
+                        let inv_ctx = crate::flow::runtime::InvocationContext::build(
+                            &agent_id,
+                            &agent_id,
+                            crate::flow::runtime::InvocationTrigger {
+                                kind: "supervisor_invoke".into(),
+                                from_node: None,
+                                approved_port: None,
+                                reviewer_doc_path: None,
+                            },
+                            vec![],
+                            vec![],
+                        );
+
+                        // We re-use spawn_agent for the actual run but we need the
+                        // oneshot — so we run the loop inline here.
+                        let run_ctx_inner = child_ctx;
+                        let agent_def = crate::capability::agent_loader::load_agent(
+                            &run_ctx_inner.workspace_root,
+                            &agent_id,
+                        )
+                        .await;
+
+                        let system_message =
+                            crate::runtime::agent_runner::render_system_message(&inv_ctx);
+                        let system_message = if agent_def.system_prompt.is_empty() {
+                            system_message
+                        } else {
+                            format!("{}\n\n---\n\n{}", agent_def.system_prompt, system_message)
+                        };
+
+                        let model = match &run_ctx_inner.llm_config {
+                            crate::llm::LlmConfig::OpenAi { model, .. }
+                            | crate::llm::LlmConfig::Anthropic { model, .. }
+                            | crate::llm::LlmConfig::Copilot { model, .. } => {
+                                if agent_def.llm_model.is_empty() {
+                                    model.clone()
+                                } else {
+                                    agent_def.llm_model.clone()
+                                }
+                            }
+                        };
+
+                        let effective_llm_config =
+                            apply_model_override(run_ctx_inner.llm_config.clone(), &model);
+                        let llm = match runner
+                            .services
+                            .llm_factory
+                            .build(&effective_llm_config)
+                            .await
+                        {
+                            Ok(p) => p,
+                            Err(e) => {
+                                let _ = authority_clone.fail_run(child_run_id, e.to_string());
+                                let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                    success: false,
+                                    output: serde_json::Value::Null,
+                                    error: Some(format!("llm build failed: {e}")),
+                                });
+                                return;
+                            }
+                        };
+
+                        let cap_builder = runner.services.capability_factory.build(
+                            &run_ctx_inner.workspace_root,
+                            run_ctx_inner.sandbox_tier.clone(),
+                        );
+                        let tools = Arc::new(cap_builder.build());
+
+                        let cfg = crate::agent_loop::LoopConfig {
+                            model: model.clone(),
+                            system_prompt: Some(system_message),
+                            user_input: goal,
+                            max_turns: 99999,
+                            temperature: None,
+                            reasoning_effort: None,
+                            llm,
+                            tools,
+                            thinking: None,
+                            initial_thread: None,
+                            session_id: None,
+                            reflection: None,
+                            critic: None,
+                            write_namespace: None,
+                            memory_manager: None,
+                            middleware: build_middleware_chain(authority_clone.clone()),
+                            agent_name: Some(agent_id.clone()),
+                        };
+
+                        let result = crate::agent_loop::ReactLoop::new(
+                            authority_clone.clone(),
+                            child_run_id,
+                            cfg,
+                        )
+                        .run()
+                        .await;
+
+                        let agent_result = match result {
+                            Ok(()) => crate::agent_loop::tools::AgentResult {
+                                success: true,
+                                output: serde_json::json!({ "run_id": child_run_id.to_string() }),
+                                error: None,
+                            },
+                            Err(e) => crate::agent_loop::tools::AgentResult {
+                                success: false,
+                                output: serde_json::Value::Null,
+                                error: Some(e.to_string()),
+                            },
+                        };
+                        let _ = tx.send(agent_result);
+                    });
+                });
+
+                register_invoke_agent(
+                    &mut cap_builder,
+                    authority.clone(),
+                    run_id,
+                    run_ctx_sup.clone(),
+                    invoke_agent_spawn,
+                );
+
+                // invoke_flow: use existing FlowRuntime and a polling-based
+                // completion hook that fires when the run reaches terminal state.
+                if let Some(flow_rt) = &run_ctx.flow_runtime {
+                    let services_flow = Arc::clone(&services);
+                    let run_ctx_flow = run_ctx.clone();
+                    let flow_rt_inv = Arc::clone(flow_rt);
+                    let authority_flow = authority.clone();
+
+                    let spawn_flow_fn: SpawnAgentFn =
+                        Arc::new(move |_flow_run_id, agent_id2, inv_ctx2| {
+                            let runner2 = AgentRunner::new(Arc::clone(&services_flow));
+                            runner2.spawn_agent(run_ctx_flow.clone(), agent_id2, inv_ctx2);
+                        });
+
+                    // Completion fn: poll run status in background, fire tx when terminal.
+                    let flow_rt_poll = Arc::clone(flow_rt);
+                    let flow_completion_fn: Arc<
+                        dyn Fn(
+                                String,
+                                tokio::sync::oneshot::Sender<crate::agent_loop::tools::AgentResult>,
+                            ) + Send
+                            + Sync
+                            + 'static,
+                    > = Arc::new(move |flow_run_id, tx| {
+                        let rt = Arc::clone(&flow_rt_poll);
+                        tokio::spawn(async move {
+                            // Poll every 500ms until terminal.
+                            loop {
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                if let Some(state) = rt.get_run(&flow_run_id) {
+                                    if state.status.is_terminal() {
+                                        let success = state.status
+                                            == crate::flow::runtime::FlowRunStatus::Completed;
+                                        let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                            success,
+                                            output: serde_json::json!({
+                                                "flow_run_id": flow_run_id,
+                                                "status": format!("{:?}", state.status),
+                                            }),
+                                            error: if success {
+                                                None
+                                            } else {
+                                                state.failure_reason.clone()
+                                            },
+                                        });
+                                        return;
+                                    }
+                                } else {
+                                    let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                        success: false,
+                                        output: serde_json::Value::Null,
+                                        error: Some(format!("flow run '{flow_run_id}' not found")),
+                                    });
+                                    return;
+                                }
+                            }
+                        });
+                    });
+
+                    let invoke_flow_desc =
+                        build_invoke_flow_description(&run_ctx.workspace_root).await;
+                    register_invoke_flow(
+                        &mut cap_builder,
+                        invoke_flow_desc,
+                        authority_flow,
+                        run_id,
+                        flow_rt_inv,
+                        run_ctx.workspace_root.clone(),
+                        spawn_flow_fn,
+                        flow_completion_fn,
+                        // Reviewer agents don't have a child session to bind to.
+                        None,
+                    );
+                }
             }
 
             if !chat_agent_def.tools.is_empty() {
@@ -392,9 +635,11 @@ impl AgentRunner {
                 initial_thread: Some(thread),
                 session_id: Some(sid.clone()),
                 reflection: None,
+                critic: None,
                 write_namespace: None,
                 memory_manager: None,
                 middleware: build_middleware_chain(authority.clone()),
+                agent_name: None,
             };
 
             let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
@@ -417,6 +662,17 @@ impl AgentRunner {
                         let _ = store.append_turns(&sid, &updated_thread[prior_thread_len..]);
                     }
                 }
+            }
+
+            // Auto-name the session after the first run completes, if not yet named.
+            {
+                let naming_services = Arc::clone(&services);
+                let naming_sid = sid.clone();
+                let naming_llm_config = effective_llm_config.clone();
+                tokio::spawn(async move {
+                    auto_name_session_if_needed(&naming_services, &naming_sid, &naming_llm_config)
+                        .await;
+                });
             }
         });
     }
@@ -555,6 +811,24 @@ pub fn render_system_message_with(inv_ctx: &InvocationContext, submit_mode: Subm
         }
     };
 
+    // Task 2.5: HUMAN-PROVIDED banner for keys that were manually supplied.
+    let human_provided_section = if inv_ctx.human_provided_keys.is_empty() {
+        String::new()
+    } else {
+        let items = inv_ctx
+            .human_provided_keys
+            .iter()
+            .map(|k| {
+                format!(
+                    "  - [HUMAN-PROVIDED: `{k}` was manually supplied by the user, \
+                     not generated by an agent]"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("\n\n### Human-Provided Inputs\n{items}")
+    };
+
     format!(
         "## FlowRuntime: Invocation Context\n\n\
          {trigger_context}\n\n\
@@ -563,7 +837,7 @@ pub fn render_system_message_with(inv_ctx: &InvocationContext, submit_mode: Subm
          ### Your Pending Ports (in order)\n\
          {pending_summary}\n\n\
          ### Available Approved Documents\n\
-         {available_summary}{feedback_section}\n\n\
+         {available_summary}{human_provided_section}{feedback_section}\n\n\
          {submit_instruction}"
     )
 }
@@ -626,6 +900,77 @@ pub(crate) fn build_middleware_chain(
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+/// After a run completes, auto-name the session if it hasn't been named yet.
+///
+/// Makes a lightweight single-turn LLM call to generate a 2–4 word title from
+/// the first user message. Skips silently if the session is already named,
+/// manually named, or if the LLM call fails for any reason.
+async fn auto_name_session_if_needed(
+    services: &RuntimeServices,
+    sid: &crate::runtime::state::SessionId,
+    llm_config: &LlmConfig,
+) {
+    let first_user_msg = match services.authority.session_needs_naming(sid) {
+        Some(msg) => msg,
+        None => return,
+    };
+
+    let prompt = if first_user_msg.is_empty() {
+        "Generate a 2–4 word project title in Title Case with no punctuation. Reply with only the title.".to_owned()
+    } else {
+        let excerpt: String = first_user_msg.chars().take(300).collect();
+        format!(
+            "Generate a 2–4 word project title in Title Case with no punctuation for: \"{excerpt}\"\nReply with only the title."
+        )
+    };
+
+    let llm = match services.llm_factory.build(llm_config).await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "auto_name_session: llm_factory.build failed");
+            return;
+        }
+    };
+
+    let req = LlmRequest {
+        model: match llm_config {
+            LlmConfig::OpenAi { model, .. } => model.clone(),
+            LlmConfig::Anthropic { model, .. } => model.clone(),
+            LlmConfig::Copilot { model, .. } => model.clone(),
+        },
+        messages: vec![ChatMessage::user(prompt)],
+        tools: vec![],
+        temperature: Some(0.3),
+        reasoning_effort: None,
+        thinking: None,
+    };
+
+    let mut stream = match llm.stream(req).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "auto_name_session: stream failed");
+            return;
+        }
+    };
+
+    let mut text = String::new();
+    while let Some(event) = stream.next().await {
+        match event {
+            LlmEvent::Delta { content } => text.push_str(&content),
+            LlmEvent::Done { .. } | LlmEvent::Error { .. } => break,
+            _ => {}
+        }
+    }
+
+    let name = text.trim().to_owned();
+    if name.is_empty() || name.len() > 60 {
+        return;
+    }
+
+    info!(session_id = %sid.0, name = %name, "auto_name_session: naming session");
+    services.authority.auto_name_session(sid, &name);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,6 +1016,7 @@ mod tests {
             }],
             pending_ports: vec!["tech-spec".to_owned(), "code-description".to_owned()],
             review_comments: None,
+            human_provided_keys: Vec::new(),
         };
         let msg = render_system_message(&ctx);
         assert!(msg.contains("## FlowRuntime: Invocation Context"));
@@ -691,6 +1037,7 @@ mod tests {
             available_docs: vec![],
             pending_ports: vec![],
             review_comments: None,
+            human_provided_keys: Vec::new(),
         };
         let msg = render_system_message(&ctx);
         assert!(msg.starts_with("## FlowRuntime: Review Assignment"));
@@ -712,6 +1059,7 @@ mod tests {
                 message: "Missing scalability section".to_owned(),
                 suggestion: Some("Add a scalability section".to_owned()),
             }]),
+            human_provided_keys: Vec::new(),
         };
         let msg = render_system_message(&ctx);
         assert!(msg.contains("## FlowRuntime: Invocation Context"));
@@ -734,6 +1082,7 @@ mod tests {
             available_docs: vec![],
             pending_ports: vec!["code-description".to_owned()],
             review_comments: None,
+            human_provided_keys: Vec::new(),
         };
         let msg = render_system_message(&ctx);
         assert!(msg.contains("Your output `tech-spec` was approved."));
@@ -749,6 +1098,7 @@ mod tests {
             available_docs: vec![],
             pending_ports: vec![],
             review_comments: None,
+            human_provided_keys: Vec::new(),
         };
         let msg = render_system_message(&ctx);
         assert!(msg.contains("All your ports are complete."));
@@ -764,6 +1114,7 @@ mod tests {
             available_docs: vec![],
             pending_ports: vec!["tech-spec".to_owned()],
             review_comments: None,
+            human_provided_keys: Vec::new(),
         };
         // Extension-backed agents have no `submit_document` tool.
         let ext_msg = render_system_message_with(&ctx, SubmitMode::TurnOutput);

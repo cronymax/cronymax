@@ -1,6 +1,6 @@
 //! `flow.*` tool capability suite.
 //!
-//! These tools are registered on the `__chat__` agent's capability dispatcher
+//! These tools are registered on the `Crony` supervisor agent's capability dispatcher
 //! so the orchestrator LLM can list, start, and monitor flow runs, and approve
 //! or request changes on documents undergoing human review.
 //!

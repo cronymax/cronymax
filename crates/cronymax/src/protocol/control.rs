@@ -66,6 +66,18 @@ pub enum ControlRequest {
         agent_id: Option<String>,
         #[serde(default)]
         contribution_kind: Option<String>,
+        /// Frontend-generated child session id for the flow thread.
+        /// When set alongside a `flow_id` in the payload, the runtime upserts
+        /// a child session with this id, sets its parent/fork_point, and routes
+        /// all flow node sub-runs into it.
+        #[serde(default)]
+        child_session_id: Option<String>,
+        /// Explicit human-readable goal for this run. When set, stored verbatim
+        /// on `Run.goal` and shown as the primary label in the Activity Panel.
+        /// When absent the runtime derives a goal from the flow definition name
+        /// or the first user message.
+        #[serde(default)]
+        goal: Option<String>,
     },
 
     /// Cancel an in-flight run.
@@ -430,6 +442,47 @@ pub enum ControlRequest {
         #[serde(default)]
         model: String,
     },
+
+    // ── supervisor-session-ux: flow YAML authoring ────────────────────────
+    /// Save (create or overwrite) a `flow.yaml` from raw YAML content.
+    /// Sent from the Schema tab of the Flows panel on Cmd+S.
+    /// Rejected with `ControlError::FlowHasActiveRun` if the flow has a
+    /// running run so in-progress nodes are not interrupted mid-flight.
+    FlowSaveYaml {
+        workspace_root: String,
+        flow_id: String,
+        /// Raw YAML content of the new `flow.yaml`.
+        yaml_content: String,
+    },
+
+    /// Persist layout metadata (canvas positions) without touching the
+    /// `flow.yaml`. Written to `.cronymax/flows/<flow_id>.layout.json`.
+    /// Auto-saved by the FlowEditor canvas on drag-end.
+    FlowSaveLayout {
+        workspace_root: String,
+        flow_id: String,
+        /// Serialised layout JSON (node positions, zoom, etc.).
+        layout_json: String,
+    },
+
+    // ── supervisor-session-ux: blackboard injection ───────────────────────
+    /// Inject a document into the per-run Blackboard from the UI.
+    /// Writes a `BlackboardEntry` with `written_by: HumanInjected` and
+    /// triggers an AND-join re-evaluation for nodes that declare `reads`.
+    BlackboardInject {
+        flow_run_id: String,
+        key: String,
+        /// Markdown content of the document to inject.
+        content: String,
+    },
+
+    // ── supervisor-session-ux: session naming ─────────────────────────────
+    /// Rename a session explicitly (manual rename from the sidebar).
+    /// Sets `manually_named: true` so auto-naming never overrides it.
+    SessionRename {
+        session_id: String,
+        name: String,
+    },
 }
 
 /// Reply to a [`ControlRequest`].
@@ -504,6 +557,9 @@ pub enum ControlError {
 
     #[error("operation not allowed in current state: {message}")]
     InvalidState { message: String },
+
+    #[error("flow has an active run and cannot be modified")]
+    FlowHasActiveRun,
 
     #[error("internal runtime error: {message}")]
     Internal { message: String },

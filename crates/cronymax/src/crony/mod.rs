@@ -49,7 +49,7 @@ impl CronyBuiltin {
     pub fn def() -> AgentDef {
         AgentDef {
             name: "Crony".to_owned(),
-            kind: AgentKind::Worker,
+            kind: AgentKind::Supervisor,
             llm_provider: String::new(),
             llm_model: String::new(),
             system_prompt: prompts::SYSTEM_PROMPT.to_owned(),
@@ -65,6 +65,7 @@ impl CronyBuiltin {
                 enabled: true,
             }),
             agent_provider: None,
+            critic: None,
         }
     }
 

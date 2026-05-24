@@ -1,5 +1,7 @@
 //! Flow CRUD request handlers (list, load, save).
 
+use crate::flow::definition::BlackboardWriter;
+use crate::flow::runtime::{AvailableDoc, FlowRunStatus};
 use crate::protocol::control::{ControlError, ControlRequest, ControlResponse};
 
 use super::RuntimeHandler;
@@ -267,5 +269,221 @@ impl RuntimeHandler {
             };
         }
         ControlResponse::Ack
+    }
+
+    // ── supervisor-session-ux new handlers ───────────────────────────────
+
+    pub(super) async fn handle_flow_save_yaml(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::FlowSaveYaml {
+            workspace_root,
+            flow_id,
+            yaml_content,
+        } = req
+        else {
+            unreachable!()
+        };
+        use crate::workspace::Workspace;
+
+        // Validate flow_id.
+        let valid = !flow_id.is_empty()
+            && flow_id.len() <= 64
+            && flow_id
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            && !flow_id.starts_with('-');
+        if !valid {
+            return ControlResponse::Err {
+                error: ControlError::InvalidRequest {
+                    message: format!("invalid flow_id: {flow_id}"),
+                },
+            };
+        }
+
+        // Basic YAML validation: check the content is non-empty and starts with
+        // recognisable YAML (not just whitespace or binary).  A full parse would
+        // require the `serde_yaml` crate; skip that for now and rely on the
+        // filesystem write being valid UTF-8.
+        if yaml_content.trim().is_empty() {
+            return ControlResponse::Err {
+                error: ControlError::InvalidRequest {
+                    message: "yaml_content must not be empty".into(),
+                },
+            };
+        }
+
+        // Reject if the flow has an active (Running) run.
+        let workspace_path = std::path::Path::new(&workspace_root);
+        let (flow_rt, _) = self
+            .services
+            .flow_registry
+            .get_or_create(workspace_path, self.workspace_cache_dir.as_deref())
+            .await;
+        let has_active = flow_rt
+            .list_runs()
+            .iter()
+            .any(|r| r.flow_id == flow_id && r.status == FlowRunStatus::Running);
+        if has_active {
+            return ControlResponse::Err {
+                error: ControlError::FlowHasActiveRun,
+            };
+        }
+
+        // Atomic write via temp file + rename.
+        let layout = Workspace::new(&workspace_root);
+        let flow_path = layout.flow_file(&flow_id);
+        if let Some(parent) = flow_path.parent() {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                return ControlResponse::Err {
+                    error: ControlError::Internal {
+                        message: e.to_string(),
+                    },
+                };
+            }
+        }
+        let tmp = flow_path.with_extension("yaml.tmp");
+        if let Err(e) = tokio::fs::write(&tmp, yaml_content.as_bytes()).await {
+            return ControlResponse::Err {
+                error: ControlError::Internal {
+                    message: e.to_string(),
+                },
+            };
+        }
+        if let Err(e) = tokio::fs::rename(&tmp, &flow_path).await {
+            return ControlResponse::Err {
+                error: ControlError::Internal {
+                    message: e.to_string(),
+                },
+            };
+        }
+        ControlResponse::Ack
+    }
+
+    pub(super) async fn handle_flow_save_layout(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::FlowSaveLayout {
+            workspace_root,
+            flow_id,
+            layout_json,
+        } = req
+        else {
+            unreachable!()
+        };
+
+        // Validate flow_id.
+        let valid = !flow_id.is_empty()
+            && flow_id.len() <= 64
+            && flow_id
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            && !flow_id.starts_with('-');
+        if !valid {
+            return ControlResponse::Err {
+                error: ControlError::InvalidRequest {
+                    message: format!("invalid flow_id: {flow_id}"),
+                },
+            };
+        }
+
+        // Write to `.cronymax/flows/<flow_id>.layout.json`.
+        let layout_path = std::path::Path::new(&workspace_root)
+            .join(".cronymax")
+            .join("flows")
+            .join(format!("{flow_id}.layout.json"));
+        if let Some(parent) = layout_path.parent() {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                return ControlResponse::Err {
+                    error: ControlError::Internal {
+                        message: e.to_string(),
+                    },
+                };
+            }
+        }
+        let tmp = layout_path.with_extension("json.tmp");
+        if let Err(e) = tokio::fs::write(&tmp, layout_json.as_bytes()).await {
+            return ControlResponse::Err {
+                error: ControlError::Internal {
+                    message: e.to_string(),
+                },
+            };
+        }
+        if let Err(e) = tokio::fs::rename(&tmp, &layout_path).await {
+            return ControlResponse::Err {
+                error: ControlError::Internal {
+                    message: e.to_string(),
+                },
+            };
+        }
+        ControlResponse::Ack
+    }
+
+    pub(super) async fn handle_blackboard_inject(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::BlackboardInject {
+            flow_run_id, key, ..
+        } = req
+        else {
+            unreachable!()
+        };
+
+        // Find the FlowRuntime associated with this flow run via flow_contexts.
+        let flow_rt = {
+            let contexts = self.flow_contexts.lock();
+            contexts
+                .get(&flow_run_id)
+                .and_then(|ctx| ctx.flow_runtime.clone())
+        };
+        let Some(flow_rt) = flow_rt else {
+            return ControlResponse::Err {
+                error: ControlError::InvalidRequest {
+                    message: format!("no active flow run context for: {flow_run_id}"),
+                },
+            };
+        };
+
+        // Verify the run exists and is active.
+        let run_state = flow_rt.get_run(&flow_run_id);
+        let Some(run_state) = run_state else {
+            return ControlResponse::Err {
+                error: ControlError::InvalidRequest {
+                    message: format!("flow run not found: {flow_run_id}"),
+                },
+            };
+        };
+        if run_state.status != FlowRunStatus::Running {
+            return ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: format!(
+                        "flow run {flow_run_id} is not running (status: {:?})",
+                        run_state.status
+                    ),
+                },
+            };
+        }
+
+        // Write a synthetic AvailableDoc entry (content is inline, no path yet).
+        // In a full implementation this would persist the content to a file first.
+        let doc = AvailableDoc {
+            path: format!(".cronymax/blackboard/{flow_run_id}/{key}.md"),
+            doc_type: "injected".to_owned(),
+            revision: 0,
+        };
+        flow_rt.write_blackboard_entry(&flow_run_id, &key, doc, BlackboardWriter::HumanInjected);
+
+        ControlResponse::Ack
+    }
+
+    pub(super) async fn handle_session_rename(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::SessionRename { session_id, name } = req else {
+            unreachable!()
+        };
+        use crate::runtime::state::SessionId;
+
+        let sid = SessionId(session_id.clone());
+        match self.authority.rename_session(&sid, &name) {
+            Ok(()) => ControlResponse::Ack,
+            Err(e) => ControlResponse::Err {
+                error: ControlError::InvalidRequest {
+                    message: e.to_string(),
+                },
+            },
+        }
     }
 }

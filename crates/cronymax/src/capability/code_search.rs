@@ -189,7 +189,7 @@ pub async fn run_rg_search(
         cmd.arg("--glob").arg(path_glob);
     }
 
-    cmd.arg(pattern);
+    cmd.arg(pattern).arg("."); // explicit path; prevents rg from reading stdin when piped
 
     let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
         .await

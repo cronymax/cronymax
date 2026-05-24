@@ -119,6 +119,8 @@ class SpaceContextEnricher : public ControlEnricher {
         "flow_list",
         "flow_load",
         "flow_save",
+        "flow_save_yaml",
+        "flow_save_layout",
         "doc_type_list",
         "doc_type_load",
         "doc_type_save",

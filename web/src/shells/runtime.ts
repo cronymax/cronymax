@@ -51,6 +51,10 @@ export interface AgentRunOptions {
   contribution_kind?: string;
   /** When set, starts a flow run with this flow id instead of a direct agent run. */
   flow_id?: string;
+  /** Frontend-generated child session id for the flow thread (crypto.randomUUID()).
+   * When present, the Rust runtime upserts a child session with this id and routes
+   * all flow node sub-runs into it so the thread view can subscribe independently. */
+  child_session_id?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +135,36 @@ export const flow = {
   },
   async save(flow_id: string, graph: unknown): Promise<{ ok: boolean }> {
     return (await runtimeSend("flow.save", { flow_id, graph })) as { ok: boolean };
+  },
+  /** Save the YAML schema for a flow (from the Schema tab editor). */
+  async saveYaml(flow_id: string, yaml_content: string): Promise<{ ok: boolean }> {
+    return (await runtimeSend("flow.save_yaml", { flow_id, yaml_content })) as { ok: boolean };
+  },
+  /** Persist the canvas layout JSON for a flow. */
+  async saveLayout(flow_id: string, layout_json: string): Promise<{ ok: boolean }> {
+    return (await runtimeSend("flow.save_layout", { flow_id, layout_json })) as { ok: boolean };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Blackboard helpers
+// ---------------------------------------------------------------------------
+
+export const blackboard = {
+  /** Human-inject a blackboard entry for a live flow run. */
+  async inject(flow_run_id: string, key: string, content: string): Promise<{ ok: boolean }> {
+    return (await runtimeSend("blackboard.inject", { flow_run_id, key, content })) as { ok: boolean };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Session helpers
+// ---------------------------------------------------------------------------
+
+export const session = {
+  /** Rename a session; sets manually_named = true on the backend. */
+  async rename(session_id: string, name: string): Promise<{ ok: boolean }> {
+    return (await runtimeSend("session.rename", { session_id, name })) as { ok: boolean };
   },
 };
 
@@ -274,6 +308,7 @@ export async function agentRun(task: string, opts: AgentRunOptions = {}): Promis
   if (opts.session_name) req.session_name = opts.session_name;
   if (opts.agent_id) req.agent_id = opts.agent_id;
   if (opts.contribution_kind) req.contribution_kind = opts.contribution_kind;
+  if (opts.child_session_id) req.child_session_id = opts.child_session_id;
   const res = (await runtimeSend("start.run", req)) as { run_id?: string };
   if (!res.run_id) throw new Error("runtime did not return run_id");
   return res.run_id;

@@ -15,6 +15,8 @@ use crate::capability::agent_loader;
 use crate::capability::dispatcher::HostCapabilityDispatcher;
 use crate::capability::filesystem::{LocalFilesystem, WorkspaceScope};
 use crate::capability::flow_tools::{register_flow_tools, SpawnAgentFn};
+use crate::capability::invoke_agent::register_invoke_agent;
+use crate::capability::invoke_flow::{build_invoke_flow_description, register_invoke_flow};
 use crate::capability::notify::NullNotify;
 use crate::capability::shell::LocalShell;
 use crate::capability::submit_document::DocumentSubmitted;
@@ -27,12 +29,12 @@ use crate::llm::{
 use crate::protocol::control::{ControlError, ControlRequest, ControlResponse};
 use crate::protocol::envelope::RuntimeToClient;
 use crate::runtime::run_context::RunContext;
-use crate::runtime::state::{RunId, SessionId, Space};
+use crate::runtime::state::{ForkPoint, RunId, SessionId, Space};
 use uuid::Uuid;
 
 use super::helpers::{
     apply_anthropic_effort_override, authority_err_to_control, build_middleware_chain,
-    build_workspace_injection_block, default_chat_system_prompt, parse_space,
+    build_workspace_injection_block, parse_space,
 };
 use super::RuntimeHandler;
 
@@ -45,6 +47,8 @@ impl RuntimeHandler {
             session_name,
             agent_id,
             contribution_kind,
+            child_session_id,
+            goal: explicit_goal,
         } = req
         else {
             unreachable!()
@@ -130,9 +134,10 @@ impl RuntimeHandler {
 
         info!(%base_url, %model, has_key = api_key.is_some(), "start_run: LLM config");
 
-        // Pre-load agent definition for direct-chat runs (no flow_id).
-        // Uses load_agent_with_builtin so the Crony builtin is always
-        // available without a YAML file on disk.
+        // Pre-load agent definition for the chat agent (Crony builtin by default).
+        // Used when no active flow context is set — i.e. either no flow_id in the
+        // payload or the flow failed to start.  When a flow entry agent is active
+        // (maybe_flow_ctx.is_some()) its own system-prompt and tools take over.
         // Done before `start_run_with_session` so no yield-points exist
         // between run creation (RunStatus:pending) and RunStarted reply.
         let resolved_agent_id = agent_id
@@ -165,13 +170,7 @@ impl RuntimeHandler {
         // before `start_run_with_session` so no yield-points exist between
         // run creation (RunStatus:pending) and the RunStarted reply.
         let preloaded_chat_agent_def: Option<crate::capability::agent_loader::AgentDef> =
-            if flow_id_opt.is_none() {
-                Some(
-                    agent_loader::load_agent_with_builtin(&workspace_root, resolved_agent_id).await,
-                )
-            } else {
-                None
-            };
+            Some(agent_loader::load_agent_with_builtin(&workspace_root, resolved_agent_id).await);
 
         // Extension-provider dispatch. A chat run routes to an extension
         // instead of the native ReactLoop in two ways:
@@ -257,14 +256,11 @@ impl RuntimeHandler {
                 .get_or_create_session(s_id.clone(), space, session_name.clone());
             // Load history from ChatStore if available, else fall back
             // to the snapshot thread (legacy / no workspace_cache_dir).
-            // Flow runs always start fresh — never continue from the chat
-            // session thread. Each flow invocation is an independent task
-            // execution; reusing the prior thread causes role-alternation
-            // corruption when LLM calls fail and the broken history is
-            // flushed back to the session on each retry.
-            let thread = if flow_id_opt.is_some() {
-                Vec::new()
-            } else if let Some(ref cache_dir) = self.workspace_cache_dir {
+            // Crony (the supervisor) persists its conversation history across
+            // turns even when a flow is selected, so the user's dialogue context
+            // is preserved between messages.  Each spawned flow *agent* starts
+            // fresh (handled in agent_runner::spawn_agent, not here).
+            let thread = if let Some(ref cache_dir) = self.workspace_cache_dir {
                 let store = crate::runtime::chat_store::ChatStore::new(cache_dir);
                 store.load_history(&s_id)
             } else {
@@ -299,6 +295,25 @@ impl RuntimeHandler {
             .start_run_with_session(space, None, payload, maybe_session_id.clone())
         {
             Ok(run_id) => {
+                // Resolve goal: explicit > flow_id string > first user message.
+                // Done immediately after run creation so the label is visible
+                // in the Activity Panel even before the run starts executing.
+                let resolved_goal: Option<String> = explicit_goal
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| flow_id_opt.as_deref().map(str::to_string))
+                    .or_else(|| {
+                        let s = user_input.trim();
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s.chars().take(120).collect())
+                        }
+                    });
+                if resolved_goal.is_some() {
+                    let _ = self.authority.set_run_goal(run_id, resolved_goal);
+                }
                 info!(%run_id, "start_run: created run, setting up fan-out");
                 let sub_outcome = self.authority.subscribe(format!("run:{run_id}"));
                 let sub_id = sub_outcome.id;
@@ -453,6 +468,18 @@ impl RuntimeHandler {
                                         self.authority
                                             .attach_flow_run_to_session(sid, frid.clone());
                                     }
+                                    // Bind the child session (or parent session) in the
+                                    // authority's flow_sessions map so flow.run.changed and
+                                    // other flow events are routed to session:{id} where the
+                                    // frontend thread-view subscription can receive them.
+                                    let bind_target = child_session_id
+                                        .as_deref()
+                                        .filter(|s| !s.is_empty())
+                                        .map(str::to_owned)
+                                        .or_else(|| maybe_session_id.as_ref().map(|s| s.0.clone()));
+                                    if let Some(ref target) = bind_target {
+                                        self.authority.bind_session(&frid, target);
+                                    }
                                     (frid, ctxs)
                                 }
                                 Err(e) => {
@@ -479,16 +506,50 @@ impl RuntimeHandler {
                         .first()
                         .map(|c| c.node_id.clone())
                         .unwrap_or_default();
-                    let entry_sys = entry_contexts
-                        .first()
-                        .map(crate::runtime::agent_runner::render_system_message);
+
+                    // If the caller supplied a child_session_id, upsert it and
+                    // set its parent/fork_point so thread views can subscribe to it.
+                    let maybe_child_session_id: Option<SessionId> = child_session_id
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .map(|s| {
+                            let child_sid = SessionId::from(s);
+                            let _ = self.authority.get_or_create_session(
+                                child_sid.clone(),
+                                space,
+                                None,
+                            );
+                            if let Some(ref parent_sid) = maybe_session_id {
+                                self.authority.set_session_fork_point(
+                                    &child_sid,
+                                    parent_sid.clone(),
+                                    ForkPoint {
+                                        message_idx: prior_thread.len(),
+                                        run_id: Some(run_id),
+                                        created_at_ms: crate::runtime::authority::now_ms(),
+                                    },
+                                );
+                            }
+                            // Also record the flow_run_id in the child session's
+                            // flow_run_ids for panel discovery.
+                            if !flow_run_id.is_empty() {
+                                self.authority
+                                    .attach_flow_run_to_session(&child_sid, flow_run_id.clone());
+                            }
+                            child_sid
+                        });
+                    // Flow node sub-runs are routed to the child session when present,
+                    // otherwise fall back to the parent session.
+                    let flow_session_id = maybe_child_session_id
+                        .clone()
+                        .or_else(|| maybe_session_id.clone());
 
                     let flow_ctx = RunContext {
                         space_id: space,
                         workspace_root: workspace_root.clone(),
                         flow_id: Some(fid.clone()),
                         flow_run_id: Some(flow_run_id.clone()),
-                        session_id: maybe_session_id.clone(),
+                        session_id: flow_session_id,
                         flow_runtime: Some(flow_rt.clone()),
                         doc_tx: doc_tx.clone(),
                         llm_config: LlmConfig::from_payload_fields(
@@ -512,13 +573,19 @@ impl RuntimeHandler {
                         .lock()
                         .insert(flow_run_id, run_id);
 
-                    // Spawn ReactLoops for additional entry nodes (if any).
-                    for ctx in entry_contexts.into_iter().skip(1) {
+                    // Spawn ReactLoops for ALL flow entry nodes.  Crony is the
+                    // supervisor and runs in the main loop with its own system
+                    // prompt; every flow agent (including the first) runs in its
+                    // own spawned ReactLoop so it appears in the Flow thread.
+                    for ctx in entry_contexts.into_iter() {
                         let agent_id = ctx.owner.clone();
                         ar.spawn_agent(flow_ctx.clone(), agent_id, ctx);
                     }
 
-                    (entry_sys, Some(flow_ctx), entry_node_id)
+                    // entry_sys is intentionally None: Crony should use its own
+                    // system.md (loaded via preloaded_chat_agent_def) rather than
+                    // the flow entry node's rendered invocation message.
+                    (None, Some(flow_ctx), entry_node_id)
                 } else {
                     (None, None, String::new())
                 };
@@ -562,12 +629,22 @@ impl RuntimeHandler {
                             };
 
                             // Process the document submission.
+                            // Use the supervision task's own flow_run_id as the
+                            // authoritative run id.  evt.run_id can be "" when an
+                            // agent was spawned via a code path that had flow_run_id
+                            // = None (e.g. the invoke_flow fallback spawn_fn_sup).
+                            let effective_run_id: String = fctx
+                                .flow_run_id
+                                .as_deref()
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or(&evt.run_id)
+                                .to_owned();
                             match fctx
                                 .flow_runtime
                                 .as_ref()
                                 .unwrap()
                                 .on_document_submitted(
-                                    &evt.run_id,
+                                    &effective_run_id,
                                     &evt.agent_id,
                                     &evt.doc_type,
                                     &evt.body,
@@ -632,22 +709,37 @@ impl RuntimeHandler {
                                         crate::protocol::events::RuntimeEventPayload::Raw {
                                             data: serde_json::json!({
                                                 "event": "flow.run.changed",
-                                                "payload": serde_json::json!({ "run_id": &evt.run_id }).to_string()
+                                                "payload": serde_json::json!({ "run_id": &effective_run_id }).to_string()
                                             }),
                                         },
                                     );
                                     info!(
                                         agent_run_id = %run_id,
-                                        flow_run_id = %evt.run_id,
+                                        flow_run_id = %effective_run_id,
                                         "supervision: emitted flow.run.changed event"
                                     );
+                                    // Append ProducedDoc to the agent's run (task 14.5).
+                                    if let Ok(doc_run_uuid) = Uuid::parse_str(&evt.run_id) {
+                                        let doc_run_id = RunId(doc_run_uuid);
+                                        sup_services.authority.append_produced_doc(
+                                            doc_run_id,
+                                            crate::runtime::state::ProducedDoc {
+                                                doc_type: evt.doc_type.clone(),
+                                                path: evt.relative_path.clone(),
+                                                revision: evt.revision,
+                                            },
+                                        );
+                                    }
                                 }
                                 Err(e) => {
-                                    warn!(error = %e, run_id = %evt.run_id, "supervision: on_document_submitted failed");
+                                    warn!(error = %e, run_id = %effective_run_id, "supervision: on_document_submitted failed");
                                     // Cycle limit exceeded or other terminal error — fail the run.
                                     if e.to_string().contains("cycle limit exceeded") {
                                         let _ = sup_services.authority.fail_run(
-                                            RunId(Uuid::parse_str(&evt.run_id).unwrap_or_default()),
+                                            RunId(
+                                                Uuid::parse_str(&effective_run_id)
+                                                    .unwrap_or_default(),
+                                            ),
                                             e.to_string(),
                                         );
                                     }
@@ -657,10 +749,23 @@ impl RuntimeHandler {
                         info!("supervision: doc channel closed, task exiting");
                     });
                 } else {
-                    // No flow context — drain the doc channel but do nothing with it.
+                    // No flow context — drain the doc channel and record produced docs.
+                    let authority_doc = self.authority.clone();
                     tokio::spawn(async move {
                         while let Some(evt) = doc_rx.recv().await {
                             info!(doc_type = %evt.doc_type, "supervision (no flow): document submitted");
+                            // Append ProducedDoc to the owning run (task 14.5).
+                            if let Ok(doc_run_uuid) = Uuid::parse_str(&evt.run_id) {
+                                let doc_run_id = RunId(doc_run_uuid);
+                                authority_doc.append_produced_doc(
+                                    doc_run_id,
+                                    crate::runtime::state::ProducedDoc {
+                                        doc_type: evt.doc_type.clone(),
+                                        path: evt.relative_path.clone(),
+                                        revision: evt.revision,
+                                    },
+                                );
+                            }
                         }
                     });
                 }
@@ -700,6 +805,15 @@ impl RuntimeHandler {
                 // Register flow.* tools for the chat session when a flow context
                 // is available. The session id (if any) is registered so human-review
                 // notifications can route back to this session.
+                //
+                // Also holds the shared FlowRuntime for the supervisor's invoke_flow
+                // tool; set in the non-flow else branch below.
+                let mut supervisor_flow_rt = None;
+                // Captured from the non-flow else-branch so register_invoke_flow
+                // gets the full spawn_fn that correctly creates per-flow supervision
+                // tasks (with the right flow_run_id / doc_tx) rather than the simple
+                // fallback that ignores flow_run_id.
+                let mut invoke_flow_spawn_fn: Option<SpawnAgentFn> = None;
                 if let Some(ref flow_ctx) = maybe_flow_ctx {
                     let fctx_spawn = flow_ctx.clone();
                     let ar_spawn = ar.clone();
@@ -725,6 +839,7 @@ impl RuntimeHandler {
                         .flow_registry
                         .get_or_create(&workspace_root, self.workspace_cache_dir.as_deref())
                         .await;
+                    supervisor_flow_rt = Some(shared_rt.clone());
                     let flow_rt_for_spawn = shared_rt.clone();
                     let flow_rt_for_tools = shared_rt.clone();
                     let authority_for_spawn = self.authority.clone();
@@ -911,6 +1026,9 @@ impl RuntimeHandler {
                         };
                         ar_for_spawn.spawn_agent(fctx.clone(), agent_id, inv_ctx);
                     });
+                    // Save a clone for register_invoke_flow so the supervisor can
+                    // start new flows with proper per-run supervision contexts.
+                    invoke_flow_spawn_fn = Some(spawn_fn.clone());
                     register_flow_tools(
                         &mut cap_builder,
                         flow_rt_for_tools,
@@ -964,14 +1082,309 @@ impl RuntimeHandler {
                     }
                 }
 
-                // For direct-chat (no flow), use pre-loaded Chat.agent.yaml to get tool
-                // allow-list and inject_workspace preference. Flow paths handled
-                // per-agent inside spawn_agent_loop.
+                // Use the pre-loaded agent def (always Crony for user-initiated turns)
+                // for tool allow-list, system prompt and supervisor tool registration.
+                // entry_system_prompt from the flow's first node takes precedence when
+                // set; this def fills the gap when it is None.
                 let chat_agent_def = preloaded_chat_agent_def;
 
                 if let Some(ref def) = chat_agent_def {
                     if !def.tools.is_empty() {
                         cap_builder.set_allowed_tools(def.tools.clone());
+                    }
+                }
+
+                // Register supervisor tools (invoke_agent + invoke_flow) when
+                // the chat agent is a Supervisor (e.g. the Crony builtin).
+                // These tools let the supervisor delegate to specialist agents
+                // and block on flow-run completion.
+                if matches!(
+                    chat_agent_def.as_ref().map(|d| d.kind),
+                    Some(agent_loader::AgentKind::Supervisor)
+                ) {
+                    let authority_sup = self.authority.clone();
+                    let services_sup = Arc::clone(&self.services);
+                    let sandbox_sup = self.sandbox_policy.clone();
+                    let wcd_sup = self.workspace_cache_dir.clone();
+                    let workspace_root_sup = workspace_root.clone();
+                    let maybe_session_id_sup = maybe_session_id.clone();
+                    let doc_tx_sup = doc_tx.clone();
+                    // Use whichever flow runtime is available: non-flow chat sets
+                    // supervisor_flow_rt in the else branch; flow-context turns expose
+                    // it through maybe_flow_ctx.
+                    let effective_sup_flow_rt = supervisor_flow_rt
+                        .clone()
+                        .or_else(|| maybe_flow_ctx.as_ref().and_then(|c| c.flow_runtime.clone()));
+                    let provider_kind_sup = provider_kind.clone();
+                    let base_url_sup = base_url.clone();
+                    let api_key_sup = api_key.clone();
+                    let model_sup = model.clone();
+
+                    let sup_run_ctx = RunContext {
+                        space_id: space,
+                        workspace_root: workspace_root_sup.clone(),
+                        flow_id: None,
+                        flow_run_id: None,
+                        session_id: maybe_session_id_sup.clone(),
+                        doc_tx: doc_tx_sup.clone(),
+                        flow_runtime: effective_sup_flow_rt.clone(),
+                        llm_config: LlmConfig::from_payload_fields(
+                            &provider_kind_sup,
+                            base_url_sup.clone(),
+                            api_key_sup.clone(),
+                            model_sup.clone(),
+                        ),
+                        sandbox_tier: match &sandbox_sup {
+                            Some(p) => SandboxTier::Sandboxed(p.clone()),
+                            None => SandboxTier::Trusted,
+                        },
+                        workspace_cache_dir: wcd_sup.clone(),
+                    };
+
+                    let invoke_agent_spawn: Arc<
+                        dyn Fn(
+                                RunContext,
+                                String,
+                                String,
+                                tokio::sync::oneshot::Sender<crate::agent_loop::tools::AgentResult>,
+                            ) + Send
+                            + Sync
+                            + 'static,
+                    > = Arc::new(move |child_ctx, agent_id, goal, tx| {
+                        let services = Arc::clone(&services_sup);
+                        let authority = authority_sup.clone();
+                        let middleware = build_middleware_chain(authority.clone());
+                        tokio::spawn(async move {
+                            let child_run_id = match authority.start_run_with_session(
+                                child_ctx.space_id,
+                                None,
+                                serde_json::json!({ "agent_name": &agent_id }),
+                                child_ctx.session_id.clone(),
+                            ) {
+                                Ok(id) => id,
+                                Err(e) => {
+                                    let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                        success: false,
+                                        output: serde_json::Value::Null,
+                                        error: Some(format!("failed to start child run: {e}")),
+                                    });
+                                    return;
+                                }
+                            };
+                            let agent_def =
+                                agent_loader::load_agent(&child_ctx.workspace_root, &agent_id)
+                                    .await;
+                            let inv_ctx = crate::flow::runtime::InvocationContext::build(
+                                &agent_id,
+                                &agent_id,
+                                crate::flow::runtime::InvocationTrigger {
+                                    kind: "supervisor_invoke".into(),
+                                    from_node: None,
+                                    approved_port: None,
+                                    reviewer_doc_path: None,
+                                },
+                                vec![],
+                                vec![],
+                            );
+                            let system_message =
+                                crate::runtime::agent_runner::render_system_message(&inv_ctx);
+                            let system_message = if agent_def.system_prompt.is_empty() {
+                                system_message
+                            } else {
+                                format!("{}\n\n---\n\n{}", agent_def.system_prompt, system_message)
+                            };
+                            let child_model = {
+                                let parent_model = match &child_ctx.llm_config {
+                                    LlmConfig::OpenAi { model, .. }
+                                    | LlmConfig::Anthropic { model, .. }
+                                    | LlmConfig::Copilot { model, .. } => model.clone(),
+                                };
+                                if agent_def.llm_model.is_empty() {
+                                    parent_model
+                                } else {
+                                    agent_def.llm_model.clone()
+                                }
+                            };
+                            let child_llm_config = match child_ctx.llm_config.clone() {
+                                LlmConfig::OpenAi {
+                                    base_url, api_key, ..
+                                } => LlmConfig::OpenAi {
+                                    base_url,
+                                    api_key,
+                                    model: child_model.clone(),
+                                },
+                                LlmConfig::Anthropic {
+                                    base_url, api_key, ..
+                                } => LlmConfig::Anthropic {
+                                    base_url,
+                                    api_key,
+                                    model: child_model.clone(),
+                                },
+                                LlmConfig::Copilot {
+                                    github_token,
+                                    base_url,
+                                    ..
+                                } => LlmConfig::Copilot {
+                                    github_token,
+                                    base_url,
+                                    model: child_model.clone(),
+                                },
+                            };
+                            let llm = match services.llm_factory.build(&child_llm_config).await {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    let _ = authority.fail_run(child_run_id, e.to_string());
+                                    let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                        success: false,
+                                        output: serde_json::Value::Null,
+                                        error: Some(format!("llm build failed: {e}")),
+                                    });
+                                    return;
+                                }
+                            };
+                            let child_cap = services
+                                .capability_factory
+                                .build(&child_ctx.workspace_root, child_ctx.sandbox_tier.clone());
+                            let child_tools = Arc::new(child_cap.build());
+                            let cfg = LoopConfig {
+                                model: child_model,
+                                system_prompt: Some(system_message),
+                                user_input: goal,
+                                max_turns: 99999,
+                                temperature: None,
+                                reasoning_effort: None,
+                                llm,
+                                tools: child_tools,
+                                thinking: None,
+                                initial_thread: None,
+                                session_id: None,
+                                reflection: agent_def.reflection.clone(),
+                                critic: agent_def.critic.clone(),
+                                write_namespace: None,
+                                memory_manager: None,
+                                middleware,
+                                agent_name: Some(agent_id.clone()),
+                            };
+                            let result = ReactLoop::new(authority.clone(), child_run_id, cfg)
+                                .run()
+                                .await;
+                            let agent_result = match result {
+                                Ok(()) => crate::agent_loop::tools::AgentResult {
+                                    success: true,
+                                    output: serde_json::json!({
+                                        "run_id": child_run_id.to_string()
+                                    }),
+                                    error: None,
+                                },
+                                Err(e) => crate::agent_loop::tools::AgentResult {
+                                    success: false,
+                                    output: serde_json::Value::Null,
+                                    error: Some(e.to_string()),
+                                },
+                            };
+                            let _ = tx.send(agent_result);
+                        });
+                    });
+
+                    register_invoke_agent(
+                        &mut cap_builder,
+                        self.authority.clone(),
+                        run_id,
+                        sup_run_ctx.clone(),
+                        invoke_agent_spawn,
+                    );
+
+                    if let Some(ref flow_rt) = effective_sup_flow_rt {
+                        let flow_rt_sup = Arc::clone(flow_rt);
+                        // Use the big spawn_fn from the non-flow else-branch when
+                        // available — it correctly builds per-flow RunContexts with
+                        // the actual flow_run_id and lazily starts supervision tasks.
+                        // Fall back to a simple version only when a bound flow context
+                        // is already active (invoke_flow would be unusual there anyway).
+                        let spawn_fn_sup: SpawnAgentFn = if let Some(ref sfn) = invoke_flow_spawn_fn
+                        {
+                            sfn.clone()
+                        } else {
+                            let ar_s = ar.clone();
+                            let ctx_s = sup_run_ctx.clone();
+                            Arc::new(move |flow_run_id: String, agent_id, inv_ctx| {
+                                // Propagate the actual flow_run_id so that agents spawned
+                                // for sub-flows have the correct run id when registering
+                                // submit_document.  Without this they inherit None from
+                                // sup_run_ctx and emit DocumentSubmitted { run_id: "" }.
+                                let ctx = RunContext {
+                                    flow_run_id: Some(flow_run_id),
+                                    ..ctx_s.clone()
+                                };
+                                ar_s.spawn_agent(ctx, agent_id, inv_ctx);
+                            })
+                        };
+                        let flow_rt_poll = Arc::clone(flow_rt);
+                        let flow_completion_fn: Arc<
+                            dyn Fn(
+                                    String,
+                                    tokio::sync::oneshot::Sender<
+                                        crate::agent_loop::tools::AgentResult,
+                                    >,
+                                ) + Send
+                                + Sync
+                                + 'static,
+                        > = Arc::new(move |flow_run_id, tx| {
+                            let rt = Arc::clone(&flow_rt_poll);
+                            tokio::spawn(async move {
+                                loop {
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                    if let Some(state) = rt.get_run(&flow_run_id) {
+                                        if state.status.is_terminal() {
+                                            let success = state.status
+                                                == crate::flow::runtime::FlowRunStatus::Completed;
+                                            let _ =
+                                                tx.send(crate::agent_loop::tools::AgentResult {
+                                                    success,
+                                                    output: serde_json::json!({
+                                                        "flow_run_id": flow_run_id,
+                                                        "status": format!("{:?}", state.status),
+                                                    }),
+                                                    error: if success {
+                                                        None
+                                                    } else {
+                                                        state.failure_reason.clone()
+                                                    },
+                                                });
+                                            return;
+                                        }
+                                    } else {
+                                        let _ = tx.send(crate::agent_loop::tools::AgentResult {
+                                            success: false,
+                                            output: serde_json::Value::Null,
+                                            error: Some(format!(
+                                                "flow run '{flow_run_id}' not found"
+                                            )),
+                                        });
+                                        return;
+                                    }
+                                }
+                            });
+                        });
+                        let invoke_flow_desc = build_invoke_flow_description(&workspace_root).await;
+                        register_invoke_flow(
+                            &mut cap_builder,
+                            invoke_flow_desc,
+                            self.authority.clone(),
+                            run_id,
+                            flow_rt_sup,
+                            workspace_root.clone(),
+                            spawn_fn_sup,
+                            flow_completion_fn,
+                            // Bind the new flow run to the child session (or parent
+                            // session) so the frontend's Flow thread subscription
+                            // receives flow.run.changed and run_status events.
+                            child_session_id
+                                .as_deref()
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_owned)
+                                .or_else(|| maybe_session_id.as_ref().map(|s| s.0.clone())),
+                        );
                     }
                 }
 
@@ -1130,8 +1543,8 @@ impl RuntimeHandler {
                     // "you may stop now" condition. Without this,
                     // gpt-4o-class models often keep calling tools
                     // until max_turns hits.
-                    let chat_system_prompt =
-                        effective_system_prompt.or_else(|| Some(default_chat_system_prompt()));
+                    let chat_system_prompt = effective_system_prompt
+                        .or_else(|| Some(crate::crony::prompts::SYSTEM_PROMPT.to_string()));
 
                     // Compact the session thread before starting the run
                     // if it is approaching the model's context limit.
@@ -1185,6 +1598,21 @@ impl RuntimeHandler {
                         prior_thread
                     };
 
+                    // Tell Crony which flow was auto-started so it knows to
+                    // monitor rather than restart it with invoke_flow.
+                    let user_input =
+                        if let (Some(ref fid), Some(ref fctx)) = (&flow_id_opt, &maybe_flow_ctx) {
+                            let frid = fctx.flow_run_id.as_deref().unwrap_or("?");
+                            format!(
+                                "[Flow '{fid}' started (run_id: {frid}). \
+                             Flow agents are executing — use flow_status to track progress \
+                             and flow_approve/flow_request_changes to manage reviews. \
+                             Summarise for the user when complete.]\n\n{user_input}"
+                            )
+                        } else {
+                            user_input
+                        };
+
                     let cfg = LoopConfig {
                         model,
                         system_prompt: chat_system_prompt,
@@ -1200,16 +1628,11 @@ impl RuntimeHandler {
                         } else {
                             Some(effective_thread)
                         },
-                        // Flow runs must not flush their temporary PM-agent
-                        // history back to the chat session. Using None here
-                        // prevents ReactLoop from calling flush_thread and
-                        // contaminating the session thread with flow messages.
-                        session_id: if maybe_flow_ctx.is_some() {
-                            None
-                        } else {
-                            maybe_session_id.clone()
-                        },
+                        // Crony (the supervisor) always tracks its session so
+                        // the conversation history is preserved across turns.
+                        session_id: maybe_session_id.clone(),
                         reflection: chat_agent_def.as_ref().and_then(|d| d.reflection.clone()),
+                        critic: chat_agent_def.as_ref().and_then(|d| d.critic.clone()),
                         write_namespace: chat_agent_def
                             .as_ref()
                             .filter(|d| !d.memory_namespace.is_empty())
@@ -1220,28 +1643,22 @@ impl RuntimeHandler {
                             }),
                         memory_manager: memory_manager.clone(),
                         middleware: build_middleware_chain(authority.clone()),
+                        agent_name: None,
                     };
                     let result = ReactLoop::new(authority.clone(), run_id, cfg).run().await;
                     info!(%run_id, ok = result.is_ok(), "react_loop: finished");
                     if let Err(e) = &result {
                         info!(%run_id, error = %e, "react_loop: failed with error");
                     }
-                    // If a ChatStore is configured, append the final session thread
-                    // to history.jsonl. The ReactLoop already flushed to the authority
-                    // snapshot internally; we read it back here to write the JSONL copy.
-                    // Flow runs must NOT write back to the chat session history — doing
-                    // so accumulates PM-agent messages across retries, which corrupts
-                    // the role-alternation sequence and causes subsequent LLM 400 errors.
-                    if maybe_flow_ctx.is_none() {
-                        if let (Some(ref sid), Some(ref cache_dir)) =
-                            (&maybe_session_id, &workspace_cache_dir_clone)
-                        {
-                            if let Some(thread) = authority.session_thread(sid) {
-                                if !thread.is_empty() {
-                                    let store =
-                                        crate::runtime::chat_store::ChatStore::new(cache_dir);
-                                    let _ = store.append_turns(sid, &thread);
-                                }
+                    // Persist Crony's conversation history (supervisor turns belong
+                    // in the session; only spawned flow-agent loops must not write here).
+                    if let (Some(ref sid), Some(ref cache_dir)) =
+                        (&maybe_session_id, &workspace_cache_dir_clone)
+                    {
+                        if let Some(thread) = authority.session_thread(sid) {
+                            if !thread.is_empty() {
+                                let store = crate::runtime::chat_store::ChatStore::new(cache_dir);
+                                let _ = store.append_turns(sid, &thread);
                             }
                         }
                     }

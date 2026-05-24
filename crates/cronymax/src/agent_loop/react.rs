@@ -74,6 +74,75 @@ impl Default for ReflectionConfig {
     }
 }
 
+/// Configuration for the post-Stop critic pass. When present on a
+/// `LoopConfig`, the `ReactLoop` runs a self-critique after every
+/// `FinishReason::Stop` and may re-enter the loop with the issues
+/// appended as a fresh user message.
+#[derive(Clone, Debug)]
+pub struct CriticConfig {
+    /// LLM model used to evaluate the agent's output. Can differ from
+    /// the main model (e.g. use a larger model for critique).
+    pub model: String,
+    /// Kinds of artifacts the critic should focus on (e.g.
+    /// `["code", "test", "doc"]`). Passed into the prompt template.
+    pub artifact_kinds: Vec<String>,
+    /// Maximum number of revision cycles before accepting the output
+    /// regardless of critique result.
+    pub max_revisions: usize,
+    /// Override for the critique prompt template. When `None`, the
+    /// loop uses the default embedded template.
+    pub prompt_template: Option<String>,
+}
+
+impl Default for CriticConfig {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            artifact_kinds: vec![],
+            max_revisions: 1,
+            prompt_template: None,
+        }
+    }
+}
+
+/// Structured output parsed from a critic LLM response.
+#[derive(Debug)]
+struct CriticOutput {
+    passed: bool,
+    issues: Vec<String>,
+    #[allow(dead_code)]
+    confidence: f32,
+}
+
+impl CriticOutput {
+    /// Parse `{"passed": bool, "issues": [...], "confidence": float}`.
+    /// Returns `None` when the JSON is malformed so the caller can
+    /// decide to treat as `passed = true`.
+    fn from_json(text: &str) -> Option<Self> {
+        // Try to find a JSON object in the response (the model may
+        // include prose before/after the JSON block).
+        let start = text.find('{')?;
+        let end = text.rfind('}').filter(|&e| e >= start)?;
+        let json_str = &text[start..=end];
+        let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
+        let passed = v["passed"].as_bool()?;
+        let issues = v["issues"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|i| i.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let confidence = v["confidence"].as_f64().unwrap_or(1.0) as f32;
+        Some(Self {
+            passed,
+            issues,
+            confidence,
+        })
+    }
+}
+
 /// Per-run loop configuration. Cheap to clone; the underlying
 /// provider/dispatcher are `Arc`-internal.
 #[derive(Clone)]
@@ -102,6 +171,10 @@ pub struct LoopConfig {
     /// self-assessment pass at the configured trigger and appends a
     /// `[REFLECTION]` sentinel message to the history.
     pub reflection: Option<ReflectionConfig>,
+    /// Optional critic configuration. When `Some`, the loop fires a
+    /// self-critique pass after every `FinishReason::Stop` and may
+    /// re-enter with issues appended as a user message.
+    pub critic: Option<CriticConfig>,
     /// Namespace to write reflection summaries and compaction summaries to.
     pub write_namespace: Option<crate::runtime::state::MemoryNamespaceId>,
     /// Memory manager shared with the runtime. `None` disables persistence-
@@ -110,6 +183,8 @@ pub struct LoopConfig {
     /// Middleware chain executed at each loop lifecycle point. Defaults to
     /// an empty (no-op) chain when not configured.
     pub middleware: Arc<MiddlewareChain>,
+    /// Optional agent name used for telemetry / event attribution (task 9.3).
+    pub agent_name: Option<String>,
 }
 
 impl std::fmt::Debug for LoopConfig {
@@ -133,12 +208,14 @@ impl std::fmt::Debug for LoopConfig {
                 &self.session_id.as_ref().map(|s| s.to_string()),
             )
             .field("reflection", &self.reflection.as_ref().map(|r| r.enabled))
+            .field("critic", &self.critic.as_ref().map(|c| &c.model))
             .field(
                 "write_namespace",
                 &self.write_namespace.as_ref().map(|n| n.0.as_str()),
             )
             .field("has_memory_manager", &self.memory_manager.is_some())
             .field("middleware_count", &self.middleware.0.len())
+            .field("agent_name", &self.agent_name)
             .finish()
     }
 }
@@ -155,6 +232,12 @@ pub struct ReactLoop {
     turn: u64,
     /// Number of consecutive tool invocation failures (reset on success).
     consecutive_failures: usize,
+    /// Remaining critic revision budget. Decremented each time the
+    /// critic requests a revision; the loop stops re-entering when this
+    /// reaches zero.
+    critic_revisions_remaining: usize,
+    /// Agent name for event attribution (task 9.3).
+    agent_name: String,
 }
 
 impl ReactLoop {
@@ -177,6 +260,9 @@ impl ReactLoop {
             h.push(ChatMessage::user(config.user_input.clone()));
             h
         };
+        let critic_revisions_remaining =
+            config.critic.as_ref().map(|c| c.max_revisions).unwrap_or(0);
+        let agent_name = config.agent_name.clone().unwrap_or_default();
         Self {
             authority,
             run_id,
@@ -184,6 +270,8 @@ impl ReactLoop {
             history,
             turn: 0,
             consecutive_failures: 0,
+            critic_revisions_remaining,
+            agent_name,
         }
     }
 
@@ -451,6 +539,61 @@ impl ReactLoop {
             match finish {
                 FinishReason::Stop | FinishReason::Length | FinishReason::Other(_) => {
                     debug!(run = %self.run_id, "loop terminating: finish_reason stop/length/other");
+                    // ── Critic phase ─────────────────────────────────────
+                    if let Some(ccfg) = self.config.critic.clone() {
+                        if self.critic_revisions_remaining > 0 {
+                            let max_rev = ccfg.max_revisions as u32;
+                            match self.run_critic_pass(&ccfg).await {
+                                CriticDecision::Passed => {
+                                    debug!(run = %self.run_id, "critic passed; accepting output");
+                                    let revision =
+                                        (max_rev - self.critic_revisions_remaining as u32) + 1;
+                                    self.authority.emit_for_run(
+                                        self.run_id,
+                                        RuntimeEventPayload::CriticResult {
+                                            run_id: self.run_id.to_string(),
+                                            agent_name: self.agent_name.clone(),
+                                            passed: true,
+                                            summary: String::new(),
+                                            revision,
+                                            max_revisions: max_rev,
+                                        },
+                                    );
+                                }
+                                CriticDecision::NeedsRevision(issues) => {
+                                    self.critic_revisions_remaining -= 1;
+                                    debug!(
+                                        run = %self.run_id,
+                                        remaining = self.critic_revisions_remaining,
+                                        "critic requested revision"
+                                    );
+                                    let revision = max_rev - self.critic_revisions_remaining as u32;
+                                    self.authority.emit_for_run(
+                                        self.run_id,
+                                        RuntimeEventPayload::CriticResult {
+                                            run_id: self.run_id.to_string(),
+                                            agent_name: self.agent_name.clone(),
+                                            passed: false,
+                                            summary: issues.join("; "),
+                                            revision,
+                                            max_revisions: max_rev,
+                                        },
+                                    );
+                                    // Format issues as a user message and
+                                    // continue the loop.
+                                    let issues_text = issues.join("\n- ");
+                                    self.history.push(ChatMessage::user(format!(
+                                        "[CRITIC] Your output has the following issues. \
+                                         Please revise:\n- {issues_text}"
+                                    )));
+                                    continue;
+                                }
+                                CriticDecision::MalformedResponse => {
+                                    warn!(run = %self.run_id, "critic returned malformed response; accepting output");
+                                }
+                            }
+                        }
+                    }
                     return Ok(());
                 }
                 FinishReason::ToolCalls => {
@@ -621,6 +764,35 @@ impl ReactLoop {
                     false,
                 )
             }
+            ToolOutcome::SpawnsAgent {
+                task_id,
+                completion,
+            } => {
+                // Suspend the loop until the child agent or flow completes.
+                let agent_result = match completion.await {
+                    Ok(r) => r,
+                    Err(_) => crate::agent_loop::tools::AgentResult {
+                        success: false,
+                        output: serde_json::Value::Null,
+                        error: Some("child agent completion channel closed unexpectedly".into()),
+                    },
+                };
+                let result = if agent_result.success {
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "success": true,
+                        "output": agent_result.output,
+                    })
+                } else {
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "success": false,
+                        "error": agent_result.error.unwrap_or_else(|| "child agent failed".into()),
+                    })
+                };
+                self.consecutive_failures = 0;
+                (result, false)
+            }
         };
 
         let serialized = match serde_json::to_string(&result_value) {
@@ -711,6 +883,88 @@ impl ReactLoop {
 
         Some(text)
     }
+
+    /// Fire a critic pass after a `FinishReason::Stop`: call the
+    /// designated critic model with a structured critique prompt, then
+    /// parse the response as `CriticOutput`.
+    ///
+    /// This is best-effort: LLM or parse failures are logged and
+    /// treated as `passed = true` to avoid blocking the user.
+    async fn run_critic_pass(&self, cfg: &CriticConfig) -> CriticDecision {
+        const DEFAULT_CRITIC_PROMPT: &str =
+            "Review the conversation above. Evaluate whether the task was completed \
+             correctly and completely. Respond ONLY with a JSON object of the form: \
+             {\"passed\": true|false, \"issues\": [\"...\"], \"confidence\": 0.0-1.0}. \
+             Do not include any prose outside the JSON.";
+
+        let artifact_context = if cfg.artifact_kinds.is_empty() {
+            String::new()
+        } else {
+            format!(" Focus on: {}.", cfg.artifact_kinds.join(", "))
+        };
+        let template = cfg
+            .prompt_template
+            .as_deref()
+            .unwrap_or(DEFAULT_CRITIC_PROMPT);
+        let prompt = format!("{template}{artifact_context}");
+
+        let mut critic_history = self.history.clone();
+        critic_history.push(ChatMessage::user(prompt));
+
+        let req = LlmRequest {
+            model: cfg.model.clone(),
+            messages: critic_history,
+            tools: vec![],
+            temperature: Some(0.0),
+            reasoning_effort: None,
+            thinking: None,
+        };
+
+        let text = match self.config.llm.stream(req).await {
+            Ok(mut stream) => {
+                let mut buf = String::new();
+                while let Some(event) = stream.next().await {
+                    match event {
+                        LlmEvent::Delta { content } => buf.push_str(&content),
+                        LlmEvent::Done { .. } => break,
+                        LlmEvent::Error { message } => {
+                            warn!(run = %self.run_id, error = %message, "critic_pass: llm error");
+                            return CriticDecision::MalformedResponse;
+                        }
+                        _ => {}
+                    }
+                }
+                buf
+            }
+            Err(e) => {
+                warn!(run = %self.run_id, error = %e, "critic_pass: stream failed");
+                return CriticDecision::MalformedResponse;
+            }
+        };
+
+        match CriticOutput::from_json(&text) {
+            Some(output) if !output.passed && !output.issues.is_empty() => {
+                CriticDecision::NeedsRevision(output.issues)
+            }
+            Some(_) => CriticDecision::Passed,
+            None => {
+                warn!(run = %self.run_id, "critic_pass: could not parse LLM response as CriticOutput; treating as passed");
+                CriticDecision::MalformedResponse
+            }
+        }
+    }
+}
+
+/// Decision returned by `ReactLoop::run_critic_pass`.
+enum CriticDecision {
+    /// Critic approved the output.
+    Passed,
+    /// Critic found issues; the inner `Vec<String>` is the list of
+    /// problems to feed back to the agent.
+    NeedsRevision(Vec<String>),
+    /// Critic LLM call failed or returned a non-parseable response.
+    /// The caller should treat this as `Passed` to avoid blocking.
+    MalformedResponse,
 }
 
 #[derive(Default, Debug)]
@@ -806,9 +1060,11 @@ mod tests {
             initial_thread: None,
             session_id: None,
             reflection: None,
+            critic: None,
             write_namespace: None,
             memory_manager: None,
             middleware: Arc::new(MiddlewareChain::empty()),
+            agent_name: None,
         }
     }
 
@@ -1240,5 +1496,207 @@ mod tests {
             content.contains("tool is forbidden"),
             "tool result should contain block reason, got: {content}"
         );
+    }
+
+    // ── critic tests (task 3.10) ──────────────────────────────────────────────
+
+    /// (a) No critic configured — loop terminates normally with no extra LLM calls.
+    #[tokio::test]
+    async fn critic_not_configured_no_extra_calls() {
+        let (auth, sid) = make_authority();
+        let llm = Arc::new(MockLlmProvider::new());
+        llm.push(MockScript::new().delta("done").done(FinishReason::Stop));
+
+        let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
+        let mut cfg = make_config(llm.clone(), Arc::new(EchoDispatcher));
+        cfg.critic = None;
+
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
+
+        assert!(auth.run_status(run_id).unwrap().is_terminal());
+        assert_eq!(
+            llm.requests().len(),
+            1,
+            "only the main turn; no critic call"
+        );
+    }
+
+    /// (b) Critic configured, LLM returns `passed: true` → loop terminates normally.
+    #[tokio::test]
+    async fn critic_passes_no_revision() {
+        let (auth, sid) = make_authority();
+        let llm = Arc::new(MockLlmProvider::new());
+        // Main turn
+        llm.push(MockScript::new().delta("output").done(FinishReason::Stop));
+        // Critic turn — returns passed
+        llm.push(
+            MockScript::new()
+                .delta(r#"{"passed": true, "issues": [], "confidence": 0.95}"#)
+                .done(FinishReason::Stop),
+        );
+
+        let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
+        let mut cfg = make_config(llm.clone(), Arc::new(EchoDispatcher));
+        cfg.critic = Some(CriticConfig {
+            model: "mock".into(),
+            artifact_kinds: vec![],
+            max_revisions: 1,
+            prompt_template: None,
+        });
+
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
+
+        assert!(auth.run_status(run_id).unwrap().is_terminal());
+        // 2 LLM calls: main + critic
+        assert_eq!(llm.requests().len(), 2);
+    }
+
+    /// (c) Critic fails once, revision requested, second main turn passes.
+    #[tokio::test]
+    async fn critic_fails_then_passes_on_revision() {
+        let (auth, sid) = make_authority();
+        let llm = Arc::new(MockLlmProvider::new());
+        // First main turn
+        llm.push(
+            MockScript::new()
+                .delta("v1 output")
+                .done(FinishReason::Stop),
+        );
+        // First critic turn — fails with issues
+        llm.push(
+            MockScript::new()
+                .delta(r#"{"passed": false, "issues": ["missing section X"], "confidence": 0.7}"#)
+                .done(FinishReason::Stop),
+        );
+        // Revised main turn after critic feedback
+        llm.push(
+            MockScript::new()
+                .delta("v2 output")
+                .done(FinishReason::Stop),
+        );
+        // Second critic turn — passes
+        llm.push(
+            MockScript::new()
+                .delta(r#"{"passed": true, "issues": [], "confidence": 0.9}"#)
+                .done(FinishReason::Stop),
+        );
+
+        let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
+        let mut cfg = make_config(llm.clone(), Arc::new(EchoDispatcher));
+        cfg.max_turns = 20;
+        cfg.critic = Some(CriticConfig {
+            model: "mock".into(),
+            artifact_kinds: vec![],
+            max_revisions: 2,
+            prompt_template: None,
+        });
+
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
+
+        assert!(auth.run_status(run_id).unwrap().is_terminal());
+        // 4 LLM calls: main, critic(fail), revised main, critic(pass)
+        assert_eq!(llm.requests().len(), 4);
+        // The third request (revised main turn) must contain the critic feedback
+        let revised_req = &llm.requests()[2];
+        let critic_msg = revised_req
+            .messages
+            .iter()
+            .find(|m| {
+                m.role == crate::llm::ChatRole::User
+                    && m.content
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("missing section X")
+            })
+            .expect("critic feedback must appear in revised main turn history");
+        assert!(critic_msg
+            .content
+            .as_deref()
+            .unwrap_or("")
+            .contains("[CRITIC]"));
+    }
+
+    /// (d) Max revisions exhausted — loop terminates even if critic keeps failing.
+    #[tokio::test]
+    async fn critic_max_revisions_exhausted_terminates() {
+        let (auth, sid) = make_authority();
+        let llm = Arc::new(MockLlmProvider::new());
+        // Main turn
+        llm.push(MockScript::new().delta("output").done(FinishReason::Stop));
+        // Critic — fails (1 revision budget consumed)
+        llm.push(
+            MockScript::new()
+                .delta(r#"{"passed": false, "issues": ["still wrong"], "confidence": 0.5}"#)
+                .done(FinishReason::Stop),
+        );
+        // Revised main turn
+        llm.push(
+            MockScript::new()
+                .delta("revised output")
+                .done(FinishReason::Stop),
+        );
+        // Critic again — fails, but no budget left → loop terminates anyway
+        // (this critic response will not be reached since revisions_remaining == 0)
+
+        let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
+        let mut cfg = make_config(llm.clone(), Arc::new(EchoDispatcher));
+        cfg.max_turns = 20;
+        cfg.critic = Some(CriticConfig {
+            model: "mock".into(),
+            artifact_kinds: vec![],
+            max_revisions: 1,
+            prompt_template: None,
+        });
+
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
+
+        assert!(auth.run_status(run_id).unwrap().is_terminal());
+        // 3 LLM calls: main, critic(fail, budget=0 after), revised main (no critic call)
+        assert_eq!(llm.requests().len(), 3);
+    }
+
+    /// (e) Malformed critic response is treated as `passed = true`.
+    #[tokio::test]
+    async fn critic_malformed_response_treated_as_passed() {
+        let (auth, sid) = make_authority();
+        let llm = Arc::new(MockLlmProvider::new());
+        // Main turn
+        llm.push(MockScript::new().delta("output").done(FinishReason::Stop));
+        // Critic returns unparseable text
+        llm.push(
+            MockScript::new()
+                .delta("I cannot evaluate this.")
+                .done(FinishReason::Stop),
+        );
+
+        let run_id = auth.start_run(sid, None, serde_json::json!({})).unwrap();
+        let mut cfg = make_config(llm.clone(), Arc::new(EchoDispatcher));
+        cfg.critic = Some(CriticConfig {
+            model: "mock".into(),
+            artifact_kinds: vec!["code".into()],
+            max_revisions: 2,
+            prompt_template: None,
+        });
+
+        ReactLoop::new(auth.clone(), run_id, cfg)
+            .run()
+            .await
+            .unwrap();
+
+        assert!(auth.run_status(run_id).unwrap().is_terminal());
+        // 2 calls: main + critic (malformed → treated as passed, no revision)
+        assert_eq!(llm.requests().len(), 2);
     }
 }

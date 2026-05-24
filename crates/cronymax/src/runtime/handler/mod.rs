@@ -303,6 +303,12 @@ impl Handler for RuntimeHandler {
             req @ ControlRequest::ExtensionWebviewPost { .. } => {
                 self.handle_extension_webview_post(req).await
             }
+            req @ ControlRequest::FlowSaveYaml { .. } => self.handle_flow_save_yaml(req).await,
+            req @ ControlRequest::FlowSaveLayout { .. } => self.handle_flow_save_layout(req).await,
+            req @ ControlRequest::BlackboardInject { .. } => {
+                self.handle_blackboard_inject(req).await
+            }
+            req @ ControlRequest::SessionRename { .. } => self.handle_session_rename(req).await,
         }
     }
 
@@ -430,6 +436,8 @@ mod tests {
                     session_name: None,
                     agent_id: None,
                     contribution_kind: None,
+                    child_session_id: None,
+                    goal: None,
                 },
             })
             .await
@@ -672,6 +680,8 @@ mod tests {
                     contribution_kind: Some(
                         crate::extensions::contributions::kind::AGENTS_PROVIDER.into(),
                     ),
+                    child_session_id: None,
+                    goal: None,
                 },
             )
             .await;
@@ -746,6 +756,8 @@ mod tests {
                     session_name: None,
                     agent_id: Some("alice.agent".into()),
                     contribution_kind: None,
+                    child_session_id: None,
+                    goal: None,
                 },
             )
             .await;
@@ -798,6 +810,8 @@ mod tests {
                     session_name: None,
                     agent_id: Some("my-agent".into()),
                     contribution_kind: None,
+                    child_session_id: None,
+                    goal: None,
                 },
             )
             .await;

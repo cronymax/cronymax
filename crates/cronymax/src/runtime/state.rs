@@ -55,6 +55,7 @@ uuid_newtype!(SpaceId);
 uuid_newtype!(RunId);
 uuid_newtype!(AgentId);
 uuid_newtype!(ReviewId);
+uuid_newtype!(TaskId);
 
 /// Session identity is a caller-supplied string (the frontend's
 /// `cronymax_chat_tab_id`) so no UUID generation is needed on the
@@ -144,6 +145,11 @@ pub struct Session {
     pub fork_point: Option<ForkPoint>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// Set to `true` the first time the user explicitly renames this session
+    /// from the sidebar. When `true`, auto-naming events (from the first
+    /// invocation completion) are ignored so the user's choice is preserved.
+    #[serde(default)]
+    pub manually_named: bool,
 }
 
 /// Memory namespace ids are caller-supplied strings (e.g. a
@@ -274,6 +280,42 @@ pub struct HistoryEntry {
     pub payload: serde_json::Value,
 }
 
+/// A document produced by a run via `submit_document`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProducedDoc {
+    /// Document type / port name (e.g. `"prd"`, `"tech-spec"`).
+    pub doc_type: String,
+    /// Workspace-relative path the doc was written to (empty if not saved).
+    pub path: String,
+    /// Revision number within this run (monotonically increasing, 1-based).
+    pub revision: u32,
+}
+
+/// A resolved review / permission decision recorded on the run for
+/// historical display in the receipt mode card.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResolvedReview {
+    pub review_id: ReviewId,
+    /// The original approval request payload (tool name, args, etc.).
+    pub request: serde_json::Value,
+    pub decision: PermissionState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    pub resolved_at_ms: i64,
+}
+
+/// A workspace file mutation recorded during a run.
+/// Phase D: populated once the filesystem capability emits fine-grained
+/// change events with line-count diffs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileChange {
+    pub path: String,
+    /// Net added lines (approximate; 0 when unavailable).
+    pub additions: i64,
+    /// Net removed lines (approximate; 0 when unavailable).
+    pub deletions: i64,
+}
+
 /// A run — the unit of execution authority the runtime owns end to end.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Run {
@@ -299,6 +341,29 @@ pub struct Run {
     pub history: Vec<HistoryEntry>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+    /// Human-readable goal for this run. Resolved in priority order:
+    /// `StartRun.goal` > flow definition name (when `flow_id` present) >
+    /// first user message. Displayed as the primary label in the
+    /// Activity Panel and receipt card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    /// The `RunId` of the run that spawned this one. Set when a Supervisor
+    /// run calls `invoke_agent` or `invoke_flow`. Used by the Activity
+    /// Panel to build the `parent_run_id`-based task tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<RunId>,
+    /// Documents produced by this run via `submit_document`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub produces: Vec<ProducedDoc>,
+    /// Approval decisions resolved during this run (historical record for
+    /// receipt mode display).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_reviews: Vec<ResolvedReview>,
+    /// Workspace file mutations recorded during this run.
+    /// Populated in Phase D once the filesystem capability emits
+    /// fine-grained change events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_changes: Vec<FileChange>,
 }
 
 /// Permission decision state for a [`PendingReview`]. The runtime is
@@ -327,6 +392,57 @@ pub struct PendingReview {
     pub notes: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+}
+
+/// Status of a dispatched child task.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    /// Task has been created but the child has not started yet.
+    Pending,
+    /// Child is actively running.
+    Running,
+    /// Child completed successfully.
+    Completed,
+    /// Child failed.
+    Failed,
+}
+
+/// A single entry in a [`TaskTree`]. Records one dispatched child agent
+/// or flow invocation from a Supervisor run.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Task {
+    pub id: TaskId,
+    /// The parent task, or `None` if this is the root task for the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<TaskId>,
+    /// Human-readable goal / label supplied by the Supervisor.
+    pub label: String,
+    /// Set when the task dispatches an agent invocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<AgentId>,
+    /// Set when the task dispatches a flow invocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_id: Option<String>,
+    pub status: TaskStatus,
+    /// Terminal output from the child, set on completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    pub created_at_ms: i64,
+}
+
+/// Per-run collection of dispatched [`Task`]s forming a parent/child tree.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct TaskTree {
+    /// Tasks keyed by their id, in creation order (BTreeMap for stable
+    /// serialisation across runs).
+    pub tasks: BTreeMap<TaskId, Task>,
+}
+
+impl TaskTree {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 /// The full authoritative snapshot the runtime owns. `RuntimeAuthority`
@@ -363,6 +479,10 @@ pub struct Snapshot {
     pub memory: BTreeMap<MemoryNamespaceId, MemoryNamespace>,
     #[serde(default)]
     pub reviews: BTreeMap<ReviewId, PendingReview>,
+    /// Per-run task trees for Supervisor-dispatched child tasks.
+    /// Added in schema v4. Old snapshots deserialise with an empty map.
+    #[serde(default)]
+    pub task_trees: BTreeMap<RunId, TaskTree>,
 }
 
 impl Default for Snapshot {
@@ -375,6 +495,7 @@ impl Default for Snapshot {
             runs: BTreeMap::new(),
             memory: BTreeMap::new(),
             reviews: BTreeMap::new(),
+            task_trees: BTreeMap::new(),
         }
     }
 }
@@ -382,7 +503,7 @@ impl Default for Snapshot {
 /// Current authoritative on-disk schema version. Bump this on any
 /// breaking change to [`Snapshot`] and add a migration arm to
 /// [`migrate_snapshot`].
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
 /// Migrate a freshly-loaded [`Snapshot`] from its on-disk
 /// `schema_version` up to [`SNAPSHOT_SCHEMA_VERSION`]. Returns an
@@ -422,6 +543,19 @@ pub fn migrate_snapshot(mut snap: Snapshot) -> Result<Snapshot, SnapshotMigratio
     if snap.schema_version == 2 {
         snap.schema_version = 3;
     }
+    // 3 → 4: `task_trees` field added. Old snapshots have no `task_trees` key;
+    // `#[serde(default)]` ensures they deserialise with an empty BTreeMap.
+    // No structural migration required — just stamp the new version.
+    if snap.schema_version == 3 {
+        snap.schema_version = 4;
+    }
+    // 4 → 5: `goal`, `parent_run_id`, `produces`, `resolved_reviews`, and
+    // `file_changes` fields added to `Run`. All carry `#[serde(default)]` so
+    // old snapshots deserialise with empty / None values automatically.
+    // No structural migration required — just stamp the new version.
+    if snap.schema_version == 4 {
+        snap.schema_version = 5;
+    }
     Ok(snap)
 }
 
@@ -448,6 +582,11 @@ mod tests {
             history: vec![],
             created_at_ms: 0,
             updated_at_ms: 0,
+            goal: None,
+            parent_run_id: None,
+            produces: vec![],
+            resolved_reviews: vec![],
+            file_changes: vec![],
         }
     }
 
@@ -472,5 +611,61 @@ mod tests {
             decoded.flow_run_id, None,
             "missing field must default to None"
         );
+    }
+
+    /// Old snapshot JSON without `task_trees` key deserialises without error.
+    #[test]
+    fn snapshot_without_task_trees_deserialises_cleanly() {
+        let snap = Snapshot::default();
+        let mut value: serde_json::Value = serde_json::to_value(&snap).unwrap();
+        value.as_object_mut().unwrap().remove("task_trees");
+        let decoded: Snapshot =
+            serde_json::from_value(value).expect("snapshot without task_trees must deserialise");
+        assert!(decoded.task_trees.is_empty());
+    }
+
+    /// TaskTree survives a JSON round-trip with all fields intact.
+    #[test]
+    fn task_tree_roundtrip() {
+        let run_id = RunId::new();
+        let task_id = TaskId::new();
+        let agent_id = AgentId::new();
+
+        let mut tree = TaskTree::new();
+        tree.tasks.insert(
+            task_id,
+            Task {
+                id: task_id,
+                parent_id: None,
+                label: "Write a tech spec".to_string(),
+                agent_id: Some(agent_id),
+                flow_id: None,
+                status: TaskStatus::Completed,
+                output: Some(serde_json::json!({ "result": "done" })),
+                created_at_ms: 0,
+            },
+        );
+
+        let mut snap = Snapshot::default();
+        snap.task_trees.insert(run_id, tree);
+
+        let json = serde_json::to_string(&snap).unwrap();
+        let decoded: Snapshot = serde_json::from_str(&json).unwrap();
+        let decoded_task = &decoded.task_trees[&run_id].tasks[&task_id];
+        assert_eq!(decoded_task.label, "Write a tech spec");
+        assert_eq!(decoded_task.status, TaskStatus::Completed);
+        assert_eq!(decoded_task.agent_id, Some(agent_id));
+    }
+
+    /// migrate_snapshot upgrades v3 → v4 in place.
+    #[test]
+    fn migrate_v3_to_v4() {
+        let snap = Snapshot {
+            schema_version: 3,
+            ..Snapshot::default()
+        };
+        let migrated = migrate_snapshot(snap).unwrap();
+        assert_eq!(migrated.schema_version, SNAPSHOT_SCHEMA_VERSION);
+        assert!(migrated.task_trees.is_empty());
     }
 }

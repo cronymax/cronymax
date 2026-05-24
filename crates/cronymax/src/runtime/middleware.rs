@@ -416,6 +416,10 @@ impl RunMiddleware for TraceEmitterMiddleware {
                     false,
                 )
             }
+            ToolOutcome::SpawnsAgent { task_id, .. } => (
+                serde_json::json!({"task_id": task_id, "status": "spawned"}),
+                false,
+            ),
         };
 
         let duration_ms = self.tool_durations.lock().get(&call.id).copied();

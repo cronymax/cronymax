@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tracing::warn;
 
-use crate::agent_loop::react::ReflectionConfig;
+use crate::agent_loop::react::{CriticConfig, ReflectionConfig};
 
 // ── PromptSource ─────────────────────────────────────────────────────────────
 
@@ -119,14 +119,22 @@ pub struct AgentDef {
     /// provider rather than the native `ReactLoop`. `None` = native engine.
     /// Parsed from the `agent_provider:` YAML key.
     pub agent_provider: Option<AgentProviderRef>,
+
+    /// Optional post-Stop critic configuration. When `Some`, the
+    /// `ReactLoop` fires a self-critique after every `FinishReason::Stop`
+    /// and may re-enter the loop with issues appended as a user message.
+    pub critic: Option<CriticConfig>,
 }
 
-/// The two legal agent kinds.
+/// The legal agent kinds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AgentKind {
     #[default]
     Worker,
     Reviewer,
+    /// A Supervisor agent can dispatch child agent/flow invocations via
+    /// `invoke_agent` / `invoke_flow` capability tools and await their results.
+    Supervisor,
 }
 
 impl AgentKind {
@@ -134,6 +142,7 @@ impl AgentKind {
         match self {
             AgentKind::Worker => "worker",
             AgentKind::Reviewer => "reviewer",
+            AgentKind::Supervisor => "supervisor",
         }
     }
 }
@@ -165,6 +174,26 @@ struct RawAgentDef {
     /// Absent / `builtin` → native `ReactLoop`. See [`parse_agent_provider`].
     #[serde(default)]
     agent_provider: Option<serde_yml::Value>,
+    /// Optional critic config block.
+    #[serde(default)]
+    critic: Option<RawCriticConfig>,
+}
+
+/// Raw YAML representation of `CriticConfig`.
+#[derive(Debug, Default, Deserialize)]
+struct RawCriticConfig {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    artifact_kinds: Vec<String>,
+    #[serde(default = "default_max_revisions")]
+    max_revisions: usize,
+    #[serde(default)]
+    prompt_template: Option<String>,
+}
+
+fn default_max_revisions() -> usize {
+    1
 }
 
 fn default_true() -> bool {
@@ -202,6 +231,7 @@ impl Default for AgentDef {
             vars: HashMap::new(),
             reflection: None,
             agent_provider: None,
+            critic: None,
         }
     }
 }
@@ -216,6 +246,7 @@ impl RawAgentDef {
 
         let kind = match self.kind.as_str() {
             "reviewer" => AgentKind::Reviewer,
+            "supervisor" => AgentKind::Supervisor,
             _ => AgentKind::Worker,
         };
 
@@ -256,6 +287,13 @@ impl RawAgentDef {
         // `agent_provider:` selects the engine — see `parse_agent_provider`.
         let agent_provider = parse_agent_provider(&self.agent_provider);
 
+        let critic = self.critic.map(|raw| CriticConfig {
+            model: raw.model,
+            artifact_kinds: raw.artifact_kinds,
+            max_revisions: raw.max_revisions,
+            prompt_template: raw.prompt_template,
+        });
+
         AgentDef {
             name,
             kind,
@@ -270,6 +308,7 @@ impl RawAgentDef {
             vars: HashMap::new(),
             reflection: None,
             agent_provider,
+            critic,
         }
     }
 }

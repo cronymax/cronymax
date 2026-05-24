@@ -70,16 +70,6 @@ pub(super) fn build_middleware_chain(authority: RuntimeAuthority) -> Arc<Middlew
     Arc::new(MiddlewareChain(vec![timing, token_accum, trace]))
 }
 
-pub(super) fn default_chat_system_prompt() -> String {
-    [
-        "You are a helpful coding assistant operating inside a developer's workspace.",
-        "You may use the provided tools (shell, filesystem, etc.) to investigate the project, but only when the user's request actually requires it.",
-        "Use the minimum number of tool calls needed. As soon as you have enough information to answer, stop calling tools and reply to the user with a concise summary.",
-        "If the request is purely conversational, answer directly without invoking any tool.",
-    ]
-    .join(" ")
-}
-
 pub(super) fn base64_encode(data: &[u8]) -> String {
     // Simple base64 without dependencies — use the alphabet directly.
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -164,6 +154,9 @@ pub(super) fn authority_err_to_control(
         },
         AuthorityError::ReviewAlreadyResolved => ControlError::InvalidState {
             message: "review already resolved".into(),
+        },
+        AuthorityError::UnknownSession(id) => ControlError::InvalidRequest {
+            message: format!("unknown session: {id}"),
         },
         AuthorityError::Persistence(p) => ControlError::Internal {
             message: format!("persistence: {p}"),

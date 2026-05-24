@@ -41,6 +41,14 @@ pub enum RuntimeEventPayload {
     RunStatus {
         run_id: String,
         status: String,
+        /// Agent identifier for this run. For flow node sub-runs this is
+        /// the node's agent name (e.g. `"pm-design"`); for top-level chat
+        /// runs it is the UUID-string of the authority agent, or `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+        /// Flow run this sub-run belongs to, or `None` for top-level runs.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        flow_run_id: Option<String>,
         detail: Option<serde_json::Value>,
     },
 
@@ -112,6 +120,45 @@ pub enum RuntimeEventPayload {
         remote: String,
         branch: String,
         commits_pushed: usize,
+    },
+
+    /// A Supervisor-dispatched child task has started running.
+    TaskStarted { run_id: String, task_id: String },
+
+    /// A Supervisor-dispatched child task has finished (succeeded or failed).
+    TaskCompleted {
+        run_id: String,
+        task_id: String,
+        success: bool,
+    },
+
+    // ── supervisor-session-ux ─────────────────────────────────────────────
+    /// Emitted after a session is auto-named or manually renamed.
+    /// The sidebar listens for this to update the session label.
+    SessionRenamed {
+        session_id: String,
+        /// The new display name.
+        name: String,
+        /// `true` if the rename was triggered by the user (manual rename from
+        /// the sidebar), `false` if it was an auto-name after the first
+        /// invocation completion.
+        manually_named: bool,
+    },
+
+    /// Emitted after each critic pass for an agent run (task 9.3).
+    /// The AgentThreadView subscribes to show a CriticPassBanner inline.
+    CriticResult {
+        run_id: String,
+        /// Name of the agent whose output was critiqued (e.g. "code").
+        agent_name: String,
+        /// `true` if the critic accepted the output; `false` if revision was requested.
+        passed: bool,
+        /// Short summary / issues list from the critic (empty if passed).
+        summary: String,
+        /// Which revision number this is (1-based).
+        revision: u32,
+        /// Maximum revisions allowed for this run.
+        max_revisions: u32,
     },
 }
 

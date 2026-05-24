@@ -1602,6 +1602,7 @@ mod tests {
             available_docs: vec![],
             pending_ports: vec!["code-review".into()],
             review_comments: None,
+            human_provided_keys: Vec::new(),
         };
 
         let params = ExtensionFlowParams {

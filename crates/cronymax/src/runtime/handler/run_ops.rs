@@ -358,9 +358,11 @@ impl RuntimeHandler {
                 },
                 session_id: maybe_session_id.clone(),
                 reflection: None,
+                critic: None,
                 write_namespace: None,
                 memory_manager: memory_manager.clone(),
                 middleware: build_middleware_chain(authority.clone()),
+                agent_name: None,
             };
 
             let result = ReactLoop::new(authority.clone(), id, cfg).run().await;

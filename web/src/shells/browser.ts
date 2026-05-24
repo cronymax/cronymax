@@ -293,6 +293,15 @@ export const Channels = {
       },
     },
 
+    // ── file read (sandbox-aware, used by the file-view.html viewer) ─
+    file: {
+      // Read a workspace file accessible to the given run's sandbox.
+      read: chan({
+        req: z.object({ run_id: z.string(), path: z.string() }),
+        res: z.object({ content: z.string() }),
+      }),
+    },
+
     // ── named sandbox profiles (stored in ~/.cronymax/profiles/) ─────
     profiles: {
       list: chan({

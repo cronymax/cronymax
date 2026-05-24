@@ -82,6 +82,8 @@ void ContentView::SetVInsets(int top, int bottom) {
   box.horizontal = false;
   box.inside_border_insets = {top, 8, bottom, 8};
   auto layout = content_outer_->SetToBoxLayout(box);
+  if (!layout)
+    return;
   layout->SetFlexForView(content_frame_, 1);
   content_outer_->Layout();
 
