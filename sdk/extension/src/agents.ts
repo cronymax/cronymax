@@ -7,29 +7,18 @@
 // FROZEN. Any change here is a v1 → v2 break. The `AgentEvent` discriminated
 // union below is mirrored exactly in the Rust runtime and over the wire.
 
+import type { ContributionItem } from "./contributions";
 import type { CancellationToken, Disposable } from "./primitives";
 
 // ─── descriptive metadata ──────────────────────────────────────────────────
 
-export interface ModelInfo {
-  /** Provider-scoped model id. e.g. "claude-opus-4-7", "gpt-5.4". */
-  id: string;
-  /** Human-facing label. */
-  label: string;
-  /** Optional one-liner. */
-  description?: string;
-  /** Bookkeeping limits the platform may surface to the user. */
-  contextWindow?: number;
-  maxOutputTokens?: number;
-  /** Free-form tags ("vision", "tools", "fast"). UI hint only. */
-  tags?: readonly string[];
-}
-
-export interface ModeInfo {
-  id: string;
-  label: string;
-  description?: string;
-}
+/**
+ * Convenience alias used by `SessionOptions.model` so existing call sites
+ * keep reading naturally. The picker actually exchanges full
+ * `ContributionItem` objects (label, description, …); the id of the
+ * selected item is what's passed to `createSession({ model: itemId })`.
+ */
+export type ModelInfo = ContributionItem;
 
 // ─── session inputs ────────────────────────────────────────────────────────
 
@@ -55,10 +44,12 @@ export interface McpServerSpec {
 export interface SessionOptions {
   /** Working directory for tools / MCP servers that need one. */
   cwd: string;
-  /** Provider-scoped model id, see ModelInfo.id. */
+  /**
+   * `ContributionItem.id` of the user-picked item — see `AgentProvider.enumerate`.
+   * Provider semantics are kind-dependent: for a "model" provider this is the
+   * model id; for a multi-personality agent this is the personality id; etc.
+   */
   model?: string;
-  /** Provider-scoped mode id, see ModeInfo.id. */
-  mode?: string;
   /** MCP servers to attach to the session at start. */
   mcpServers?: readonly McpServerSpec[];
   /** Override the system prompt (provider may merge with its default). */
@@ -150,11 +141,19 @@ export interface AgentEventDone {
 // ─── runtime interfaces ────────────────────────────────────────────────────
 
 export interface AgentProvider {
-  /** Enumerate models discoverable at the current credential level. */
-  listModels(): Promise<readonly ModelInfo[]>;
-
-  /** Declarative; empty / undefined means provider has no mode concept. */
-  modes?: readonly ModeInfo[];
+  /**
+   * Enumerate the selectable items inside this provider (models, modes,
+   * personalities, …). Each item appears as a row under this provider's
+   * group in the chat panel's picker. The user's selection is forwarded to
+   * `createSession({ model: itemId })`.
+   *
+   * Return `[]` for providers that have nothing to pick — the platform
+   * will surface them as a single "default" entry instead.
+   *
+   * Replaces the v1-pre `listModels()` + `modes?` pair: contribution items
+   * are now the unified dimension.
+   */
+  enumerate(): Promise<readonly ContributionItem[]>;
 
   createSession(opts: SessionOptions): Promise<AgentSession>;
 }

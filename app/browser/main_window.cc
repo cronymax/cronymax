@@ -809,14 +809,23 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   };
 
   // DevTools: F12 or Cmd+Option+I shows the DevTools inspector for the
-  // active web tab's browser. A new detached DevTools window opens.
+  // active tab's browser. A new detached DevTools window opens. Works for
+  // kWeb (WebTabBehavior) as well as kChat/kTerminal/kFlows/kActivity/
+  // kSettings (SimpleTabBehavior) — anything that owns a CefBrowserView.
   client_handler_->on_devtools_requested = [this](int /*browser_id*/) {
     CefRefPtr<CefBrowser> target;
     Tab* active = shell_model_.tabs_ ? shell_model_.tabs_->Active() : nullptr;
-    if (active && active->kind() == TabKind::kWeb) {
-      if (auto* wb = static_cast<WebTabBehavior*>(active->behavior())) {
-        if (auto bv = wb->browser_view())
-          target = bv->GetBrowser();
+    if (active) {
+      if (active->kind() == TabKind::kWeb) {
+        if (auto* wb = static_cast<WebTabBehavior*>(active->behavior())) {
+          if (auto bv = wb->browser_view())
+            target = bv->GetBrowser();
+        }
+      } else {
+        if (auto* sb = static_cast<SimpleTabBehavior*>(active->behavior())) {
+          if (auto bv = sb->browser_view())
+            target = bv->GetBrowser();
+        }
       }
     }
     if (!target)

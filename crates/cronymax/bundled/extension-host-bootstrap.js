@@ -22,7 +22,6 @@
 // This file is intentionally dependency-light. The only npm import is
 // `@msgpack/msgpack` (resolved against Node 26's bundled `node_modules`
 // that ships next to the binary; see `P2-T01`).
-"use strict";
 
 const net = require("node:net");
 const fs = require("node:fs");
@@ -50,9 +49,7 @@ try {
 }
 
 if (!MANIFEST_PATH || !EXT_DIR || !EXT_STORAGE || !EXT_GLOBAL_STORAGE) {
-  process.stderr.write(
-    "[bootstrap] missing one of CRONYMAX_EXTENSION_{MANIFEST,DIR,STORAGE,GLOBAL_STORAGE}\n",
-  );
+  process.stderr.write("[bootstrap] missing one of CRONYMAX_EXTENSION_{MANIFEST,DIR,STORAGE,GLOBAL_STORAGE}\n");
   process.exit(2);
 }
 
@@ -63,7 +60,7 @@ const EXT_ID = manifest.id;
 
 const rpcSocket = new net.Socket({ fd: 3 });
 const encoder = new Encoder();
-const decoder = new Decoder();
+const _decoder = new Decoder();
 
 function writeFrame(frame) {
   rpcSocket.write(encoder.encode(frame));
@@ -115,7 +112,7 @@ function dispatchFrame(frame) {
         },
         (err) => {
           inFlight.delete(msgid);
-          const msg = err && err.message ? String(err.message) : String(err);
+          const msg = err?.message ? String(err.message) : String(err);
           writeFrame([1, msgid, msg, null]);
         },
       );
@@ -144,10 +141,8 @@ function dispatchFrame(frame) {
       Promise.resolve()
         .then(() => handler(params))
         .catch((err) => {
-          const msg = err && err.message ? String(err.message) : String(err);
-          console.error(
-            `[cronymax-bootstrap] notify handler '${method}' threw: ${msg}`,
-          );
+          const msg = err?.message ? String(err.message) : String(err);
+          console.error(`[cronymax-bootstrap] notify handler '${method}' threw: ${msg}`);
         });
     }
   }
@@ -205,7 +200,7 @@ rpcSocket.on("error", (e) => {
 // (optionally) audit-routes via RPC. We don't hook `require` — spec §6.1
 // forbids module-graph mutation; this is a plain global replacement.
 
-const originalConsole = {
+const _originalConsole = {
   log: console.log.bind(console),
   info: console.info.bind(console),
   warn: console.warn.bind(console),
@@ -234,9 +229,9 @@ for (const level of ["log", "info", "warn", "error", "debug"]) {
   console[level] = (...args) => {
     const line = fmtArgs(args);
     if (level === "warn" || level === "error") {
-      process.stderr.write(line + "\n");
+      process.stderr.write(`${line}\n`);
     } else {
-      process.stdout.write(line + "\n");
+      process.stdout.write(`${line}\n`);
     }
   };
 }
@@ -247,12 +242,12 @@ let activated = false;
 
 process.on("uncaughtException", (err) => {
   const phase = activated ? "running" : "activate";
-  const stack = err && err.stack ? String(err.stack) : String(err);
+  const stack = err?.stack ? String(err.stack) : String(err);
   process.stderr.write(`[bootstrap] uncaughtException (${phase}): ${stack}\n`);
 });
 
 process.on("unhandledRejection", (reason) => {
-  const msg = reason && reason.message ? String(reason.message) : String(reason);
+  const msg = reason?.message ? String(reason.message) : String(reason);
   process.stderr.write(`[bootstrap] unhandledRejection: ${msg}\n`);
 });
 
@@ -274,7 +269,7 @@ const channels = new Map(); // name → OutputChannel
 const agentSessions = new Map();
 
 function createOutputChannel(name, options) {
-  const isLog = !!(options && options.log);
+  const isLog = !!options?.log;
   // Server-side rpc to allocate the channel file lives in P2-T12 / the
   // SDK; here we just notify on each line so the platform writes the
   // log channel file.
@@ -305,10 +300,10 @@ function createOutputChannel(name, options) {
         const line = args.length
           ? `${msg} ${fmtArgs(args)}`
           : typeof msg === "string"
-          ? msg
-          : msg && msg.stack
-          ? msg.stack
-          : String(msg);
+            ? msg
+            : msg?.stack
+              ? msg.stack
+              : String(msg);
         send(level, line);
       };
     }
@@ -333,11 +328,10 @@ const cronymax = {
   },
   commands: {
     register(commandId, callback) {
-      registerRpcHandler("commands/execute:" + commandId, async (params) => {
+      registerRpcHandler(`commands/execute:${commandId}`, async (params) => {
         return await callback(...(Array.isArray(params) ? params : []));
       });
-      const dispose = () =>
-        rpcNotify("commands/unregister", { commandId });
+      const dispose = () => rpcNotify("commands/unregister", { commandId });
       rpcNotify("commands/register", { commandId });
       const sub = { dispose };
       subscriptions.push(sub);
@@ -351,11 +345,8 @@ const cronymax = {
     },
   },
   workspace: {
-    workspaceFolders: WORKSPACE_FOLDERS.map((p) => ({ uri: "file://" + p })),
-    rootUri:
-      WORKSPACE_FOLDERS.length > 0
-        ? "file://" + WORKSPACE_FOLDERS[0]
-        : undefined,
+    workspaceFolders: WORKSPACE_FOLDERS.map((p) => ({ uri: `file://${p}` })),
+    rootUri: WORKSPACE_FOLDERS.length > 0 ? `file://${WORKSPACE_FOLDERS[0]}` : undefined,
     getConfiguration(section) {
       return {
         get(key, fallback) {
@@ -381,27 +372,26 @@ const cronymax = {
     // the manifest's contributes["cronymax.agents.provider"] entry; the
     // notify here just announces "the JS impl is live".
     registerProvider(providerId, impl) {
-      registerRpcHandler(
-        "agents/session.create:" + providerId,
-        async (params) => {
-          const session = await impl.createSession(params);
-          if (!session || typeof session.id !== "string" || !session.id) {
-            throw new Error(
-              `provider '${providerId}' createSession() must return AgentSession with a non-empty string id`,
-            );
-          }
-          // Stash so the global session.prompt / dispose / cancel /
-          // resolvePermission handlers (registered below) can find it.
-          agentSessions.set(session.id, session);
-          return { sessionId: session.id };
-        },
-      );
-      registerRpcHandler(
-        "agents/listModels:" + providerId,
-        async () => impl.listModels(),
-      );
-      const dispose = () =>
-        rpcNotify("agents/unregisterProvider", { providerId });
+      registerRpcHandler(`agents/session.create:${providerId}`, async (params) => {
+        const session = await impl.createSession(params);
+        if (!session || typeof session.id !== "string" || !session.id) {
+          throw new Error(
+            `provider '${providerId}' createSession() must return AgentSession with a non-empty string id`,
+          );
+        }
+        // Stash so the global session.prompt / dispose / cancel /
+        // resolvePermission handlers (registered below) can find it.
+        agentSessions.set(session.id, session);
+        return { sessionId: session.id };
+      });
+      registerRpcHandler(`agents/enumerate:${providerId}`, async () => {
+        if (typeof impl.enumerate !== "function") {
+          return [];
+        }
+        const items = await impl.enumerate();
+        return items ?? [];
+      });
+      const dispose = () => rpcNotify("agents/unregisterProvider", { providerId });
       rpcNotify("agents/registerProvider", { providerId });
       const sub = { dispose };
       subscriptions.push(sub);
@@ -412,12 +402,8 @@ const cronymax = {
     // Extensions call this from activate() to make a content renderer
     // available. The platform routes render() requests by MIME type.
     registerRenderer(rendererId, handler) {
-      registerRpcHandler(
-        "renderers/render:" + rendererId,
-        async (params) => handler(params),
-      );
-      const dispose = () =>
-        rpcNotify("renderers/unregister", { rendererId });
+      registerRpcHandler(`renderers/render:${rendererId}`, async (params) => handler(params));
+      const dispose = () => rpcNotify("renderers/unregister", { rendererId });
       rpcNotify("renderers/register", { rendererId });
       const sub = { dispose };
       subscriptions.push(sub);
@@ -429,10 +415,7 @@ const cronymax = {
     // available. Title / icon / entry come from the manifest.
     register(viewId, handler) {
       if (handler) {
-        registerRpcHandler(
-          "sidebar/view.message:" + viewId,
-          async (params) => handler(params),
-        );
+        registerRpcHandler(`sidebar/view.message:${viewId}`, async (params) => handler(params));
       }
       const dispose = () => rpcNotify("sidebar/unregister", { viewId });
       rpcNotify("sidebar/register", { viewId });
@@ -498,9 +481,7 @@ function buildCancellationToken(cancelFlag) {
             try {
               cb();
             } catch (e) {
-              process.stderr.write(
-                `[bootstrap] cancellation cb threw (sync path): ${e}\n`,
-              );
+              process.stderr.write(`[bootstrap] cancellation cb threw (sync path): ${e}\n`);
             }
           });
           return {
@@ -523,7 +504,7 @@ function buildCancellationToken(cancelFlag) {
 }
 
 registerRpcHandler("agents/session.prompt", async (params, cancelFlag) => {
-  const sessionId = params && params.sessionId;
+  const sessionId = params?.sessionId;
   if (typeof sessionId !== "string" || !sessionId) {
     throw new Error("agents/session.prompt: missing string sessionId");
   }
@@ -531,7 +512,7 @@ registerRpcHandler("agents/session.prompt", async (params, cancelFlag) => {
   if (!session) {
     throw new Error(`agents/session.prompt: unknown sessionId '${sessionId}'`);
   }
-  const message = (params && params.message) || { text: "" };
+  const message = params?.message || { text: "" };
   const { token, dispose: disposeToken } = buildCancellationToken(cancelFlag);
   let sawDone = false;
   try {
@@ -551,7 +532,7 @@ registerRpcHandler("agents/session.prompt", async (params, cancelFlag) => {
       rpcNotify("agents/event", { sessionId, event: synthetic });
     }
   } catch (err) {
-    const msg = err && err.message ? String(err.message) : String(err);
+    const msg = err?.message ? String(err.message) : String(err);
     rpcNotify("agents/event", {
       sessionId,
       event: { kind: "done", stopReason: "error", errorMessage: msg },
@@ -564,27 +545,23 @@ registerRpcHandler("agents/session.prompt", async (params, cancelFlag) => {
 });
 
 registerRpcHandler("agents/session.resolvePermission", async (params) => {
-  const sessionId = params && params.sessionId;
+  const sessionId = params?.sessionId;
   if (typeof sessionId !== "string" || !sessionId) {
     throw new Error("agents/session.resolvePermission: missing string sessionId");
   }
   const session = agentSessions.get(sessionId);
   if (!session) {
-    throw new Error(
-      `agents/session.resolvePermission: unknown sessionId '${sessionId}'`,
-    );
+    throw new Error(`agents/session.resolvePermission: unknown sessionId '${sessionId}'`);
   }
   if (typeof session.resolvePermission !== "function") {
-    throw new Error(
-      `agents/session.resolvePermission: session '${sessionId}' has no resolvePermission()`,
-    );
+    throw new Error(`agents/session.resolvePermission: session '${sessionId}' has no resolvePermission()`);
   }
   await session.resolvePermission(params.requestId, params.decision);
   return null;
 });
 
 registerRpcHandler("agents/session.cancel", async (params) => {
-  const sessionId = params && params.sessionId;
+  const sessionId = params?.sessionId;
   if (typeof sessionId !== "string" || !sessionId) {
     throw new Error("agents/session.cancel: missing string sessionId");
   }
@@ -597,7 +574,7 @@ registerRpcHandler("agents/session.cancel", async (params) => {
 });
 
 registerRpcHandler("agents/session.dispose", async (params) => {
-  const sessionId = params && params.sessionId;
+  const sessionId = params?.sessionId;
   if (typeof sessionId !== "string" || !sessionId) {
     throw new Error("agents/session.dispose: missing string sessionId");
   }
@@ -615,23 +592,18 @@ registerRpcHandler("agents/session.dispose", async (params) => {
 // / namespace-reserved / etc.). Surface as console.error so developers
 // notice — silent drop hides bugs until users complain.
 registerRpcHandler("extension/registerError", async (params) => {
-  const ep = params && params.ep ? String(params.ep) : "<unknown ep>";
-  const id = params && params.id ? String(params.id) : "<unknown id>";
-  const reason = params && params.reason ? String(params.reason) : "<no reason>";
-  console.error(
-    `[cronymax] register failed: ep=${ep} id=${id} reason=${reason}`,
-  );
+  const ep = params?.ep ? String(params.ep) : "<unknown ep>";
+  const id = params?.id ? String(params.id) : "<unknown id>";
+  const reason = params?.reason ? String(params.reason) : "<no reason>";
+  console.error(`[cronymax] register failed: ep=${ep} id=${id} reason=${reason}`);
 });
-
 
 registerRpcHandler("extension/activate", async () => {
   const mainPath = path.join(EXT_DIR, manifest.main);
   const userModule = require(mainPath);
   const activateFn = userModule.activate;
   if (typeof activateFn !== "function") {
-    throw new Error(
-      `extension ${EXT_ID}: no activate() export from ${manifest.main}`,
-    );
+    throw new Error(`extension ${EXT_ID}: no activate() export from ${manifest.main}`);
   }
   const ctx = {
     extensionId: EXT_ID,
@@ -649,7 +621,7 @@ registerRpcHandler("extension/activate", async () => {
 registerRpcHandler("extension/deactivate", async () => {
   for (const sub of subscriptions.splice(0)) {
     try {
-      const r = sub.dispose && sub.dispose();
+      const r = sub.dispose?.();
       if (r && typeof r.then === "function") await r;
     } catch (e) {
       process.stderr.write(`[bootstrap] dispose threw: ${e}\n`);

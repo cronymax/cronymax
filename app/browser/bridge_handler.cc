@@ -111,10 +111,11 @@ class SpaceContextEnricher : public ControlEnricher {
 
     static const std::unordered_set<std::string> kNeedsWorkspace{
         "terminal_start",
-        "agent_registry_list",
-        "agent_registry_load",
-        "agent_registry_save",
-        "agent_registry_delete",
+        "contribution_list",
+        "contribution_enumerate",
+        "contribution_load",
+        "contribution_save",
+        "contribution_delete",
         "flow_list",
         "flow_load",
         "flow_save",

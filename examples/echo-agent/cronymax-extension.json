@@ -1,0 +1,23 @@
+{
+  "id": "cronymax-examples.echo-agent",
+  "name": "Echo Agent",
+  "version": "0.1.0",
+  "publisher": "cronymax-examples",
+  "engines": { "cronymax": "^1.0" },
+  "main": "./dist/main.js",
+  "description": "Minimal cronymax.agents.provider example: echoes the prompt back as a streamed reply.",
+  "activationEvents": ["*"],
+  "contributes": {
+    "cronymax.agents.provider": [
+      {
+        "id": "cronymax-examples.echo-agent.echo",
+        "label": "Echo",
+        "description": "Echoes your prompt back as a streamed assistant turn.",
+        "supportsModels": true
+      }
+    ]
+  },
+  "capabilities": {
+    "extension-points": ["cronymax.agents.provider"]
+  }
+}

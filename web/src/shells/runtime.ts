@@ -21,24 +21,8 @@ export function b64ToUtf8(b64: string): string {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Agent registry helpers
+// Agent run options
 // ---------------------------------------------------------------------------
-
-export interface AgentEntry {
-  name: string;
-  kind: string;
-  llm: string;
-  builtin?: boolean;
-  prompt_sealed?: boolean;
-}
-
-export interface AgentDetail extends AgentEntry {
-  system_prompt: string;
-  memory_namespace: string;
-  tools: string[];
-  /** OpenAI reasoning_effort hint (`minimal` | `low` | `medium` | `high`). */
-  reasoning_effort?: string;
-}
 
 /** Per-message LLM overrides for an agent run (chat-UI selections, etc.). */
 export interface AgentRunOptions {
@@ -62,22 +46,74 @@ export interface AgentRunOptions {
   session_name?: string;
   /** Authored agent id (chat agent selector). */
   agent_id?: string;
+  /** ContributionKind of the picked agent. Required for new callers; legacy
+   * sites that omit it fall through to the runtime's probing heuristic. */
+  contribution_kind?: string;
   /** When set, starts a flow run with this flow id instead of a direct agent run. */
   flow_id?: string;
 }
 
-export const agentRegistry = {
-  async list(): Promise<{ agents: AgentEntry[] }> {
-    return (await runtimeSend("agent.registry.list")) as { agents: AgentEntry[] };
+// ---------------------------------------------------------------------------
+// Contribution registry helpers — unified surface across platform / workspace
+// / extension contributions. Mirrors the Rust `ContributionRegistry`.
+// ---------------------------------------------------------------------------
+
+/** Owner classification on every contribution descriptor. */
+export type ContributionOwner = { type: "platform" } | { type: "workspace" } | { type: "extension"; ext_id: string };
+
+/** One entry returned by `contributionRegistry.list()`. */
+export interface ContributionDescriptor {
+  kind: string;
+  id: string;
+  owner: ContributionOwner;
+  label: string;
+  description?: string;
+  icon?: string;
+  metadata?: unknown;
+}
+
+/** One enumerable item under a descriptor (e.g. a model under an agent provider). */
+export interface ContributionItem {
+  id: string;
+  label: string;
+  description?: string;
+  icon?: string;
+  metadata?: unknown;
+}
+
+/** Known contribution kinds. Match `crate::extensions::contributions::kind`. */
+export const ContributionKind = {
+  AgentsBuiltin: "cronymax.agents.builtin",
+  AgentsWorkspace: "cronymax.agents.workspace",
+  AgentsProvider: "cronymax.agents.provider",
+  Command: "cronymax.command",
+  ConfigSchema: "cronymax.config.schema",
+  ConfigPage: "cronymax.config.page",
+  ContentRenderer: "cronymax.content.renderer",
+  SidebarView: "cronymax.ui.sidebar.view",
+} as const;
+export type ContributionKindId = (typeof ContributionKind)[keyof typeof ContributionKind];
+
+export const contributionRegistry = {
+  async list(): Promise<{ contributions: ContributionDescriptor[] }> {
+    return (await runtimeSend("contribution.list")) as { contributions: ContributionDescriptor[] };
   },
-  async load(name: string): Promise<AgentDetail> {
-    return (await runtimeSend("agent.registry.load", { name })) as AgentDetail;
+  async enumerate(contribution_kind: string, id: string): Promise<{ items: ContributionItem[] }> {
+    return (await runtimeSend("contribution.enumerate", { contribution_kind, id })) as {
+      items: ContributionItem[];
+    };
   },
-  async save(fields: Record<string, unknown>): Promise<{ ok: boolean }> {
-    return (await runtimeSend("agent.registry.save", fields)) as { ok: boolean };
+  async load(contribution_kind: string, id: string): Promise<{ descriptor: ContributionDescriptor; source: unknown }> {
+    return (await runtimeSend("contribution.load", { contribution_kind, id })) as {
+      descriptor: ContributionDescriptor;
+      source: unknown;
+    };
   },
-  async delete(name: string): Promise<{ ok: boolean }> {
-    return (await runtimeSend("agent.registry.delete", { name })) as { ok: boolean };
+  async save(contribution_kind: string, id: string, payload: Record<string, unknown>): Promise<{ ok: boolean }> {
+    return (await runtimeSend("contribution.save", { contribution_kind, id, payload })) as { ok: boolean };
+  },
+  async delete(contribution_kind: string, id: string): Promise<{ ok: boolean }> {
+    return (await runtimeSend("contribution.delete", { contribution_kind, id })) as { ok: boolean };
   },
 };
 
@@ -237,6 +273,7 @@ export async function agentRun(task: string, opts: AgentRunOptions = {}): Promis
   if (opts.session_id) req.session_id = opts.session_id;
   if (opts.session_name) req.session_name = opts.session_name;
   if (opts.agent_id) req.agent_id = opts.agent_id;
+  if (opts.contribution_kind) req.contribution_kind = opts.contribution_kind;
   const res = (await runtimeSend("start.run", req)) as { run_id?: string };
   if (!res.run_id) throw new Error("runtime did not return run_id");
   return res.run_id;

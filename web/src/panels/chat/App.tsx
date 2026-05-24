@@ -1421,7 +1421,9 @@ export function App() {
     let pendingReviewId: string | null = null;
     let runtimeOff: (() => void) | null = null;
     // Placeholder — replaced by the real browser.on unsub below.
-    let off: () => void = () => {};
+    let off: () => void = () => {
+      // noop
+    };
     const teardown = () => {
       off();
       runtimeOff?.();

@@ -36,6 +36,7 @@ use crate::runtime::agent_runner::AgentRunner;
 use crate::runtime::run_context::RunContext;
 use crate::runtime::services::RuntimeServices;
 
+mod contribution_ops;
 mod document_ops;
 mod flow_ops;
 mod helpers;
@@ -248,17 +249,20 @@ impl Handler for RuntimeHandler {
             req @ ControlRequest::FlowList { .. } => self.handle_flow_list(req).await,
             req @ ControlRequest::FlowLoad { .. } => self.handle_flow_load(req).await,
             req @ ControlRequest::FlowSave { .. } => self.handle_flow_save(req).await,
-            req @ ControlRequest::AgentRegistryList { .. } => {
-                self.handle_agent_registry_list(req).await
+            req @ ControlRequest::ContributionList { .. } => {
+                self.handle_contribution_list(req).await
             }
-            req @ ControlRequest::AgentRegistryLoad { .. } => {
-                self.handle_agent_registry_load(req).await
+            req @ ControlRequest::ContributionEnumerate { .. } => {
+                self.handle_contribution_enumerate(req).await
             }
-            req @ ControlRequest::AgentRegistrySave { .. } => {
-                self.handle_agent_registry_save(req).await
+            req @ ControlRequest::ContributionLoad { .. } => {
+                self.handle_contribution_load(req).await
             }
-            req @ ControlRequest::AgentRegistryDelete { .. } => {
-                self.handle_agent_registry_delete(req).await
+            req @ ControlRequest::ContributionSave { .. } => {
+                self.handle_contribution_save(req).await
+            }
+            req @ ControlRequest::ContributionDelete { .. } => {
+                self.handle_contribution_delete(req).await
             }
             req @ ControlRequest::DocTypeList { .. } => self.handle_doc_type_list(req).await,
             req @ ControlRequest::DocTypeLoad { .. } => self.handle_doc_type_load(req).await,
@@ -421,6 +425,7 @@ mod tests {
                     session_id: None,
                     session_name: None,
                     agent_id: None,
+                    contribution_kind: None,
                 },
             })
             .await
@@ -539,22 +544,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_registry_list_includes_extension_providers() {
+    async fn contribution_list_hides_inactive_extension_and_includes_active_one() {
+        use crate::extensions::contributions::{
+            kind as kind_id, ContributionDescriptor, ContributionOwner,
+        };
+
         let auth = RuntimeAuthority::in_memory();
         let extensions = ExtensionRuntime::new(ExtensionRegistry::default());
-        extensions
-            .providers()
-            .register(ProviderEntry {
-                provider_id: "alice.agent".into(),
-                owning_ext: "alice.ext".into(),
-                label: "Alice Agent".into(),
-                icon: None,
-                description: Some("extension provider".into()),
-                supports_models: true,
-                supports_modes: false,
-                supports_mcp: true,
-            })
-            .unwrap();
+        // Two providers from two different extensions: alice is activated,
+        // bob is dormant. The picker must see alice but not bob.
+        for (ext_id, prov_id, label) in [
+            ("alice.ext", "alice.agent", "Alice Agent"),
+            ("bob.ext", "bob.agent", "Bob Agent"),
+        ] {
+            extensions.add_contribution(
+                ContributionDescriptor::new(
+                    kind_id::AGENTS_PROVIDER,
+                    prov_id,
+                    ContributionOwner::Extension {
+                        ext_id: ext_id.into(),
+                    },
+                    label,
+                )
+                .with_metadata(serde_json::json!({
+                    "id": prov_id,
+                    "label": label,
+                    "supports_models": true,
+                    "supports_modes": false,
+                    "supports_mcp": true,
+                })),
+            );
+        }
+        extensions.test_mark_activated("alice.ext");
 
         let services = RuntimeServices {
             authority: auth,
@@ -571,7 +592,7 @@ mod tests {
         let resp = handler
             .handle_control(
                 CorrelationId::new(),
-                ControlRequest::AgentRegistryList {
+                ControlRequest::ContributionList {
                     workspace_root: std::env::temp_dir().display().to_string(),
                 },
             )
@@ -581,17 +602,19 @@ mod tests {
             ControlResponse::Data { payload } => payload,
             other => panic!("expected Data, got {other:?}"),
         };
-        let agents = payload["agents"].as_array().expect("agents array");
-        let provider = agents
+        let contributions = payload["contributions"]
+            .as_array()
+            .expect("contributions array");
+        let alice = contributions
             .iter()
-            .find(|agent| agent["name"] == "alice.agent")
-            .expect("extension provider present");
-        assert_eq!(provider["kind"], "extension_provider");
-        assert_eq!(provider["llm"], "alice.agent");
-        assert_eq!(provider["label"], "Alice Agent");
-        assert_eq!(provider["owning_ext"], "alice.ext");
-        assert_eq!(provider["supports_models"], true);
-        assert_eq!(provider["supports_mcp"], true);
+            .find(|d| d["id"] == "alice.agent")
+            .expect("active extension provider must appear");
+        assert_eq!(alice["owner"]["type"], "extension");
+        assert_eq!(alice["owner"]["extId"], "alice.ext");
+        assert!(
+            !contributions.iter().any(|d| d["id"] == "bob.agent"),
+            "inactive extension provider must be hidden from the picker",
+        );
     }
 
     #[tokio::test]
@@ -642,6 +665,9 @@ mod tests {
                     session_id: None,
                     session_name: None,
                     agent_id: Some("alice.agent".into()),
+                    contribution_kind: Some(
+                        crate::extensions::contributions::kind::AGENTS_PROVIDER.into(),
+                    ),
                 },
             )
             .await;
@@ -715,6 +741,7 @@ mod tests {
                     session_id: None,
                     session_name: None,
                     agent_id: Some("alice.agent".into()),
+                    contribution_kind: None,
                 },
             )
             .await;
@@ -766,6 +793,7 @@ mod tests {
                     session_id: None,
                     session_name: None,
                     agent_id: Some("my-agent".into()),
+                    contribution_kind: None,
                 },
             )
             .await;
@@ -810,7 +838,11 @@ mod tests {
             .start_run_with_session(
                 space_id,
                 None,
-                serde_json::json!({ "agent_id": "alice.agent", "task": "hi" }),
+                serde_json::json!({
+                    "agent_id": "alice.agent",
+                    "contribution_kind": crate::extensions::contributions::kind::AGENTS_PROVIDER,
+                    "task": "hi",
+                }),
                 None,
             )
             .unwrap();

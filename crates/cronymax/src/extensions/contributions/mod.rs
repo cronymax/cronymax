@@ -1,60 +1,171 @@
-//! L2 extension-point registry — the *only* place per-EP wiring lives.
+//! Central contribution registry — every user-selectable thing (built-in
+//! agent, workspace YAML agent, extension agent provider, command, content
+//! renderer, sidebar view, …) is stored here as one
+//! [`ContributionDescriptor`] keyed by `(kind, id)`.
 //!
-//! Hard invariant (spec §1, plan §2.2): every L2 EP goes through this
-//! module. There is no per-EP handler file; each new EP adds:
+//! Three owner classes share the same table:
 //!
-//! 1. A field on [`crate::extensions::manifest::Contributes`] (already
-//!    done for the six v1 points)
-//! 2. One [`Self::ingest`] match arm
-//! 3. (Optionally) a typed runtime registry next to
-//!    [`crate::extensions::api::agents::AgentProviderRegistry`] when the
-//!    EP needs RPC plumbing (commands / agents / renderers / sidebar)
+//! * [`ContributionOwner::Platform`] — entries registered by Crony core
+//!   itself (the built-in chat agent).
+//! * [`ContributionOwner::Workspace`] — entries derived from files inside
+//!   the active workspace (e.g. `<ws>/.cronymax/agents/*.agent.yaml`).
+//! * [`ContributionOwner::Extension(ext_id)`] — entries declared in an
+//!   extension manifest's `contributes.*` block.
 //!
-//! [`ContributionRegistry`] itself is just a JSON snapshot keyed by EP id;
-//! callers downcast the `value` by EP. The platform consumers that wire
-//! the live RPC connection (chat panel reading agent providers, command
-//! palette listing commands, etc.) read the typed registries; this
-//! registry is the source of truth for "what does the manifest say?" —
-//! useful for the settings panel and for the v1 acceptance demos.
+//! The chat / flow picker, the run dispatcher, and the settings UI all
+//! talk to this one registry instead of stitching three separate sources
+//! together. Picker dimensions (group/owner kind) and dispatcher dimensions
+//! (which kind of agent to run) are derivable from the descriptor's
+//! `kind` + `owner` pair.
 //!
-//! EP id strings match `cep-idl/v1/manifest.ts` and the `#[serde(rename)]`
-//! attributes on [`crate::extensions::manifest::Contributes`].
+//! Wire contract: the JSON shape emitted to the chat panel (over the new
+//! `contribution/list` and `contribution/enumerate` IPC variants) mirrors
+//! `ContributionDescriptor` field-for-field. Field names match
+//! `cep-idl/v1/contributions.ts` (kebab/camel handled at the serde layer).
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::extensions::manifest::Manifest;
 
-/// All v1 L2 extension-point ids. Kept as constants so consumers don't
+/// All v1 contribution-kind ids. Kept as constants so consumers don't
 /// stringly-type the names at every call site.
-pub mod ep {
+///
+/// The first six match the original v1 L2 extension-point ids 1:1; the
+/// last three are new contribution kinds that don't come from a manifest
+/// (platform / workspace sources).
+pub mod kind {
+    // Extension-declared (manifest `contributes.*`)
     pub const COMMAND: &str = "cronymax.command";
     pub const CONFIG_SCHEMA: &str = "cronymax.config.schema";
     pub const CONFIG_PAGE: &str = "cronymax.config.page";
     pub const AGENTS_PROVIDER: &str = "cronymax.agents.provider";
     pub const CONTENT_RENDERER: &str = "cronymax.content.renderer";
     pub const UI_SIDEBAR_VIEW: &str = "cronymax.ui.sidebar.view";
+
+    // Platform / workspace registered at runtime, not from a manifest.
+    pub const AGENTS_BUILTIN: &str = "cronymax.agents.builtin";
+    pub const AGENTS_WORKSPACE: &str = "cronymax.agents.workspace";
 }
 
-/// One typed entry inside the registry. The `value` is the raw JSON of
-/// whatever the manifest declared at this EP; per-EP consumers decide
-/// how to interpret it.
-#[derive(Clone, Debug)]
-pub struct ContributionEntry {
-    pub ext_id: String,
-    pub ep_id: String,
-    pub value: serde_json::Value,
+/// Where this contribution came from. Mirrored on the wire as a tagged
+/// union so the picker can group entries by source.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ContributionOwner {
+    /// Registered by Crony core (e.g. the built-in chat agent sentinel).
+    Platform,
+    /// Derived from the active workspace's filesystem (YAML agents,
+    /// project-local configs, …).
+    Workspace,
+    /// Declared by an extension manifest. `ext_id` is the manifest `id`.
+    Extension {
+        #[serde(rename = "extId")]
+        ext_id: String,
+    },
 }
 
-/// Every contribution registered at runtime, indexed by EP id and then
-/// by owning extension id.
+impl ContributionOwner {
+    pub fn extension(ext_id: impl Into<String>) -> Self {
+        Self::Extension {
+            ext_id: ext_id.into(),
+        }
+    }
+
+    pub fn ext_id(&self) -> Option<&str> {
+        match self {
+            Self::Extension { ext_id } => Some(ext_id.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// One contribution. Stored in [`ContributionRegistry`] under `(kind, id)`.
 ///
-/// Within one `(ep_id, ext_id)` pair the value is either a single object
-/// (for EPs that take a single object, like `cronymax.config.schema`) or
-/// a JSON array of objects (for EPs that take a list, like
-/// `cronymax.command`). Consumers can branch on `value.is_array()`.
+/// `metadata` is the raw per-kind JSON payload — the caller that knows the
+/// kind decodes it into the typed shape (e.g. `AgentProviderContribution`
+/// for `cronymax.agents.provider`). For platform / workspace owners the
+/// metadata mirrors whatever runtime info the source has (e.g. the agent
+/// YAML body, the C++ Crony builtin descriptor).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ContributionDescriptor {
+    pub kind: String,
+    pub id: String,
+    pub owner: ContributionOwner,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Free-form per-kind payload. The shape depends on `kind`.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+impl ContributionDescriptor {
+    pub fn new(
+        kind: impl Into<String>,
+        id: impl Into<String>,
+        owner: ContributionOwner,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: kind.into(),
+            id: id.into(),
+            owner,
+            label: label.into(),
+            description: None,
+            icon: None,
+            metadata: serde_json::Value::Null,
+        }
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.metadata = metadata;
+        self
+    }
+}
+
+/// One enumerable child of a descriptor (e.g. a model under an agent
+/// provider). Returned by `cronymax.agents.AgentProvider.enumerate()` and
+/// the platform's workspace-agent introspection.
+///
+/// Items aren't stored in the registry — they're fetched on demand from
+/// the descriptor's owner (extension RPC for provider items, in-memory
+/// state for platform/workspace items). The registry only knows about
+/// descriptors.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ContributionItem {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+/// Every contribution currently registered, indexed by `kind` then by
+/// `id`. Within one `kind` the `id` must be globally unique — collisions
+/// between an extension and the platform are rejected, but multiple
+/// extensions can contribute to the same kind so long as their ids
+/// differ.
 #[derive(Debug, Default)]
 pub struct ContributionRegistry {
-    entries: HashMap<String, HashMap<String, ContributionEntry>>,
+    /// `kind` → `id` → descriptor.
+    entries: HashMap<String, HashMap<String, ContributionDescriptor>>,
 }
 
 impl ContributionRegistry {
@@ -62,103 +173,216 @@ impl ContributionRegistry {
         Self::default()
     }
 
-    /// Reflect every `contributes.*` field of `manifest` into the
-    /// registry. Overwrites any prior entries for this extension at
-    /// the same EP (re-activation is idempotent).
-    ///
-    /// Returns the number of EP slots populated for this extension (0–6).
-    /// Useful for tracing.
-    pub fn ingest(&mut self, manifest: &Manifest) -> usize {
-        let ext_id = &manifest.id;
-        let c = &manifest.contributes;
-        let mut populated = 0;
-
-        if !c.commands.is_empty() {
-            let v = serde_json::to_value(&c.commands).unwrap_or_else(|_| serde_json::json!([]));
-            self.insert(ep::COMMAND, ext_id, v);
-            populated += 1;
-        }
-        if let Some(schema) = &c.config_schema {
-            self.insert(ep::CONFIG_SCHEMA, ext_id, schema.clone());
-            populated += 1;
-        }
-        if !c.config_pages.is_empty() {
-            let v = serde_json::to_value(&c.config_pages).unwrap_or_else(|_| serde_json::json!([]));
-            self.insert(ep::CONFIG_PAGE, ext_id, v);
-            populated += 1;
-        }
-        if !c.agent_providers.is_empty() {
-            let v =
-                serde_json::to_value(&c.agent_providers).unwrap_or_else(|_| serde_json::json!([]));
-            self.insert(ep::AGENTS_PROVIDER, ext_id, v);
-            populated += 1;
-        }
-        if !c.content_renderers.is_empty() {
-            let v = serde_json::to_value(&c.content_renderers)
-                .unwrap_or_else(|_| serde_json::json!([]));
-            self.insert(ep::CONTENT_RENDERER, ext_id, v);
-            populated += 1;
-        }
-        if !c.sidebar_views.is_empty() {
-            let v =
-                serde_json::to_value(&c.sidebar_views).unwrap_or_else(|_| serde_json::json!([]));
-            self.insert(ep::UI_SIDEBAR_VIEW, ext_id, v);
-            populated += 1;
-        }
-        populated
+    /// Insert / overwrite one descriptor. Returns the previous descriptor
+    /// at the same `(kind, id)` if one existed.
+    pub fn add(&mut self, descriptor: ContributionDescriptor) -> Option<ContributionDescriptor> {
+        self.entries
+            .entry(descriptor.kind.clone())
+            .or_default()
+            .insert(descriptor.id.clone(), descriptor)
     }
 
-    /// Drop every contribution owned by `ext_id` across all EPs.
-    /// Returns the number of EP slots emptied. Called on deactivate.
-    pub fn remove_extension(&mut self, ext_id: &str) -> usize {
-        let mut removed = 0;
-        for ep_map in self.entries.values_mut() {
-            if ep_map.remove(ext_id).is_some() {
-                removed += 1;
-            }
+    /// Remove one descriptor by `(kind, id)`.
+    pub fn remove(&mut self, kind: &str, id: &str) -> Option<ContributionDescriptor> {
+        let map = self.entries.get_mut(kind)?;
+        let prev = map.remove(id);
+        if map.is_empty() {
+            self.entries.remove(kind);
         }
-        // Drop now-empty EP maps so `iter`/`ep_ids` don't return phantoms.
+        prev
+    }
+
+    /// Reflect every `contributes.*` field of `manifest` into the registry
+    /// as one descriptor per item. Overwrites any prior entries with the
+    /// same `(kind, id)` (re-activation is idempotent).
+    ///
+    /// Returns the number of descriptors written.
+    pub fn ingest(&mut self, manifest: &Manifest) -> usize {
+        let ext_id = manifest.id.as_str();
+        let owner = ContributionOwner::extension(ext_id);
+        let c = &manifest.contributes;
+        let mut written = 0usize;
+
+        for cmd in &c.commands {
+            let mut meta = serde_json::to_value(cmd).unwrap_or(serde_json::Value::Null);
+            // Strip duplicated `id` / `title` from metadata for cleaner wire payloads.
+            if let Some(obj) = meta.as_object_mut() {
+                obj.remove("id");
+            }
+            let mut desc = ContributionDescriptor::new(
+                kind::COMMAND,
+                cmd.id.clone(),
+                owner.clone(),
+                cmd.title.clone(),
+            )
+            .with_metadata(meta);
+            if let Some(icon) = &cmd.icon {
+                desc = desc.with_icon(icon.clone());
+            }
+            if let Some(category) = &cmd.category {
+                desc = desc.with_description(format!("Category: {category}"));
+            }
+            self.add(desc);
+            written += 1;
+        }
+
+        if let Some(schema) = &c.config_schema {
+            // Config schema is a single object per extension, addressed by
+            // the owning ext id.
+            let label = schema
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or(ext_id)
+                .to_string();
+            let desc =
+                ContributionDescriptor::new(kind::CONFIG_SCHEMA, ext_id, owner.clone(), label)
+                    .with_metadata(schema.clone());
+            self.add(desc);
+            written += 1;
+        }
+
+        for page in &c.config_pages {
+            let meta = serde_json::to_value(page).unwrap_or(serde_json::Value::Null);
+            let desc = ContributionDescriptor::new(
+                kind::CONFIG_PAGE,
+                page.id.clone(),
+                owner.clone(),
+                page.title.clone(),
+            )
+            .with_metadata(meta);
+            self.add(desc);
+            written += 1;
+        }
+
+        for provider in &c.agent_providers {
+            let meta = serde_json::to_value(provider).unwrap_or(serde_json::Value::Null);
+            let mut desc = ContributionDescriptor::new(
+                kind::AGENTS_PROVIDER,
+                provider.id.clone(),
+                owner.clone(),
+                provider.label.clone(),
+            )
+            .with_metadata(meta);
+            if let Some(icon) = &provider.icon {
+                desc = desc.with_icon(icon.clone());
+            }
+            if let Some(d) = &provider.description {
+                desc = desc.with_description(d.clone());
+            }
+            self.add(desc);
+            written += 1;
+        }
+
+        for renderer in &c.content_renderers {
+            let meta = serde_json::to_value(renderer).unwrap_or(serde_json::Value::Null);
+            let label = renderer.mime_types.join(", ");
+            let desc = ContributionDescriptor::new(
+                kind::CONTENT_RENDERER,
+                renderer.id.clone(),
+                owner.clone(),
+                label,
+            )
+            .with_metadata(meta);
+            self.add(desc);
+            written += 1;
+        }
+
+        for view in &c.sidebar_views {
+            let meta = serde_json::to_value(view).unwrap_or(serde_json::Value::Null);
+            let mut desc = ContributionDescriptor::new(
+                kind::UI_SIDEBAR_VIEW,
+                view.id.clone(),
+                owner.clone(),
+                view.title.clone(),
+            )
+            .with_metadata(meta);
+            if let Some(icon) = &view.icon {
+                desc = desc.with_icon(icon.clone());
+            }
+            self.add(desc);
+            written += 1;
+        }
+
+        written
+    }
+
+    /// Drop every descriptor owned by `Extension(ext_id)`. Returns the
+    /// number of descriptors removed. Called on extension deactivate.
+    pub fn remove_extension(&mut self, ext_id: &str) -> usize {
+        let mut removed = 0usize;
+        for kind_map in self.entries.values_mut() {
+            let before = kind_map.len();
+            kind_map.retain(|_, d| d.owner.ext_id() != Some(ext_id));
+            removed += before - kind_map.len();
+        }
         self.entries.retain(|_, m| !m.is_empty());
         removed
     }
 
-    /// Iterate contributions for one EP. Returns an empty iterator if no
-    /// extension contributed. Order is unspecified.
-    pub fn for_ep<'a>(&'a self, ep_id: &str) -> impl Iterator<Item = &'a ContributionEntry> + 'a {
-        self.entries.get(ep_id).into_iter().flat_map(|m| m.values())
+    /// Drop every descriptor whose owner is `Workspace`. Called when the
+    /// active workspace changes or the workspace agent set is refreshed.
+    pub fn remove_workspace(&mut self) -> usize {
+        let mut removed = 0usize;
+        for kind_map in self.entries.values_mut() {
+            let before = kind_map.len();
+            kind_map.retain(|_, d| !matches!(d.owner, ContributionOwner::Workspace));
+            removed += before - kind_map.len();
+        }
+        self.entries.retain(|_, m| !m.is_empty());
+        removed
     }
 
-    /// Look up one extension's contribution at a specific EP.
-    pub fn get(&self, ep_id: &str, ext_id: &str) -> Option<&ContributionEntry> {
-        self.entries.get(ep_id).and_then(|m| m.get(ext_id))
+    /// Iterate descriptors of one kind. Order is unspecified.
+    pub fn for_kind<'a>(
+        &'a self,
+        kind: &str,
+    ) -> impl Iterator<Item = &'a ContributionDescriptor> + 'a {
+        self.entries.get(kind).into_iter().flat_map(|m| m.values())
     }
 
-    /// All EP ids with at least one contribution, sorted.
-    pub fn ep_ids(&self) -> Vec<&str> {
-        let mut v: Vec<&str> = self.entries.keys().map(|s| s.as_str()).collect();
+    /// Look up one descriptor by `(kind, id)`.
+    pub fn get(&self, kind: &str, id: &str) -> Option<&ContributionDescriptor> {
+        self.entries.get(kind).and_then(|m| m.get(id))
+    }
+
+    /// Find any descriptor with the given `id`, scanning all kinds. Used
+    /// by the run dispatcher when the caller passes a raw agent id without
+    /// the kind tag.
+    pub fn find_by_id(&self, id: &str) -> Option<&ContributionDescriptor> {
+        for kind_map in self.entries.values() {
+            if let Some(d) = kind_map.get(id) {
+                return Some(d);
+            }
+        }
+        None
+    }
+
+    /// All distinct kinds with at least one descriptor, sorted.
+    pub fn kinds(&self) -> Vec<&str> {
+        let mut v: Vec<&str> = self.entries.keys().map(String::as_str).collect();
         v.sort_unstable();
         v
     }
 
-    /// Total contribution count across all EPs. Each `(ep, ext)` pair
-    /// counts as one even if the underlying array has multiple commands.
+    /// Snapshot every descriptor currently in the registry. Used by the
+    /// `contribution/list` IPC variant.
+    pub fn snapshot(&self) -> Vec<ContributionDescriptor> {
+        let mut out = Vec::with_capacity(self.len());
+        for kind_map in self.entries.values() {
+            for d in kind_map.values() {
+                out.push(d.clone());
+            }
+        }
+        out
+    }
+
+    /// Total descriptor count across all kinds.
     pub fn len(&self) -> usize {
         self.entries.values().map(|m| m.len()).sum()
     }
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
-    }
-
-    fn insert(&mut self, ep_id: &str, ext_id: &str, value: serde_json::Value) {
-        self.entries.entry(ep_id.to_string()).or_default().insert(
-            ext_id.to_string(),
-            ContributionEntry {
-                ext_id: ext_id.to_string(),
-                ep_id: ep_id.to_string(),
-                value,
-            },
-        );
     }
 }
 
@@ -201,7 +425,7 @@ mod tests {
         Manifest::from_json(raw).unwrap()
     }
 
-    fn manifest_with_only_commands(ext_id: &str, publisher: &str) -> Manifest {
+    fn manifest_with_two_commands(ext_id: &str, publisher: &str) -> Manifest {
         let raw = format!(
             r#"{{
                 "id": "{ext_id}",
@@ -213,7 +437,8 @@ mod tests {
                 "activationEvents": [],
                 "contributes": {{
                     "cronymax.command": [
-                        {{ "id": "{ext_id}.hello", "title": "Hello" }}
+                        {{ "id": "{ext_id}.hello", "title": "Hello" }},
+                        {{ "id": "{ext_id}.bye", "title": "Bye" }}
                     ]
                 }}
             }}"#
@@ -224,135 +449,179 @@ mod tests {
     #[test]
     fn empty_manifest_ingests_nothing() {
         let mut reg = ContributionRegistry::new();
-        let m = Manifest::default();
-        let n = reg.ingest(&m);
+        let n = reg.ingest(&Manifest::default());
         assert_eq!(n, 0);
         assert_eq!(reg.len(), 0);
         assert!(reg.is_empty());
     }
 
     #[test]
-    fn ingest_all_six_eps() {
+    fn ingest_all_six_kinds_one_descriptor_each() {
         let mut reg = ContributionRegistry::new();
-        let m = manifest_with_all_six();
-        let n = reg.ingest(&m);
-        assert_eq!(n, 6, "all six EP slots populated");
+        let n = reg.ingest(&manifest_with_all_six());
+        // 1 command + 1 schema + 1 page + 1 provider + 1 renderer + 1 view = 6
+        assert_eq!(n, 6);
         assert_eq!(reg.len(), 6);
-        let mut eps = reg.ep_ids();
-        eps.sort_unstable();
+        assert!(reg.get(kind::COMMAND, "alice.x.hi").is_some());
+        assert!(reg.get(kind::CONFIG_SCHEMA, "alice.x").is_some());
+        assert!(reg.get(kind::CONFIG_PAGE, "p.main").is_some());
+        assert!(reg.get(kind::AGENTS_PROVIDER, "alice.x.gpt").is_some());
+        assert!(reg.get(kind::CONTENT_RENDERER, "r1").is_some());
+        assert!(reg.get(kind::UI_SIDEBAR_VIEW, "v1").is_some());
+    }
+
+    #[test]
+    fn ingest_multiple_commands_yields_one_descriptor_each() {
+        let mut reg = ContributionRegistry::new();
+        let n = reg.ingest(&manifest_with_two_commands("alice.x", "alice"));
+        assert_eq!(n, 2);
+        assert_eq!(reg.for_kind(kind::COMMAND).count(), 2);
+        let hello = reg.get(kind::COMMAND, "alice.x.hello").unwrap();
+        assert_eq!(hello.label, "Hello");
+        assert_eq!(hello.owner, ContributionOwner::extension("alice.x"));
+    }
+
+    #[test]
+    fn config_schema_descriptor_uses_ext_id_as_descriptor_id() {
+        let mut reg = ContributionRegistry::new();
+        reg.ingest(&manifest_with_all_six());
+        let schema = reg.get(kind::CONFIG_SCHEMA, "alice.x").unwrap();
+        assert!(schema.metadata.is_object());
+        assert_eq!(schema.metadata["title"], "Alice");
+        assert_eq!(schema.label, "Alice");
+    }
+
+    #[test]
+    fn multiple_extensions_coexist_at_same_kind() {
+        let mut reg = ContributionRegistry::new();
+        reg.ingest(&manifest_with_two_commands("alice.x", "alice"));
+        reg.ingest(&manifest_with_two_commands("bob.y", "bob"));
+        assert_eq!(reg.for_kind(kind::COMMAND).count(), 4);
+        // Lookups stay precise even across extensions.
         assert_eq!(
-            eps,
-            vec![
-                ep::AGENTS_PROVIDER,
-                ep::COMMAND,
-                ep::CONFIG_PAGE,
-                ep::CONFIG_SCHEMA,
-                ep::CONTENT_RENDERER,
-                ep::UI_SIDEBAR_VIEW,
-            ]
+            reg.get(kind::COMMAND, "alice.x.hello").unwrap().owner,
+            ContributionOwner::extension("alice.x")
         );
-    }
-
-    #[test]
-    fn ingest_command_array_is_preserved() {
-        let mut reg = ContributionRegistry::new();
-        let m = manifest_with_only_commands("alice.x", "alice");
-        reg.ingest(&m);
-        let entry = reg.get(ep::COMMAND, "alice.x").unwrap();
-        assert!(entry.value.is_array(), "commands serialize as a JSON array");
-        let arr = entry.value.as_array().unwrap();
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["id"], "alice.x.hello");
-        assert_eq!(arr[0]["title"], "Hello");
-    }
-
-    #[test]
-    fn config_schema_is_stored_as_object_not_array() {
-        let mut reg = ContributionRegistry::new();
-        let m = manifest_with_all_six();
-        reg.ingest(&m);
-        let entry = reg.get(ep::CONFIG_SCHEMA, "alice.x").unwrap();
-        assert!(
-            entry.value.is_object(),
-            "config schema is a single object, not an array"
+        assert_eq!(
+            reg.get(kind::COMMAND, "bob.y.hello").unwrap().owner,
+            ContributionOwner::extension("bob.y")
         );
-        assert_eq!(entry.value["title"], "Alice");
-    }
-
-    #[test]
-    fn multiple_extensions_coexist_at_same_ep() {
-        let mut reg = ContributionRegistry::new();
-        reg.ingest(&manifest_with_only_commands("alice.x", "alice"));
-        reg.ingest(&manifest_with_only_commands("bob.y", "bob"));
-
-        let mut seen: Vec<String> = reg.for_ep(ep::COMMAND).map(|e| e.ext_id.clone()).collect();
-        seen.sort_unstable();
-        assert_eq!(seen, vec!["alice.x", "bob.y"]);
-        assert_eq!(reg.len(), 2);
     }
 
     #[test]
     fn same_extension_ingested_twice_overwrites_not_duplicates() {
         let mut reg = ContributionRegistry::new();
-        reg.ingest(&manifest_with_only_commands("alice.x", "alice"));
-        reg.ingest(&manifest_with_only_commands("alice.x", "alice"));
-        // One entry, not two.
-        assert_eq!(reg.for_ep(ep::COMMAND).count(), 1);
-        assert_eq!(reg.len(), 1);
+        reg.ingest(&manifest_with_two_commands("alice.x", "alice"));
+        reg.ingest(&manifest_with_two_commands("alice.x", "alice"));
+        assert_eq!(reg.for_kind(kind::COMMAND).count(), 2);
     }
 
     #[test]
-    fn remove_extension_clears_every_ep_slot_it_owned() {
+    fn remove_extension_clears_every_kind_it_owned() {
         let mut reg = ContributionRegistry::new();
         reg.ingest(&manifest_with_all_six());
-        reg.ingest(&manifest_with_only_commands("bob.y", "bob"));
+        reg.ingest(&manifest_with_two_commands("bob.y", "bob"));
 
         let removed = reg.remove_extension("alice.x");
-        assert_eq!(
-            removed, 6,
-            "alice.x contributed to all six EPs; all should be cleared"
-        );
-        // bob.y's command contribution survives.
-        assert_eq!(reg.len(), 1);
-        assert_eq!(reg.for_ep(ep::COMMAND).count(), 1);
-        assert!(reg.get(ep::AGENTS_PROVIDER, "alice.x").is_none());
+        assert_eq!(removed, 6);
+        // bob.y's two commands survive.
+        assert_eq!(reg.for_kind(kind::COMMAND).count(), 2);
+        assert!(reg.get(kind::AGENTS_PROVIDER, "alice.x.gpt").is_none());
+        assert!(reg.get(kind::CONFIG_SCHEMA, "alice.x").is_none());
     }
 
     #[test]
-    fn remove_unknown_extension_is_a_zero_return_noop() {
+    fn remove_unknown_extension_is_zero_noop() {
         let mut reg = ContributionRegistry::new();
-        reg.ingest(&manifest_with_only_commands("alice.x", "alice"));
+        reg.ingest(&manifest_with_two_commands("alice.x", "alice"));
         assert_eq!(reg.remove_extension("ghost"), 0);
-        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.len(), 2);
     }
 
     #[test]
-    fn for_ep_on_unknown_ep_is_empty() {
-        let reg = ContributionRegistry::new();
-        assert_eq!(reg.for_ep("cronymax.totally.fake").count(), 0);
-    }
-
-    #[test]
-    fn ep_constants_match_manifest_serde_renames() {
-        // Defence in depth: if anyone bumps the dotted JSON key on
-        // `Contributes` without also updating the EP constant, the
-        // entry would silently land at the wrong EP id. Pin the round
-        // trip here.
-        let m = manifest_with_all_six();
+    fn programmatic_add_and_remove_platform_descriptor() {
         let mut reg = ContributionRegistry::new();
-        reg.ingest(&m);
-        for ep in [
-            ep::COMMAND,
-            ep::CONFIG_SCHEMA,
-            ep::CONFIG_PAGE,
-            ep::AGENTS_PROVIDER,
-            ep::CONTENT_RENDERER,
-            ep::UI_SIDEBAR_VIEW,
-        ] {
-            assert!(
-                reg.get(ep, "alice.x").is_some(),
-                "no contribution for EP `{ep}` — the EP id constant likely drifted from the serde(rename) on Contributes",
-            );
-        }
+        reg.add(
+            ContributionDescriptor::new(
+                kind::AGENTS_BUILTIN,
+                "crony.builtin",
+                ContributionOwner::Platform,
+                "Crony",
+            )
+            .with_description("Built-in chat agent"),
+        );
+        assert_eq!(reg.len(), 1);
+        let entry = reg.get(kind::AGENTS_BUILTIN, "crony.builtin").unwrap();
+        assert_eq!(entry.owner, ContributionOwner::Platform);
+        let removed = reg.remove(kind::AGENTS_BUILTIN, "crony.builtin");
+        assert!(removed.is_some());
+        assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn remove_workspace_only_drops_workspace_owned() {
+        let mut reg = ContributionRegistry::new();
+        reg.add(ContributionDescriptor::new(
+            kind::AGENTS_WORKSPACE,
+            "ws.dev",
+            ContributionOwner::Workspace,
+            "Dev",
+        ));
+        reg.add(ContributionDescriptor::new(
+            kind::AGENTS_BUILTIN,
+            "crony.builtin",
+            ContributionOwner::Platform,
+            "Crony",
+        ));
+        reg.ingest(&manifest_with_two_commands("alice.x", "alice"));
+
+        let removed = reg.remove_workspace();
+        assert_eq!(removed, 1);
+        assert!(reg.get(kind::AGENTS_BUILTIN, "crony.builtin").is_some());
+        assert_eq!(reg.for_kind(kind::COMMAND).count(), 2);
+    }
+
+    #[test]
+    fn find_by_id_scans_all_kinds() {
+        let mut reg = ContributionRegistry::new();
+        reg.ingest(&manifest_with_all_six());
+        let d = reg.find_by_id("alice.x.gpt").unwrap();
+        assert_eq!(d.kind, kind::AGENTS_PROVIDER);
+    }
+
+    #[test]
+    fn snapshot_returns_every_descriptor() {
+        let mut reg = ContributionRegistry::new();
+        reg.ingest(&manifest_with_all_six());
+        let snap = reg.snapshot();
+        assert_eq!(snap.len(), 6);
+        let kinds: std::collections::BTreeSet<_> = snap.iter().map(|d| d.kind.clone()).collect();
+        assert!(kinds.contains(kind::COMMAND));
+        assert!(kinds.contains(kind::AGENTS_PROVIDER));
+    }
+
+    #[test]
+    fn for_kind_on_unknown_kind_is_empty() {
+        let reg = ContributionRegistry::new();
+        assert_eq!(reg.for_kind("cronymax.totally.fake").count(), 0);
+    }
+
+    #[test]
+    fn owner_serializes_as_tagged_union() {
+        let p = ContributionOwner::Platform;
+        let w = ContributionOwner::Workspace;
+        let e = ContributionOwner::extension("alice.x");
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            serde_json::json!({"type": "platform"})
+        );
+        assert_eq!(
+            serde_json::to_value(&w).unwrap(),
+            serde_json::json!({"type": "workspace"})
+        );
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            serde_json::json!({"type": "extension", "extId": "alice.x"})
+        );
     }
 }

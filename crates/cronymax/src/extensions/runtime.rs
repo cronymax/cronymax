@@ -180,19 +180,72 @@ impl ExtensionRuntime {
     }
 
     /// Snapshot of every contribution currently ingested, scoped to one
-    /// EP id. Useful for the settings UI listing all `cronymax.command`
-    /// entries, etc.
-    pub fn contributions_for_ep(&self, ep_id: &str) -> Vec<serde_json::Value> {
+    /// kind. Used by the integration tests and the settings UI to list
+    /// e.g. all `cronymax.command` entries. Each element is the
+    /// descriptor's `metadata` JSON payload — the per-kind shape (e.g.
+    /// `AgentProviderContribution` for `cronymax.agents.provider`).
+    pub fn contributions_for_ep(&self, kind: &str) -> Vec<serde_json::Value> {
         self.state
             .contributions
             .lock()
-            .for_ep(ep_id)
-            .map(|e| e.value.clone())
+            .for_kind(kind)
+            .map(|d| d.metadata.clone())
             .collect()
+    }
+
+    /// Full snapshot of every descriptor across every kind. Used by the
+    /// `contribution/list` IPC variant.
+    pub fn contributions_snapshot(
+        &self,
+    ) -> Vec<crate::extensions::contributions::ContributionDescriptor> {
+        self.state.contributions.lock().snapshot()
+    }
+
+    /// Programmatically add one platform / workspace descriptor. Returns
+    /// any previous descriptor at the same `(kind, id)`.
+    pub fn add_contribution(
+        &self,
+        descriptor: crate::extensions::contributions::ContributionDescriptor,
+    ) -> Option<crate::extensions::contributions::ContributionDescriptor> {
+        self.state.contributions.lock().add(descriptor)
+    }
+
+    /// Programmatically remove one descriptor by `(kind, id)`.
+    pub fn remove_contribution(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> Option<crate::extensions::contributions::ContributionDescriptor> {
+        self.state.contributions.lock().remove(kind, id)
+    }
+
+    /// Look up one descriptor by `(kind, id)` and return an owned clone.
+    pub fn contribution_get(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> Option<crate::extensions::contributions::ContributionDescriptor> {
+        self.state.contributions.lock().get(kind, id).cloned()
+    }
+
+    /// Find the first descriptor with matching `id` across all kinds.
+    pub fn contribution_find_by_id(
+        &self,
+        id: &str,
+    ) -> Option<crate::extensions::contributions::ContributionDescriptor> {
+        self.state.contributions.lock().find_by_id(id).cloned()
     }
 
     pub fn is_activated(&self, ext_id: &str) -> bool {
         self.state.lifecycle.lock().is_activated(ext_id)
+    }
+
+    /// Test-only: synthesise an activation record without spinning up a Node
+    /// host. Used by `RuntimeHandler` tests that need an "active extension"
+    /// shape without exercising the full `activate()` pipeline.
+    #[cfg(test)]
+    pub(crate) fn test_mark_activated(&self, ext_id: &str) {
+        let _ = self.state.lifecycle.lock().mark_activated(ext_id);
     }
 
     pub fn activated_ids(&self) -> Vec<String> {
@@ -1407,9 +1460,16 @@ mod tests {
         let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
         let manifest = alice_x_manifest_all_six();
         runtime.state.contributions.lock().ingest(&manifest);
+        // Each command now becomes its own descriptor; the metadata of
+        // that descriptor is the command's manifest object (minus `id`).
         let cmds = runtime.contributions_for_ep("cronymax.command");
         assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0][0]["id"], "alice.x.hi");
+        // Round-trip through the descriptor lookup to confirm the id key
+        // survives ingestion as the descriptor id.
+        let d = runtime
+            .contribution_get("cronymax.command", "alice.x.hi")
+            .expect("descriptor present");
+        assert_eq!(d.label, "Hi");
     }
 
     #[tokio::test]

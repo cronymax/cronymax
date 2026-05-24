@@ -72,7 +72,6 @@ export type {
   AgentSession,
   AgentsNamespace,
   McpServerSpec,
-  ModeInfo,
   ModelInfo,
   PermissionDecision,
   PromptAttachment,

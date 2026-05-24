@@ -230,6 +230,11 @@ export interface AgentSummary {
   supports_models?: boolean;
   supports_modes?: boolean;
   supports_mcp?: boolean;
+  /** ContributionKind for this agent — drives run-dispatch in the Rust runtime.
+   * One of `cronymax.agents.builtin` / `cronymax.agents.workspace` /
+   * `cronymax.agents.provider`. Omitted on legacy AgentSummary rows produced
+   * before Phase 4. */
+  contribution_kind?: string;
 }
 
 export function agentPickerDescription(agent: AgentSummary): string | undefined {
@@ -1196,6 +1201,12 @@ export interface StoredModelProvider {
   kind: string;
   base_url: string;
   api_key: string;
+  /** When the picked model belongs to an extension agent provider rather than
+   * a configured LLM provider, these identify the agent to dispatch the run
+   * to. base_url / api_key are unused for this case (extensions handle their
+   * own auth). */
+  agent_id?: string;
+  contribution_kind?: string;
 }
 
 export function loadSelectedModelProvider(): StoredModelProvider | null {

@@ -32,10 +32,18 @@
 //!   established RPC connection.
 //! - `cancel.run` → `$/cancel` bridging — kept on the safety guard
 //!   pending an explicit cancellation channel API.
-//! - `permissionRequest` → review surface bridging — events of that
-//!   kind are surfaced as `Trace` events for now so they're at least
-//!   visible to the chat UI.
+//!
+//! ### Permission round-trip
+//!
+//! `PermissionRequest` events are bridged into the native review subsystem
+//! via [`RuntimeAuthority::open_review_with_completion`]: the chat panel's
+//! existing `ApprovalCard` surface and the `review.approve` /
+//! `review.request_changes` IPC paths kick in for free. When the user
+//! resolves the review, the parked oneshot wakes our spawned awaiter,
+//! which RPCs `agents/session.resolvePermission` back to the extension —
+//! mirroring how the native `ReactLoop` unparks after `resolve_review`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use tracing::{info, warn};
@@ -50,7 +58,7 @@ use crate::protocol::events::RuntimeEventPayload;
 use crate::runtime::agent_runner::{render_system_message_with, SubmitMode};
 use crate::runtime::authority::RuntimeAuthority;
 use crate::runtime::run_context::RunContext;
-use crate::runtime::state::RunId;
+use crate::runtime::state::{PermissionState, RunId};
 
 /// Resolve an [`AgentDef`]'s declared engine against the live extension runtime.
 ///
@@ -158,6 +166,28 @@ async fn run_extension_turn(
     if let Err(e) = authority.mark_run_running(run_id) {
         warn!(%run_id, error = %e, "ext_dispatch: mark_run_running failed");
     }
+
+    // ── 0a. Emit `run_start` so the chat timeline mirrors the native
+    // ReactLoop's first event. Without this the trace pane stays blank
+    // until the first `text` token, which makes extension-backed runs
+    // look stuck even when they're streaming.
+    authority.emit_for_run(
+        run_id,
+        RuntimeEventPayload::Trace {
+            run_id: run_id.to_string(),
+            trace: serde_json::json!({
+                "kind": "run_start",
+                "model": model.clone().unwrap_or_default(),
+                "system_prompt": system_prompt.clone().unwrap_or_default(),
+                "user_input": user_input.clone(),
+                "tools": allowed_tools.clone().unwrap_or_default(),
+                // turns_limit is opaque from the platform's perspective —
+                // an extension session manages its own turn budget.
+                "turns_limit": 0,
+            }),
+        },
+    );
+    let turn_started_at = std::time::Instant::now();
 
     // ── 1. session.create -------------------------------------------------
     let mut create_payload = serde_json::Map::new();
@@ -274,22 +304,73 @@ async fn run_extension_turn(
     // ── 4. Event loop. Each `text` delta is both streamed (as a `Token`
     // event, via translate_event) and accumulated into `assistant_text` so
     // the flow caller can use the full reply as a document body.
+    //
+    // `tool_names` maps tool_call_id → tool name across ToolCall ➜
+    // ToolCallUpdate boundaries; the IDL's update event carries only
+    // the id, but the UI's `tool_done` trace needs the name to label
+    // the row.
     let turn_id = format!("ext-{run_id}");
     let mut final_status: Option<RunOutcome> = None;
     let mut assistant_text = String::new();
+    let mut tool_names: HashMap<String, String> = HashMap::new();
     while let Some(msg) = sink.recv().await {
         match msg {
             AgentSessionMessage::Event(ev) => {
                 if let AgentSessionEvent::Text { text } = &ev {
                     assistant_text.push_str(text);
                 }
-                if let Some(outcome) = translate_event(authority, run_id, &turn_id, ev) {
+                // PermissionRequest is bridged into the native review
+                // subsystem instead of being translated, so we get the
+                // existing ApprovalCard / review.approve plumbing for
+                // free and `translate_event` can stay a pure mapper.
+                if let AgentSessionEvent::PermissionRequest {
+                    request_id,
+                    tool,
+                    options,
+                } = ev
+                {
+                    bridge_permission_request(
+                        authority.clone(),
+                        extensions.clone(),
+                        provider.owning_ext.clone(),
+                        session_id.clone(),
+                        run_id,
+                        request_id,
+                        tool,
+                        options,
+                    );
+                    continue;
+                }
+                if let Some(outcome) =
+                    translate_event(authority, run_id, &turn_id, &mut tool_names, ev)
+                {
                     final_status = Some(outcome);
                 }
             }
             AgentSessionMessage::TurnDone => break,
         }
     }
+
+    // ── 4a. Emit `assistant_turn` so the timeline closes out with the
+    // full reply + finish_reason, matching what the native loop emits
+    // from TraceEmitterMiddleware::after_llm_call.
+    let finish_reason = match &final_status {
+        Some(RunOutcome::Failed(_)) => "error",
+        _ => "end_turn",
+    };
+    authority.emit_for_run(
+        run_id,
+        RuntimeEventPayload::Trace {
+            run_id: run_id.to_string(),
+            trace: serde_json::json!({
+                "kind": "assistant_turn",
+                "turn": 1,
+                "text": assistant_text,
+                "finish_reason": finish_reason,
+                "duration_ms": turn_started_at.elapsed().as_millis() as u64,
+            }),
+        },
+    );
 
     // Make sure session.prompt completed (it should have, since
     // bootstrap sends turn.done after the iterator drains). Surface any
@@ -544,10 +625,17 @@ pub async fn drive_extension_flow_agent(
 /// `RuntimeEventPayload` and emit it. Returns `Some(RunOutcome)` only
 /// when the event terminates the turn (kind="done"); the event loop
 /// uses that to skip emitting further events past the terminal one.
+///
+/// The trace `kind` vocabulary mirrors what the native ReactLoop emits
+/// (`tool_start` / `tool_done`) so the chat panel's existing trace
+/// renderer can handle extension agents without a separate code path.
+/// `PermissionRequest` is intentionally a no-op here — the event loop
+/// routes it through [`bridge_permission_request`] instead.
 fn translate_event(
     authority: &RuntimeAuthority,
     run_id: RunId,
     turn_id: &str,
+    tool_names: &mut HashMap<String, String>,
     ev: AgentSessionEvent,
 ) -> Option<RunOutcome> {
     let run_id_s = run_id.to_string();
@@ -575,63 +663,48 @@ fn translate_event(
             None
         }
         AgentSessionEvent::ToolCall {
-            id,
-            name,
-            input,
-            source,
-            ..
+            id, name, input, ..
         } => {
+            tool_names.insert(id.clone(), name.clone());
             authority.emit_for_run(
                 run_id,
                 RuntimeEventPayload::Trace {
                     run_id: run_id_s,
                     trace: serde_json::json!({
-                        "kind": "tool_call",
-                        "id": id,
-                        "name": name,
-                        "input": input,
-                        "source": source,
-                        "status": "in_progress",
+                        "kind": "tool_start",
+                        "tool": name,
+                        "tool_call_id": id,
+                        "arguments": input,
                     }),
                 },
             );
             None
         }
         AgentSessionEvent::ToolCallUpdate { id, status, output } => {
+            // The IDL's update event drops the tool name; recover it
+            // from the ToolCall that opened the pair so the UI's
+            // `tool_done` row can still label itself.
+            let tool = tool_names.remove(&id).unwrap_or_default();
+            let is_error = status == "failed";
             authority.emit_for_run(
                 run_id,
                 RuntimeEventPayload::Trace {
                     run_id: run_id_s,
                     trace: serde_json::json!({
-                        "kind": "tool_call_update",
-                        "id": id,
-                        "status": status,
-                        "output": output,
+                        "kind": "tool_done",
+                        "tool": tool,
+                        "tool_call_id": id,
+                        "result": output,
+                        "terminal": false,
+                        "is_error": is_error,
                     }),
                 },
             );
             None
         }
-        AgentSessionEvent::PermissionRequest {
-            request_id,
-            tool,
-            options,
-        } => {
-            // Permission bridging to the review subsystem is its own
-            // slice; for now surface the request as a trace so the chat
-            // panel at least shows it.
-            authority.emit_for_run(
-                run_id,
-                RuntimeEventPayload::Trace {
-                    run_id: run_id_s,
-                    trace: serde_json::json!({
-                        "kind": "permission_request",
-                        "request_id": request_id,
-                        "tool": tool,
-                        "options": options,
-                    }),
-                },
-            );
+        AgentSessionEvent::PermissionRequest { .. } => {
+            // Bridged in the caller via bridge_permission_request so
+            // the native review subsystem owns the user-facing surface.
             None
         }
         AgentSessionEvent::Done {
@@ -644,6 +717,93 @@ fn translate_event(
             _ => Some(RunOutcome::Succeeded),
         },
     }
+}
+
+/// Bridge an extension `permissionRequest` event into the native review
+/// subsystem and arrange for the user's decision to be RPC'd back to
+/// the extension's `AgentSession.resolvePermission`.
+///
+/// Open a review on the authority (which emits the `PermissionRequest`
+/// runtime event the chat panel already renders via `ApprovalCard`) and
+/// spawn an awaiter holding the resulting oneshot. When the user clicks
+/// Allow/Deny, `ResolveReview` → `authority.resolve_review` fires the
+/// oneshot, and the awaiter RPCs `agents/session.resolvePermission`
+/// back to the extension — closing the loop the same way the native
+/// ReactLoop's parked `handle.completion.await` resumes.
+///
+/// Errors are logged rather than failing the run: an extension that
+/// hangs waiting for a permission reply will time out on its own, and
+/// surfacing a one-off RPC failure here would mask the user's decision.
+#[allow(clippy::too_many_arguments)]
+fn bridge_permission_request(
+    authority: RuntimeAuthority,
+    extensions: ExtensionRuntime,
+    owning_ext: String,
+    session_id: String,
+    run_id: RunId,
+    request_id: String,
+    tool: String,
+    options: serde_json::Value,
+) {
+    // Shape the review payload to match what the native dispatcher
+    // wraps NeedsApproval requests in: `kind`/`tool`/`tool_call_id`/
+    // `arguments` plus a `request` object the UI's ApprovalCard
+    // unpacks for tool_name/args display.
+    let review_payload = serde_json::json!({
+        "kind": "tool_call",
+        "tool": tool.clone(),
+        "tool_call_id": request_id.clone(),
+        "arguments": options.clone(),
+        "request": {
+            "tool_name": tool,
+            "args": options,
+        },
+    });
+    let handle = match authority.open_review_with_completion(run_id, review_payload) {
+        Ok(h) => h,
+        Err(e) => {
+            warn!(
+                %run_id,
+                error = %e,
+                "ext_dispatch: open_review_with_completion failed; permission request dropped",
+            );
+            return;
+        }
+    };
+    tokio::spawn(async move {
+        let resolution = match handle.completion.await {
+            Ok(r) => r,
+            Err(_) => {
+                // The authority dropped its sender — happens when the
+                // run is cancelled before the user resolves. The
+                // extension will see this via session.cancel.
+                return;
+            }
+        };
+        // The IDL's PermissionDecision is { allow: boolean, … }; map
+        // Approved → allow=true and everything else → allow=false
+        // (Deferred is a UI-only concept the extension can't act on).
+        let allow = matches!(resolution.decision, PermissionState::Approved);
+        let params = serde_json::json!({
+            "sessionId": session_id,
+            "requestId": request_id,
+            "decision": { "allow": allow },
+        });
+        if let Err(e) = extensions
+            .send_to_extension(
+                &owning_ext,
+                agents_method::SESSION_RESOLVE_PERMISSION,
+                json_to_rmpv(&params),
+            )
+            .await
+        {
+            warn!(
+                %run_id,
+                error = %e,
+                "ext_dispatch: session.resolvePermission RPC failed",
+            );
+        }
+    });
 }
 
 #[cfg(test)]
@@ -684,10 +844,12 @@ mod tests {
         let (authority, run_id, turn_id) = build_run();
         let mut sub = authority.subscribe(format!("run:{run_id}")).receiver;
 
+        let mut tool_names = std::collections::HashMap::new();
         let outcome = translate_event(
             &authority,
             run_id,
             &turn_id,
+            &mut tool_names,
             AgentSessionEvent::Text {
                 text: "hello".into(),
             },
@@ -712,10 +874,12 @@ mod tests {
         let (authority, run_id, turn_id) = build_run();
         let mut sub = authority.subscribe(format!("run:{run_id}")).receiver;
 
+        let mut tool_names = std::collections::HashMap::new();
         let _ = translate_event(
             &authority,
             run_id,
             &turn_id,
+            &mut tool_names,
             AgentSessionEvent::Thinking {
                 text: "ruminate".into(),
             },
@@ -734,14 +898,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn translate_tool_call_emits_trace() {
+    async fn translate_tool_call_emits_tool_start_trace() {
         let (authority, run_id, turn_id) = build_run();
         let mut sub = authority.subscribe(format!("run:{run_id}")).receiver;
 
+        // The tool name carried by ToolCall must survive on the
+        // ToolCallUpdate side too (the IDL update event drops it).
+        let mut tool_names = std::collections::HashMap::new();
         let _ = translate_event(
             &authority,
             run_id,
             &turn_id,
+            &mut tool_names,
             AgentSessionEvent::ToolCall {
                 id: "t-1".into(),
                 name: "shell".into(),
@@ -763,9 +931,57 @@ mod tests {
                 }
             })
             .expect("a Trace event was emitted");
-        assert_eq!(trace["kind"], "tool_call");
-        assert_eq!(trace["id"], "t-1");
-        assert_eq!(trace["name"], "shell");
+        // Vocabulary matches the native ReactLoop's TraceEmitterMiddleware
+        // (kind=tool_start, fields tool / tool_call_id / arguments)
+        // so the chat panel's existing trace renderer handles it.
+        assert_eq!(trace["kind"], "tool_start");
+        assert_eq!(trace["tool"], "shell");
+        assert_eq!(trace["tool_call_id"], "t-1");
+        assert_eq!(trace["arguments"]["cmd"], "ls");
+        assert_eq!(tool_names.get("t-1"), Some(&"shell".to_string()));
+    }
+
+    #[tokio::test]
+    async fn translate_tool_call_update_emits_tool_done_trace_with_recovered_name() {
+        let (authority, run_id, turn_id) = build_run();
+        let mut sub = authority.subscribe(format!("run:{run_id}")).receiver;
+
+        // Prime tool_names as if a ToolCall opened the pair.
+        let mut tool_names = std::collections::HashMap::new();
+        tool_names.insert("t-1".to_string(), "shell".to_string());
+
+        let _ = translate_event(
+            &authority,
+            run_id,
+            &turn_id,
+            &mut tool_names,
+            AgentSessionEvent::ToolCallUpdate {
+                id: "t-1".into(),
+                status: "completed".into(),
+                output: serde_json::json!({"stdout": "ok"}),
+            },
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let events = drain_topic(&mut sub);
+        let trace = events
+            .iter()
+            .find_map(|e| {
+                if let RuntimeEventPayload::Trace { trace, .. } = e {
+                    Some(trace.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("a Trace event was emitted");
+        assert_eq!(trace["kind"], "tool_done");
+        assert_eq!(trace["tool"], "shell");
+        assert_eq!(trace["tool_call_id"], "t-1");
+        assert_eq!(trace["is_error"], false);
+        assert_eq!(trace["result"]["stdout"], "ok");
+        // The map entry was consumed so a late duplicate update
+        // doesn't accidentally re-tag with a stale name.
+        assert!(!tool_names.contains_key("t-1"));
     }
 
     #[test]
@@ -782,10 +998,12 @@ mod tests {
             .start_run_with_session(space.id, None, serde_json::json!({}), None)
             .unwrap();
 
+        let mut tool_names = std::collections::HashMap::new();
         let outcome = translate_event(
             &authority,
             run_id,
             "t",
+            &mut tool_names,
             AgentSessionEvent::Done {
                 stop_reason: "error".into(),
                 error_message: Some("model timeout".into()),
@@ -811,10 +1029,12 @@ mod tests {
             .start_run_with_session(space.id, None, serde_json::json!({}), None)
             .unwrap();
 
+        let mut tool_names = std::collections::HashMap::new();
         let outcome = translate_event(
             &authority,
             run_id,
             "t",
+            &mut tool_names,
             AgentSessionEvent::Done {
                 stop_reason: "end_turn".into(),
                 error_message: None,

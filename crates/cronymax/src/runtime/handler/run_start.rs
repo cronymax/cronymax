@@ -44,6 +44,7 @@ impl RuntimeHandler {
             session_id,
             session_name,
             agent_id,
+            contribution_kind,
         } = req
         else {
             unreachable!()
@@ -152,6 +153,12 @@ impl RuntimeHandler {
                 "agent_id".to_string(),
                 serde_json::Value::String(resolved_agent_id.to_string()),
             );
+            if let Some(ref k) = contribution_kind {
+                obj.insert(
+                    "contribution_kind".to_string(),
+                    serde_json::Value::String(k.clone()),
+                );
+            }
         }
 
         // Pre-load the agent definition for direct-chat runs (no flow_id) —
@@ -176,43 +183,65 @@ impl RuntimeHandler {
         //            become the session system prompt / allowedTools.
         // Either way the result is a `ProviderEntry` driven through
         // ExtensionRuntime's session.create → prompt → agents/event chain.
-        // Flow-id-bearing runs are bypassed — flow has its own provider path.
+        //
+        // The `contribution_kind` hint is authoritative: the picker has
+        // already classified what the user selected. Case A targets an
+        // extension-declared agent provider; Case B targets a workspace
+        // YAML agent that internally delegates to a provider. Neither
+        // case is probed when no kind is supplied — the caller must
+        // pick one, otherwise the run goes through the native LLM path.
+        //
+        // flow_id is NOT consulted here. The chat panel always carries a
+        // selectedFlow (often the legacy "Chat" sentinel), and gating on
+        // its absence would mean the picker's extension pick is silently
+        // ignored. The picker's own classification is the source of truth.
+        let kind_hint = contribution_kind.as_deref();
         let mut extension_dispatch: Option<crate::extensions::api::agents::ProviderEntry> = None;
         let mut extension_agent_ref: Option<crate::capability::agent_loader::AgentProviderRef> =
             None;
-        if flow_id_opt.is_none() {
-            if let Some(ext) = self.services.extensions.as_ref() {
-                if let Some(provider) = ext.providers().get(resolved_agent_id) {
-                    // Case A. Refuse upfront if the extension isn't activated —
-                    // the chat panel would otherwise see a misleading session
-                    // failure after RunStarted.
-                    if !ext.is_activated(&provider.owning_ext) {
-                        return ControlResponse::Err {
-                            error: ControlError::InvalidState {
-                                message: format!(
-                                    "extension `{}` (owning provider `{}`) is not activated; activate it before chatting",
-                                    provider.owning_ext, provider.provider_id
-                                ),
-                            },
-                        };
-                    }
-                    extension_dispatch = Some(provider);
-                } else if let Some(ref agent_def) = preloaded_chat_agent_def {
-                    // Case B. `resolve_agent_provider` performs the same
-                    // activation check and reports a clear error otherwise.
-                    match crate::runtime::ext_dispatch::resolve_agent_provider(agent_def, Some(ext))
-                    {
-                        Ok(None) => {}
-                        Ok(Some((agent_ref, entry))) => {
-                            extension_dispatch = Some(entry);
-                            extension_agent_ref = Some(agent_ref);
-                        }
-                        Err(message) => {
+        if let Some(ext) = self.services.extensions.as_ref() {
+            match kind_hint {
+                Some(crate::extensions::contributions::kind::AGENTS_PROVIDER) => {
+                    if let Some(provider) = ext.providers().get(resolved_agent_id) {
+                        // Case A. Refuse upfront if the extension isn't activated —
+                        // the chat panel would otherwise see a misleading session
+                        // failure after RunStarted.
+                        if !ext.is_activated(&provider.owning_ext) {
                             return ControlResponse::Err {
-                                error: ControlError::InvalidState { message },
+                                error: ControlError::InvalidState {
+                                    message: format!(
+                                        "extension `{}` (owning provider `{}`) is not activated; activate it before chatting",
+                                        provider.owning_ext, provider.provider_id
+                                    ),
+                                },
                             };
                         }
+                        extension_dispatch = Some(provider);
                     }
+                }
+                Some(crate::extensions::contributions::kind::AGENTS_WORKSPACE) => {
+                    if let Some(ref agent_def) = preloaded_chat_agent_def {
+                        // Case B. `resolve_agent_provider` performs the same
+                        // activation check and reports a clear error otherwise.
+                        match crate::runtime::ext_dispatch::resolve_agent_provider(
+                            agent_def,
+                            Some(ext),
+                        ) {
+                            Ok(None) => {}
+                            Ok(Some((agent_ref, entry))) => {
+                                extension_dispatch = Some(entry);
+                                extension_agent_ref = Some(agent_ref);
+                            }
+                            Err(message) => {
+                                return ControlResponse::Err {
+                                    error: ControlError::InvalidState { message },
+                                };
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // AGENTS_BUILTIN, None, or any other kind: native path.
                 }
             }
         }

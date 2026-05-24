@@ -87,7 +87,7 @@ fn write_p4_extension(root: &std::path::Path) -> PathBuf {
             );
             ctx.subscriptions.push(
                 c.agents.registerProvider("alice.p4.gpt", {
-                    listModels: async () => [{ id: "m1", label: "M1" }],
+                    enumerate: async () => [{ id: "m1", label: "M1" }],
                     createSession: async () => ({ id: "s1", prompt: () => {}, dispose: () => {} }),
                 }),
             );
@@ -313,7 +313,7 @@ async fn registering_undeclared_provider_surfaces_via_register_error() {
         exports.activate = async (ctx) => {
             ctx.subscriptions.push(
                 globalThis.cronymax.agents.registerProvider("alice.bad.UNDECLARED", {
-                    listModels: async () => [],
+                    enumerate: async () => [],
                     createSession: async () => ({}),
                 }),
             );

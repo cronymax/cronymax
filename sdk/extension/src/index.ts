@@ -72,7 +72,6 @@ export type {
   AgentSession,
   AgentsNamespace,
   McpServerSpec,
-  ModeInfo,
   ModelInfo,
   PermissionDecision,
   PromptAttachment,
@@ -80,9 +79,14 @@ export type {
   SessionOptions,
 } from "./agents";
 export type { Auth, AuthSession, GetSessionOptions } from "./auth";
-
 export type { CommandHandler, Commands } from "./commands";
-
+export type {
+  ContributionDescriptor,
+  ContributionItem,
+  ContributionKindId,
+  ContributionOwner,
+} from "./contributions";
+export { ContributionKind } from "./contributions";
 export type {
   EventHandler,
   Events,

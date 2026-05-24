@@ -93,17 +93,35 @@ impl RuntimeHandler {
         // name — the exact divergence `handle_start_run` rejects. Must be
         // checked before `mark_run_running` so a rejected resume leaves
         // the run `Paused` rather than orphaned in `Running`.
-        if let Some(extensions) = self.services.extensions.as_ref() {
-            if let Some(provider) = extensions.providers().get(&resolved_agent_id) {
-                return ControlResponse::Err {
-                    error: ControlError::InvalidState {
-                        message: format!(
-                            "run `{run_id}` was driven by extension provider `{}` (from `{}`); extension sessions cannot be resumed — start a new chat",
-                            provider.provider_id, provider.owning_ext
-                        ),
-                    },
-                };
-            }
+        //
+        // The spec's `contribution_kind` is authoritative — the picker
+        // recorded what was selected when the run started. Runs without
+        // a recorded kind predate the contribution registry and are
+        // treated as native (workspace YAML / Crony) runs.
+        let persisted_kind = run
+            .spec
+            .get("contribution_kind")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        let is_extension_run = matches!(
+            persisted_kind,
+            Some(crate::extensions::contributions::kind::AGENTS_PROVIDER)
+        );
+        if is_extension_run {
+            let provider_label = self
+                .services
+                .extensions
+                .as_ref()
+                .and_then(|ext| ext.providers().get(&resolved_agent_id))
+                .map(|p| format!("`{}` (from `{}`)", p.provider_id, p.owning_ext))
+                .unwrap_or_else(|| format!("`{resolved_agent_id}`"));
+            return ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: format!(
+                        "run `{run_id}` was driven by extension provider {provider_label}; extension sessions cannot be resumed — start a new chat",
+                    ),
+                },
+            };
         }
 
         // ── Reconstruct startup context from the persisted spec ───

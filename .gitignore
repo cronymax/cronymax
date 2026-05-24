@@ -19,6 +19,11 @@ web/log/
 # sibling and any test fixtures stay tracked.
 crates/cronymax/bundled/node/
 
+# Flow runtime artifacts — per-run state, traces, generated docs.
+# `flow.yaml` (the flow definition) under each flow dir stays tracked.
+.cronymax/flows/*/runs/
+.cronymax/flows/*/docs/
+
 # TypeScript compile outputs for the SDK + sample extensions; rebuilt
 # from source via `tsc -p ...`.
 sdk/*/dist/

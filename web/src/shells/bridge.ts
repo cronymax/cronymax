@@ -316,7 +316,9 @@ export const runtime = {
         "[bridge] runtime.on('*') is deprecated and delivers no events. Migrate to runtime.on('session:{id}', cb) or runtime.on('run:{id}', cb).",
       );
       void cb; // acknowledge parameter to avoid lint warnings
-      return () => {};
+      return () => {
+        // noop
+      };
     }
 
     if (!window.cronymax?.runtime?.send) return null;

@@ -88,6 +88,10 @@ pub mod sidebar_method {
 pub mod agents_method {
     pub const REGISTER_PROVIDER: &str = "agents/registerProvider";
     pub const UNREGISTER_PROVIDER: &str = "agents/unregisterProvider";
+    /// Platform → extension. Scoped as `agents/enumerate:<providerId>`.
+    /// Replaces the v1-pre `agents/listModels` RPC; returns a
+    /// `readonly ContributionItem[]` for the named provider.
+    pub const ENUMERATE: &str = "agents/enumerate";
     pub const SESSION_CREATE: &str = "agents/session.create";
     pub const SESSION_PROMPT: &str = "agents/session.prompt";
     pub const SESSION_RESOLVE_PERMISSION: &str = "agents/session.resolvePermission";

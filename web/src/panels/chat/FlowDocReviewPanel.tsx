@@ -176,7 +176,7 @@ function ReviewCard({ item, onApproved, onChangesRequested }: ReviewCardProps) {
   useEffect(() => {
     if (!pendingSelection) return;
     function onMouseDown(e: MouseEvent) {
-      if (selectionTooltipRef.current && selectionTooltipRef.current.contains(e.target as Node)) {
+      if (selectionTooltipRef.current?.contains(e.target as Node)) {
         return;
       }
       setPendingSelection(null);

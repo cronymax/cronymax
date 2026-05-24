@@ -11,13 +11,18 @@
 //!   touching any real infrastructure.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
 use crate::capability::factory::{CapabilityFactory, DefaultCapabilityFactory};
 use crate::config::RuntimeConfig;
-use crate::extensions::{default_registry_root, ExtensionRegistry, ExtensionRuntime};
+use crate::extensions::host::node::SpawnConfig;
+use crate::extensions::{
+    default_bundled_bootstrap, default_bundled_node, default_registry_root, ExtensionRegistry,
+    ExtensionRuntime,
+};
 use crate::flow::{FlowRuntimeOnCreate, FlowRuntimeRegistry};
 use crate::llm::factory::{DefaultLlmProviderFactory, LlmProviderFactory};
 use crate::memory::MemoryManager;
@@ -107,7 +112,17 @@ impl RuntimeServices {
             if let Err(e) = extension_registry.refresh() {
                 tracing::warn!(error = %e, "extension registry refresh failed during runtime startup");
             }
-            ExtensionRuntime::new(extension_registry)
+            // Snapshot ids to activate before moving the registry into the
+            // runtime. Filtering on `enabled` here avoids spawning hosts for
+            // extensions the user explicitly disabled via the CLI.
+            let to_activate: Vec<String> = extension_registry
+                .iter()
+                .filter(|e| e.enabled)
+                .map(|e| e.manifest.id.clone())
+                .collect();
+            let runtime = ExtensionRuntime::new(extension_registry);
+            spawn_startup_activation(&runtime, &to_activate);
+            runtime
         });
 
         Arc::new(Self {
@@ -139,5 +154,115 @@ impl RuntimeServices {
             memory_manager: None,
             extensions: None,
         })
+    }
+}
+
+/// Spawn an async activation task per enabled extension. Failures are
+/// logged but never block startup — a single broken extension shouldn't
+/// take down the rest of the runtime.
+///
+/// Requires a tokio runtime in scope; in environments without one
+/// (e.g. the synchronous `Runtime::new` unit tests in `lifecycle.rs`)
+/// this becomes a no-op so we don't panic at composition time.
+fn spawn_startup_activation(runtime: &ExtensionRuntime, ext_ids: &[String]) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        if !ext_ids.is_empty() {
+            tracing::debug!(
+                count = ext_ids.len(),
+                "no tokio runtime in scope; skipping extension startup activation",
+            );
+        }
+        return;
+    };
+
+    let bundled_node = default_bundled_node();
+    let bootstrap_js = default_bundled_bootstrap();
+    let (bundled_node, bootstrap_js) = match (bundled_node, bootstrap_js) {
+        (Some(n), Some(b)) if n.is_file() && b.is_file() => (n, b),
+        _ => {
+            if !ext_ids.is_empty() {
+                tracing::warn!(
+                    count = ext_ids.len(),
+                    "bundled Node 26 or bootstrap.js not found; \
+                     skipping extension startup activation. \
+                     Set CRONYMAX_BUNDLED_DIR or run scripts/fetch-node26.sh.",
+                );
+            }
+            return;
+        }
+    };
+
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    let Some(home) = home else {
+        tracing::warn!(
+            "neither HOME nor USERPROFILE is set; skipping extension startup activation",
+        );
+        return;
+    };
+
+    for ext_id in ext_ids {
+        let runtime = runtime.clone();
+        let ext_id = ext_id.clone();
+        let node_binary = bundled_node.clone();
+        let bootstrap_js = bootstrap_js.clone();
+        let storage_dir = home
+            .join(".cronymax")
+            .join("extensions")
+            .join(&ext_id)
+            .join("storage");
+        let global_storage_dir = home.join(".cronymax").join("global-state").join(&ext_id);
+
+        handle.spawn(async move {
+            if let Err(e) = std::fs::create_dir_all(&storage_dir) {
+                tracing::warn!(
+                    ext_id = %ext_id,
+                    path = %storage_dir.display(),
+                    error = %e,
+                    "failed to create extension storage dir; activation may still succeed",
+                );
+            }
+            if let Err(e) = std::fs::create_dir_all(&global_storage_dir) {
+                tracing::warn!(
+                    ext_id = %ext_id,
+                    path = %global_storage_dir.display(),
+                    error = %e,
+                    "failed to create extension global-storage dir; activation may still succeed",
+                );
+            }
+
+            let result = {
+                let ext_id_for_cfg = ext_id.clone();
+                runtime
+                    .activate(&ext_id, move |_manifest, ext_dir| SpawnConfig {
+                        ext_id: ext_id_for_cfg,
+                        node_binary,
+                        node_flags: vec!["--no-warnings".into()],
+                        bootstrap_js,
+                        ext_dir: ext_dir.clone(),
+                        storage_dir,
+                        global_storage_dir,
+                        workspace_dirs: Vec::new(),
+                        manifest_path: ext_dir.join("cronymax-extension.json"),
+                        max_restarts: 0,
+                        ping_interval: Some(SpawnConfig::ping_interval_default()),
+                    })
+                    .await
+            };
+
+            match result {
+                Ok(()) => {
+                    tracing::info!(ext_id = %ext_id, "extension activated at startup");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        ext_id = %ext_id,
+                        error = %e,
+                        "extension activation failed at startup; other extensions unaffected",
+                    );
+                }
+            }
+        });
     }
 }

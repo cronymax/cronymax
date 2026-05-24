@@ -48,6 +48,13 @@ pub enum ControlRequest {
     ///
     /// `agent_id` selects which agent definition to use for the run.
     /// When absent or `""`, falls through to the builtin Crony agent.
+    ///
+    /// `contribution_kind` is the `ContributionKind` of the picked agent —
+    /// see `extensions/contributions/mod.rs::kind` for the legal strings
+    /// (e.g. `cronymax.agents.builtin`, `cronymax.agents.workspace`,
+    /// `cronymax.agents.provider`). When omitted, the runtime falls back
+    /// to a probing heuristic for back-compat with pre-contribution
+    /// callers; once Phase 4 lands this field becomes effectively required.
     StartRun {
         space_id: String,
         payload: serde_json::Value,
@@ -57,6 +64,8 @@ pub enum ControlRequest {
         session_name: Option<String>,
         #[serde(default)]
         agent_id: Option<String>,
+        #[serde(default)]
+        contribution_kind: Option<String>,
     },
 
     /// Cancel an in-flight run.
@@ -138,41 +147,57 @@ pub enum ControlRequest {
         graph: serde_json::Value,
     },
 
-    // ── Phase 3: Agent registry ───────────────────────────────────────────
-    /// Returns list of all agents: `{agents:[{name, kind, llm, llm_provider, llm_model}]}`
-    AgentRegistryList {
+    // ── Contributions (unified registry: platform / workspace / extension) ───
+    /// Snapshot of every `ContributionDescriptor` currently known. Sources:
+    /// the Crony built-in chat agent (`owner=platform`), every workspace
+    /// YAML agent under `<ws>/.cronymax/agents/` (`owner=workspace`), and
+    /// every active extension's manifest contributions (`owner=extension`).
+    /// Returns `Data { payload: { contributions: [ContributionDescriptor] } }`.
+    ContributionList {
         workspace_root: String,
     },
 
-    /// Full agent definition. Payload: `{name}`.
-    AgentRegistryLoad {
+    /// Enumerate items inside one descriptor (e.g. models under an
+    /// extension agent provider, or named variants of a workspace agent).
+    /// For extension-owned descriptors the runtime forwards to the
+    /// extension's `agents/enumerate:<id>` RPC. For platform / workspace
+    /// owners the runtime returns a synthesized item list.
+    /// Returns `Data { payload: { items: [ContributionItem] } }`.
+    ///
+    /// `contribution_kind` is named with the `contribution_` prefix to
+    /// avoid colliding with serde's `tag = "kind"` discriminant on this
+    /// enum.
+    ContributionEnumerate {
         workspace_root: String,
-        name: String,
+        contribution_kind: String,
+        id: String,
     },
 
-    /// Write (create or overwrite) an agent YAML file from structured fields.
-    /// The Rust runtime serialises the fields into the canonical YAML format.
-    AgentRegistrySave {
+    /// Load the full source backing one descriptor (e.g. YAML body for a
+    /// workspace agent, manifest excerpt for an extension provider).
+    /// Returns `Data { payload: { descriptor: ContributionDescriptor, source: Value } }`.
+    ContributionLoad {
         workspace_root: String,
-        name: String,
-        /// `"worker"` | `"reviewer"`. Defaults to `"worker"` if absent.
-        #[serde(default)]
-        agent_kind: String,
-        #[serde(default)]
-        llm: String,
-        #[serde(default)]
-        system_prompt: String,
-        #[serde(default)]
-        memory_namespace: String,
-        /// Comma-separated tool names. Empty string means no tools.
-        #[serde(default)]
-        tools_csv: String,
+        contribution_kind: String,
+        id: String,
     },
 
-    /// Delete an agent file.
-    AgentRegistryDelete {
+    /// Save (create or overwrite) one descriptor's backing source.
+    /// `payload` shape is kind-specific (e.g. workspace YAML body, agent
+    /// fields). Returns `Ack`.
+    ContributionSave {
         workspace_root: String,
-        name: String,
+        contribution_kind: String,
+        id: String,
+        payload: serde_json::Value,
+    },
+
+    /// Delete one descriptor's backing source (workspace YAML file, etc.).
+    /// Returns `Ack`.
+    ContributionDelete {
+        workspace_root: String,
+        contribution_kind: String,
+        id: String,
     },
 
     // ── Phase 3: Doc-type registry ────────────────────────────────────────

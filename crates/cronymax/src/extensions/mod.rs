@@ -48,11 +48,13 @@ pub mod events;
 pub mod host;
 pub mod logging;
 pub mod manifest;
+pub mod paths;
 pub mod registry;
 pub mod rpc;
 pub mod runtime;
 
 pub use error::ExtensionError;
 pub use manifest::Manifest;
+pub use paths::{default_bundled_bootstrap, default_bundled_dir, default_bundled_node};
 pub use registry::{default_registry_root, ExtensionRegistry};
 pub use runtime::ExtensionRuntime;
