@@ -2360,6 +2360,16 @@ export function App() {
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Don't intercept any keys while an IME composition is in flight.
+    // Otherwise Enter that confirms a Chinese / Japanese / Korean
+    // candidate would fall through to requestSubmit() AND end the
+    // composition, leaving the just-committed text in the textarea
+    // and posting the previous draft. Keycode 229 is the historical
+    // "composition still going" signal browsers emit when isComposing
+    // isn't set.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) {
+      return;
+    }
     // When picker is open, intercept navigation keys
     if (picker && pickerItems.length > 0) {
       if (e.key === "ArrowDown") {
