@@ -887,3 +887,97 @@ P5 把 P3-T01 留下的事件总线骨架接到 chat/flow 流上。`EventBus` �
 | Phase 8 agent_provider 接通 chat+flow | 主体 ✅ | worker-only;reviewer / P8-T03 / P8-T04 推后 |
 | Phase 9 SDK + 扩展管理 UI | 部分(统一 ContributionDescriptor) | Settings UI / CLI ext package / 模板仓 待做 |
 | Phase 10 收尾 + Alpha | 未启动 | |
+
+---
+
+## Phase 6 执行进度(2026-05-24 · webview 基建端到端)
+
+P6 在 v0.2 设计里是「CEF 自定义协议 + iframe + postMessage 跨进程桥」。这一刀把全链路落地:**Rust 端 panel 注册表 + RPC + 事件总线接入**、**bootstrap.js SDK `createWebviewPanel`**、**C++ 自定义 scheme `cronymax-webview://` + V8 注入 `acquireCronymaxApi()`**、**双向跨进程 postMessage 桥**。
+
+### 核心设计
+
+- **scheme 模型**:`cronymax-webview://<extId>/<path>?panel=<panelId>`。三性合一:`STANDARD`(host=ext id 当原生原点)+ `SECURE`(secure-context API 通)+ `CSP_BYPASSING`(让响应头的 CSP 真正生效而非外层 frame-src 锁死)+ `CORS_ENABLED`(同源 fetch 通)。`panel` 在 query 而非 hash,因为 hash 不传给服务端,iframe 内 V8 注入要解析它去关联 panel。
+- **隔离**:每个扩展是自己的 origin(host = `<extId>`);浏览器原生 same-origin 拒跨扩展 postMessage 而无需我们手工 gate。**默认 CSP** `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src cronymax-webview: data:; connect-src 'self'; font-src 'self' data:` —— 扩展无法 fetch 外网,要外网通信走 Node 侧 main.js 再 postMessage 进 iframe。
+- **路径安全**:scheme handler 用 `realpath` 把候选路径解到 inode 实位,再 prefix 校验,前缀末位必须是 `/` —— 阻挡 `../` 越狱 + symlink 越狱 + `extensions-evil` 这种前缀混淆。
+- **双向 postMessage**:
+  - 出方向(iframe → ext):iframe `acquireCronymaxApi().postMessage(payload)` → 渲染进程 V8 handler `WebviewPostHandler` → `kMsgWebviewPost` 进 browser process → `BridgeHandler::HandleWebviewPost` → `RuntimeProxy::SendControl(kind="extension_webview_post")` → Rust runtime handler → `ExtensionRuntime::forward_panel_message(panelId, payload)` → 注册表查 owner → 经 RPC 通道 `webview/onDidReceiveMessage` notify 给 owning ext。**所有权用 registry 做硬校验**,渲染进程篡改 panelId 不会击穿到别的扩展。
+  - 入方向(ext → iframe):扩展 `panel.postMessage(payload)` → `webview/postMessage` notify(ext→平台 RPC)→ `WebviewRegistry::deliver_message` → emit `WebviewEvent::Message` → 经 emitter 回调走 `RuntimeAuthority::emit("extensions/webview", ...)` → `BridgeHandler` 订阅了该 topic → 用 `WebviewFrameResolver` 解 panelId → 给目标 frame `SendProcessMessage(PID_RENDERER, kMsgWebviewDeliver)` → 渲染进程 `App::DispatchWebviewDelivery` 找匹配 `WebviewFrameContext` → 进 V8 context 调用 `onDidReceiveMessage` listener 数组。
+- **acquireCronymaxApi `acquired`-once 语义**:一个 iframe 内 `acquireCronymaxApi()` 第二次调用抛错,匹配 VS Code 一致 —— 防 user 在两个 handle 上注册 listener 但 dispatch 只走一个的隐藏 bug。
+- **WebviewEvent 设计**:4 个 variant —— `PanelCreated` / `PanelDisposed` / `Message` / `VisibilityChanged` —— 全部 `Serialize+Deserialize`,这样 Authority 那侧不丢类型,可以拿同一份 `cep-idl/v1` 类型在 web 渲染层校验。
+
+### 改动(15+ 个文件)
+
+**Rust 侧:**
+
+| 文件 | 改动 |
+|---|---|
+| `extensions/api/webview.rs` | `PanelSlot` 加 `Tab` 对齐 IDL;`WebviewEvent` 枚举 + `WebviewEventEmitter` 回调;`RegistryInner` 用 `Arc<...>` 共享;`WebviewRegistry` 加 `set_emitter / url_for(ext, panel_id, entry) / owner_of / snapshot / deliver_message`;`url_for` 把 panel_id 百分号转义后跟在 `?panel=` 后;create/dispose/set_visible/deliver_message 都 emit 对应 event;**+11 单测** |
+| `extensions/runtime.rs` | `RuntimeState.webviews: WebviewRegistry` + `webviews()` accessor + `set_webview_emitter()`;activate 不需新动作(panel 由 ext 在 activate 后主动 createPanel),deactivate 调 `webviews.dispose_all_for` 清掉所有挂载;`build_rpc_server` 加 4 handler(`webview/createPanel` request 返回 `{panelId, url, slot}` / `disposePanel` notify / `setVisible` notify / `postMessage` notify);加 3 个 forward 方法:`forward_panel_message`(渲染→ext)、`forward_panel_view_state`、`forward_panel_disposed`;**+9 集成测试** |
+| `extensions/rpc/codec.rs` | 加 `webview_method::{CREATE_PANEL, DISPOSE_PANEL, SET_VISIBLE, POST_MESSAGE, ON_DID_RECEIVE_MESSAGE, ON_DID_CHANGE_VIEW_STATE, ON_DID_DISPOSE}` 一组方法名常量 |
+| `protocol/control.rs` | 加 `ControlRequest::ExtensionWebviewPost { panel_id, payload }`(snake_case → `extension_webview_post` 串)|
+| `runtime/handler/mod.rs` | 注册 `ExtensionWebviewPost` arm |
+| `runtime/handler/extension_ops.rs` | 新文件,`handle_extension_webview_post` 把 ControlRequest 转给 `ExtensionRuntime::forward_panel_message`,无 ext runtime 时返回 `InvalidState` |
+| `runtime/services.rs` | 组合根装 `runtime.set_webview_emitter(...)`:把 WebviewEvent 转 JSON 经 `authority.emit("extensions/webview", Raw{data})` 走 RuntimeAuthority,让 C++ 那侧能订阅 |
+
+**bootstrap.js SDK(Node host):**
+
+| 改动 |
+|---|
+| `webviewPanels: Map<panelId, WebviewPanel>` + 3 个反向 notify handler(`webview/onDidReceiveMessage / onDidChangeViewState / onDidDispose`),按 panelId 派发到 user listener |
+| `buildWebviewPanel({id, slot, url, title, ownerExtId})` 工厂:封装 V8-like `Disposable` 风格的 `onDidReceiveMessage / onDidChangeViewState / onDidDispose` event emitter,内部 Set 收 listener;listener throw safe(catch + stderr) |
+| `cronymax.window.createWebviewPanel(opts)` async 走 `webview/createPanel` request,拿响应里的 `panelId + url + slot` 装出 panel 对象;塞进 `webviewPanels` 表 + `subscriptions.push` 确保 deactivate 时一起 dispose |
+| `panel.postMessage(payload)` → `webview/postMessage` notify;`panel.dispose()` → `webview/disposePanel` notify + 本地 fire `onDidDispose`;`setHtml` 留接口但 v1 alpha throw "not implemented"(IDL 写了,渲染端没实现 inline HTML 加载) |
+
+**C++ 浏览器进程(`app/browser/`):**
+
+| 文件 | 改动 |
+|---|---|
+| `webview_scheme.{h,cc}` | 新文件,`kWebviewScheme = "cronymax-webview"`;`RegisterWebviewScheme(registrar)` 注册 4 个 option;`WebviewSchemeHandlerFactory` + `WebviewResourceHandler` 实现 `CefResourceHandler`:同步 Open() 读盘、SetMimeType 推断 11 类、SetHeaderMap 加 CSP/no-store/nosniff/no-referrer、Read() 分块写 buffer;`ResolveUrl` 拆 host=extId + path,`NormalizeLogical` 逻辑层 `..` 折叠,`realpath` 实位校验前缀 + 边界 `/` 字符 |
+| `app.{h,cc}` | `OnRegisterCustomSchemes` override 调 `RegisterWebviewScheme`;`OnContextInitialized` 加 `InstallWebviewSchemeHandlerFactory(ResolveExtensionsRoot())`(`HOME/.cronymax/extensions` 当根)|
+| `bridge_handler.{h,cc}` | 加 `kMsgWebviewPost / kMsgWebviewDeliver` 常量;`HandleWebviewPost` 读 panel_id+payload,封 `extension_webview_post` ControlRequest 经 `RuntimeProxy::SendControl` 走 runtime;`SetWebviewFrameResolver(resolver)` 装映射回调,内部第一次调用时通过 `runtime_proxy_->SubscribeEvents` 订阅 `extensions/webview` 主题,收到 `Message` 类事件就用 resolver 找到目标 frame 发 `kMsgWebviewDeliver`(msgpack payload) |
+| `client_handler.cc` | `OnProcessMessageReceived` 加一条 `kMsgWebviewPost` 路由,调 `bridge_handler_->HandleWebviewPost(...)` |
+| `CMakeLists`/`CronymaxApp.cmake` | `webview_scheme.{h,cc}` 加进 `CRONYMAX_APP_SRCS` + `CRONYMAX_HELPER_SRCS`(两个 process 都要登记 scheme)|
+
+**C++ 渲染进程(`app/renderer/`):**
+
+| 文件 | 改动 |
+|---|---|
+| `app.{h,cc}` | `OnRegisterCustomSchemes` override 镜像 browser 端的 scheme 登记(CEF 要求两端登记一致,否则 iframe URL 当 opaque origin)|
+| `app.cc` | `IsBuiltinUrl` 增加 `cronymax-webview://` 早期 short-circuit(不暴露 `cronymax.runtime` / `cronymax.browser`);`IsExtensionWebviewUrl` / `ExtractWebviewExtensionId` helper;`OnContextCreated` 早 branch:`cronymax-webview://` frame 走 `InjectAcquireCronymaxApi(frame, context)`,其他保持原逻辑 |
+| `app.cc` (V8 handler classes) | `WebviewPostHandler`(`postMessage` → `kMsgWebviewPost`)、`WebviewStateHandler`(`setState`/`getState`)、`WebviewOnMessageHandler`(注册 listener,返回 `Disposable`)、`WebviewDisposeHandler`、`WebviewAcquireHandler`(acquired-once)—— 全部 `class : public CefV8Handler + IMPLEMENT_REFCOUNTING`,放命名空间内方便 friend |
+| `app.cc::InjectAcquireCronymaxApi` | 解析 URL → extId + panelId(`?panel=` 反百分号解码)→ 在 `webview_frames_` 表存 V8 context + listener Array + state slot → 装 `acquireCronymaxApi` 全局函数 |
+| `app.cc::DispatchWebviewDelivery` | 接 `kMsgWebviewDeliver` payload:进 frame V8 context → 反 msgpack → 遍历 listener array(跳过 null = 已 dispose 的槽位)→ ExecuteFunctionWithContext |
+| `app.cc::OnContextReleased` | 增按 V8 context identity 清理 `webview_frames_` 条目(frame 可能比 panel 注册表更晚销毁)|
+
+### 验证
+
+- `cargo test -p cronymax` → **lib 499 passed**(原 478 + 21 新 webview 测:11 单测 + 9 集成 + 1 unsubscribe);extensions::: **275 passed**(原 254 + 21)
+- `cargo clippy -p cronymax --lib --tests` → 0 warnings
+- `cargo fmt -p cronymax -- --check` → clean
+- `cmake --build . --target cronymax_app -j4` → C++ 全 target 链接成功(主 app + 4 个 helper bundle + renderer helper),webview_scheme.cc / app.cc / bridge_handler.cc / client_handler.cc / renderer/app.cc 都过编译
+- `node --check bundled/extension-host-bootstrap.js` → OK
+- 注:`runtime_e2e::full_run_lifecycle…` 沿用 head 上**已有**的红,与 P6 无关
+
+### 显式不做(在 P7 dogfood 时补)
+
+- **web/ 渲染层 `<ExtensionWebviewIframe>`**:把订阅 `extensions/webview` topic + 收到 `PanelCreated` 时挂 `<iframe src=url sandbox=...>`、`PanelDisposed` 时拆 —— 还没写,需要决定挂到 sidebar/settings/tab 哪个 host 组件。`MainWindow::SetWebviewFrameResolver` 注入 panelId→(browser,frame) 映射的逻辑同步推后(目前 BridgeHandler 调用 SetWebviewFrameResolver 接口已就绪,只缺 host 侧组件来注册)。
+- **`panel.setHtml(html)`**:IDL 包含但 v1 alpha 让 SDK throw —— 渲染端没实现 inline HTML 加载路径。
+- **跨扩展 webview 隔离 demo 测试**(P6-T06 of spec):扩展 A、B 装 webview,A `cronymax.events.emit("cross-ext")` 不应触达 B 的 iframe —— 框架天然隔离(scheme host = extId 当 origin),等真实 dogfood `mermaid-renderer` 扩展时跑下证实。
+- **Windows 上 `realpath` 兜底**:目前 `webview_scheme.cc` 在非 macOS/Linux 平台跳过 canonicalize,直接拼绝对路径 —— P10 之前补 GetFinalPathName。
+
+### Phase 完成度(Phase 6 接入后)
+
+| Phase | 完成 / 总数 | 状态 |
+|---|---|---|
+| Phase 0 基础 + spike | 7 / 7 | ✅ 完成 |
+| Phase 1 manifest + registry + activation | 6 / 6 | ✅ 完成 |
+| Phase 2 Node host + L1 第一切片 | 11 / 12 | T09 perf / T10 安全冒烟 |
+| Phase 3 其余 L1 Kernel | 8 / 9 | T09 验收扩展 待做 |
+| Phase 4 L2 EP × 6 wiring | 7 / 8 | T08 permissionRequest 桥 待做 |
+| Phase 4.5 chat-provider 接通 | 主体 ✅ | 遗留懒激活 / cancel / permission |
+| Phase 5 L1.5 平台事件 | 主体 ✅ | 8 topic 从 ext_dispatch 接通;native 路径 emit + logger 测试扩展推后 |
+| **Phase 6 Webview 基建** | **主体 ✅** | **Rust 注册表 + RPC + bootstrap SDK + C++ scheme 全链路;web 渲染端 `<ExtensionWebviewIframe>` 组件 + MainWindow resolver 接入推后(P7 dogfood 时补)** |
+| Phase 7 coco dogfood | 未启动 | |
+| Phase 8 agent_provider 接通 chat+flow | 主体 ✅ | worker-only;reviewer / P8-T03 / P8-T04 推后 |
+| Phase 9 SDK + 扩展管理 UI | 部分(统一 ContributionDescriptor) | Settings UI / CLI ext package / 模板仓 待做 |
+| Phase 10 收尾 + Alpha | 未启动 | |
