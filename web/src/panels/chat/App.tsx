@@ -44,7 +44,14 @@ import { FlowDocReviewPanel } from "@/panels/chat/FlowDocReviewPanel";
 import { FlowInstancesBar } from "@/panels/chat/FlowInstancesBar";
 import { browser, runtime, shells } from "@/shells/bridge";
 import { listProviderModels } from "@/shells/llm";
-import { agentRegistry, agentRun, b64ToUtf8, flowRun, terminal as rt_terminal } from "@/shells/runtime";
+import {
+  agentRun,
+  b64ToUtf8,
+  ContributionKind,
+  contributionRegistry,
+  flowRun,
+  terminal as rt_terminal,
+} from "@/shells/runtime";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
 import { ContentStreamView } from "./ContentStreamView";
 import { resolveContextLimit } from "./contextLimits";
@@ -52,7 +59,6 @@ import { FileChangesView } from "./FileChangesView";
 import { FlowTrajectoryDiagram } from "./FlowTrajectoryDiagram";
 import { LiveTasksView } from "./LiveTasksView";
 import { PromptPopover } from "./PromptPopover";
-import { ReviewsPanel } from "./ReviewsPanel";
 import {
   type AnthropicEffort,
   type Attachment,
@@ -666,6 +672,11 @@ export function App() {
       base_url: string;
       api_key: string;
       models: string[];
+      /** Set when this group is backed by an extension agent provider rather
+       * than a configured LLM provider. Picking a model from such a group
+       * dispatches the run through the extension instead of an LLM HTTP call. */
+      agent_id?: string;
+      contribution_kind?: string;
     }[]
   >([]);
   /** ID + kind of the currently-active provider — used as the fallback when
@@ -805,7 +816,12 @@ export function App() {
               models,
             });
         }
-        setModelGroups(groups);
+        // Preserve any extension provider groups that the other useEffect
+        // may have already appended — listing LLM providers can take
+        // seconds (HTTP roundtrip), and the local enumerate IPC usually
+        // wins the race, so an unconditional replace would wipe extension
+        // groups from the picker.
+        setModelGroups((prev) => [...groups, ...prev.filter((g) => g.kind === "extension")]);
       })
       .catch(() => undefined);
   }, []);
@@ -854,15 +870,82 @@ export function App() {
   };
 
   // ── agent catalog ─────────────────────────────────────────────────────
+  // Sourced from the unified ContributionRegistry: builtin + workspace agents
+  // are direct rows; extension agent providers are surfaced as agents too.
+  // Each row carries `contribution_kind` so the run dispatcher knows how to
+  // route the StartRun without re-probing the registry.
   const refreshAgents = async () => {
     try {
-      const res = await agentRegistry.list();
-      dispatch({ type: "setAgents", agents: res.agents ?? [] });
+      const res = await contributionRegistry.list();
+      const agents = (res.contributions ?? [])
+        .filter(
+          (d) =>
+            d.kind === ContributionKind.AgentsBuiltin ||
+            d.kind === ContributionKind.AgentsWorkspace ||
+            d.kind === ContributionKind.AgentsProvider,
+        )
+        .map((d) => {
+          const meta = (d.metadata && typeof d.metadata === "object" ? d.metadata : {}) as Record<string, unknown>;
+          const isExt = d.kind === ContributionKind.AgentsProvider;
+          const owningExt = d.owner.type === "extension" ? d.owner.ext_id : undefined;
+          return {
+            name: d.id,
+            kind: isExt ? "extension_provider" : ((meta.kind as string) ?? "worker"),
+            llm: (meta.llm as string) ?? "",
+            label: d.label,
+            owning_ext: owningExt,
+            description: d.description,
+            supports_models: Boolean(meta.supports_models),
+            supports_modes: Boolean(meta.supports_modes),
+            supports_mcp: Boolean(meta.supports_mcp),
+            contribution_kind: d.kind,
+          };
+        });
+      dispatch({ type: "setAgents", agents });
       setAgentLoadError(null);
     } catch (err) {
       setAgentLoadError((err as Error).message);
     }
   };
+
+  // Enumerate extension agent providers and add them as additional groups in
+  // the model picker. Re-runs whenever the agent catalog refreshes so newly
+  // installed providers show up live. Each item under the provider is one of
+  // its enumerated models; picking it sets agent_id + contribution_kind so
+  // the run goes through the extension rather than an LLM HTTP endpoint.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const providers = state.agents.filter((a) => a.contribution_kind === ContributionKind.AgentsProvider);
+      const groups: typeof modelGroups = [];
+      for (const p of providers) {
+        try {
+          const { items } = await contributionRegistry.enumerate(ContributionKind.AgentsProvider, p.name);
+          if (cancelled) return;
+          if (!items.length) continue;
+          groups.push({
+            label: p.label || p.name,
+            id: `ext:${p.name}`,
+            kind: "extension",
+            base_url: "",
+            api_key: "",
+            models: items.map((it) => it.id),
+            agent_id: p.name,
+            contribution_kind: ContributionKind.AgentsProvider,
+          });
+        } catch {
+          /* skip providers that fail to enumerate */
+        }
+      }
+      if (cancelled) return;
+      // Merge: drop any prior extension groups, then append the freshly
+      // enumerated ones. LLM-provider groups are preserved as-is.
+      setModelGroups((prev) => [...prev.filter((g) => g.kind !== "extension"), ...groups]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state.agents]);
 
   // ── ensure terminal session for this chat tab ─────────────────────────
   const ensureChatTerminal = async (currentTid: string | null, chatId: string) => {
@@ -1320,9 +1403,12 @@ export function App() {
     let hasContent = false;
     let thinkingStartedAt: number | null = null;
     let thinkingSealed = false;
-    // Dedup key = "<subscription_id>:<sequence>" so that concurrent
-    // conversations whose Rust subscriptions independently start at seq=0
-    // never cross-contaminate each other's dedup sets.
+    // Dedup key MUST be identical across both delivery channels
+    // (`browser.on("event")` wildcard + `runtime.on("run:{id}")` targeted).
+    // The two paths see the same event twice; if the keys diverge, both
+    // pass and every event is processed twice. Both handlers filter by
+    // runId before consulting this set, so `seq` alone is unique within
+    // the run we're tracking.
     const seenSeqs = new Set<string>();
     let runId = "";
     // Last error surfaced via a "trace.error" event from the runtime
@@ -1353,10 +1439,9 @@ export function App() {
         // Filter by run_id BEFORE deduplicating so that a different run's
         // seq=0 does not consume our seq=0 from the dedup set.
         if (pRunId && runId && pRunId !== runId) return;
-        const subId = (ev.subscription as string | undefined) ?? "";
         const seq = inner.sequence as number | undefined;
         if (typeof seq === "number") {
-          const dedupKey = `${subId}:${seq}`;
+          const dedupKey = String(seq);
           if (seenSeqs.has(dedupKey)) return;
           seenSeqs.add(dedupKey);
         }
@@ -1448,8 +1533,12 @@ export function App() {
           // Tool approval request: check global mode first, then per-category trust
           const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
           const req = (pl.request as Record<string, unknown> | undefined) ?? {};
-          const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
-          const args = req.args ?? pl.args ?? {};
+          const toolName =
+            (req.tool_name as string | undefined) ??
+            (req.tool as string | undefined) ??
+            (pl.tool_name as string | undefined) ??
+            "";
+          const args = req.args ?? req.arguments ?? pl.args ?? {};
           const category = toolName.split("_")[0] ?? toolName;
 
           // Global approval mode takes precedence over per-category trust map
@@ -1618,7 +1707,7 @@ export function App() {
             });
           } else if (traceKind === "review_resolved") {
             const resolvedId = (trace.review_id as string | undefined) ?? "";
-            const decision = (trace.decision as string | undefined) === "approve" ? "approve" : "reject";
+            const decision = (trace.decision as string | undefined) === "approved" ? "approve" : "reject";
             dispatch({
               type: "appendTraceEntry",
               id: blockId,
@@ -1768,8 +1857,12 @@ export function App() {
       } else if (kind === "permission_request") {
         const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
         const req = (pl.request as Record<string, unknown> | undefined) ?? {};
-        const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
-        const args = req.args ?? pl.args ?? {};
+        const toolName =
+          (req.tool_name as string | undefined) ??
+          (req.tool as string | undefined) ??
+          (pl.tool_name as string | undefined) ??
+          "";
+        const args = req.args ?? req.arguments ?? pl.args ?? {};
         const category = toolName.split("_")[0] ?? toolName;
         let effectiveTrust: "autopilot" | "bypass" | "ask";
         if (globalApprovalMode === "autopilot") {
@@ -1891,7 +1984,7 @@ export function App() {
           });
         } else if (traceKind === "review_resolved") {
           const resolvedId = (trace.review_id as string | undefined) ?? "";
-          const decision = (trace.decision as string | undefined) === "approve" ? "approve" : "reject";
+          const decision = (trace.decision as string | undefined) === "approved" ? "approve" : "reject";
           dispatch({
             type: "appendTraceEntry",
             id: blockId,
@@ -1953,7 +2046,7 @@ export function App() {
       // the agent/provider default kicks in.
       const runOpts: Parameters<typeof agentRun>[1] = {
         session_id: chatId,
-        agent_id: state.selectedFlow ? undefined : state.agentId || undefined,
+        agent_id: state.selectedFlow ? undefined : speaker || state.agentId || undefined,
         flow_id: state.selectedFlow || undefined,
       };
       if (reasoningEffortRef.current) runOpts.reasoning_effort = reasoningEffortRef.current;
@@ -1965,17 +2058,32 @@ export function App() {
       // stored `default_model` which may be stale, mismatched, or from a different
       // provider than what the user currently has selected.
       if (state.model) runOpts.model = state.model;
-      // If the picked model belongs to a non-active provider group, send
-      // that provider's wire config alongside so the request actually
-      // routes there instead of being sent to the active provider's
-      // endpoint with a model name it doesn't recognise.
+      // If the picked model belongs to a non-active group, dispatch overrides.
+      // Two cases:
+      //   • LLM-provider group: override wire fields (provider_kind / base_url
+      //     / api_key) so the request routes to that provider's endpoint.
+      //   • Extension agent provider group: override agent_id +
+      //     contribution_kind so the runtime dispatches through the extension
+      //     instead of an HTTP LLM call. We do NOT set base_url/api_key here;
+      //     extensions own their auth.
       if (state.model) {
         const owner = modelGroups.find((g) => g.models.includes(state.model));
-        if (owner && owner.id !== activeProviderId) {
-          runOpts.provider_kind = owner.kind;
-          runOpts.base_url = owner.base_url;
-          if (owner.api_key) runOpts.api_key = owner.api_key;
+        if (owner) {
+          if (owner.contribution_kind === ContributionKind.AgentsProvider && owner.agent_id) {
+            runOpts.agent_id = owner.agent_id;
+            runOpts.contribution_kind = ContributionKind.AgentsProvider;
+          } else if (owner.id !== activeProviderId) {
+            runOpts.provider_kind = owner.kind;
+            runOpts.base_url = owner.base_url;
+            if (owner.api_key) runOpts.api_key = owner.api_key;
+          }
         }
+      }
+      // For builtin / workspace agent picks, forward the kind too so the
+      // runtime doesn't have to probe; extension providers handled above.
+      if (!runOpts.contribution_kind) {
+        const picked = state.agents.find((a) => a.name === runOpts.agent_id);
+        if (picked?.contribution_kind) runOpts.contribution_kind = picked.contribution_kind;
       }
       runId = await agentRun(body, runOpts);
       if (!runId) throw new Error("runtime did not return run_id");
@@ -2044,6 +2152,56 @@ export function App() {
     }
   }, [state.blocks, state.runningBlockId, state.activeChatId, dispatch]);
 
+  // Seed awaitingApproval from snapshot when returning to a chat that still has
+  // a pending tool approval upstream. Covers the chat-switch case where
+  // loadChat resets awaitingApproval but the runtime still holds the review.
+  // The rehydrate path (authority.rs) clears stale reviews on cold start, so
+  // this only re-surfaces live ones from the current process.
+  useEffect(() => {
+    const chatId = state.activeChatId;
+    if (!chatId) return;
+    shells.browser.activity
+      .snapshot()
+      .then((resp: { runs?: unknown[]; pending_reviews?: unknown[] }) => {
+        const rawRuns = (resp.runs ?? []).map((r) => r as Record<string, unknown>);
+        const direct = new Set<string>(
+          rawRuns
+            .filter((r) => (r.session_id as string | undefined) === chatId)
+            .map((r) => r.id as string)
+            .filter(Boolean),
+        );
+        const sessionRunIds = new Set<string>(direct);
+        for (const r of rawRuns) {
+          const flowRunId = r.flow_run_id as string | undefined;
+          if (flowRunId && direct.has(flowRunId)) {
+            const id = r.id as string;
+            if (id) sessionRunIds.add(id);
+          }
+        }
+        const match = (resp.pending_reviews ?? [])
+          .map((r) => r as Record<string, unknown>)
+          .find((r) => {
+            if (!sessionRunIds.has(r.run_id as string)) return false;
+            const req = (r.request as Record<string, unknown>) ?? {};
+            const reqKind = req.kind as string | undefined;
+            return !reqKind || reqKind === "tool_call";
+          });
+        if (!match) return;
+        const req = (match.request as Record<string, unknown>) ?? {};
+        const reviewId = (match.id as string) ?? (match.review_id as string) ?? "";
+        const toolName = (req.tool_name as string) ?? (req.tool as string) ?? (match.tool_name as string) ?? "tool";
+        const args = req.args ?? req.arguments ?? match.args ?? {};
+        dispatch({
+          type: "setAwaitingApproval",
+          runId: match.run_id as string,
+          reviewId,
+          toolName,
+          args,
+        });
+      })
+      .catch(() => undefined);
+  }, [state.activeChatId]);
+
   // Persist blocks after each conversation finalization (state.running transitions)
   useEffect(() => {
     if (!state.running && state.activeChatId && state.blocks.length > 0) {
@@ -2094,7 +2252,10 @@ export function App() {
     if (picker) return;
     const typed = inputRef.current?.value.trim() || "";
     if (!typed && attachedPrompts.length === 0) return;
-    if (inputRef.current) inputRef.current.value = "";
+    if (inputRef.current) {
+      inputRef.current.value = "";
+      inputRef.current.style.height = "auto";
+    }
     setInputMode("chat");
     // Collect content from explicitly-attached picker pills.
     const parts = attachedPrompts.map((p) => p.content);
@@ -2387,7 +2548,7 @@ export function App() {
         {agentLoadError && (
           <Alert variant="destructive" className="rounded-none border-0 border-b">
             <TriangleAlert />
-            <AlertTitle>agent.registry.list failed</AlertTitle>
+            <AlertTitle>contribution.list failed</AlertTitle>
             <AlertDescription>{agentLoadError}</AlertDescription>
           </Alert>
         )}
@@ -2558,7 +2719,6 @@ export function App() {
                 <FlowTrajectoryDiagram selectedFlow={state.selectedFlow} sessionId={state.activeChatId} />
               )}
               <FlowDocReviewPanel sessionId={state.activeChatId} />
-              <ReviewsPanel sessionId={state.activeChatId} />
             </div>
 
             {/* ── Slash / @ picker ──────────────────────────────────────── */}
@@ -2769,7 +2929,16 @@ export function App() {
                                     kind: g.kind,
                                     base_url: g.base_url,
                                     api_key: g.api_key,
+                                    agent_id: g.agent_id,
+                                    contribution_kind: g.contribution_kind,
                                   });
+                                  // Picking a model from an extension agent
+                                  // provider group also flips the active
+                                  // agent so the next run routes via that
+                                  // provider's session API.
+                                  if (g.agent_id) {
+                                    dispatch({ type: "setAgentId", agentId: g.agent_id });
+                                  }
                                   setModelComboOpen(false);
                                 }}
                                 className="text-xs"

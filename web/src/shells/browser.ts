@@ -86,6 +86,7 @@ export const Channels = {
       go_back: chan({ req: EmptySchema, res: EmptySchema }),
       go_forward: chan({ req: EmptySchema, res: EmptySchema }),
       reload: chan({ req: EmptySchema, res: EmptySchema }),
+      relaunch: chan({ req: EmptySchema, res: EmptySchema }),
       popover_open: chan({
         req: ShellPopoverOpenPayloadSchema,
         res: EmptySchema,

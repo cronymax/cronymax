@@ -9,7 +9,7 @@
  *   Flows      — visual agent-flow editor
  *   Runner     — legacy ReAct runner (terminal Explain/Fix/Retry target)
  */
-import { Check, Palette, Play, Plug, ShieldCheck, X } from "lucide-react";
+import { Check, Palette, Play, Plug, ShieldCheck, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { PanelWindowHeader } from "@/components/PanelWindowHeader";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FieldLabel, Heading } from "@/components/ui/typography";
 import { shells } from "@/shells/bridge";
 import { AppearanceTab } from "./AppearanceTab";
+import { MaintenanceTab } from "./MaintenanceTab";
 import { ProfilesTab } from "./ProfilesTab";
 import { ProvidersTab } from "./ProvidersTab";
 import { RunnerTab } from "./RunnerTab";
@@ -32,7 +33,15 @@ import { type PermissionRequest, useStore } from "./store";
 
 // ── types ─────────────────────────────────────────────────────────────────
 
-type SettingsTab = "appearance" | "providers" | "agents" | "doc-types" | "profiles" | "flows" | "runner";
+type SettingsTab =
+  | "appearance"
+  | "providers"
+  | "agents"
+  | "doc-types"
+  | "profiles"
+  | "flows"
+  | "runner"
+  | "maintenance";
 
 // ── shared Field ──────────────────────────────────────────────────────────
 
@@ -84,6 +93,7 @@ const TAB_LABELS: { id: SettingsTab; label: string; icon: typeof Palette }[] = [
   { id: "providers", label: "Providers", icon: Plug },
   { id: "profiles", label: "Profiles", icon: ShieldCheck },
   { id: "runner", label: "Runner", icon: Play },
+  { id: "maintenance", label: "Maintenance", icon: Wrench },
 ];
 
 // ── App ───────────────────────────────────────────────────────────────────
@@ -184,6 +194,9 @@ export function App() {
         </TabsContent>
         <TabsContent value="runner" className="flex-1 overflow-y-auto data-[state=inactive]:hidden">
           <RunnerTab />
+        </TabsContent>
+        <TabsContent value="maintenance" className="flex-1 overflow-y-auto data-[state=inactive]:hidden">
+          <MaintenanceTab />
         </TabsContent>
       </Tabs>
       {state.permission && <PermissionOverlay perm={state.permission} onResolve={onResolvePermission} />}

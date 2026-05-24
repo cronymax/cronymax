@@ -3,7 +3,14 @@
 
 #include "browser/bridge_handler.h"
 
+#include <mach-o/dyld.h>
+#include <signal.h>
+#include <unistd.h>
+#include <cstdlib>
+#include <string>
+
 #include <nlohmann/json.hpp>
+#include "include/cef_app.h"
 
 namespace cronymax {
 
@@ -193,6 +200,71 @@ void RegisterShellHandlers(BridgeRegistry& r, BridgeHandler* h) {
     if (h->shell_cbs_.reload)
       h->shell_cbs_.reload();
     ctx.callback->Success(nlohmann::json{{"ok", true}});
+  });
+
+  // ── browser.shell.relaunch ────────────────────────────────────────────────
+  // Quit the current process and re-open the .app bundle. Used by the
+  // Settings → Maintenance tab to pick up state changes that require a
+  // full process restart (runtime persistence, locked leveldb stores).
+  r.add("browser.shell.relaunch", [](BridgeCtx ctx) {
+    (void)ctx.payload;
+    // 1. Resolve the .app bundle path by walking up from the executable.
+    //    Executable lives at <bundle>/Contents/MacOS/<exe>; the bundle is
+    //    three levels up.
+    char exe_path[PATH_MAX];
+    uint32_t exe_path_size = sizeof(exe_path);
+    if (_NSGetExecutablePath(exe_path, &exe_path_size) != 0) {
+      ctx.callback->Failure(500, "could not resolve executable path");
+      return;
+    }
+    char resolved[PATH_MAX];
+    if (!realpath(exe_path, resolved)) {
+      ctx.callback->Failure(500, "could not canonicalize executable path");
+      return;
+    }
+    std::string bundle_path(resolved);
+    for (int i = 0; i < 3; ++i) {
+      auto pos = bundle_path.find_last_of('/');
+      if (pos == std::string::npos) {
+        ctx.callback->Failure(500, "executable not inside a .app bundle");
+        return;
+      }
+      bundle_path = bundle_path.substr(0, pos);
+    }
+    if (bundle_path.size() < 4 ||
+        bundle_path.substr(bundle_path.size() - 4) != ".app") {
+      ctx.callback->Failure(500, "executable not inside a .app bundle");
+      return;
+    }
+    // 2. Spawn a detached child that waits for us to die, then re-opens
+    //    the bundle. `open -n` forces a new instance even when the OS
+    //    still has the old one registered briefly.
+    pid_t parent_pid = getpid();
+    pid_t child = fork();
+    if (child == 0) {
+      // Detach from parent's session and process group so the child
+      // survives our exit.
+      setsid();
+      // Wait for the parent to actually exit before re-launching, so the
+      // leveldb / runtime-state.json locks are released before the new
+      // instance starts up.
+      for (int i = 0; i < 50; ++i) {  // up to ~5 s
+        if (kill(parent_pid, 0) != 0)
+          break;
+        usleep(100 * 1000);
+      }
+      execlp("open", "open", "-n", bundle_path.c_str(), (char*)NULL);
+      _exit(127);
+    }
+    if (child < 0) {
+      ctx.callback->Failure(500, "fork failed");
+      return;
+    }
+    // 3. Reply success first so the renderer doesn't see a closed
+    //    bridge, then quit the CEF message loop. The child is already
+    //    waiting for us to exit.
+    ctx.callback->Success(nlohmann::json{{"ok", true}});
+    CefQuitMessageLoop();
   });
 
   // ── browser.shell.popover_open ────────────────────────────────────────────
