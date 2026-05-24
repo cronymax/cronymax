@@ -35,6 +35,11 @@ set(CRONYMAX_APP_SRCS
   app/browser/shells/workspace.cc
   app/browser/client_handler.cc
   app/browser/client_handler.h
+  # Phase 6 extension webview scheme handler — wires
+  # `cronymax-webview://<ext-id>/<path>` to files under
+  # `~/.cronymax/extensions/<ext-id>/` with strict CSP.
+  app/browser/webview_scheme.cc
+  app/browser/webview_scheme.h
   app/browser/main_window.cc
   app/browser/main_window.h
   # Refactor 2: generic ObserverList (header-only)
@@ -195,6 +200,10 @@ if(APPLE)
     app/renderer/main.cc
     app/renderer/app.cc
     app/renderer/app.h
+    # Renderer-process scheme registration mirrors browser side so the
+    # scheme is declared identically across processes.
+    app/browser/webview_scheme.cc
+    app/browser/webview_scheme.h
   )
   set(CRONYMAX_HELPER_TARGET      "cronymax_app_helper")
   set(CRONYMAX_HELPER_OUTPUT_NAME "cronymax Helper")

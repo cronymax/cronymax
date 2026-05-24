@@ -1,6 +1,10 @@
 #include "browser/app.h"
 
+#include <cstdlib>
+#include <string>
+
 #include "browser/main_window.h"
+#include "browser/webview_scheme.h"
 #include "include/wrapper/cef_helpers.h"
 
 #if defined(__APPLE__)
@@ -8,6 +12,23 @@
 #endif
 
 namespace cronymax {
+
+namespace {
+
+// Resolve the user's `~/.cronymax/extensions` directory. Mirrors the
+// Rust `default_registry_root()` so the C++ scheme handler reads files
+// from the exact location the Rust runtime writes them.
+std::string ResolveExtensionsRoot() {
+#if defined(_WIN32)
+  const char* home = std::getenv("USERPROFILE");
+#else
+  const char* home = std::getenv("HOME");
+#endif
+  if (!home || !*home) return ".cronymax/extensions";
+  return std::string(home) + "/.cronymax/extensions";
+}
+
+}  // namespace
 
 App::App() {
   CefMessageRouterConfig config;
@@ -24,7 +45,17 @@ void App::OnContextInitialized() {
   // synchronously read images out of the registry while building buttons.
   IconRegistry::Init();
 #endif
+  // Wire `cronymax-webview://<ext-id>/<path>` to the on-disk extensions
+  // directory. The scheme name itself was declared in
+  // OnRegisterCustomSchemes (which runs strictly before this hook); here
+  // we just attach the factory that handles each incoming request.
+  InstallWebviewSchemeHandlerFactory(ResolveExtensionsRoot());
   MainWindow::Create();
+}
+
+void App::OnRegisterCustomSchemes(
+    CefRawPtr<CefSchemeRegistrar> registrar) {
+  RegisterWebviewScheme(registrar);
 }
 
 void App::OnBeforeCommandLineProcessing(

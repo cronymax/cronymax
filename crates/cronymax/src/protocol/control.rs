@@ -391,6 +391,20 @@ pub enum ControlRequest {
         model: String,
     },
 
+    /// Forward a payload that arrived from inside an extension webview
+    /// iframe (via `acquireCronymaxApi().postMessage(payload)`) to the
+    /// owning extension's Node host. The platform looks up the panel's
+    /// owning extension and translates this into a
+    /// `webview/onDidReceiveMessage` notify on its RPC channel.
+    ///
+    /// Returns `Ack` on success; rejects with `ControlError::InvalidState`
+    /// if the panel id is unknown (e.g. the extension was deactivated
+    /// after the iframe loaded).
+    ExtensionWebviewPost {
+        panel_id: String,
+        payload: serde_json::Value,
+    },
+
     /// Request changes on a pending document review in a flow run.
     /// Calls `FlowRuntime::write_review_comments` +
     /// `FlowRuntime::on_rejected_requeue` and re-spawns the producing node.

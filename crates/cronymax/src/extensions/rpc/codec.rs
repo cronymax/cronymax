@@ -86,6 +86,36 @@ pub mod sidebar_method {
     pub const UNREGISTER: &str = "sidebar/unregister";
 }
 
+/// Method names for the `cronymax.window.createWebviewPanel` surface
+/// (window L1 — webview panel lifecycle and bidirectional postMessage).
+///
+/// **Extension → platform** (request unless noted):
+/// * [`Self::CREATE_PANEL`] — extension creates a new webview panel;
+///   returns the resolved `cronymax-webview://<extId>/<entry>` URL the
+///   renderer mounts into an iframe.
+/// * [`Self::DISPOSE_PANEL`] — extension drops the panel.
+/// * [`Self::SET_VISIBLE`] (notify) — extension toggles visibility.
+/// * [`Self::POST_MESSAGE`] (notify) — extension → iframe payload;
+///   platform forwards to the renderer over the existing bridge.
+///
+/// **Platform → extension** (notify):
+/// * [`Self::ON_DID_RECEIVE_MESSAGE`] — payload posted from inside the
+///   iframe via `acquireCronymaxApi().postMessage(...)`; the bootstrap
+///   shim fans it out to user `panel.onDidReceiveMessage` listeners.
+/// * [`Self::ON_DID_CHANGE_VIEW_STATE`] — visibility/active state
+///   transitions surfaced from the renderer.
+/// * [`Self::ON_DID_DISPOSE`] — the renderer destroyed the iframe (e.g.
+///   user closed a tab); the extension should drop its references.
+pub mod webview_method {
+    pub const CREATE_PANEL: &str = "webview/createPanel";
+    pub const DISPOSE_PANEL: &str = "webview/disposePanel";
+    pub const SET_VISIBLE: &str = "webview/setVisible";
+    pub const POST_MESSAGE: &str = "webview/postMessage";
+    pub const ON_DID_RECEIVE_MESSAGE: &str = "webview/onDidReceiveMessage";
+    pub const ON_DID_CHANGE_VIEW_STATE: &str = "webview/onDidChangeViewState";
+    pub const ON_DID_DISPOSE: &str = "webview/onDidDispose";
+}
+
 /// Method names for the `cronymax.agents.provider` L2 EP — both directions.
 ///
 /// **Extension → platform** (notify, called from the extension when its

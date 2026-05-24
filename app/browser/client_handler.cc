@@ -44,6 +44,9 @@ bool ClientHandler::OnProcessMessageReceived(
   if (bridge_handler_ && message->GetName() == kMsgBrowserCtrl &&
       bridge_handler_->HandleBrowserCtrlMessage(browser, frame, message))
     return true;
+  if (bridge_handler_ && message->GetName() == kMsgWebviewPost &&
+      bridge_handler_->HandleWebviewPost(browser, frame, message))
+    return true;
   return message_router_->OnProcessMessageReceived(browser, frame,
                                                    source_process, message);
 }

@@ -29,6 +29,18 @@ static constexpr char kMsgBrowserCtrl[] = "cronymax.browser.ctrl";
 static constexpr char kMsgBrowserCtrlReply[] = "cronymax.browser.ctrl.reply";
 static constexpr char kMsgBrowserEvent[] = "cronymax.browser.event";
 
+// ── Extension webview bridge (Phase 6) ────────────────────────────────────
+// Renderer → browser: an iframe inside `cronymax-webview://...` called
+// `acquireCronymaxApi().postMessage(payload)`. Carries `(panelId, payload_msgpack)`.
+// Browser-side dispatcher in `BridgeHandler` looks up the panel's owning
+// extension and forwards via the Rust `ExtensionRuntime::forward_panel_message`.
+static constexpr char kMsgWebviewPost[] = "cronymax.webview.post";
+// Browser → renderer: payload sent by `panel.postMessage(...)` inside the
+// owning extension. Carries `(panelId, payload_msgpack)`. The renderer-side
+// `App::OnProcessMessageReceived` matches the panelId to the iframe and
+// dispatches into its `acquireCronymaxApi().onDidReceiveMessage` listeners.
+static constexpr char kMsgWebviewDeliver[] = "cronymax.webview.deliver";
+
 // Forward declaration; defined in bridge_handler.cc.
 class ControlEnricher;
 
@@ -296,6 +308,25 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
                             const nlohmann::json& response,
                             bool is_error);
 
+  // ── Extension webview bridge (Phase 6) ───────────────────────────────────
+  // Route a `cronymax.webview.post` process message that originated inside
+  // an extension webview iframe (via `acquireCronymaxApi().postMessage`).
+  // Wraps the payload into an `ExtensionWebviewPost` ControlRequest and
+  // sends it through the RuntimeProxy. Returns true if handled.
+  bool HandleWebviewPost(CefRefPtr<CefBrowser> browser,
+                         CefRefPtr<CefFrame> frame,
+                         CefRefPtr<CefProcessMessage> message);
+
+  // Wire the renderer-bound delivery side of the webview bridge. Called
+  // once at startup with a callback that locates the renderer browser /
+  // frame that owns the panel id. The BridgeHandler subscribes to the
+  // runtime's `extensions/webview` event topic and, on each `Message`
+  // event, looks up the renderer via the supplied resolver and sends
+  // `kMsgWebviewDeliver`.
+  using WebviewFrameResolver = std::function<
+      std::pair<CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>>(const std::string&)>;
+  void SetWebviewFrameResolver(WebviewFrameResolver resolver);
+
  private:
   // Install the user_approval capability handler on the RuntimeProxy.
   // Called automatically from SetRuntimeProxy.
@@ -348,6 +379,17 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   // closure here; OnBrowserClosed runs them all to release tokens.
   std::mutex browser_subs_mutex_;
   std::map<int, std::vector<std::function<void()>>> browser_subs_;
+
+  // ── Phase 6 webview state ────────────────────────────────────────────────
+  // Resolver that maps panel id → (browser, frame) the renderer mounted the
+  // iframe in. Installed at startup via SetWebviewFrameResolver. Looked up
+  // each time the runtime emits a `Message` event on `extensions/webview`
+  // so the platform can target the right renderer process.
+  std::mutex webview_mu_;
+  WebviewFrameResolver webview_resolver_;
+  // Token for the RuntimeProxy event subscription that watches the
+  // `extensions/webview` topic. Released in `~BridgeHandler`.
+  int64_t webview_event_token_ = -1;
 
   // (task 4.2) Per-space RuntimeProxy event sub tokens and runtime sub IDs.
   // Key: space_id. Cleaned up by OnSpaceSwitch when space becomes inactive.

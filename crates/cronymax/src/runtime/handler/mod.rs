@@ -38,6 +38,7 @@ use crate::runtime::services::RuntimeServices;
 
 mod contribution_ops;
 mod document_ops;
+mod extension_ops;
 mod flow_ops;
 mod helpers;
 mod registry_ops;
@@ -298,6 +299,9 @@ impl Handler for RuntimeHandler {
             req @ ControlRequest::FlowRunApprove { .. } => self.handle_flow_run_approve(req).await,
             req @ ControlRequest::FlowRunRequestChanges { .. } => {
                 self.handle_flow_run_request_changes(req).await
+            }
+            req @ ControlRequest::ExtensionWebviewPost { .. } => {
+                self.handle_extension_webview_post(req).await
             }
         }
     }

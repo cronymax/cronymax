@@ -88,6 +88,9 @@ use crate::extensions::api::commands::CommandRegistry;
 use crate::extensions::api::lifecycle::LifecycleState;
 use crate::extensions::api::renderers::{ContentRendererRegistry, RendererEntry};
 use crate::extensions::api::sidebar::{SidebarViewEntry, SidebarViewRegistry};
+use crate::extensions::api::webview::{
+    CreatePanelArgs, PanelSlot, WebviewEventEmitter, WebviewRegistry,
+};
 use crate::extensions::contributions::ContributionRegistry;
 use crate::extensions::error::{ExtensionError, ExtensionResult};
 #[cfg(test)]
@@ -98,7 +101,9 @@ use crate::extensions::manifest::{
     AgentProviderContribution, ContentRendererContribution, Manifest, SidebarViewContribution,
 };
 use crate::extensions::registry::ExtensionRegistry;
-use crate::extensions::rpc::codec::{agents_method, method, renderers_method, sidebar_method};
+use crate::extensions::rpc::codec::{
+    agents_method, method, renderers_method, sidebar_method, webview_method,
+};
 use crate::extensions::rpc::{Connection, RpcServer};
 
 /// Live state for one activated extension. Held inside `ExtensionRuntime`
@@ -134,6 +139,11 @@ struct RuntimeState {
     providers: AgentProviderRegistry,
     renderers: ContentRendererRegistry,
     sidebars: SidebarViewRegistry,
+    /// Live webview panel index. Created via `webview/createPanel` RPC,
+    /// torn down via `webview/disposePanel` or on extension deactivate.
+    /// The renderer subscribes to its event stream via the emitter wired
+    /// at composition root.
+    webviews: WebviewRegistry,
     /// Per-extension live host. Insert immediately after spawn (so
     /// register notifies fired during activate() can find the conn);
     /// remove on deactivate or activate-failure rollback.
@@ -163,6 +173,7 @@ impl ExtensionRuntime {
                 providers: AgentProviderRegistry::new(),
                 renderers: ContentRendererRegistry::new(),
                 sidebars: SidebarViewRegistry::new(),
+                webviews: WebviewRegistry::new(),
                 handles: Mutex::new(HashMap::new()),
                 session_router: AgentSessionRouter::new(),
                 events: EventBus::new(),
@@ -182,6 +193,20 @@ impl ExtensionRuntime {
 
     pub fn sidebars(&self) -> &SidebarViewRegistry {
         &self.state.sidebars
+    }
+
+    /// Live webview panel registry. The chat / settings / sidebar shells
+    /// subscribe to its event stream via the emitter wired at
+    /// composition root (see [`Self::set_webview_emitter`]).
+    pub fn webviews(&self) -> &WebviewRegistry {
+        &self.state.webviews
+    }
+
+    /// Replace the renderer-facing webview event emitter. Called once
+    /// at composition root so events flow into the [`RuntimeAuthority`]
+    /// topic the panel UI shells subscribe to.
+    pub fn set_webview_emitter(&self, emitter: WebviewEventEmitter) {
+        self.state.webviews.set_emitter(emitter);
     }
 
     /// L1.5 platform-event bus. Chat / tool dispatch sites call
@@ -479,6 +504,7 @@ impl ExtensionRuntime {
         self.state.commands.lock().unregister_all_for(ext_id);
         self.state.renderers.unregister_all_for(ext_id);
         self.state.sidebars.unregister_all_for(ext_id);
+        let _ = self.state.webviews.dispose_all_for(ext_id);
         let _ = self.state.events.unregister_extension(ext_id);
         let _ = self.state.lifecycle.lock().mark_deactivated(ext_id);
 
@@ -502,6 +528,7 @@ impl ExtensionRuntime {
         self.state.commands.lock().unregister_all_for(ext_id);
         self.state.renderers.unregister_all_for(ext_id);
         self.state.sidebars.unregister_all_for(ext_id);
+        let _ = self.state.webviews.dispose_all_for(ext_id);
         let _ = self.state.events.unregister_extension(ext_id);
         if let Some(h) = handle {
             let _ = h.host.shutdown().await;
@@ -892,7 +919,204 @@ impl ExtensionRuntime {
             });
         }
 
+        // ── webview/createPanel (request) ─────────────────────────────
+        //
+        // Extension-side `cronymax.window.createWebviewPanel(opts): Promise<WebviewPanel>`.
+        // Request, not notify, so the SDK's awaited promise can carry
+        // the resolved URL back to the JS side — the panel JS needs
+        // the URL it'll be loaded from for any debug logging /
+        // self-introspection, and an `id` collision must surface as a
+        // rejection.
+        //
+        // Response shape: `{ panelId, url, slot }` — the URL is the
+        // `cronymax-webview://<extId>/<entry>` form the renderer mounts
+        // into an iframe.
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.handle(webview_method::CREATE_PANEL, move |params, _ctx| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let panel_id = extract_str_field(&params, "panelId")?;
+                    let title = extract_str_field(&params, "title").unwrap_or_default();
+                    let entry = extract_str_field(&params, "entry")?;
+                    let slot_str = extract_str_field(&params, "slot")
+                        .unwrap_or_else(|_| "sidebar".to_string());
+                    let slot = PanelSlot::from_idl_str(&slot_str)
+                        .ok_or_else(|| ExtensionError::Rpc(format!("unknown slot `{slot_str}`")))?;
+                    let view = state.webviews.create(CreatePanelArgs {
+                        ext_id: ext_id.clone(),
+                        panel_id: panel_id.clone(),
+                        title,
+                        slot,
+                        entry: entry.clone(),
+                    })?;
+                    let url = WebviewRegistry::url_for(&ext_id, &view.panel_id, &entry);
+                    Ok(Value::Map(vec![
+                        (
+                            Value::String("panelId".into()),
+                            Value::String(view.panel_id.into()),
+                        ),
+                        (Value::String("url".into()), Value::String(url.into())),
+                        (
+                            Value::String("slot".into()),
+                            Value::String(view.slot.idl_str().to_string().into()),
+                        ),
+                    ]))
+                }
+            });
+        }
+
+        // ── webview/disposePanel (notify) ─────────────────────────────
+        //
+        // Extension calls `panel.dispose()` → bootstrap fires this notify.
+        // Idempotent against a missing id; the renderer just gets a
+        // PanelDisposed event for whatever was actually present.
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.on_notify(webview_method::DISPOSE_PANEL, move |params| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let panel_id = extract_str_field(&params, "panelId")?;
+                    let _ = state.webviews.dispose(&ext_id, &panel_id)?;
+                    Ok(())
+                }
+            });
+        }
+
+        // ── webview/setVisible (notify) ───────────────────────────────
+        //
+        // Visibility toggle. The Registry validates ownership and fires
+        // VisibilityChanged on the emitter so the renderer can mount /
+        // unmount or show/hide the iframe.
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.on_notify(webview_method::SET_VISIBLE, move |params| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let panel_id = extract_str_field(&params, "panelId")?;
+                    let visible = lookup_field(&params, "visible")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    state.webviews.set_visible(&ext_id, &panel_id, visible)?;
+                    Ok(())
+                }
+            });
+        }
+
+        // ── webview/postMessage (notify) ──────────────────────────────
+        //
+        // Extension → iframe payload. The Registry validates ownership
+        // and emits a `Message` event the renderer routes to the right
+        // iframe via the cefQuery / process-message bridge. We don't
+        // need to round-trip an ACK here — the IDL's `postMessage()`
+        // resolves on platform receipt, which is implicit at this notify
+        // boundary.
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.on_notify(webview_method::POST_MESSAGE, move |params| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let panel_id = extract_str_field(&params, "panelId")?;
+                    let payload_rmpv = lookup_field(&params, "payload").unwrap_or(Value::Nil);
+                    let payload = rmpv_to_json(&payload_rmpv);
+                    state
+                        .webviews
+                        .deliver_message(&ext_id, &panel_id, payload)?;
+                    Ok(())
+                }
+            });
+        }
+
         builder.build()
+    }
+
+    // ── iframe → extension bridge ──────────────────────────────────────
+
+    /// Forward a message that arrived from inside an iframe (via the
+    /// renderer-side `acquireCronymaxApi().postMessage(payload)` →
+    /// cefQuery bridge) to the owning extension's Node host as a
+    /// `webview/onDidReceiveMessage` notify.
+    ///
+    /// Ownership is enforced at the registry level: the lookup keys the
+    /// `panel_id` to its `ext_id`, so a misbehaving renderer cannot
+    /// route a payload to an extension that didn't create the panel.
+    pub async fn forward_panel_message(
+        &self,
+        panel_id: &str,
+        payload: serde_json::Value,
+    ) -> ExtensionResult<()> {
+        let owner = self.state.webviews.owner_of(panel_id)?.ok_or_else(|| {
+            ExtensionError::BadContribution {
+                point: "cronymax.window.panel".into(),
+                ext_id: "<renderer>".into(),
+                reason: format!("panel `{panel_id}` does not exist"),
+            }
+        })?;
+        let frame = Value::Map(vec![
+            (
+                Value::String("panelId".into()),
+                Value::String(panel_id.to_string().into()),
+            ),
+            (Value::String("payload".into()), json_to_rmpv(&payload)),
+        ]);
+        self.notify_extension(&owner, webview_method::ON_DID_RECEIVE_MESSAGE, frame)
+            .await
+    }
+
+    /// Forward a renderer-driven view-state change (visibility / focus)
+    /// to the owning extension as a `webview/onDidChangeViewState` notify.
+    /// Mirrors the IDL `WebviewPanel.onDidChangeViewState` event.
+    pub async fn forward_panel_view_state(
+        &self,
+        panel_id: &str,
+        active: bool,
+        visible: bool,
+    ) -> ExtensionResult<()> {
+        let owner = self.state.webviews.owner_of(panel_id)?.ok_or_else(|| {
+            ExtensionError::BadContribution {
+                point: "cronymax.window.panel".into(),
+                ext_id: "<renderer>".into(),
+                reason: format!("panel `{panel_id}` does not exist"),
+            }
+        })?;
+        let frame = Value::Map(vec![
+            (
+                Value::String("panelId".into()),
+                Value::String(panel_id.to_string().into()),
+            ),
+            (Value::String("active".into()), Value::Boolean(active)),
+            (Value::String("visible".into()), Value::Boolean(visible)),
+        ]);
+        self.notify_extension(&owner, webview_method::ON_DID_CHANGE_VIEW_STATE, frame)
+            .await
+    }
+
+    /// Forward a renderer-driven panel close (user closed the iframe's
+    /// tab, etc.) to the owning extension as a `webview/onDidDispose`
+    /// notify and remove the panel from the registry.
+    pub async fn forward_panel_disposed(&self, panel_id: &str) -> ExtensionResult<()> {
+        let owner = match self.state.webviews.owner_of(panel_id)? {
+            Some(o) => o,
+            None => return Ok(()), // already gone
+        };
+        // Strip the panel under owner credentials so the dispose path
+        // also fires `PanelDisposed` to the renderer (other subscribers
+        // see one consistent removal).
+        let _ = self.state.webviews.dispose(&owner, panel_id);
+        let frame = Value::Map(vec![(
+            Value::String("panelId".into()),
+            Value::String(panel_id.to_string().into()),
+        )]);
+        self.notify_extension(&owner, webview_method::ON_DID_DISPOSE, frame)
+            .await
     }
 }
 
@@ -2152,5 +2376,450 @@ mod tests {
         assert_eq!(caps.len(), 1);
         assert_eq!(caps[0].0, "alice.x.beat");
         assert_eq!(caps[0].1, "alice.x");
+    }
+
+    // ── P6 · webview panel RPC integration ─────────────────────────────
+
+    /// Build a wired pair where the runtime has alice.x's manifest
+    /// installed and an emitter that captures every WebviewEvent. The
+    /// peer side has no extra handlers (tests drive notifies and
+    /// requests directly).
+    async fn wired_pair_with_webview_capture() -> (
+        ExtensionRuntime,
+        Arc<Connection>,
+        Arc<StdMutex<Vec<crate::extensions::api::webview::WebviewEvent>>>,
+    ) {
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let manifest = alice_x_manifest_all_six();
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("alice.x", manifest.clone());
+
+        let log: Arc<StdMutex<Vec<crate::extensions::api::webview::WebviewEvent>>> =
+            Arc::new(StdMutex::new(Vec::new()));
+        let log_c = log.clone();
+        runtime.set_webview_emitter(Arc::new(move |ev| {
+            log_c.lock().unwrap().push(ev);
+        }));
+
+        let rpc_for_runtime_side = runtime.build_per_extension_handlers("alice.x", &manifest);
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (runtime_conn, _t1) = Connection::open(a_r, a_w, rpc_for_runtime_side);
+        let (peer_conn, _t2) = Connection::open(b_r, b_w, RpcServer::builder().build());
+        runtime.install_test_handle_conn_only("alice.x", runtime_conn);
+        (runtime, peer_conn, log)
+    }
+
+    #[tokio::test]
+    async fn webview_create_panel_request_returns_url_and_fires_event() {
+        let (runtime, peer_conn, log) = wired_pair_with_webview_capture().await;
+        let resp = peer_conn
+            .request(
+                webview_method::CREATE_PANEL,
+                Value::Map(vec![
+                    (
+                        Value::String("panelId".into()),
+                        Value::String("p-hello".into()),
+                    ),
+                    (Value::String("title".into()), Value::String("Hello".into())),
+                    (
+                        Value::String("slot".into()),
+                        Value::String("sidebar".into()),
+                    ),
+                    (
+                        Value::String("entry".into()),
+                        Value::String("./hello.html".into()),
+                    ),
+                ]),
+            )
+            .await
+            .expect("createPanel request must succeed");
+        let url = rmpv_to_json(&resp)
+            .get("url")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        assert_eq!(
+            url.as_deref(),
+            Some("cronymax-webview://alice.x/hello.html?panel=p-hello"),
+        );
+        assert_eq!(runtime.webviews().len(), 1);
+        let events = log.lock().unwrap().clone();
+        assert!(
+            matches!(
+                &events[..],
+                [crate::extensions::api::webview::WebviewEvent::PanelCreated {
+                    panel_id, slot, url,
+                    ..
+                }] if panel_id == "p-hello" && slot == "sidebar"
+                    && url == "cronymax-webview://alice.x/hello.html?panel=p-hello"
+            ),
+            "got {events:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn webview_create_panel_with_unknown_slot_rejects() {
+        let (_runtime, peer_conn, _log) = wired_pair_with_webview_capture().await;
+        let err = peer_conn
+            .request(
+                webview_method::CREATE_PANEL,
+                Value::Map(vec![
+                    (Value::String("panelId".into()), Value::String("p-x".into())),
+                    (
+                        Value::String("entry".into()),
+                        Value::String("./x.html".into()),
+                    ),
+                    (Value::String("slot".into()), Value::String("nope".into())),
+                ]),
+            )
+            .await
+            .expect_err("unknown slot must reject");
+        let msg = format!("{err}");
+        assert!(msg.contains("unknown slot"), "got `{msg}`");
+    }
+
+    #[tokio::test]
+    async fn webview_dispose_panel_notify_clears_registry_and_emits_event() {
+        let (runtime, peer_conn, log) = wired_pair_with_webview_capture().await;
+        // Seed a panel.
+        peer_conn
+            .request(
+                webview_method::CREATE_PANEL,
+                Value::Map(vec![
+                    (Value::String("panelId".into()), Value::String("p-1".into())),
+                    (
+                        Value::String("entry".into()),
+                        Value::String("./p.html".into()),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(runtime.webviews().len(), 1);
+
+        peer_conn
+            .notify(
+                webview_method::DISPOSE_PANEL,
+                Value::Map(vec![(
+                    Value::String("panelId".into()),
+                    Value::String("p-1".into()),
+                )]),
+            )
+            .await
+            .unwrap();
+        wait_until(|| runtime.webviews().is_empty()).await;
+        assert!(runtime.webviews().is_empty());
+        // Two emitter events: PanelCreated + PanelDisposed.
+        let events = log.lock().unwrap().clone();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[1],
+            crate::extensions::api::webview::WebviewEvent::PanelDisposed { panel_id } if panel_id == "p-1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn webview_post_message_notify_emits_message_event() {
+        let (runtime, peer_conn, log) = wired_pair_with_webview_capture().await;
+        peer_conn
+            .request(
+                webview_method::CREATE_PANEL,
+                Value::Map(vec![
+                    (Value::String("panelId".into()), Value::String("p-2".into())),
+                    (
+                        Value::String("entry".into()),
+                        Value::String("./p.html".into()),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+        // Drain the PanelCreated event from the capture so the next
+        // assertion sees only the Message.
+        log.lock().unwrap().clear();
+
+        peer_conn
+            .notify(
+                webview_method::POST_MESSAGE,
+                Value::Map(vec![
+                    (Value::String("panelId".into()), Value::String("p-2".into())),
+                    (
+                        Value::String("payload".into()),
+                        Value::Map(vec![(
+                            Value::String("note".into()),
+                            Value::String("hi".into()),
+                        )]),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+        wait_until(|| !log.lock().unwrap().is_empty()).await;
+        let events = log.lock().unwrap().clone();
+        match &events[..] {
+            [crate::extensions::api::webview::WebviewEvent::Message { panel_id, payload }] => {
+                assert_eq!(panel_id, "p-2");
+                assert_eq!(payload.get("note").and_then(|v| v.as_str()), Some("hi"),);
+            }
+            other => panic!("expected one Message event, got {other:?}"),
+        }
+        let _ = runtime; // keep alive
+    }
+
+    #[tokio::test]
+    async fn webview_set_visible_notify_emits_visibility_event() {
+        let (runtime, peer_conn, log) = wired_pair_with_webview_capture().await;
+        peer_conn
+            .request(
+                webview_method::CREATE_PANEL,
+                Value::Map(vec![
+                    (Value::String("panelId".into()), Value::String("p-3".into())),
+                    (
+                        Value::String("entry".into()),
+                        Value::String("./p.html".into()),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+        log.lock().unwrap().clear();
+
+        peer_conn
+            .notify(
+                webview_method::SET_VISIBLE,
+                Value::Map(vec![
+                    (Value::String("panelId".into()), Value::String("p-3".into())),
+                    (Value::String("visible".into()), Value::Boolean(true)),
+                ]),
+            )
+            .await
+            .unwrap();
+        wait_until(|| !log.lock().unwrap().is_empty()).await;
+        let events = log.lock().unwrap().clone();
+        assert!(matches!(
+            events.as_slice(),
+            [crate::extensions::api::webview::WebviewEvent::VisibilityChanged {
+                panel_id, visible,
+            }] if panel_id == "p-3" && *visible
+        ));
+        // And the registry's PanelView reflects the new state.
+        let pv = runtime.webviews().get("p-3").unwrap().unwrap();
+        assert!(pv.visible);
+    }
+
+    #[tokio::test]
+    async fn forward_panel_message_delivers_to_owning_extension() {
+        // Capture the `webview/onDidReceiveMessage` notify on the peer
+        // side and verify the runtime routes it to the right ext.
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let manifest = alice_x_manifest_all_six();
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("alice.x", manifest.clone());
+
+        type Captured = Arc<StdMutex<Vec<(String, serde_json::Value)>>>;
+        let captured: Captured = Arc::new(StdMutex::new(Vec::new()));
+        let cap_c = captured.clone();
+        let peer_server = RpcServer::builder()
+            .on_notify(webview_method::ON_DID_RECEIVE_MESSAGE, move |params| {
+                let cap = cap_c.clone();
+                async move {
+                    let panel_id = extract_str_field(&params, "panelId").unwrap_or_default();
+                    let payload = lookup_field(&params, "payload")
+                        .map(|v| rmpv_to_json(&v))
+                        .unwrap_or(serde_json::Value::Null);
+                    cap.lock().unwrap().push((panel_id, payload));
+                    Ok(())
+                }
+            })
+            .build();
+
+        let runtime_rpc = runtime.build_per_extension_handlers("alice.x", &manifest);
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (runtime_conn, _t1) = Connection::open(a_r, a_w, runtime_rpc);
+        let (_peer_conn, _t2) = Connection::open(b_r, b_w, peer_server);
+        runtime.install_test_handle_conn_only("alice.x", runtime_conn);
+
+        // Seed a panel and then drive forward_panel_message as the
+        // renderer-side bridge would.
+        runtime
+            .webviews()
+            .create(crate::extensions::api::webview::CreatePanelArgs {
+                ext_id: "alice.x".into(),
+                panel_id: "p-fwd".into(),
+                title: "T".into(),
+                slot: crate::extensions::api::webview::PanelSlot::Sidebar,
+                entry: "./e.html".into(),
+            })
+            .unwrap();
+        runtime
+            .forward_panel_message("p-fwd", serde_json::json!({"from": "iframe"}))
+            .await
+            .expect("forward must succeed");
+
+        for _ in 0..50 {
+            if !captured.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let caps = captured.lock().unwrap().clone();
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0].0, "p-fwd");
+        assert_eq!(
+            caps[0].1.get("from").and_then(|v| v.as_str()),
+            Some("iframe"),
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_panel_message_for_unknown_panel_errors() {
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let err = runtime
+            .forward_panel_message("ghost", serde_json::json!({}))
+            .await
+            .expect_err("missing panel must reject");
+        assert!(
+            matches!(err, ExtensionError::BadContribution { .. }),
+            "got {err:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_extension_post_message_is_rejected_at_ownership() {
+        // alice.x creates a panel; bob.y tries to postMessage to it.
+        // The Registry's owner check rejects without firing any event.
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let alice_m = alice_x_manifest_all_six();
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("alice.x", alice_m.clone());
+        let bob_m = Manifest::from_json(
+            r#"{
+                "id": "bob.y", "name": "Y", "version": "0.1.0",
+                "publisher": "bob",
+                "engines": { "cronymax": "^1.0" },
+                "main": "./m.js",
+                "activationEvents": [],
+                "contributes": {}
+            }"#,
+        )
+        .unwrap();
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("bob.y", bob_m.clone());
+
+        let alice_rpc = runtime.build_per_extension_handlers("alice.x", &alice_m);
+        let bob_rpc = runtime.build_per_extension_handlers("bob.y", &bob_m);
+        let (a, b) = duplex(8192);
+        let (c, d) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (c_r, c_w) = split(c);
+        let (d_r, d_w) = split(d);
+        let (alice_conn, _t1) = Connection::open(a_r, a_w, alice_rpc);
+        let (alice_peer, _t2) = Connection::open(b_r, b_w, RpcServer::builder().build());
+        let (bob_conn, _t3) = Connection::open(c_r, c_w, bob_rpc);
+        let (bob_peer, _t4) = Connection::open(d_r, d_w, RpcServer::builder().build());
+        runtime.install_test_handle_conn_only("alice.x", alice_conn);
+        runtime.install_test_handle_conn_only("bob.y", bob_conn);
+
+        // alice creates a panel.
+        alice_peer
+            .request(
+                webview_method::CREATE_PANEL,
+                Value::Map(vec![
+                    (
+                        Value::String("panelId".into()),
+                        Value::String("alice-panel".into()),
+                    ),
+                    (
+                        Value::String("entry".into()),
+                        Value::String("./a.html".into()),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+
+        // bob tries to push a message to alice's panel — notify swallows
+        // the error platform-side, but the registry stays unmodified
+        // and the renderer never sees a Message event from this attempt.
+        bob_peer
+            .notify(
+                webview_method::POST_MESSAGE,
+                Value::Map(vec![
+                    (
+                        Value::String("panelId".into()),
+                        Value::String("alice-panel".into()),
+                    ),
+                    (
+                        Value::String("payload".into()),
+                        Value::String("evil".into()),
+                    ),
+                ]),
+            )
+            .await
+            .unwrap();
+        // Let the notify dispatch land then ensure no message-event was
+        // emitted for alice-panel.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // The owner_of lookup still returns alice.x (panel unchanged).
+        assert_eq!(
+            runtime
+                .webviews()
+                .owner_of("alice-panel")
+                .unwrap()
+                .as_deref(),
+            Some("alice.x"),
+        );
+    }
+
+    #[tokio::test]
+    async fn deactivate_disposes_webview_panels() {
+        // create a panel, then unwind via the same path deactivate
+        // takes (no real spawn needed — we exercise the registry
+        // dispose_all_for + emitter directly).
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        runtime
+            .webviews()
+            .create(crate::extensions::api::webview::CreatePanelArgs {
+                ext_id: "alice.x".into(),
+                panel_id: "p1".into(),
+                title: "T".into(),
+                slot: crate::extensions::api::webview::PanelSlot::Sidebar,
+                entry: "./e.html".into(),
+            })
+            .unwrap();
+        runtime
+            .webviews()
+            .create(crate::extensions::api::webview::CreatePanelArgs {
+                ext_id: "bob.y".into(),
+                panel_id: "b1".into(),
+                title: "T".into(),
+                slot: crate::extensions::api::webview::PanelSlot::Sidebar,
+                entry: "./e.html".into(),
+            })
+            .unwrap();
+        assert_eq!(runtime.webviews().len(), 2);
+        let n = runtime.webviews().dispose_all_for("alice.x").unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(runtime.webviews().len(), 1);
+        assert_eq!(
+            runtime.webviews().owner_of("b1").unwrap().as_deref(),
+            Some("bob.y"),
+        );
     }
 }

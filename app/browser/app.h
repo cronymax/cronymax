@@ -19,6 +19,13 @@ class App : public CefApp,
       const CefString& process_type,
       CefRefPtr<CefCommandLine> command_line) override;
 
+  // Register `cronymax-webview://` so the extension webview iframes can
+  // load with a proper origin. Must be declared identically on every
+  // process app (browser + renderer); see `app/renderer/app.cc` for the
+  // matching renderer-side registration.
+  void OnRegisterCustomSchemes(
+      CefRawPtr<CefSchemeRegistrar> registrar) override;
+
   CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override {
     return this;
   }

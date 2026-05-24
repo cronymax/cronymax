@@ -334,6 +334,110 @@ function createOutputChannel(name, options) {
   return channel;
 }
 
+// ── Webview panel state ─────────────────────────────────────────────────
+//
+// `cronymax.window.createWebviewPanel(opts)` returns a panel object that
+// holds the user's `onDidReceiveMessage` listeners locally. Inbound
+// `webview/onDidReceiveMessage` / `webview/onDidChangeViewState` /
+// `webview/onDidDispose` notifies arrive routed by `panelId`; the global
+// handlers below look up the matching panel object and fan out.
+const webviewPanels = new Map(); // panelId → live WebviewPanel impl
+
+registerRpcHandler("webview/onDidReceiveMessage", (params) => {
+  const panel = webviewPanels.get(params?.panelId);
+  if (!panel) return;
+  panel._fireMessage(params.payload);
+});
+
+registerRpcHandler("webview/onDidChangeViewState", (params) => {
+  const panel = webviewPanels.get(params?.panelId);
+  if (!panel) return;
+  panel._setViewState({
+    active: !!params.active,
+    visible: !!params.visible,
+  });
+});
+
+registerRpcHandler("webview/onDidDispose", (params) => {
+  const panel = webviewPanels.get(params?.panelId);
+  if (!panel) return;
+  // The platform already removed the panel registry entry; just notify
+  // the user listeners and clean up our local map.
+  panel._fireDispose();
+  webviewPanels.delete(params.panelId);
+});
+
+function buildWebviewPanel({ id, slot, url, title, ownerExtId }) {
+  const msgListeners = new Set();
+  const viewStateListeners = new Set();
+  const disposeListeners = new Set();
+  let active = false;
+  let visible = false;
+  let disposed = false;
+  const fireSafe = (set, arg) => {
+    for (const cb of set) {
+      Promise.resolve()
+        .then(() => cb(arg))
+        .catch((err) => {
+          const msg = err?.message ? String(err.message) : String(err);
+          process.stderr.write(`[bootstrap] webview listener threw: ${msg}\n`);
+        });
+    }
+  };
+  const subscribable = (set) => (listener) => {
+    if (typeof listener !== "function") {
+      throw new TypeError("event listener must be a function");
+    }
+    set.add(listener);
+    return { dispose: () => set.delete(listener) };
+  };
+  const panel = {
+    get id() { return id; },
+    get slot() { return slot; },
+    get url() { return url; },
+    get title() { return title; },
+    get active() { return active; },
+    get visible() { return visible; },
+    onDidReceiveMessage: subscribable(msgListeners),
+    onDidChangeViewState: subscribable(viewStateListeners),
+    onDidDispose: subscribable(disposeListeners),
+    async postMessage(payload) {
+      if (disposed) {
+        throw new Error(`webview panel '${id}' is disposed`);
+      }
+      rpcNotify("webview/postMessage", { panelId: id, payload });
+    },
+    async setHtml(_html) {
+      // setHtml is reserved (IDL v1 includes it) but not yet plumbed
+      // through to the renderer; until the iframe loader supports
+      // inline HTML, throw rather than silently no-op.
+      throw new Error("webview setHtml is not implemented in v1 alpha");
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      webviewPanels.delete(id);
+      rpcNotify("webview/disposePanel", { panelId: id });
+      fireSafe(disposeListeners, undefined);
+    },
+    _fireMessage(payload) {
+      fireSafe(msgListeners, payload);
+    },
+    _setViewState(s) {
+      active = s.active;
+      visible = s.visible;
+      fireSafe(viewStateListeners, { active, visible });
+    },
+    _fireDispose() {
+      if (disposed) return;
+      disposed = true;
+      fireSafe(disposeListeners, undefined);
+    },
+  };
+  panel._ownerExtId = ownerExtId;
+  return panel;
+}
+
 const cronymax = {
   ExtensionMode: { Production: 1, Development: 2, Test: 3 },
   window: {
@@ -346,6 +450,37 @@ const cronymax = {
     },
     showErrorMessage(message) {
       return rpcRequest("window/showErrorMessage", { message });
+    },
+    // IDL: createWebviewPanel(opts): Promise<WebviewPanel>. Returns a
+    // panel that fires `onDidReceiveMessage` for cefQuery-routed posts
+    // from inside the iframe and `postMessage` to push payloads back.
+    async createWebviewPanel(opts) {
+      if (!opts || typeof opts.id !== "string" || typeof opts.entry !== "string") {
+        throw new TypeError(
+          "createWebviewPanel: { id, slot, title, entry } required",
+        );
+      }
+      const resp = await rpcRequest("webview/createPanel", {
+        panelId: opts.id,
+        title: opts.title ?? "",
+        slot: opts.slot ?? "sidebar",
+        entry: opts.entry,
+        retainContextWhenHidden: opts.retainContextWhenHidden ?? false,
+      });
+      // The platform echoes back the resolved url + slot so the SDK
+      // can expose a final shape that matches what the renderer
+      // actually mounted (the slot string is normalised against the
+      // accepted IDL set).
+      const panel = buildWebviewPanel({
+        id: resp?.panelId ?? opts.id,
+        slot: resp?.slot ?? opts.slot ?? "sidebar",
+        url: resp?.url ?? `cronymax-webview://${EXT_ID}/${opts.entry.replace(/^\.\/+/, "")}`,
+        title: opts.title ?? "",
+        ownerExtId: EXT_ID,
+      });
+      webviewPanels.set(panel.id, panel);
+      subscriptions.push({ dispose: () => panel.dispose() });
+      return panel;
     },
   },
   commands: {

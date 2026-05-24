@@ -121,6 +121,32 @@ impl RuntimeServices {
                 .map(|e| e.manifest.id.clone())
                 .collect();
             let runtime = ExtensionRuntime::new(extension_registry);
+
+            // Bridge webview registry events into the authority's
+            // "extensions/webview" topic so the C++ BridgeHandler can
+            // subscribe and forward `Message` events to the matching
+            // iframe via `kMsgWebviewDeliver`. The PanelCreated /
+            // PanelDisposed / VisibilityChanged variants are surfaced
+            // here too so the renderer UI can react to platform-side
+            // panel lifecycle without polling.
+            let auth_for_webview = authority.clone();
+            runtime.set_webview_emitter(std::sync::Arc::new(move |event| {
+                let payload = match serde_json::to_value(&event) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "failed to serialise WebviewEvent",
+                        );
+                        return;
+                    }
+                };
+                auth_for_webview.emit(
+                    "extensions/webview",
+                    RuntimeEventPayload::Raw { data: payload },
+                );
+            }));
+
             spawn_startup_activation(&runtime, &to_activate);
             runtime
         });

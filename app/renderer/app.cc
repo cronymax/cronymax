@@ -1,5 +1,7 @@
 #include "renderer/app.h"
 
+#include "browser/webview_scheme.h"
+
 #include <mutex>
 #include <random>
 #include <string>
@@ -22,6 +24,11 @@ static constexpr char kMsgRuntimeEvent[] = "cronymax.runtime.event";
 static constexpr char kMsgBrowserCtrl[] = "cronymax.browser.ctrl";
 static constexpr char kMsgBrowserCtrlReply[] = "cronymax.browser.ctrl.reply";
 static constexpr char kMsgBrowserEvent[] = "cronymax.browser.event";
+// Extension webview frame → browser process. Mirrors the constants in
+// `browser/bridge_handler.h` but is declared locally so the renderer
+// compilation unit doesn't pull in the full browser bridge header.
+static constexpr char kMsgWebviewPost[] = "cronymax.webview.post";
+static constexpr char kMsgWebviewDeliver[] = "cronymax.webview.deliver";
 
 // ---------------------------------------------------------------------------
 // V8 ↔ nlohmann::json conversion helpers (renderer process only)
@@ -190,6 +197,70 @@ bool RuntimeCtrlHandler::Execute(const CefString& /*name*/,
 }
 
 // ---------------------------------------------------------------------------
+// V8 handler: acquireCronymaxApi().postMessage(payload) → Promise<void>
+//
+// Installed onto cronymax-webview://<ext-id>/<entry>?panel=<id> iframes only.
+// Bridges to the browser process via the kMsgWebviewPost process message
+// carrying the panelId and a msgpack-encoded payload. The browser-side
+// BridgeHandler::HandleWebviewPost looks up the panel's owning extension
+// (via the WebviewRegistry) and calls
+// `ExtensionRuntime::forward_panel_message`, which lands a
+// `webview/onDidReceiveMessage` notify on the extension's Node host.
+//
+// Per-panel state (panel_id, ext_id) is captured at construction time,
+// derived from the frame URL at OnContextCreated time. The promise
+// resolves as soon as the process message has been dispatched — the
+// IDL's `postMessage()` contract is "queue the payload", not "wait for
+// the extension to handle it".
+// ---------------------------------------------------------------------------
+
+class WebviewPostHandler : public CefV8Handler {
+ public:
+  WebviewPostHandler(std::string panel_id, std::string ext_id)
+      : panel_id_(std::move(panel_id)), ext_id_(std::move(ext_id)) {}
+
+  bool Execute(const CefString& /*name*/,
+               CefRefPtr<CefV8Value> /*object*/,
+               const CefV8ValueList& arguments,
+               CefRefPtr<CefV8Value>& retval,
+               CefString& exception) override {
+    if (arguments.empty()) {
+      exception = "postMessage requires a payload argument";
+      return true;
+    }
+    auto context = CefV8Context::GetCurrentContext();
+    auto promise = CefV8Value::CreatePromise();
+    if (!promise) {
+      exception = "postMessage: failed to create Promise";
+      return true;
+    }
+    retval = promise;
+
+    const auto j = V8ToJson(arguments[0]);
+    const auto bytes = nlohmann::json::to_msgpack(j);
+
+    auto msg = CefProcessMessage::Create(kMsgWebviewPost);
+    auto args = msg->GetArgumentList();
+    args->SetString(0, panel_id_);
+    args->SetString(1, ext_id_);
+    args->SetBinary(2, CefBinaryValue::Create(bytes.data(), bytes.size()));
+    context->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
+
+    // Fire-and-forget on the renderer side; the IDL promises only
+    // "queued for delivery", and there is no per-message ACK on the
+    // wire that would let us reject on bridge errors.
+    promise->ResolvePromise(CefV8Value::CreateUndefined());
+    return true;
+  }
+
+ private:
+  std::string panel_id_;
+  std::string ext_id_;
+
+  IMPLEMENT_REFCOUNTING(WebviewPostHandler);
+};
+
+// ---------------------------------------------------------------------------
 // V8 handler: window.cronymax.browser.send(channel, payload) → Promise
 //
 // Uses the binary msgpack transport (cronymax.browser.send process message).
@@ -250,29 +321,73 @@ App::App() {
   render_message_router_ = CefMessageRouterRendererSide::Create(config);
 }
 
+void App::OnRegisterCustomSchemes(
+    CefRawPtr<CefSchemeRegistrar> registrar) {
+  cronymax::RegisterWebviewScheme(registrar);
+}
+
 // Check whether a frame URL belongs to built-in pages.
 // Production: built-in panels are served from file:// (or a custom scheme),
 // so any http(s):// URL is an external site that must not see the bridge.
 // Dev (CRONYMAX_DEV=1): main_window.cc rewrites ResourceUrl() to
 // http://localhost:5173/<path>; we mirror that exact prefix here so external
 // tabs (https://example.com, …) still can't see the bridge.
+//
+// **Extension webview URLs** (`cronymax-webview://...`) are deliberately
+// NOT classified as built-in — they get a separate, tightly-scoped
+// `acquireCronymaxApi()` surface via [`IsExtensionWebviewUrl`], not the
+// full `cronymax.runtime` / `cronymax.browser` IPC.
 // CEF helper processes inherit the host's env, so getenv works here.
 static bool IsBuiltinUrl(const CefString& url) {
   static const char* const kDevPanelPrefix = "http://localhost:5173/";
+  static const char* const kExtSchemePrefix = "cronymax-webview://";
   static const bool dev_mode = [] {
     const char* v = std::getenv("CRONYMAX_DEV");
     return v && *v;
   }();
   std::string u = url.ToString();
+  if (u.rfind(kExtSchemePrefix, 0) == 0) return false;  // separate surface
   if (dev_mode && u.rfind(kDevPanelPrefix, 0) == 0)
     return true;
   return u.rfind("https://", 0) != 0 && u.rfind("http://", 0) != 0;
+}
+
+// Returns true for `cronymax-webview://<ext-id>/<path>` frames — the
+// extension-webview sandbox surface. Used to scope `acquireCronymaxApi`
+// injection to those frames only.
+static bool IsExtensionWebviewUrl(const CefString& url) {
+  static const char* const kExtSchemePrefix = "cronymax-webview://";
+  std::string u = url.ToString();
+  return u.rfind(kExtSchemePrefix, 0) == 0;
+}
+
+// Parse `cronymax-webview://<ext-id>/<path>` and return the `<ext-id>`
+// component. Returns empty string if the URL is malformed.
+static std::string ExtractWebviewExtensionId(const CefString& url) {
+  static const std::string kPrefix = "cronymax-webview://";
+  std::string u = url.ToString();
+  if (u.rfind(kPrefix, 0) != 0) return std::string();
+  std::string tail = u.substr(kPrefix.size());
+  size_t slash = tail.find('/');
+  return (slash == std::string::npos) ? tail : tail.substr(0, slash);
 }
 
 void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
                            CefRefPtr<CefFrame> frame,
                            CefRefPtr<CefV8Context> context) {
   render_message_router_->OnContextCreated(browser, frame, context);
+
+  const CefString frame_url = frame->GetURL();
+
+  // ── Extension webview iframe surface ──────────────────────────────────
+  // Frames loaded from `cronymax-webview://...` get a tightly-scoped
+  // `acquireCronymaxApi()` global instead of the full cronymax.runtime /
+  // cronymax.browser surface. They can post messages to the owning
+  // extension (and receive replies); they cannot reach any built-in IPC.
+  if (IsExtensionWebviewUrl(frame_url)) {
+    InjectAcquireCronymaxApi(frame, context);
+    return;
+  }
 
   // Move cefQuery / cefQueryCancel from the window global into
   // window.cronymax.browser.query / .queryCancel, then delete the originals
@@ -307,7 +422,7 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
 
   // Inject window.cronymax.runtime only into built-in main frames — external
   // pages (https://...) must not see the runtime IPC surface.
-  if (!IsBuiltinUrl(frame->GetURL()))
+  if (!IsBuiltinUrl(frame_url))
     return;
 
   // Ensure window.cronymax exists; bridge.ts adds .browser to the same object.
@@ -347,6 +462,253 @@ void App::OnContextReleased(CefRefPtr<CefBrowser> browser,
     pending_browser_ctrl_callbacks_.clear();
     main_context_ = nullptr;
   }
+
+  // Drop any webview frame context whose V8 context we just lost. Frames
+  // can outlive the panel registry entry (the renderer process may keep
+  // serving an iframe after the platform disposed its registry row), so
+  // we identify the frame by V8 context identity rather than panel id.
+  for (auto it = webview_frames_.begin(); it != webview_frames_.end();) {
+    if (it->second.context && it->second.context->IsSame(context)) {
+      it = webview_frames_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Extension webview API injection.
+//
+// Builds a per-frame `acquireCronymaxApi` global. Each call returns the
+// same panel-scoped object (a la VS Code's `acquireVsCodeApi()` model)
+// — calling it twice in the same iframe throws, matching VS Code's
+// "exactly one handle per iframe" convention.
+//
+// The handler classes are defined at file scope (not as locals of the
+// injection function) because C++ doesn't permit one local class to
+// name another that's declared later in the same function.
+// ---------------------------------------------------------------------------
+
+class WebviewStateHandler : public CefV8Handler {
+ public:
+  WebviewStateHandler(App* app, std::string panel_id, bool set)
+      : app_(app), panel_id_(std::move(panel_id)), set_(set) {}
+  bool Execute(const CefString& /*name*/, CefRefPtr<CefV8Value> /*object*/,
+               const CefV8ValueList& arguments,
+               CefRefPtr<CefV8Value>& retval, CefString& /*exception*/) override {
+    auto it = app_->webview_frames_.find(panel_id_);
+    if (it == app_->webview_frames_.end()) {
+      retval = CefV8Value::CreateUndefined();
+      return true;
+    }
+    if (set_) {
+      it->second.state = arguments.empty() ? CefV8Value::CreateUndefined()
+                                            : arguments[0];
+      retval = CefV8Value::CreateUndefined();
+    } else {
+      retval = it->second.state ? it->second.state
+                                : CefV8Value::CreateUndefined();
+    }
+    return true;
+  }
+
+ private:
+  App* app_;
+  std::string panel_id_;
+  bool set_;
+  IMPLEMENT_REFCOUNTING(WebviewStateHandler);
+};
+
+class WebviewDisposeHandler : public CefV8Handler {
+ public:
+  WebviewDisposeHandler(App* app, std::string panel_id, int index)
+      : app_(app), panel_id_(std::move(panel_id)), index_(index) {}
+  bool Execute(const CefString&, CefRefPtr<CefV8Value>,
+               const CefV8ValueList&, CefRefPtr<CefV8Value>&,
+               CefString&) override {
+    auto it = app_->webview_frames_.find(panel_id_);
+    if (it != app_->webview_frames_.end() &&
+        it->second.on_message_handlers &&
+        it->second.on_message_handlers->IsArray() &&
+        index_ < it->second.on_message_handlers->GetArrayLength()) {
+      it->second.on_message_handlers->SetValue(index_, CefV8Value::CreateNull());
+    }
+    return true;
+  }
+
+ private:
+  App* app_;
+  std::string panel_id_;
+  int index_;
+  IMPLEMENT_REFCOUNTING(WebviewDisposeHandler);
+};
+
+class WebviewOnMessageHandler : public CefV8Handler {
+ public:
+  WebviewOnMessageHandler(App* app, std::string panel_id)
+      : app_(app), panel_id_(std::move(panel_id)) {}
+  bool Execute(const CefString& /*name*/, CefRefPtr<CefV8Value> /*object*/,
+               const CefV8ValueList& arguments,
+               CefRefPtr<CefV8Value>& retval, CefString& exception) override {
+    if (arguments.empty() || !arguments[0]->IsFunction()) {
+      exception = "onDidReceiveMessage expects a function";
+      return true;
+    }
+    int idx = 0;
+    auto it = app_->webview_frames_.find(panel_id_);
+    if (it != app_->webview_frames_.end() &&
+        it->second.on_message_handlers &&
+        it->second.on_message_handlers->IsArray()) {
+      idx = it->second.on_message_handlers->GetArrayLength();
+      it->second.on_message_handlers->SetValue(idx, arguments[0]);
+    }
+    // Return a Disposable-shaped object so the SDK consumer can drop
+    // listeners — we mark the slot null rather than splicing the array
+    // so other indexes stay stable across dispose calls.
+    auto disposable = CefV8Value::CreateObject(nullptr, nullptr);
+    disposable->SetValue(
+        "dispose",
+        CefV8Value::CreateFunction(
+            "dispose", new WebviewDisposeHandler(app_, panel_id_, idx)),
+        V8_PROPERTY_ATTRIBUTE_NONE);
+    retval = disposable;
+    return true;
+  }
+
+ private:
+  App* app_;
+  std::string panel_id_;
+  IMPLEMENT_REFCOUNTING(WebviewOnMessageHandler);
+};
+
+class WebviewAcquireHandler : public CefV8Handler {
+ public:
+  WebviewAcquireHandler(App* app, std::string panel_id, std::string ext_id)
+      : app_(app),
+        panel_id_(std::move(panel_id)),
+        ext_id_(std::move(ext_id)) {}
+  bool Execute(const CefString& /*name*/, CefRefPtr<CefV8Value> /*object*/,
+               const CefV8ValueList& /*arguments*/,
+               CefRefPtr<CefV8Value>& retval, CefString& exception) override {
+    if (consumed_) {
+      exception = "acquireCronymaxApi: already acquired in this frame";
+      return true;
+    }
+    consumed_ = true;
+    auto api = CefV8Value::CreateObject(nullptr, nullptr);
+    api->SetValue(
+        "postMessage",
+        CefV8Value::CreateFunction(
+            "postMessage", new WebviewPostHandler(panel_id_, ext_id_)),
+        V8_PROPERTY_ATTRIBUTE_NONE);
+    api->SetValue(
+        "setState",
+        CefV8Value::CreateFunction(
+            "setState",
+            new WebviewStateHandler(app_, panel_id_, /*set=*/true)),
+        V8_PROPERTY_ATTRIBUTE_NONE);
+    api->SetValue(
+        "getState",
+        CefV8Value::CreateFunction(
+            "getState",
+            new WebviewStateHandler(app_, panel_id_, /*set=*/false)),
+        V8_PROPERTY_ATTRIBUTE_NONE);
+    api->SetValue(
+        "onDidReceiveMessage",
+        CefV8Value::CreateFunction(
+            "onDidReceiveMessage",
+            new WebviewOnMessageHandler(app_, panel_id_)),
+        V8_PROPERTY_ATTRIBUTE_NONE);
+    retval = api;
+    return true;
+  }
+
+ private:
+  App* app_;
+  std::string panel_id_;
+  std::string ext_id_;
+  bool consumed_ = false;
+  IMPLEMENT_REFCOUNTING(WebviewAcquireHandler);
+};
+
+void App::InjectAcquireCronymaxApi(CefRefPtr<CefFrame> frame,
+                                   CefRefPtr<CefV8Context> context) {
+  const std::string url = frame->GetURL().ToString();
+  const std::string ext_id = ExtractWebviewExtensionId(url);
+  if (ext_id.empty()) return;
+
+  // Parse `?panel=<id>` out of the URL. The Rust-side `url_for` always
+  // appends this; if the iframe was loaded with a missing/malformed
+  // panel param we still inject the API but downstream postMessage
+  // routing will fail with a clear "panel not found" error.
+  std::string panel_id;
+  const size_t qpos = url.find("?panel=");
+  if (qpos != std::string::npos) {
+    panel_id = url.substr(qpos + std::strlen("?panel="));
+    const size_t end = panel_id.find_first_of("&#");
+    if (end != std::string::npos) panel_id.resize(end);
+    // Percent-decode the (small) set Rust's `url_for` encodes.
+    std::string decoded;
+    decoded.reserve(panel_id.size());
+    for (size_t i = 0; i < panel_id.size(); ++i) {
+      if (panel_id[i] == '%' && i + 2 < panel_id.size()) {
+        const auto from_hex = [](char c) -> int {
+          if (c >= '0' && c <= '9') return c - '0';
+          if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+          if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+          return -1;
+        };
+        int hi = from_hex(panel_id[i + 1]);
+        int lo = from_hex(panel_id[i + 2]);
+        if (hi >= 0 && lo >= 0) {
+          decoded.push_back(static_cast<char>((hi << 4) | lo));
+          i += 2;
+          continue;
+        }
+      }
+      decoded.push_back(panel_id[i]);
+    }
+    panel_id = std::move(decoded);
+  }
+
+  WebviewFrameContext fc;
+  fc.context = context;
+  fc.panel_id = panel_id;
+  fc.ext_id = ext_id;
+  fc.on_message_handlers = CefV8Value::CreateArray(0);
+  fc.state = CefV8Value::CreateUndefined();
+  webview_frames_[panel_id] = std::move(fc);
+
+  CefRefPtr<CefV8Value> global = context->GetGlobal();
+  global->SetValue(
+      "acquireCronymaxApi",
+      CefV8Value::CreateFunction(
+          "acquireCronymaxApi",
+          new WebviewAcquireHandler(this, panel_id, ext_id)),
+      V8_PROPERTY_ATTRIBUTE_NONE);
+}
+
+void App::DispatchWebviewDelivery(const std::string& panel_id,
+                                  const std::vector<uint8_t>& payload_msgpack) {
+  auto it = webview_frames_.find(panel_id);
+  if (it == webview_frames_.end()) return;
+  if (!it->second.context) return;
+  it->second.context->Enter();
+  auto j = nlohmann::json::from_msgpack(payload_msgpack, true, false);
+  CefRefPtr<CefV8Value> payload =
+      j.is_discarded() ? CefV8Value::CreateNull() : JsonToV8(j);
+  auto handlers = it->second.on_message_handlers;
+  if (handlers && handlers->IsArray()) {
+    const int n = handlers->GetArrayLength();
+    for (int i = 0; i < n; ++i) {
+      auto h = handlers->GetValue(i);
+      if (!h || !h->IsFunction()) continue;
+      CefV8ValueList args;
+      args.push_back(payload);
+      h->ExecuteFunctionWithContext(it->second.context, nullptr, args);
+    }
+  }
+  it->second.context->Exit();
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +867,21 @@ bool App::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
       }
     }
     main_context_->Exit();
+    return true;
+  }
+
+  // ── Webview delivery ───────────────────────────────────────────────────
+  // Browser sends kMsgWebviewDeliver(panel_id, ext_id, payload_msgpack)
+  // whenever an extension calls `panel.postMessage(...)`. Find the matching
+  // iframe frame and fan out to its onDidReceiveMessage listeners.
+  if (name == kMsgWebviewDeliver) {
+    auto msg_args = message->GetArgumentList();
+    const std::string panel_id = msg_args->GetString(0).ToString();
+    auto bin = msg_args->GetBinary(2);
+    if (!bin) return true;
+    std::vector<uint8_t> bytes(bin->GetSize());
+    bin->GetData(bytes.data(), bytes.size(), 0);
+    DispatchWebviewDelivery(panel_id, bytes);
     return true;
   }
 

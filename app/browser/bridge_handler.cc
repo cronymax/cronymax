@@ -470,6 +470,121 @@ void BridgeHandler::SendBrowserCtrlReply(CefRefPtr<CefBrowser> browser,
 }
 
 // ---------------------------------------------------------------------------
+// HandleWebviewPost — bridge `cronymax.webview.post` from a webview iframe
+// up into the runtime as an `ExtensionWebviewPost` ControlRequest.
+//   arg[0]: panel_id (string)
+//   arg[1]: ext_id (string)
+//   arg[2]: payload (msgpack binary)
+// The reply is discarded — the iframe's postMessage promise resolved at
+// the renderer boundary, and dropping errors here would silently mask
+// extension deactivation; we surface them as console warnings instead.
+// ---------------------------------------------------------------------------
+
+bool BridgeHandler::HandleWebviewPost(CefRefPtr<CefBrowser> /*browser*/,
+                                      CefRefPtr<CefFrame> /*frame*/,
+                                      CefRefPtr<CefProcessMessage> message) {
+  CEF_REQUIRE_UI_THREAD();
+  if (message->GetName() != kMsgWebviewPost) return false;
+  if (!runtime_proxy_) return true;  // nothing to forward to — drop quietly
+
+  auto margs = message->GetArgumentList();
+  const std::string panel_id = margs->GetString(0).ToString();
+  // arg[1] = ext_id, declared for forward compat / cross-checking; the
+  // runtime does its own ownership check against the WebviewRegistry.
+
+  nlohmann::json payload = nullptr;
+  if (margs->GetSize() > 2) {
+    auto binary = margs->GetBinary(2);
+    if (binary && binary->GetSize() > 0) {
+      std::vector<uint8_t> bytes(binary->GetSize());
+      binary->GetData(bytes.data(), bytes.size(), 0);
+      auto decoded = nlohmann::json::from_msgpack(bytes, true,
+                                                   /*allow_exceptions=*/false);
+      if (!decoded.is_discarded()) payload = std::move(decoded);
+    }
+  }
+
+  nlohmann::json req = {
+      {"kind", "extension_webview_post"},
+      {"panel_id", panel_id},
+      {"payload", std::move(payload)},
+  };
+  runtime_proxy_->SendControl(
+      std::move(req),
+      [panel_id](nlohmann::json /*response*/, bool is_error) {
+        if (is_error) {
+          LOG(WARNING) << "[webview] forward to extension failed for panel "
+                       << panel_id;
+        }
+      });
+  return true;
+}
+
+void BridgeHandler::SetWebviewFrameResolver(WebviewFrameResolver resolver) {
+  std::lock_guard lock(webview_mu_);
+  webview_resolver_ = std::move(resolver);
+
+  // Subscribe to the runtime's `extensions/webview` topic exactly once.
+  // The runtime emits a `Raw` payload whose `data` is a typed
+  // WebviewEvent (PanelCreated / PanelDisposed / Message / VisibilityChanged).
+  // We forward `Message` variants to the matching iframe as a
+  // `kMsgWebviewDeliver` process message.
+  if (webview_event_token_ >= 0) return;
+  if (!runtime_proxy_) return;
+  webview_event_token_ = runtime_proxy_->SubscribeEvents(
+      [this](const nlohmann::json& event) {
+        if (!event.is_object()) return;
+        // Authority events come wrapped as
+        //   {"topic":"extensions/webview","payload":{"kind":"raw","data":{...}}}
+        // The shape varies a little across the C++/Rust boundary, so look
+        // for the `kind`+`panelId`+`payload` inside whichever subfield is
+        // present and ignore otherwise.
+        const auto* node = &event;
+        if (event.contains("payload") && event["payload"].is_object()) {
+          node = &event["payload"];
+        }
+        if (node->contains("data") && (*node)["data"].is_object()) {
+          node = &(*node)["data"];
+        }
+        if (!node->is_object()) return;
+        if (!node->contains("kind")) return;
+        const std::string kind = node->value("kind", "");
+        if (kind != "message") return;
+        const std::string panel_id = node->value("panelId", "");
+        if (panel_id.empty()) return;
+        nlohmann::json payload = node->value("payload", nlohmann::json{});
+
+        WebviewFrameResolver r;
+        {
+          std::lock_guard lock(webview_mu_);
+          r = webview_resolver_;
+        }
+        if (!r) return;
+        auto [target_browser, target_frame] = r(panel_id);
+        if (!target_browser || !target_frame) return;
+
+        auto bytes = nlohmann::json::to_msgpack(payload);
+        auto post = [panel_id, target_browser, target_frame,
+                     bytes = std::move(bytes)]() {
+          auto msg = CefProcessMessage::Create(kMsgWebviewDeliver);
+          auto args = msg->GetArgumentList();
+          args->SetString(0, panel_id);
+          args->SetString(1, std::string());  // reserved for ext_id
+          args->SetBinary(
+              2, CefBinaryValue::Create(bytes.data(), bytes.size()));
+          target_frame->SendProcessMessage(PID_RENDERER, msg);
+        };
+        if (CefCurrentlyOn(TID_UI)) {
+          post();
+        } else {
+          CefPostTask(TID_UI, base::BindOnce(
+                                  [](decltype(post) fn) { fn(); },
+                                  std::move(post)));
+        }
+      });
+}
+
+// ---------------------------------------------------------------------------
 // OnBrowserClosed — clean up per-browser event subscriptions
 // ---------------------------------------------------------------------------
 
