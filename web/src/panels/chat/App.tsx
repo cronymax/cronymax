@@ -2836,6 +2836,10 @@ export function App() {
     });
     const offReconnected = browser.on("runtime.reconnected", () => {
       dispatch({ type: "setReconnecting", reconnecting: false });
+      // Also re-runs after the *first* attach (broadcast by SetRuntimeProxy in
+      // bridge_handler.h) — covers the startup race where refreshAgents fires
+      // before the Rust runtime finished its Hello/Welcome handshake.
+      void refreshAgents();
     });
     return () => {
       offRestarting();

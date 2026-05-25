@@ -31,9 +31,10 @@ static constexpr char kMsgBrowserEvent[] = "cronymax.browser.event";
 
 // ── Extension webview bridge (Phase 6) ────────────────────────────────────
 // Renderer → browser: an iframe inside `cronymax-webview://...` called
-// `acquireCronymaxApi().postMessage(payload)`. Carries `(panelId, payload_msgpack)`.
-// Browser-side dispatcher in `BridgeHandler` looks up the panel's owning
-// extension and forwards via the Rust `ExtensionRuntime::forward_panel_message`.
+// `acquireCronymaxApi().postMessage(payload)`. Carries `(panelId,
+// payload_msgpack)`. Browser-side dispatcher in `BridgeHandler` looks up the
+// panel's owning extension and forwards via the Rust
+// `ExtensionRuntime::forward_panel_message`.
 static constexpr char kMsgWebviewPost[] = "cronymax.webview.post";
 // Browser → renderer: payload sent by `panel.postMessage(...)` inside the
 // owning extension. Carries `(panelId, payload_msgpack)`. The renderer-side
@@ -219,9 +220,19 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   void SetRuntimeProxy(RuntimeProxy* proxy) {
     // Bump generation to abort any in-flight restart re-subscription tasks.
     ++restart_generation_;
+    const bool first_attach = (runtime_proxy_ == nullptr) && (proxy != nullptr);
     runtime_proxy_ = proxy;
     if (proxy) {
       SetupCapabilityHandler();
+      // First successful attach after process start. Renderer panels that
+      // mounted during the Rust-runtime handshake window saw their early
+      // contribution.list / space.list calls rejected with "runtime not
+      // available" (HandleRuntimeProcessMessage short-circuits while
+      // runtime_proxy_ is null). Reuse the existing reconnected channel so
+      // those panels' "runtime.reconnected" listeners refetch and clear
+      // their error banners.
+      if (first_attach && shell_cbs_.broadcast_event)
+        shell_cbs_.broadcast_event("runtime.reconnected", "{}");
       // When the supervisor restarts crony:
       //  1. Broadcast runtime.restarting so panels can show a reconnecting UI.
       //  2. Clear stale renderer subscriptions (zombie renderer_subs_).
@@ -323,8 +334,9 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   // runtime's `extensions/webview` event topic and, on each `Message`
   // event, looks up the renderer via the supplied resolver and sends
   // `kMsgWebviewDeliver`.
-  using WebviewFrameResolver = std::function<
-      std::pair<CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>>(const std::string&)>;
+  using WebviewFrameResolver =
+      std::function<std::pair<CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>>(
+          const std::string&)>;
   void SetWebviewFrameResolver(WebviewFrameResolver resolver);
 
  private:
