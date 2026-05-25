@@ -981,3 +981,130 @@ P6 在 v0.2 设计里是「CEF 自定义协议 + iframe + postMessage 跨进程�
 | Phase 8 agent_provider 接通 chat+flow | 主体 ✅ | worker-only;reviewer / P8-T03 / P8-T04 推后 |
 | Phase 9 SDK + 扩展管理 UI | 部分(统一 ContributionDescriptor) | Settings UI / CLI ext package / 模板仓 待做 |
 | Phase 10 收尾 + Alpha | 未启动 | |
+
+---
+
+## Phase 6.5 执行计划(2026-05-25 · ContentRenderer 接通 chat 流)
+
+P6 把 webview 基建(scheme + 跨进程桥 + V8 注入)落了,但只覆盖**扩展主动 `createWebviewPanel` 开 sidebar/settings/tab 面板**这一条路径。P6.5 接通另一条:**chat 消息里的 fenced code block 被扩展渲染成富内容**(dogfood `acme.mermaid-renderer`)。
+
+P6.5 的核心区别是:不复用 `createWebviewPanel`(语义不同 —— 用户主动 vs 平台驱动),也不在原 `WebviewSlot` 加新槽位。renderer iframe 是平台看到 MIME-matched block 后**自动 mount inline 进 chat 消息 DOM**,生命周期跟 block 绑定。
+
+### IDL 决策(2026-05-25 Codex review 后定稿)
+
+放弃 v1 alpha 原 IDL 里 `Renderers.registerRenderer(id, handler)` 的 Node-side handler 方案。原方案与同文件注释 "each renderer is hosted in a webview iframe" 自相矛盾,且 `RenderHandle` 没有任何输出字段 → Node 渲染出的 SVG 没合法 IDL 路径回到 DOM。改方案如下,12 条:
+
+| # | 决策 | 说明 |
+|---|---|---|
+| D1 | 删除 `Renderers.registerRenderer` (Node-side API) | alpha 期硬删,不留 deprecated shim(零外部依赖,无迁移负担)|
+| D2 | 删除 `RenderHandle` / `RenderHandler` / `Renderers` 类型 | 合并进新 `RendererApi`(iframe 侧)|
+| D3 | 新文件 `cep-idl/v1/renderer-host.ts` 定义 iframe 侧 API | `RendererActivationApi`(acquire-once)、`RendererActivate`、`RendererContext`、`RendererApi`(`renderItem` / `updateItem?` / `disposeItem?` 三件套,带 `CancellationToken`)|
+| D3+ | `RenderRequest` 形状重做 | `data: Uint8Array` → `content: string`(v1 text-first);加 `complete: boolean`(流式)+ `version: number`(stale drop)+ `rendererId`(平台路由)+ `metadata { language, source, messageId }` |
+| D4 | renderer iframe **复用** P6 的 `cronymax-webview://` scheme | 不开第二个 scheme,共享 C++ 桥基础设施 |
+| D5 | URL query 用 **`?surface=panel\|renderer&id=<...>`** | **必须改成真 query parser**;现 C++ `app/renderer/app.cc:640` 只 `url.find("?panel=")` 字符串匹配,缺失时 `panel_id=""` → `webview_frames_[""]` 多 renderer iframe 互相覆盖,是个 bug。renderer surface **不**注入 `acquireCronymaxApi`,反之亦然(互斥)|
+| D6 | `WebviewSlot` 不动 | renderer 不走 `createWebviewPanel`,语义彻底分开 |
+| D7 | renderer-only 扩展可以无 `main.js` | `manifest.main: string?`,validator 看 contributions 决定是否 spawn Node host;现 `manifest.rs:213` `require("main", ...)` 是块 |
+| D8 | chat 挂 iframe = React 组件 `<ExtensionContentBlock>` + Authority topic `extensions/renderer`(仅 lifecycle) | create / dispose 走 topic;streaming payload **不**走 topic |
+| D9 | `renderItem` / `updateItem` payload 走 **parent React → iframe `contentWindow.postMessage` 直传** | 不绕 Rust IPC,省 RPC + msgpack 一来回。Rust 通道**仅**用于:(a) iframe → 扩展 Node host 反向(扩展有 main 时),(b) 平台观测的生命周期事件 |
+| D10 | 平台不 sanitize iframe 内 DOM | iframe 是独立 origin(host=extId),XSS 被浏览器原生 origin 模型按扩展分舱。CSP / sandbox / `setHeight` / parse error fallback 是另外的多层防线,**不被这条决策替代** |
+| D11 | `ContentRendererContribution.csp?: { connect_src?: string[] }` | 让扩展声明 iframe 网络白名单(merge 进 scheme handler response 的 CSP 头);与扩展 `capabilities.network`(Node-side fetch)**解耦** —— 两个 origin,两套权限 |
+| D12 | chat 看到 fenced code block **未闭合** → 显示原 code block | **闭合后**才 mount renderer iframe。若要 typing 预览,扩展自己 try/catch parse error 显示 spinner;`RenderRequest.complete: false` 标识流式中 |
+
+被 push back 的 Codex 建议:
+- 拒绝 `requiresMessaging: "never"|"optional"|"always"` 字段 —— derived state(`main` 存在与否 implicit derive),YAGNI
+- 拒绝 deprecated shim —— alpha 期破契约成本为零,留着是给自己挖坑
+- v1 不展开 `RendererTheme` 成 `{ kind, zoom, reducedMotion, cssVariables }`,只 `"light" | "dark"`,其他 M1
+- **接受**共享 iframe 思路但 v1 实现成**一块一 iframe**;dogfood 时如果 perf 真扛不住再做共享池(一个 `(ext, rendererId)` 一 iframe,N 块 N 个 element)
+
+详见 conversation transcript 2026-05-25(IDL review with Codex gpt-5.5 xhigh)。
+
+### IDL 已落地(本次 commit)
+
+- `cep-idl/v1/renderers.ts` 完全重写:删 `RenderHandle` / `RenderHandler` / `Renderers`;`RenderRequest` 新形状(`rendererId` / `content: string` / `complete: boolean` / `version: number` / `metadata`)
+- 新文件 `cep-idl/v1/renderer-host.ts`:`RendererActivationApi` / `RendererActivate` / `RendererContext` / `RendererApi` / `RendererTheme` + `declare global function acquireCronymaxRendererApi()`
+- `cep-idl/v1/manifest.ts`:`Manifest.main` 改 `string?`;`ContentRendererContribution.csp?: RendererCsp` 新增
+- `cep-idl/v1/index.ts`:`Cronymax` 接口删 `renderers` namespace;re-exports 同步;新增 `RenderRequestMetadata` / `RendererCsp` / renderer-host 5 个类型导出
+- tsc strict + isolatedModules `npx tsc --noEmit` exit 0
+
+### P6.5 子任务(待执行)
+
+| ID | 内容 | 阻塞 / 依赖 |
+|---|---|---|
+| P6.5-T01 | Rust `extensions/manifest.rs` validator:`main` 改 optional;`spawn Node host` 路径加 "无 main → skip" 分支;`extensions/runtime.rs` activate / deactivate 对 main-less 扩展走 declarative-only 路径(无 RPC 通道,但 contribution 入 registry) | — |
+| P6.5-T02 | Rust `extensions/api/renderers.rs`:`RendererEntry` 加 `csp: Option<RendererCsp>` 字段;`lookup_by_mime(mime) -> Option<(ext_id, renderer_id, entry, csp)>` 方法 | — |
+| P6.5-T03 | **C++ query parser 修复**:`app/renderer/app.cc:640` 把 `url.find("?panel=")` 字符串匹配改成正确的 query parser;按 `surface=panel\|renderer` 二选一注入 `acquireCronymaxApi()` 或 `acquireCronymaxRendererApi()`;`webview_frames_[""]` 覆盖 bug 顺手修(empty surface → reject,不写入 map) | 独立于 P6.5 其他;**先做** |
+| P6.5-T04 | C++ V8 注入 `acquireCronymaxRendererApi()`:新 handler classes `RendererPostHandler` / `RendererSetHeightHandler` / `RendererAcquireHandler`;镜像 P6 的 `?panel=` 路径但 SDK 表面是 renderer 侧 | 依赖 T03 query parser |
+| P6.5-T05 | Rust `protocol/control.rs` 加 `ExtensionRendererSetHeight { instance_id, px }` ControlRequest;`runtime/handler/extension_ops.rs` 路由到 `ExtensionRuntime::forward_renderer_height` | — |
+| P6.5-T06 | Rust scheme handler `webview_scheme.cc`:对 `?surface=renderer` URL,在 CSP 头里 merge 扩展声明的 `csp.connect_src` 进 `connect-src` 指令 | 依赖 T02 csp 入 registry |
+| P6.5-T07 | bootstrap.js 删 `cronymax.renderers.registerRenderer` shim(line 604-614);删 `Renderers` 命名空间属性 —— renderer 不再走 Node host | — |
+| P6.5-T08 | web `<ExtensionContentBlock mime data instanceId>` 组件:订阅 `extensions/renderer` topic 的 `InstanceCreated` / `InstanceDisposed`,挂 `<iframe src=cronymax-webview://<ext>/<entry>?surface=renderer&id=<inst>>`;`setHeight` 通过 child→parent postMessage 接收;`renderItem` payload 通过 parent→child postMessage 发送 | 依赖 T03 / T04 |
+| P6.5-T09 | chat 消息渲染:识别 fenced code block → 看到 `complete: true` 才 lookup renderer + emit `InstanceCreated`;source 变化 → emit `InstanceUpdated`(增 version);消息卸载 → emit `InstanceDisposed` | 依赖 T02 / T08 |
+| P6.5-T10 | dogfood:写 `acme.mermaid-renderer` 扩展(无 main.js,只 manifest + renderer/index.html + mermaid.min.js)放进 fixtures;e2e 测试 chat 输出 ```mermaid 块 → mermaid SVG 显示在消息流 | 依赖 T01-T09 全部 |
+
+### Phase 完成度(P6.5 IDL 阶段)
+
+| Phase | 完成 / 总数 | 状态 |
+|---|---|---|
+| Phase 0-6 | 同上 | 不变 |
+| **Phase 6.5 ContentRenderer IDL** | **决策 + IDL ✅** | **D1-D12 落档,renderers.ts / renderer-host.ts / manifest.ts / index.ts 改完,tsc strict 通过;P6.5-T01..T10 待执行** |
+| Phase 7-10 | 同上 | 不变 |
+
+### P6.5 子任务执行进度 (2026-05-25)
+
+| Task | 状态 | 备注 |
+|---|---|---|
+| T01 main 可选 + 跳 spawn | ✅ | `manifest.main: Option<String>` + `ExtensionRuntime::activate` declarative-only 分支;`lifecycle` 是 activated 真值源(不再用 `handles`);bootstrap.js `extension/activate` 加 defensive guard;516 lib tests |
+| T02 RendererEntry.csp | ✅ | `RendererCsp { connect_src }` + ingest 透传;`Option<RendererCsp>` 区分 "未声明" 和 "空 allowlist" |
+| T03 query parser + url_for_surface | ✅ | C++ `app/renderer/app.cc::InjectAcquireCronymaxApi` 真 query parser;Rust `url_for_surface(ext_id, kind, id, entry)`;修 `webview_frames_[""]` 覆盖 bug;URL 形 `?surface=panel\|renderer&id=...` |
+| T04 acquireCronymaxRendererApi V8 注入 | ✅ | C++ `RendererSetHeightHandler` 仅暴露 setHeight (跨进程必需);`__cronymax_renderer_native__` 全局对象 (extensionId/instanceId/theme/setHeight);`ExecuteJavaScript` 注入 ~110 行 JS shim 实现 `acquireCronymaxRendererApi().activate(fn)` + message dispatch + pendingMessages buffer |
+| T05 ExtensionRendererSetHeight ControlRequest | ✅ | `protocol/control.rs` 加 variant;`extension_ops.rs` handler;Rust `RendererEvent::HeightChanged` 通过 `RendererEventEmitter` 注册;组合根装到 `RuntimeAuthority` topic `extensions/renderer`;C++ bridge_handler `HandleRendererSetHeight` + `kMsgRendererSetHeight` IPC;client_handler 路由 |
+| T06 scheme handler CSP merge | ✅ | `app/browser/webview_scheme.cc` 加 query parse + manifest-driven `LookupRendererConnectSrc` (打开 ext_dir/cronymax-extension.json,nlohmann no-throw API,按 entry path 段匹配);`BuildCspHeader` 把 connect_src hosts merge 进 `connect-src` 指令 |
+| T07 bootstrap shim 删 + manifest-driven ingest | ✅ | 删 `cronymax.renderers.registerRenderer`;`ContentRendererRegistry::ingest_manifest` 在 activate 时填充;删 `register_renderer_handler` / `renderers/register`+`unregister` notify + `renderers_method` 常量;`extension_renderer_register_lands_in_registry` 测试改写成 `manifest_renderer_contribution_lands_in_registry` |
+| T08 ExtensionContentBlock React 组件 | ✅ | `web/src/panels/chat/ExtensionContentBlock.tsx`:挂 iframe (`cronymax-webview://<ext>/<entry>?surface=renderer&id=<inst>`)、subscribe `extensions/renderer` topic 设 height (clamp ≤ 8192px)、parent→iframe `postMessage` 发 RenderRequest、onLoad 排队首帧、unmount 发 dispose;`sandbox="allow-scripts allow-same-origin"` |
+| T09 chat fenced-block dispatch | ✅ | `web/src/panels/chat/extensionRenderers.ts` `useExtensionRendererRegistry` hook + `lookupRendererByLang` (探测 lang / `text/vnd.<lang>` / `text/x-<lang>` / `application/vnd.<lang>`);`ContentStreamView` 走 `splitTextOnExtensionFences` 把闭合 fence 切成 [text\|extblock] chunks;text chunks 走 Streamdown (保留 Shiki + 流动画),extblock chunks 挂 `<ExtensionContentBlock>` |
+| **T10 dogfood mermaid-renderer** | **✅** | `examples/mermaid-renderer/`:manifest (无 main) + renderer/index.html (acquireCronymaxRendererApi → mermaid.render + setHeight + ResizeObserver) + package.json/scripts/copy-mermaid.cjs 从 node_modules 拷 mermaid.min.js (~3 MB,gitignored);`dogfood_mermaid_renderer_fixture_activates_cleanly` Rust 测试装载真 manifest → assert renderer registry 收到 `text/vnd.mermaid` 条目 |
+
+### P6.5 手动验证步骤
+
+1. **构建扩展**:
+   ```bash
+   cd examples/mermaid-renderer
+   bun install     # 或 npm install
+   bun run build   # 或 npm run build —— 拷 mermaid.min.js
+   ```
+2. **安装**:把整个目录链/拷到 `~/.cronymax/extensions/cronymax-examples.mermaid-renderer/`
+3. **运行 cronymax**,新建 chat 会话
+4. 给 agent 发"画一个 mermaid 流程图",或者直接贴一段含 ` ```mermaid\ngraph TD\n  A --> B\n``` ` 的 markdown
+5. **预期**:
+   - 闭合的 mermaid fence 显示成 SVG (不是源码) —— `<ExtensionContentBlock>` 挂 iframe 渲染
+   - 半截 (未闭合) fence 显示成普通 streaming code block —— D12 语义
+   - iframe 高度自适应 (mermaid SVG 多大就多高,clamp ≤ 8192px)
+6. **DevTools 验证**:
+   - Response Headers 的 CSP 含 `connect-src 'self'` (本 fixture 无 csp 声明,故没有 host allowlist)
+   - iframe origin 为 `cronymax-webview://cronymax-examples.mermaid-renderer`
+   - 解析失败 (e.g. ` ```mermaid\nNOT-VALID\n``` `) → iframe 内显示红色错误条而非崩溃
+
+### P6.5 dogfood 实测复盘 (2026-05-25 晚)
+
+按上面手动验证步骤跑了端到端 + 修复了 6 个 bug 才让 mermaid 真正自动渲染 + 撑开 iframe。bug 类型集中在 **Rust serde camelCase ↔ TS snake_case 字段串台** + **CEF custom scheme 的 mime/header 怪癖**:
+
+| # | bug | 现象 | 修复 |
+|---|---|---|---|
+| 1 | `ContributionOwner` TS 类型字段名 `ext_id`(wire 是 `extId`) | iframe URL 变 `cronymax-webview://undefined/...` → 404 | `runtime.ts` 类型字段改 `extId` + 两处消费跟进 |
+| 2 | CEF `MimeFromExtension` 返回 `text/html; charset=utf-8` 带 charset 后缀 | Chromium 渲染响应当成 text/plain,iframe DOM 变 `<pre>` 包源码 | 去掉 `; charset=` 后缀;`SetMimeType` 跟 `SetHeaderMap` 并行调用 |
+| 3 | scheme handler 默认 CSP `script-src 'self'` 拦 inline `<script>` | mermaid 加载但 `acquireCronymaxRendererApi()` 没人调,iframe 停在 `Waiting for input…` | 默认 CSP 加 `'unsafe-inline'`(script + style),扩展自家 iframe 同源 inline 没实质安全代价 |
+| 4 | `RendererEvent` envelope 形状误判 — 漏了 `RuntimeEventPayload::Raw` 的 outer wrapper | filter 检查 `payload.kind === "heightChanged"` 永远不通,iframe 高度 stuck 32px | TS envelope 改成 `payload.data.kind` 两层嵌套(outer `kind: "raw"`,inner `kind: "heightChanged"`) |
+| 5 | `#[serde(rename_all = "camelCase")]` 在 enum 上**不传染** struct-style variant 内的字段 | wire 是 `instance_id`(snake) 而非 `instanceId`(camel),filter `inner.instanceId` 拿到 undefined | `RendererEvent::HeightChanged` 加 per-variant `#[serde(rename_all = "camelCase")]` |
+| 6 | mermaid 扩展用 `root.getBoundingClientRect().height` 量高度,不含 body padding/wrapper | iframe 撑开了但内部有滚动条 | 改用 `document.documentElement.scrollHeight`;ResizeObserver 也改观察 documentElement |
+
+**配套基础设施**:
+- `app/browser/main_mac.mm` 加 `CRONYMAX_LOG_LEVEL` / `CRONYMAX_LOG_FILE` env var(跟 RUST_LOG 同精神),用 INFO 级跟踪 webview-scheme 路径
+- 全链路 5 个点(V8 / IPC / Bridge / Rust ControlRequest / Rust forward / Authority emit / web `runtime.on`)挨个加 / 拆 log 定位 — 没系统化日志的话 6 个 bug 全跟"沉默失败"硬扛
+
+**最终状态**:mermaid SVG 闭合 fence 自动渲染,iframe 高度自适应到 SVG 实际尺寸,无内部滚动条。
+
+**遗留 / 优化项**:
+- CSP `'unsafe-inline'` 长期看是 trade-off — 严格 CSP 需要每个扩展把 inline `<script>` 拆独立 `.js` 文件,v1 alpha 不强制
+- mermaid bundle ~3.2 MB 是 mermaid 上游包的体积,不在我们控制内;`@mermaid-js/mermaid-zenuml` 等分块加载是 M1 优化
+- theme 同步 — `ctx.onDidChangeTheme` SDK 通路就位但 chat 端没 push 主题事件,默认 light
+- renderer iframe 启动开销 — 当前一块一 iframe,P7 dogfood 时如果 perf 真扛不住再做 `(ext, rendererId)` 共享 iframe 池

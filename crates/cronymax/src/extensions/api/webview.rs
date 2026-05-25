@@ -184,28 +184,51 @@ impl WebviewRegistry {
     /// the renderer mounts into an iframe. Path-normalises leading `./`
     /// from manifest-declared entries (`./panel.html` → `panel.html`).
     ///
-    /// When the iframe's JS calls `acquireCronymaxApi()` it needs to
-    /// know which panel it belongs to (one extension can mount the same
-    /// entry into multiple panels). The panel id is appended as a
-    /// `?panel=<id>` query so the V8 injection layer can read it
-    /// straight out of `frame->GetURL()` without an additional roundtrip.
+    /// When the iframe's JS calls `acquireCronymaxApi()` it needs to know
+    /// which panel it belongs to (one extension can mount the same entry
+    /// into multiple panels). The platform identifies the iframe surface
+    /// with a two-key query: `?surface=<kind>&id=<value>`, where `<kind>`
+    /// is `panel` for [`createWebviewPanel`] / [`PanelView`] iframes and
+    /// `renderer` for [`ContentRendererContribution`] iframes (see
+    /// `renderer-host.ts`). The V8 injection layer reads both keys
+    /// straight out of `frame->GetURL()` and chooses which SDK to inject.
+    ///
+    /// Old single-key `?panel=<id>` URLs are no longer emitted; the C++
+    /// scheme handler and V8 injection only understand the surfaced form.
     pub fn url_for(ext_id: &str, panel_id: &str, entry: &str) -> String {
+        Self::url_for_surface(ext_id, "panel", panel_id, entry)
+    }
+
+    /// Build a `cronymax-webview://` URL for any surface kind. v1 surfaces:
+    ///   * `panel`    — webview panels (window.createWebviewPanel)
+    ///   * `renderer` — content renderer iframes (P6.5)
+    ///
+    /// The `id` is panel id (for panel surface) or renderer instance id
+    /// (for renderer surface). It is percent-encoded for the same minimal
+    /// set as [`url_for`].
+    pub fn url_for_surface(ext_id: &str, surface: &str, id: &str, entry: &str) -> String {
         let cleaned = entry.trim_start_matches("./").trim_start_matches('/');
-        // Encode panel_id with a tiny percent-encoder restricted to the
-        // few characters that would break URL parsing. ext_id and
-        // panel_id come from manifest / extension code and are typically
-        // dotted identifiers (`alice.x.panel.foo`) — these need no
-        // escaping. We escape `?`, `#`, `&`, space defensively.
-        let mut escaped = String::with_capacity(panel_id.len());
-        for ch in panel_id.chars() {
-            match ch {
-                '?' | '#' | '&' | ' ' | '/' | '\\' => {
-                    escaped.push_str(&format!("%{:02X}", ch as u32));
+        // ext_id, surface and id are platform / manifest identifiers, but
+        // defensively escape the few characters that would break URL
+        // parsing. Most ids are dotted (`alice.x.panel.foo`) and need no
+        // escaping at all.
+        fn escape(s: &str) -> String {
+            let mut out = String::with_capacity(s.len());
+            for ch in s.chars() {
+                match ch {
+                    '?' | '#' | '&' | '=' | ' ' | '/' | '\\' => {
+                        out.push_str(&format!("%{:02X}", ch as u32));
+                    }
+                    _ => out.push(ch),
                 }
-                _ => escaped.push(ch),
             }
+            out
         }
-        format!("cronymax-webview://{ext_id}/{cleaned}?panel={escaped}")
+        format!(
+            "cronymax-webview://{ext_id}/{cleaned}?surface={s}&id={i}",
+            s = escape(surface),
+            i = escape(id),
+        )
     }
 
     fn lock_panels(
@@ -541,29 +564,45 @@ mod tests {
     }
 
     #[test]
-    fn url_for_strips_relative_prefix_and_appends_panel_id() {
+    fn url_for_strips_relative_prefix_and_appends_surface_and_id() {
         assert_eq!(
             WebviewRegistry::url_for("alice.x", "p1", "./panel.html"),
-            "cronymax-webview://alice.x/panel.html?panel=p1",
+            "cronymax-webview://alice.x/panel.html?surface=panel&id=p1",
         );
         assert_eq!(
             WebviewRegistry::url_for("alice.x", "deep.panel", "/abs/index.html"),
-            "cronymax-webview://alice.x/abs/index.html?panel=deep.panel",
+            "cronymax-webview://alice.x/abs/index.html?surface=panel&id=deep.panel",
         );
         assert_eq!(
             WebviewRegistry::url_for("alice.x", "nested.p", "deep/nested/index.html"),
-            "cronymax-webview://alice.x/deep/nested/index.html?panel=nested.p",
+            "cronymax-webview://alice.x/deep/nested/index.html?surface=panel&id=nested.p",
         );
     }
 
     #[test]
-    fn url_for_escapes_reserved_chars_in_panel_id() {
-        // The panel-id field is user-controlled (extension manifest /
-        // runtime); a stray `?` or `&` would corrupt the URL parse.
-        // We percent-encode the small reserved set.
+    fn url_for_escapes_reserved_chars_in_id() {
+        // The id field is user-controlled (extension manifest / runtime);
+        // a stray `?`, `&`, or `=` would corrupt the URL parse. We
+        // percent-encode the small reserved set.
         assert_eq!(
             WebviewRegistry::url_for("alice.x", "weird?panel&id", "p.html"),
-            "cronymax-webview://alice.x/p.html?panel=weird%3Fpanel%26id",
+            "cronymax-webview://alice.x/p.html?surface=panel&id=weird%3Fpanel%26id",
+        );
+    }
+
+    #[test]
+    fn url_for_surface_renderer_emits_renderer_keyword() {
+        // P6.5 content renderer iframes go through the same helper but
+        // emit `surface=renderer` so the V8 layer injects
+        // `acquireCronymaxRendererApi()` instead of `acquireCronymaxApi()`.
+        assert_eq!(
+            WebviewRegistry::url_for_surface(
+                "acme.mermaid",
+                "renderer",
+                "instance-42",
+                "renderer/index.html",
+            ),
+            "cronymax-webview://acme.mermaid/renderer/index.html?surface=renderer&id=instance-42",
         );
     }
 
@@ -617,7 +656,10 @@ mod tests {
                 assert_eq!(ext_id, "alice.x");
                 assert_eq!(panel_id, "p1");
                 assert_eq!(slot, "sidebar");
-                assert_eq!(url, "cronymax-webview://alice.x/panel.html?panel=p1");
+                assert_eq!(
+                    url,
+                    "cronymax-webview://alice.x/panel.html?surface=panel&id=p1"
+                );
             }
             other => panic!("expected PanelCreated, got {other:?}"),
         }

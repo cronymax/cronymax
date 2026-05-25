@@ -14,8 +14,42 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 
 use crate::extensions::error::{ExtensionError, ExtensionResult};
+use crate::extensions::manifest::RendererCsp;
+
+/// Events the platform pushes to the renderer UI shell about the
+/// content-renderer iframe lifecycle. Mirrors the wire-side
+/// `RuntimeEventPayload::Raw` JSON the chat surface subscribes to via
+/// the `extensions/renderer` topic.
+///
+/// v1 alpha only emits `HeightChanged`; chat-driven instance lifecycle
+/// (create / update / dispose) is emitted from the chat dispatch site
+/// (P6.5-T09) rather than this registry because the registry has no
+/// notion of "active instances" — instances are per-block, not per
+/// `(extension, renderer_id)`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RendererEvent {
+    /// Content-renderer iframe reported its rendered height (px). The
+    /// chat surface uses this to size the embedding `<iframe>` element,
+    /// since cross-origin iframe content cannot be measured from the
+    /// parent. Fires after every render and on internal layout changes
+    /// the renderer observes (e.g. via `ResizeObserver`).
+    //
+    // NB: `rename_all = "camelCase"` at the enum level renames variant
+    // tags (`HeightChanged` → `"heightChanged"`) but does NOT propagate
+    // to the variant's fields. Per-variant `rename_all` is required so
+    // `instance_id` ships on the wire as `instanceId`, matching the
+    // rest of the cronymax wire conventions (extId, panelId, etc.).
+    #[serde(rename_all = "camelCase")]
+    HeightChanged { instance_id: String, px: i32 },
+}
+
+/// Callback installed by the composition root (see `runtime/services.rs`).
+/// Cheap to clone (Arc), safe to call from any thread.
+pub type RendererEventEmitter = Arc<dyn Fn(RendererEvent) + Send + Sync>;
 
 /// One registered content renderer. Keyed in the registry by `renderer_id`.
 #[derive(Debug, Clone)]
@@ -26,6 +60,11 @@ pub struct RendererEntry {
     pub mime_types: Vec<String>,
     /// Entry path (relative to the extension dir) for the iframe.
     pub entry: String,
+    /// Optional CSP overrides for the renderer iframe, mirroring
+    /// [`crate::extensions::manifest::ContentRendererContribution::csp`].
+    /// Consumed by the `cronymax-webview://` scheme handler when serving
+    /// `?surface=renderer` responses (P6.5-T06).
+    pub csp: Option<RendererCsp>,
 }
 
 /// Thread-safe map keyed by `renderer_id`. Cheap to share.
@@ -92,6 +131,39 @@ impl ContentRendererRegistry {
         before - g.len()
     }
 
+    /// Ingest every `cronymax.content.renderer` contribution in `manifest`.
+    /// Called once per extension at activate time — the registry is
+    /// **manifest-driven** in v1 (post-P6.5 IDL): there is no Node-side
+    /// `registerRenderer` API, so the only path into this registry is
+    /// declarative.
+    ///
+    /// Idempotent: re-ingesting the same manifest (re-activate) does NOT
+    /// produce duplicate entries because [`register`] returns Ok when the
+    /// same `(ext_id, renderer_id)` pair is re-claimed.
+    ///
+    /// Returns the number of renderers ingested. Errors only on registry
+    /// collisions (e.g. another extension already owns the same id) or
+    /// reserved-namespace violations — manifest validation should have
+    /// caught those upstream, so a failure here means a real bug.
+    pub fn ingest_manifest(
+        &self,
+        manifest: &crate::extensions::manifest::Manifest,
+        ext_id: &str,
+    ) -> ExtensionResult<usize> {
+        let mut n = 0;
+        for decl in &manifest.contributes.content_renderers {
+            self.register(RendererEntry {
+                renderer_id: decl.id.clone(),
+                owning_ext: ext_id.to_string(),
+                mime_types: decl.mime_types.clone(),
+                entry: decl.entry.clone(),
+                csp: decl.csp.clone(),
+            })?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
     pub fn get(&self, renderer_id: &str) -> Option<RendererEntry> {
         self.inner.read().get(renderer_id).cloned()
     }
@@ -135,6 +207,7 @@ mod tests {
             owning_ext: ext_id.into(),
             mime_types: mimes.iter().map(|s| (*s).into()).collect(),
             entry: "./r.html".into(),
+            csp: None,
         }
     }
 
@@ -187,6 +260,52 @@ mod tests {
         r.register(entry("alpha", "alice.x", &["text/x-foo"]))
             .unwrap();
         assert_eq!(r.first_for_mime("text/x-foo").unwrap().renderer_id, "alpha");
+    }
+
+    /// `ingest_manifest` copies the declared `csp` field through to the
+    /// `RendererEntry`. The scheme handler (P6.5-T06) reads this to merge
+    /// host allowlists into the iframe's `connect-src` CSP header.
+    #[test]
+    fn ingest_manifest_propagates_csp_connect_src() {
+        let raw = r#"{
+            "id": "acme.diagrams",
+            "name": "Diagrams",
+            "version": "0.1.0",
+            "publisher": "acme",
+            "engines": { "cronymax": "^1.0" },
+            "activationEvents": [],
+            "contributes": {
+                "cronymax.content.renderer": [
+                    {
+                        "id": "acme.diagrams.mermaid",
+                        "mimeTypes": ["text/vnd.mermaid"],
+                        "entry": "./r.html",
+                        "csp": { "connect_src": ["https://mermaid.ink"] }
+                    },
+                    {
+                        "id": "acme.diagrams.plain",
+                        "mimeTypes": ["text/x-plain"],
+                        "entry": "./p.html"
+                    }
+                ]
+            }
+        }"#;
+        let manifest = crate::extensions::manifest::Manifest::from_json(raw).unwrap();
+        let r = ContentRendererRegistry::new();
+        let n = r.ingest_manifest(&manifest, "acme.diagrams").unwrap();
+        assert_eq!(n, 2);
+
+        let mermaid = r.get("acme.diagrams.mermaid").unwrap();
+        assert_eq!(
+            mermaid.csp.as_ref().unwrap().connect_src,
+            vec!["https://mermaid.ink".to_string()],
+        );
+
+        // Renderer without `csp` carries `None`, NOT an empty struct —
+        // distinguishing "no override" from "empty allowlist" matters for
+        // the scheme handler's CSP header serialiser.
+        let plain = r.get("acme.diagrams.plain").unwrap();
+        assert!(plain.csp.is_none());
     }
 
     #[test]

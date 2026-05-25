@@ -1173,7 +1173,7 @@ export function App() {
         .map((d) => {
           const meta = (d.metadata && typeof d.metadata === "object" ? d.metadata : {}) as Record<string, unknown>;
           const isExt = d.kind === ContributionKind.AgentsProvider;
-          const owningExt = d.owner.type === "extension" ? d.owner.ext_id : undefined;
+          const owningExt = d.owner.type === "extension" ? d.owner.extId : undefined;
           return {
             name: d.id,
             kind: isExt ? "extension_provider" : ((meta.kind as string) ?? "worker"),

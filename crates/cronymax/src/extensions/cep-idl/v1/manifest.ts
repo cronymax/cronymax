@@ -19,8 +19,15 @@ export interface Manifest {
   /** Publisher slug, lower-case, kebab/dot-free. */
   publisher: string;
   engines: { cronymax: string };
-  /** Entry point relative to extension root. CJS in v1; ESM in M1. */
-  main: string;
+  /**
+   * Entry point relative to extension root. CJS in v1; ESM in M1.
+   *
+   * Optional: extensions that ship ONLY declarative contributions (content
+   * renderers without a Node-side coordinator, pure UI sidebar views, etc.)
+   * may omit `main` entirely. The platform skips spawning a Node host for
+   * such extensions and only ingests their manifest contributions.
+   */
+  main?: string;
 
   description?: string;
   icon?: string;
@@ -183,8 +190,28 @@ export interface ContentRendererContribution {
    * Renderer scope is `block` in v1; inline is M1.
    */
   mimeTypes: string[];
-  /** Renderer HTML entry. */
+  /** Renderer HTML entry, loaded into an iframe by the platform. */
   entry: string;
+  /**
+   * Renderer-iframe CSP overrides. The default CSP applied to the
+   * `cronymax-webview://` scheme is
+   *   `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
+   *    img-src cronymax-webview: data:; connect-src 'self'; font-src 'self' data:`
+   * which lets the renderer fetch resources from its own extension dir but
+   * NOT the outside network. To allow the renderer to fetch from external
+   * hosts (e.g. a remote diagram CDN), declare them here — these hosts are
+   * merged into the iframe's `connect-src` directive.
+   *
+   * This is INDEPENDENT of the extension's Node-side `capabilities.network`:
+   * Node fetch and iframe fetch are separate origins, and each must be
+   * authorised in its own dimension.
+   */
+  csp?: RendererCsp;
+}
+
+export interface RendererCsp {
+  /** Hosts merged into the iframe's `connect-src` CSP directive. */
+  connect_src?: string[];
 }
 
 export interface SidebarViewContribution {

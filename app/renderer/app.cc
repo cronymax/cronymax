@@ -5,6 +5,9 @@
 #include <mutex>
 #include <random>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 #include "include/cef_process_message.h"
 #include "include/cef_values.h"
@@ -29,6 +32,9 @@ static constexpr char kMsgBrowserEvent[] = "cronymax.browser.event";
 // compilation unit doesn't pull in the full browser bridge header.
 static constexpr char kMsgWebviewPost[] = "cronymax.webview.post";
 static constexpr char kMsgWebviewDeliver[] = "cronymax.webview.deliver";
+// Content-renderer iframe → browser process (P6.5). Same locality
+// rationale as the webview constants above.
+static constexpr char kMsgRendererSetHeight[] = "cronymax.renderer.setHeight";
 
 // ---------------------------------------------------------------------------
 // V8 ↔ nlohmann::json conversion helpers (renderer process only)
@@ -199,9 +205,9 @@ bool RuntimeCtrlHandler::Execute(const CefString& /*name*/,
 // ---------------------------------------------------------------------------
 // V8 handler: acquireCronymaxApi().postMessage(payload) → Promise<void>
 //
-// Installed onto cronymax-webview://<ext-id>/<entry>?panel=<id> iframes only.
-// Bridges to the browser process via the kMsgWebviewPost process message
-// carrying the panelId and a msgpack-encoded payload. The browser-side
+// Installed onto cronymax-webview://<ext-id>/<entry>?surface=panel&id=<id>
+// iframes only. Bridges to the browser process via the kMsgWebviewPost process
+// message carrying the panelId and a msgpack-encoded payload. The browser-side
 // BridgeHandler::HandleWebviewPost looks up the panel's owning extension
 // (via the WebviewRegistry) and calls
 // `ExtensionRuntime::forward_panel_message`, which lands a
@@ -321,8 +327,7 @@ App::App() {
   render_message_router_ = CefMessageRouterRendererSide::Create(config);
 }
 
-void App::OnRegisterCustomSchemes(
-    CefRawPtr<CefSchemeRegistrar> registrar) {
+void App::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar) {
   cronymax::RegisterWebviewScheme(registrar);
 }
 
@@ -346,7 +351,8 @@ static bool IsBuiltinUrl(const CefString& url) {
     return v && *v;
   }();
   std::string u = url.ToString();
-  if (u.rfind(kExtSchemePrefix, 0) == 0) return false;  // separate surface
+  if (u.rfind(kExtSchemePrefix, 0) == 0)
+    return false;  // separate surface
   if (dev_mode && u.rfind(kDevPanelPrefix, 0) == 0)
     return true;
   return u.rfind("https://", 0) != 0 && u.rfind("http://", 0) != 0;
@@ -366,7 +372,8 @@ static bool IsExtensionWebviewUrl(const CefString& url) {
 static std::string ExtractWebviewExtensionId(const CefString& url) {
   static const std::string kPrefix = "cronymax-webview://";
   std::string u = url.ToString();
-  if (u.rfind(kPrefix, 0) != 0) return std::string();
+  if (u.rfind(kPrefix, 0) != 0)
+    return std::string();
   std::string tail = u.substr(kPrefix.size());
   size_t slash = tail.find('/');
   return (slash == std::string::npos) ? tail : tail.substr(0, slash);
@@ -493,21 +500,23 @@ class WebviewStateHandler : public CefV8Handler {
  public:
   WebviewStateHandler(App* app, std::string panel_id, bool set)
       : app_(app), panel_id_(std::move(panel_id)), set_(set) {}
-  bool Execute(const CefString& /*name*/, CefRefPtr<CefV8Value> /*object*/,
+  bool Execute(const CefString& /*name*/,
+               CefRefPtr<CefV8Value> /*object*/,
                const CefV8ValueList& arguments,
-               CefRefPtr<CefV8Value>& retval, CefString& /*exception*/) override {
+               CefRefPtr<CefV8Value>& retval,
+               CefString& /*exception*/) override {
     auto it = app_->webview_frames_.find(panel_id_);
     if (it == app_->webview_frames_.end()) {
       retval = CefV8Value::CreateUndefined();
       return true;
     }
     if (set_) {
-      it->second.state = arguments.empty() ? CefV8Value::CreateUndefined()
-                                            : arguments[0];
+      it->second.state =
+          arguments.empty() ? CefV8Value::CreateUndefined() : arguments[0];
       retval = CefV8Value::CreateUndefined();
     } else {
-      retval = it->second.state ? it->second.state
-                                : CefV8Value::CreateUndefined();
+      retval =
+          it->second.state ? it->second.state : CefV8Value::CreateUndefined();
     }
     return true;
   }
@@ -523,15 +532,17 @@ class WebviewDisposeHandler : public CefV8Handler {
  public:
   WebviewDisposeHandler(App* app, std::string panel_id, int index)
       : app_(app), panel_id_(std::move(panel_id)), index_(index) {}
-  bool Execute(const CefString&, CefRefPtr<CefV8Value>,
-               const CefV8ValueList&, CefRefPtr<CefV8Value>&,
+  bool Execute(const CefString&,
+               CefRefPtr<CefV8Value>,
+               const CefV8ValueList&,
+               CefRefPtr<CefV8Value>&,
                CefString&) override {
     auto it = app_->webview_frames_.find(panel_id_);
-    if (it != app_->webview_frames_.end() &&
-        it->second.on_message_handlers &&
+    if (it != app_->webview_frames_.end() && it->second.on_message_handlers &&
         it->second.on_message_handlers->IsArray() &&
         index_ < it->second.on_message_handlers->GetArrayLength()) {
-      it->second.on_message_handlers->SetValue(index_, CefV8Value::CreateNull());
+      it->second.on_message_handlers->SetValue(index_,
+                                               CefV8Value::CreateNull());
     }
     return true;
   }
@@ -547,17 +558,18 @@ class WebviewOnMessageHandler : public CefV8Handler {
  public:
   WebviewOnMessageHandler(App* app, std::string panel_id)
       : app_(app), panel_id_(std::move(panel_id)) {}
-  bool Execute(const CefString& /*name*/, CefRefPtr<CefV8Value> /*object*/,
+  bool Execute(const CefString& /*name*/,
+               CefRefPtr<CefV8Value> /*object*/,
                const CefV8ValueList& arguments,
-               CefRefPtr<CefV8Value>& retval, CefString& exception) override {
+               CefRefPtr<CefV8Value>& retval,
+               CefString& exception) override {
     if (arguments.empty() || !arguments[0]->IsFunction()) {
       exception = "onDidReceiveMessage expects a function";
       return true;
     }
     int idx = 0;
     auto it = app_->webview_frames_.find(panel_id_);
-    if (it != app_->webview_frames_.end() &&
-        it->second.on_message_handlers &&
+    if (it != app_->webview_frames_.end() && it->second.on_message_handlers &&
         it->second.on_message_handlers->IsArray()) {
       idx = it->second.on_message_handlers->GetArrayLength();
       it->second.on_message_handlers->SetValue(idx, arguments[0]);
@@ -584,12 +596,12 @@ class WebviewOnMessageHandler : public CefV8Handler {
 class WebviewAcquireHandler : public CefV8Handler {
  public:
   WebviewAcquireHandler(App* app, std::string panel_id, std::string ext_id)
-      : app_(app),
-        panel_id_(std::move(panel_id)),
-        ext_id_(std::move(ext_id)) {}
-  bool Execute(const CefString& /*name*/, CefRefPtr<CefV8Value> /*object*/,
+      : app_(app), panel_id_(std::move(panel_id)), ext_id_(std::move(ext_id)) {}
+  bool Execute(const CefString& /*name*/,
+               CefRefPtr<CefV8Value> /*object*/,
                const CefV8ValueList& /*arguments*/,
-               CefRefPtr<CefV8Value>& retval, CefString& exception) override {
+               CefRefPtr<CefV8Value>& retval,
+               CefString& exception) override {
     if (consumed_) {
       exception = "acquireCronymaxApi: already acquired in this frame";
       return true;
@@ -598,27 +610,24 @@ class WebviewAcquireHandler : public CefV8Handler {
     auto api = CefV8Value::CreateObject(nullptr, nullptr);
     api->SetValue(
         "postMessage",
-        CefV8Value::CreateFunction(
-            "postMessage", new WebviewPostHandler(panel_id_, ext_id_)),
+        CefV8Value::CreateFunction("postMessage",
+                                   new WebviewPostHandler(panel_id_, ext_id_)),
         V8_PROPERTY_ATTRIBUTE_NONE);
     api->SetValue(
         "setState",
         CefV8Value::CreateFunction(
-            "setState",
-            new WebviewStateHandler(app_, panel_id_, /*set=*/true)),
+            "setState", new WebviewStateHandler(app_, panel_id_, /*set=*/true)),
         V8_PROPERTY_ATTRIBUTE_NONE);
-    api->SetValue(
-        "getState",
-        CefV8Value::CreateFunction(
-            "getState",
-            new WebviewStateHandler(app_, panel_id_, /*set=*/false)),
-        V8_PROPERTY_ATTRIBUTE_NONE);
-    api->SetValue(
-        "onDidReceiveMessage",
-        CefV8Value::CreateFunction(
-            "onDidReceiveMessage",
-            new WebviewOnMessageHandler(app_, panel_id_)),
-        V8_PROPERTY_ATTRIBUTE_NONE);
+    api->SetValue("getState",
+                  CefV8Value::CreateFunction(
+                      "getState",
+                      new WebviewStateHandler(app_, panel_id_, /*set=*/false)),
+                  V8_PROPERTY_ATTRIBUTE_NONE);
+    api->SetValue("onDidReceiveMessage",
+                  CefV8Value::CreateFunction(
+                      "onDidReceiveMessage",
+                      new WebviewOnMessageHandler(app_, panel_id_)),
+                  V8_PROPERTY_ATTRIBUTE_NONE);
     retval = api;
     return true;
   }
@@ -631,68 +640,374 @@ class WebviewAcquireHandler : public CefV8Handler {
   IMPLEMENT_REFCOUNTING(WebviewAcquireHandler);
 };
 
+// ---------------------------------------------------------------------------
+// Content-renderer iframe V8 handlers (Phase 6.5)
+// ---------------------------------------------------------------------------
+//
+// `cronymax-webview://<ext>/<entry>?surface=renderer&id=<inst>` iframes
+// get a single V8 native primitive: `setHeight(px)` — JS reports the
+// rendered content height through this so the cross-origin parent
+// React surface can size the embedding `<iframe>` element.
+//
+// Everything else the IDL `RendererContext` / `RendererActivationApi`
+// exposes (acquired-once `activate(fn)`, the postMessage-driven render
+// dispatch loop) is built in pure JS inside the bootstrap shim injected
+// via `frame->ExecuteJavaScript`. The split is deliberate: only
+// IPC-crossing things go in V8.
+
+class RendererSetHeightHandler : public CefV8Handler {
+ public:
+  RendererSetHeightHandler(std::string instance_id)
+      : instance_id_(std::move(instance_id)) {}
+
+  bool Execute(const CefString& /*name*/,
+               CefRefPtr<CefV8Value> /*object*/,
+               const CefV8ValueList& arguments,
+               CefRefPtr<CefV8Value>& retval,
+               CefString& exception) override {
+    if (arguments.empty() ||
+        (!arguments[0]->IsDouble() && !arguments[0]->IsInt() &&
+         !arguments[0]->IsUInt())) {
+      exception = "setHeight(px): expected a number";
+      return true;
+    }
+    int px = 0;
+    if (arguments[0]->IsInt()) {
+      px = arguments[0]->GetIntValue();
+    } else if (arguments[0]->IsUInt()) {
+      px = static_cast<int>(arguments[0]->GetUIntValue());
+    } else {
+      // Round JS doubles defensively; CSS heights are integers in
+      // practice and Rust on the other end of the bridge takes i32.
+      const double d = arguments[0]->GetDoubleValue();
+      if (d < 0) {
+        px = 0;
+      } else if (d > static_cast<double>(INT32_MAX)) {
+        px = INT32_MAX;
+      } else {
+        px = static_cast<int>(d + 0.5);
+      }
+    }
+
+    auto context = CefV8Context::GetCurrentContext();
+    if (!context) {
+      retval = CefV8Value::CreateUndefined();
+      return true;
+    }
+    auto msg = CefProcessMessage::Create(kMsgRendererSetHeight);
+    auto args = msg->GetArgumentList();
+    args->SetString(0, instance_id_);
+    args->SetInt(1, px);
+    context->GetFrame()->SendProcessMessage(PID_BROWSER, msg);
+    retval = CefV8Value::CreateUndefined();
+    return true;
+  }
+
+ private:
+  std::string instance_id_;
+  IMPLEMENT_REFCOUNTING(RendererSetHeightHandler);
+};
+
+namespace {
+
+// Percent-decode the small set Rust's `url_for_surface` encodes. Lenient:
+// a malformed `%xx` triplet is passed through byte-for-byte (we don't have
+// a richer error channel here, and the Rust-emitted URLs only ever contain
+// uppercase hex from `format!("{:02X}", ...)`).
+std::string PercentDecode(std::string_view raw) {
+  const auto from_hex = [](char c) -> int {
+    if (c >= '0' && c <= '9')
+      return c - '0';
+    if (c >= 'A' && c <= 'F')
+      return 10 + (c - 'A');
+    if (c >= 'a' && c <= 'f')
+      return 10 + (c - 'a');
+    return -1;
+  };
+  std::string out;
+  out.reserve(raw.size());
+  for (size_t i = 0; i < raw.size(); ++i) {
+    if (raw[i] == '%' && i + 2 < raw.size()) {
+      int hi = from_hex(raw[i + 1]);
+      int lo = from_hex(raw[i + 2]);
+      if (hi >= 0 && lo >= 0) {
+        out.push_back(static_cast<char>((hi << 4) | lo));
+        i += 2;
+        continue;
+      }
+    }
+    out.push_back(raw[i]);
+  }
+  return out;
+}
+
+// Parse `?k1=v1&k2=v2` query string into a vector of (key, decoded-value)
+// pairs preserving order. Values are percent-decoded; keys are not (they
+// are platform constants like `surface` / `id`).
+//
+// Whatever sits between '?' and '#' (or end-of-string) is treated as the
+// query; pairs without '=' are kept with an empty value.
+std::vector<std::pair<std::string, std::string>> ParseQuery(
+    const std::string& url) {
+  std::vector<std::pair<std::string, std::string>> out;
+  const size_t qpos = url.find('?');
+  if (qpos == std::string::npos)
+    return out;
+  size_t end = url.find('#', qpos);
+  if (end == std::string::npos)
+    end = url.size();
+  size_t pos = qpos + 1;
+  while (pos < end) {
+    size_t amp = url.find('&', pos);
+    if (amp == std::string::npos || amp > end)
+      amp = end;
+    const std::string_view pair_sv(url.data() + pos, amp - pos);
+    if (!pair_sv.empty()) {
+      const size_t eq = pair_sv.find('=');
+      if (eq == std::string_view::npos) {
+        out.emplace_back(std::string(pair_sv), std::string());
+      } else {
+        std::string key(pair_sv.substr(0, eq));
+        std::string value = PercentDecode(pair_sv.substr(eq + 1));
+        out.emplace_back(std::move(key), std::move(value));
+      }
+    }
+    pos = amp + 1;
+  }
+  return out;
+}
+
+std::string LookupQuery(
+    const std::vector<std::pair<std::string, std::string>>& q,
+    std::string_view key) {
+  for (const auto& [k, v] : q) {
+    if (k == key)
+      return v;
+  }
+  return {};
+}
+
+}  // namespace
+
 void App::InjectAcquireCronymaxApi(CefRefPtr<CefFrame> frame,
                                    CefRefPtr<CefV8Context> context) {
   const std::string url = frame->GetURL().ToString();
   const std::string ext_id = ExtractWebviewExtensionId(url);
-  if (ext_id.empty()) return;
+  if (ext_id.empty())
+    return;
 
-  // Parse `?panel=<id>` out of the URL. The Rust-side `url_for` always
-  // appends this; if the iframe was loaded with a missing/malformed
-  // panel param we still inject the API but downstream postMessage
-  // routing will fail with a clear "panel not found" error.
-  std::string panel_id;
-  const size_t qpos = url.find("?panel=");
-  if (qpos != std::string::npos) {
-    panel_id = url.substr(qpos + std::strlen("?panel="));
-    const size_t end = panel_id.find_first_of("&#");
-    if (end != std::string::npos) panel_id.resize(end);
-    // Percent-decode the (small) set Rust's `url_for` encodes.
-    std::string decoded;
-    decoded.reserve(panel_id.size());
-    for (size_t i = 0; i < panel_id.size(); ++i) {
-      if (panel_id[i] == '%' && i + 2 < panel_id.size()) {
-        const auto from_hex = [](char c) -> int {
-          if (c >= '0' && c <= '9') return c - '0';
-          if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
-          if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
-          return -1;
-        };
-        int hi = from_hex(panel_id[i + 1]);
-        int lo = from_hex(panel_id[i + 2]);
-        if (hi >= 0 && lo >= 0) {
-          decoded.push_back(static_cast<char>((hi << 4) | lo));
-          i += 2;
-          continue;
-        }
-      }
-      decoded.push_back(panel_id[i]);
-    }
-    panel_id = std::move(decoded);
+  // Parse the `?surface=<kind>&id=<value>` query the Rust-side `url_for_
+  // surface` always emits. Two surfaces are recognised in v1:
+  //
+  //   * `panel`    → install `acquireCronymaxApi()` (P6 webview panels)
+  //   * `renderer` → install `acquireCronymaxRendererApi()` (P6.5 content
+  //                  renderer iframes; injection itself lands in T04)
+  //
+  // A missing / empty / unknown surface is REJECTED: we do not write the
+  // frame into `webview_frames_` (an empty key would collide across all
+  // such frames) and no SDK is injected. The iframe loads, but any attempt
+  // to acquire the API throws ReferenceError — a louder, easier-to-debug
+  // failure than silent cross-frame state corruption.
+  const auto query = ParseQuery(url);
+  const std::string surface = LookupQuery(query, "surface");
+  const std::string id = LookupQuery(query, "id");
+
+  if (surface.empty() || id.empty()) {
+    // Malformed URL (no surface=... or no id=...). Do nothing — neither
+    // SDK is injected and the frame is not registered.
+    return;
   }
 
-  WebviewFrameContext fc;
-  fc.context = context;
-  fc.panel_id = panel_id;
-  fc.ext_id = ext_id;
-  fc.on_message_handlers = CefV8Value::CreateArray(0);
-  fc.state = CefV8Value::CreateUndefined();
-  webview_frames_[panel_id] = std::move(fc);
+  if (surface == "panel") {
+    WebviewFrameContext fc;
+    fc.context = context;
+    fc.panel_id = id;
+    fc.ext_id = ext_id;
+    fc.on_message_handlers = CefV8Value::CreateArray(0);
+    fc.state = CefV8Value::CreateUndefined();
+    webview_frames_[id] = std::move(fc);
 
-  CefRefPtr<CefV8Value> global = context->GetGlobal();
-  global->SetValue(
-      "acquireCronymaxApi",
-      CefV8Value::CreateFunction(
-          "acquireCronymaxApi",
-          new WebviewAcquireHandler(this, panel_id, ext_id)),
-      V8_PROPERTY_ATTRIBUTE_NONE);
+    CefRefPtr<CefV8Value> global = context->GetGlobal();
+    global->SetValue(
+        "acquireCronymaxApi",
+        CefV8Value::CreateFunction("acquireCronymaxApi",
+                                   new WebviewAcquireHandler(this, id, ext_id)),
+        V8_PROPERTY_ATTRIBUTE_NONE);
+    return;
+  }
+
+  if (surface == "renderer") {
+    // P6.5-T04: install `acquireCronymaxRendererApi()` for content-
+    // renderer iframes. We expose ONE V8 native primitive
+    // (`setHeight(px)`) plus metadata as a hidden
+    // `__cronymax_renderer_native__` global; everything else (the
+    // acquired-once `activate(fn)` wrapper and the postMessage-driven
+    // render dispatch loop) is a JS bootstrap defined via
+    // `frame->ExecuteJavaScript` below. Splitting that way keeps the
+    // V8 surface to the bare minimum that actually needs to cross the
+    // process boundary.
+    CefRefPtr<CefV8Value> native = CefV8Value::CreateObject(nullptr, nullptr);
+    native->SetValue("extensionId", CefV8Value::CreateString(ext_id),
+                     V8_PROPERTY_ATTRIBUTE_READONLY);
+    native->SetValue("instanceId", CefV8Value::CreateString(id),
+                     V8_PROPERTY_ATTRIBUTE_READONLY);
+    // Theme is constant for v1 alpha; the IDL `onDidChangeTheme` event
+    // returns an immediately-disposable noop from the JS shim. Theme
+    // sync will be wired in P6.5-T08 / a later task.
+    native->SetValue("theme", CefV8Value::CreateString("light"),
+                     V8_PROPERTY_ATTRIBUTE_READONLY);
+    native->SetValue("setHeight",
+                     CefV8Value::CreateFunction(
+                         "setHeight", new RendererSetHeightHandler(id)),
+                     V8_PROPERTY_ATTRIBUTE_READONLY);
+
+    CefRefPtr<CefV8Value> global = context->GetGlobal();
+    global->SetValue("__cronymax_renderer_native__", native,
+                     V8_PROPERTY_ATTRIBUTE_DONTENUM);
+
+    // JS bootstrap shim. Defines `acquireCronymaxRendererApi()` and
+    // installs the message listener that drives `renderItem` /
+    // `updateItem` / `disposeItem` from parent → iframe postMessage
+    // (per P6.5 IDL D9: streaming payloads bypass Rust IPC).
+    //
+    // Message contract:
+    //   { type: "cronymax:renderer:render",  request: RenderRequest }
+    //   { type: "cronymax:renderer:update",  request: RenderRequest }
+    //   { type: "cronymax:renderer:dispose", instanceId: string      }
+    //
+    // The parent React surface (P6.5-T08 `<ExtensionContentBlock>`)
+    // posts these via `iframe.contentWindow.postMessage(msg,
+    // "cronymax-webview://<ext>")`. We accept messages whose origin
+    // begins with `cronymax-webview://` (or any messages if the
+    // platform sends from a non-scheme origin, which it currently does
+    // — chat React runs from `file://` or the built-in app chrome).
+    static constexpr char kRendererBootstrap[] =
+        R"((function () {
+  var native = globalThis.__cronymax_renderer_native__;
+  if (!native) return;
+
+  var acquired = false;
+  var activateFn = null;
+  var rendererApi = null;
+  var rendererApiPromise = null;
+  var pendingMessages = [];
+
+  function makeDisposable() { return { dispose: function () {} }; }
+
+  function buildCtx() {
+    return Object.freeze({
+      rendererId: '',
+      extensionId: native.extensionId,
+      theme: native.theme,
+      onDidChangeTheme: function () { return makeDisposable(); },
+      setHeight: function (px) {
+        try { native.setHeight(px | 0); } catch (e) { /* ignore */ }
+      },
+    });
+  }
+
+  globalThis.acquireCronymaxRendererApi = function () {
+    if (acquired) {
+      throw new Error('acquireCronymaxRendererApi: already acquired');
+    }
+    acquired = true;
+    return Object.freeze({
+      activate: function (fn) {
+        if (activateFn) {
+          throw new Error('RendererActivationApi.activate: already called');
+        }
+        if (typeof fn !== 'function') {
+          throw new TypeError('activate(fn): fn must be a function');
+        }
+        activateFn = fn;
+        flushPending();
+      },
+    });
+  };
+
+  function ensureRenderer() {
+    if (rendererApi) return Promise.resolve(rendererApi);
+    if (rendererApiPromise) return rendererApiPromise;
+    if (!activateFn) return Promise.resolve(null);
+    rendererApiPromise = Promise.resolve()
+      .then(function () { return activateFn(buildCtx()); })
+      .then(function (api) {
+        rendererApi = api || {};
+        return rendererApi;
+      })
+      .catch(function (e) {
+        console.error('[cronymax renderer] activate() failed:', e);
+        rendererApi = {};
+        return rendererApi;
+      });
+    return rendererApiPromise;
+  }
+
+  function dispatch(msg) {
+    if (!msg || typeof msg !== 'object') return;
+    var t = msg.type;
+    if (typeof t !== 'string') return;
+    if (t === 'cronymax:renderer:dispose') {
+      var inst = msg.instanceId || native.instanceId;
+      if (rendererApi && typeof rendererApi.disposeItem === 'function') {
+        try { rendererApi.disposeItem(inst); } catch (e) { console.error(e); }
+      }
+      return;
+    }
+    if (t !== 'cronymax:renderer:render' && t !== 'cronymax:renderer:update') {
+      return;
+    }
+    ensureRenderer().then(function (api) {
+      if (!api) return;  // activate not yet called — message already buffered
+      var element = document.body;
+      var token = Object.freeze({
+        isCancellationRequested: false,
+        onCancellationRequested: function () { return makeDisposable(); },
+      });
+      var fn = (t === 'cronymax:renderer:update' && typeof api.updateItem === 'function')
+        ? api.updateItem
+        : api.renderItem;
+      if (typeof fn !== 'function') return;
+      try { fn.call(api, element, msg.request, token); }
+      catch (e) { console.error('[cronymax renderer]', e); }
+    });
+  }
+
+  function flushPending() {
+    var batch = pendingMessages;
+    pendingMessages = [];
+    for (var i = 0; i < batch.length; i++) dispatch(batch[i]);
+  }
+
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    if (!data || typeof data !== 'object' || typeof data.type !== 'string') {
+      return;
+    }
+    if (!data.type.startsWith('cronymax:renderer:')) return;
+    if (!activateFn) {
+      pendingMessages.push(data);
+      return;
+    }
+    dispatch(data);
+  });
+})();)";
+
+    frame->ExecuteJavaScript(kRendererBootstrap,
+                             "cronymax://renderer-bootstrap", 0);
+    return;
+  }
+
+  // Unknown surface — same outcome as missing: no SDK, no registration.
 }
 
 void App::DispatchWebviewDelivery(const std::string& panel_id,
                                   const std::vector<uint8_t>& payload_msgpack) {
   auto it = webview_frames_.find(panel_id);
-  if (it == webview_frames_.end()) return;
-  if (!it->second.context) return;
+  if (it == webview_frames_.end())
+    return;
+  if (!it->second.context)
+    return;
   it->second.context->Enter();
   auto j = nlohmann::json::from_msgpack(payload_msgpack, true, false);
   CefRefPtr<CefV8Value> payload =
@@ -702,7 +1017,8 @@ void App::DispatchWebviewDelivery(const std::string& panel_id,
     const int n = handlers->GetArrayLength();
     for (int i = 0; i < n; ++i) {
       auto h = handlers->GetValue(i);
-      if (!h || !h->IsFunction()) continue;
+      if (!h || !h->IsFunction())
+        continue;
       CefV8ValueList args;
       args.push_back(payload);
       h->ExecuteFunctionWithContext(it->second.context, nullptr, args);
@@ -892,7 +1208,8 @@ bool App::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,
     auto msg_args = message->GetArgumentList();
     const std::string panel_id = msg_args->GetString(0).ToString();
     auto bin = msg_args->GetBinary(2);
-    if (!bin) return true;
+    if (!bin)
+      return true;
     std::vector<uint8_t> bytes(bin->GetSize());
     bin->GetData(bytes.data(), bytes.size(), 0);
     DispatchWebviewDelivery(panel_id, bytes);

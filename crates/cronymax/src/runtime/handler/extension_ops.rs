@@ -1,6 +1,6 @@
-//! Extension-platform request handlers — currently the
-//! [`ControlRequest::ExtensionWebviewPost`] bridge from a webview iframe
-//! back to the owning extension's Node host.
+//! Extension-platform request handlers.
+//!
+//! ## `ExtensionWebviewPost` (P6 webview panels)
 //!
 //! The C++ renderer-side `acquireCronymaxApi().postMessage(payload)`
 //! turns into a `kMsgWebviewPost` process message; the browser-side
@@ -12,6 +12,17 @@
 //! From here we look the panel id up in the `ExtensionRuntime`'s panel
 //! registry and forward to the matching extension's Node host via
 //! [`crate::extensions::runtime::ExtensionRuntime::forward_panel_message`].
+//!
+//! ## `ExtensionRendererSetHeight` (P6.5 content renderers)
+//!
+//! Content-renderer iframes call
+//! `acquireCronymaxRendererApi().setHeight(px)` from inside the iframe
+//! to report their rendered height. The renderer process IPC's a
+//! `kMsgRendererSetHeight` to the browser, which packages it as this
+//! ControlRequest. The handler routes to
+//! [`crate::extensions::runtime::ExtensionRuntime::forward_renderer_height`]
+//! which emits an `extensions/renderer` topic event the chat surface
+//! subscribes to.
 
 use crate::protocol::control::{ControlError, ControlRequest, ControlResponse};
 
@@ -37,6 +48,30 @@ impl RuntimeHandler {
             Err(e) => ControlResponse::Err {
                 error: ControlError::InvalidState {
                     message: format!("forward_panel_message failed: {e}"),
+                },
+            },
+        }
+    }
+
+    pub(super) async fn handle_extension_renderer_set_height(
+        &self,
+        req: ControlRequest,
+    ) -> ControlResponse {
+        let ControlRequest::ExtensionRendererSetHeight { instance_id, px } = req else {
+            unreachable!()
+        };
+        let Some(ext_rt) = self.services.extensions.as_ref() else {
+            return ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: "extension runtime not configured".into(),
+                },
+            };
+        };
+        match ext_rt.forward_renderer_height(&instance_id, px).await {
+            Ok(()) => ControlResponse::Ack,
+            Err(e) => ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: format!("forward_renderer_height failed: {e}"),
                 },
             },
         }

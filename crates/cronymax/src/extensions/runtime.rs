@@ -78,7 +78,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use rmpv::Value;
 
 use crate::extensions::api::agents::{
@@ -86,7 +86,9 @@ use crate::extensions::api::agents::{
 };
 use crate::extensions::api::commands::CommandRegistry;
 use crate::extensions::api::lifecycle::LifecycleState;
-use crate::extensions::api::renderers::{ContentRendererRegistry, RendererEntry};
+use crate::extensions::api::renderers::{
+    ContentRendererRegistry, RendererEvent, RendererEventEmitter,
+};
 use crate::extensions::api::sidebar::{SidebarViewEntry, SidebarViewRegistry};
 use crate::extensions::api::webview::{
     CreatePanelArgs, PanelSlot, WebviewEventEmitter, WebviewRegistry,
@@ -97,13 +99,9 @@ use crate::extensions::error::{ExtensionError, ExtensionResult};
 use crate::extensions::events::PlatformTopic;
 use crate::extensions::events::{EventBus, EventPayload, SubscriptionGuard};
 use crate::extensions::host::node::{NodeHost, SpawnConfig};
-use crate::extensions::manifest::{
-    AgentProviderContribution, ContentRendererContribution, Manifest, SidebarViewContribution,
-};
+use crate::extensions::manifest::{AgentProviderContribution, Manifest, SidebarViewContribution};
 use crate::extensions::registry::ExtensionRegistry;
-use crate::extensions::rpc::codec::{
-    agents_method, method, renderers_method, sidebar_method, webview_method,
-};
+use crate::extensions::rpc::codec::{agents_method, method, sidebar_method, webview_method};
 use crate::extensions::rpc::{Connection, RpcServer};
 
 /// Live state for one activated extension. Held inside `ExtensionRuntime`
@@ -130,7 +128,6 @@ pub struct ExtensionRuntime {
     state: Arc<RuntimeState>,
 }
 
-#[derive(Debug)]
 struct RuntimeState {
     registry: Mutex<ExtensionRegistry>,
     contributions: Mutex<ContributionRegistry>,
@@ -160,6 +157,33 @@ struct RuntimeState {
     /// extensions subscribe to topics they declared in
     /// `capabilities.events.subscribe` via `events/subscribe` RPC.
     events: EventBus,
+    /// Composition-root-installed callback that pipes
+    /// [`RendererEvent`]s into the [`RuntimeAuthority`] topic
+    /// `extensions/renderer`. Defaults to a no-op so unit tests can
+    /// drive the runtime without a renderer attached.
+    renderer_event_emitter: RwLock<RendererEventEmitter>,
+}
+
+impl std::fmt::Debug for RuntimeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Hand-written because `renderer_event_emitter` holds a dyn Fn
+        // closure that doesn't implement Debug. Every other field
+        // forwards normally.
+        f.debug_struct("RuntimeState")
+            .field("registry", &self.registry)
+            .field("contributions", &self.contributions)
+            .field("lifecycle", &self.lifecycle)
+            .field("commands", &self.commands)
+            .field("providers", &self.providers)
+            .field("renderers", &self.renderers)
+            .field("sidebars", &self.sidebars)
+            .field("webviews", &self.webviews)
+            .field("handles", &self.handles)
+            .field("session_router", &self.session_router)
+            .field("events", &self.events)
+            .field("renderer_event_emitter", &"<fn>")
+            .finish()
+    }
 }
 
 impl ExtensionRuntime {
@@ -177,6 +201,7 @@ impl ExtensionRuntime {
                 handles: Mutex::new(HashMap::new()),
                 session_router: AgentSessionRouter::new(),
                 events: EventBus::new(),
+                renderer_event_emitter: RwLock::new(Arc::new(|_| {})),
             }),
         }
     }
@@ -207,6 +232,23 @@ impl ExtensionRuntime {
     /// topic the panel UI shells subscribe to.
     pub fn set_webview_emitter(&self, emitter: WebviewEventEmitter) {
         self.state.webviews.set_emitter(emitter);
+    }
+
+    /// Replace the content-renderer event emitter. Called once at
+    /// composition root so [`RendererEvent`]s flow into the
+    /// [`RuntimeAuthority`] topic `extensions/renderer` the chat surface
+    /// subscribes to. Test runtimes without a renderer keep the
+    /// no-op default.
+    pub fn set_renderer_emitter(&self, emitter: RendererEventEmitter) {
+        *self.state.renderer_event_emitter.write() = emitter;
+    }
+
+    fn emit_renderer_event(&self, event: RendererEvent) {
+        // Clone the emitter under read lock then drop the lock before
+        // firing — mirrors WebviewRegistry::emit so emitters that
+        // re-enter the runtime don't deadlock.
+        let emitter = self.state.renderer_event_emitter.read().clone();
+        emitter(event);
     }
 
     /// L1.5 platform-event bus. Chat / tool dispatch sites call
@@ -412,6 +454,21 @@ impl ExtensionRuntime {
         //    activate() throws, so the settings UI can still surface them.
         self.state.contributions.lock().ingest(&manifest);
 
+        // 1.b. Populate the manifest-driven typed registries. Currently this
+        //      is just content renderers; agent providers and sidebar views
+        //      go through Node-side notify register/unregister because they
+        //      need a live RPC handler attached (`session.create`,
+        //      `sidebar/view.message`). Renderers don't — they're iframe-
+        //      hosted (`acquireCronymaxRendererApi()` in the iframe), so
+        //      manifest declaration is the only thing the platform needs.
+        if let Err(e) = self.state.renderers.ingest_manifest(&manifest, ext_id) {
+            tracing::warn!(
+                ext_id = %ext_id,
+                error = %e,
+                "ingest_manifest for content renderers failed; declared renderers won't dispatch",
+            );
+        }
+
         // 1a. Register event-bus capability whitelist so any `events/subscribe`
         //     notify the extension fires from activate() can pass capability
         //     gating. Mirrors contributions: keep the cap registered even if
@@ -429,47 +486,70 @@ impl ExtensionRuntime {
             );
         }
 
-        // 2. Build the per-extension RPC handler table.
-        let rpc = self.build_rpc_server(ext_id.to_string(), manifest.clone());
+        // 2-5. Spawn Node host only when the manifest declares a `main`
+        //      entry point. Declarative-only extensions (e.g. a content
+        //      renderer with no Node-side coordinator — see P6.5 IDL D7)
+        //      skip the entire host pipeline; contributions already
+        //      ingested at step 1 are all the platform needs.
+        if manifest.main.is_some() {
+            // 2. Build the per-extension RPC handler table.
+            let rpc = self.build_rpc_server(ext_id.to_string(), manifest.clone());
 
-        // 3. Spawn the host.
-        let cfg = cfg_builder(&manifest, ext_dir);
-        let host = match NodeHost::spawn(cfg, rpc).await {
-            Ok(h) => h,
-            Err(e) => {
-                self.state.contributions.lock().remove_extension(ext_id);
+            // 3. Spawn the host.
+            let cfg = cfg_builder(&manifest, ext_dir);
+            let host = match NodeHost::spawn(cfg, rpc).await {
+                Ok(h) => h,
+                Err(e) => {
+                    self.state.contributions.lock().remove_extension(ext_id);
+                    self.state.renderers.unregister_all_for(ext_id);
+                    let _ = self.state.events.unregister_extension(ext_id);
+                    return Err(e);
+                }
+            };
+
+            // 4. Snapshot the conn. Must happen before driving
+            //    extension/activate so that any register-notify the extension
+            //    fires from inside its activate() callback can find the conn
+            //    in state.handles.
+            let conn = match host.connection().await {
+                Some(c) => c,
+                None => {
+                    self.state.contributions.lock().remove_extension(ext_id);
+                    self.state.renderers.unregister_all_for(ext_id);
+                    let _ = self.state.events.unregister_extension(ext_id);
+                    let _ = host.shutdown().await;
+                    return Err(ExtensionError::HostSpawn(
+                        "host spawned but connection unavailable".into(),
+                    ));
+                }
+            };
+            self.state.handles.lock().insert(
+                ext_id.to_string(),
+                ExtensionHandle {
+                    host,
+                    conn: conn.clone(),
+                    event_subscriptions: HashMap::new(),
+                },
+            );
+
+            // 5. Drive extension/activate. Failure is fatal — rollback all
+            //    state and tear down the host.
+            if let Err(e) = conn.request(method::EXTENSION_ACTIVATE, Value::Nil).await {
+                self.rollback_failed_activate(ext_id).await;
                 return Err(e);
             }
-        };
-
-        // 4. Snapshot the conn. Must happen before driving
-        //    extension/activate so that any register-notify the extension
-        //    fires from inside its activate() callback can find the conn
-        //    in state.handles.
-        let conn = match host.connection().await {
-            Some(c) => c,
-            None => {
-                self.state.contributions.lock().remove_extension(ext_id);
-                let _ = host.shutdown().await;
-                return Err(ExtensionError::HostSpawn(
-                    "host spawned but connection unavailable".into(),
-                ));
-            }
-        };
-        self.state.handles.lock().insert(
-            ext_id.to_string(),
-            ExtensionHandle {
-                host,
-                conn: conn.clone(),
-                event_subscriptions: HashMap::new(),
-            },
-        );
-
-        // 5. Drive extension/activate. Failure is fatal — rollback all
-        //    state and tear down the host.
-        if let Err(e) = conn.request(method::EXTENSION_ACTIVATE, Value::Nil).await {
-            self.rollback_failed_activate(ext_id).await;
-            return Err(e);
+        } else {
+            // Declarative-only extension: no host, no conn, no
+            // `extension/activate` RPC. Contributions are already in the
+            // registries; mark lifecycle and we're done. Note that
+            // `state.handles` deliberately stays without an entry so
+            // downstream code (deactivate, `send_to_extension`, etc.) can
+            // tell host-backed and declarative-only apart with a simple
+            // map lookup.
+            tracing::debug!(
+                ext_id = %ext_id,
+                "activating declarative-only extension (no `manifest.main`); skipping Node host spawn",
+            );
         }
 
         // 6. Mark lifecycle. This is the user-visible "activated" bit;
@@ -482,22 +562,32 @@ impl ExtensionRuntime {
         Ok(())
     }
 
-    /// Deactivate `ext_id`. Idempotent against a missing host (returns
-    /// `NotActivated`).
+    /// Deactivate `ext_id`. Errors with `NotActivated` if the lifecycle
+    /// bit is not set. For host-backed extensions this also drives the
+    /// `extension/deactivate` RPC and tears down the Node host; for
+    /// declarative-only extensions (P6.5 — no `manifest.main`) the
+    /// `state.handles` map has no entry, so we skip the host shutdown
+    /// and only clean the registries.
     pub async fn deactivate(&self, ext_id: &str) -> ExtensionResult<()> {
-        let handle = self
-            .state
-            .handles
-            .lock()
-            .remove(ext_id)
-            .ok_or_else(|| ExtensionError::NotActivated(ext_id.to_string()))?;
+        // Source of truth for "is this extension activated" is the
+        // lifecycle table, NOT `state.handles` (which is empty for
+        // declarative-only extensions).
+        if !self.state.lifecycle.lock().is_activated(ext_id) {
+            return Err(ExtensionError::NotActivated(ext_id.to_string()));
+        }
 
-        // Best-effort RPC notice; failure means the host is already gone,
-        // which is fine.
-        let _ = handle
-            .conn
-            .request(method::EXTENSION_DEACTIVATE, Value::Nil)
-            .await;
+        // Pop the host-backed handle if present; missing means
+        // declarative-only.
+        let handle = self.state.handles.lock().remove(ext_id);
+
+        // Best-effort RPC notice on host-backed extensions; failure means
+        // the host is already gone, which is fine.
+        if let Some(handle) = handle.as_ref() {
+            let _ = handle
+                .conn
+                .request(method::EXTENSION_DEACTIVATE, Value::Nil)
+                .await;
+        }
 
         self.state.contributions.lock().remove_extension(ext_id);
         self.state.providers.unregister_all_for(ext_id);
@@ -508,16 +598,18 @@ impl ExtensionRuntime {
         let _ = self.state.events.unregister_extension(ext_id);
         let _ = self.state.lifecycle.lock().mark_deactivated(ext_id);
 
-        // Destructure the handle so `event_subscriptions` drops here
-        // (severing every forwarding listener) while `host` survives long
-        // enough for the explicit shutdown await below.
-        let ExtensionHandle {
-            host,
-            conn: _,
-            event_subscriptions,
-        } = handle;
-        drop(event_subscriptions);
-        let _ = host.shutdown().await;
+        if let Some(handle) = handle {
+            // Destructure the handle so `event_subscriptions` drops here
+            // (severing every forwarding listener) while `host` survives
+            // long enough for the explicit shutdown await below.
+            let ExtensionHandle {
+                host,
+                conn: _,
+                event_subscriptions,
+            } = handle;
+            drop(event_subscriptions);
+            let _ = host.shutdown().await;
+        }
         Ok(())
     }
 
@@ -539,7 +631,6 @@ impl ExtensionRuntime {
 
     fn build_rpc_server(&self, ext_id: String, manifest: Manifest) -> RpcServer {
         let providers = self.state.providers.clone();
-        let renderers = self.state.renderers.clone();
         let sidebars = self.state.sidebars.clone();
         let state = self.state.clone();
 
@@ -733,46 +824,12 @@ impl ExtensionRuntime {
             });
         }
 
-        // ── renderers/register ─────────────────────────────────────────
-        {
-            let renderers = renderers.clone();
-            let state = state.clone();
-            let ext_id_c = ext_id.clone();
-            let manifest_c = manifest.clone();
-            builder = builder.on_notify(renderers_method::REGISTER, move |params| {
-                let renderers = renderers.clone();
-                let state = state.clone();
-                let ext_id = ext_id_c.clone();
-                let manifest = manifest_c.clone();
-                async move {
-                    let result = register_renderer_handler(&renderers, &manifest, &ext_id, &params);
-                    report_register_outcome(
-                        &state,
-                        &ext_id,
-                        "cronymax.content.renderer",
-                        &params,
-                        "rendererId",
-                        result,
-                    )
-                    .await
-                }
-            });
-        }
-
-        // ── renderers/unregister ───────────────────────────────────────
-        {
-            let renderers = renderers.clone();
-            let ext_id_c = ext_id.clone();
-            builder = builder.on_notify(renderers_method::UNREGISTER, move |params| {
-                let renderers = renderers.clone();
-                let ext_id = ext_id_c.clone();
-                async move {
-                    let renderer_id = extract_str_field(&params, "rendererId")?;
-                    let _ = renderers.unregister(&ext_id, &renderer_id)?;
-                    Ok(())
-                }
-            });
-        }
+        // NB: there is no `renderers/register` / `renderers/unregister`
+        // RPC in v1 — content renderers are iframe-hosted and the registry
+        // is manifest-driven (see `ContentRendererRegistry::ingest_manifest`
+        // called from `activate`). Earlier alpha drafts routed Node-side
+        // `cronymax.renderers.registerRenderer(...)` notifies here; that
+        // path was removed in P6.5 (IDL decisions D1+D2).
 
         // ── sidebar/register ───────────────────────────────────────────
         {
@@ -1099,6 +1156,24 @@ impl ExtensionRuntime {
             .await
     }
 
+    /// Forward a height update from a content-renderer iframe to the
+    /// chat surface via the `extensions/renderer` Authority topic.
+    /// Called by [`crate::runtime::handler::RuntimeHandler::
+    /// handle_extension_renderer_set_height`] in response to the
+    /// `kMsgRendererSetHeight` IPC the renderer-side V8 binding sends
+    /// when an extension calls `setHeight(px)` inside its iframe.
+    ///
+    /// Currently always returns `Ok(())` — the emit is fire-and-forget;
+    /// stale instance ids (extension deactivated mid-render) are caught
+    /// by the chat surface dropping the event for unknown instances.
+    pub async fn forward_renderer_height(&self, instance_id: &str, px: i32) -> ExtensionResult<()> {
+        self.emit_renderer_event(RendererEvent::HeightChanged {
+            instance_id: instance_id.to_string(),
+            px,
+        });
+        Ok(())
+    }
+
     /// Forward a renderer-driven panel close (user closed the iframe's
     /// tab, etc.) to the owning extension as a `webview/onDidDispose`
     /// notify and remove the panel from the registry.
@@ -1145,29 +1220,6 @@ fn register_provider_handler(
         supports_models: decl.supports_models.unwrap_or(false),
         supports_modes: decl.supports_modes.unwrap_or(false),
         supports_mcp: decl.supports_mcp.unwrap_or(false),
-    })?;
-    Ok(())
-}
-
-fn register_renderer_handler(
-    renderers: &ContentRendererRegistry,
-    manifest: &Manifest,
-    ext_id: &str,
-    params: &Value,
-) -> ExtensionResult<()> {
-    let renderer_id = extract_str_field(params, "rendererId")?;
-    let decl = find_renderer_decl(manifest, &renderer_id).ok_or_else(|| {
-        ExtensionError::BadContribution {
-            point: "cronymax.content.renderer".into(),
-            ext_id: ext_id.to_string(),
-            reason: format!("renderer `{renderer_id}` not declared in manifest contributes"),
-        }
-    })?;
-    renderers.register(RendererEntry {
-        renderer_id: decl.id.clone(),
-        owning_ext: ext_id.to_string(),
-        mime_types: decl.mime_types.clone(),
-        entry: decl.entry.clone(),
     })?;
     Ok(())
 }
@@ -1403,17 +1455,6 @@ fn find_provider_decl<'a>(
         .find(|p| p.id == id)
 }
 
-fn find_renderer_decl<'a>(
-    manifest: &'a Manifest,
-    id: &str,
-) -> Option<&'a ContentRendererContribution> {
-    manifest
-        .contributes
-        .content_renderers
-        .iter()
-        .find(|r| r.id == id)
-}
-
 fn find_sidebar_decl<'a>(manifest: &'a Manifest, id: &str) -> Option<&'a SidebarViewContribution> {
     manifest
         .contributes
@@ -1478,6 +1519,17 @@ mod tests {
             .registry
             .lock()
             .insert_for_test("alice.x", manifest.clone());
+
+        // Mirror the activate-time manifest-driven population of the
+        // content-renderer registry (real `activate()` does this from
+        // `ingest_manifest`; the test side-steps full activate so we
+        // replicate the step here so renderer tests see a populated
+        // registry).
+        runtime
+            .state
+            .renderers
+            .ingest_manifest(&manifest, "alice.x")
+            .unwrap();
 
         let rpc_for_runtime_side = runtime.build_per_extension_handlers("alice.x", &manifest);
 
@@ -1690,23 +1742,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn extension_renderer_register_lands_in_registry() {
-        let (runtime, peer) = wired_pair().await;
-        peer.notify(
-            renderers_method::REGISTER,
-            Value::Map(vec![(
-                Value::String("rendererId".into()),
-                Value::String("alice.x.rend".into()),
-            )]),
-        )
-        .await
-        .unwrap();
-        for _ in 0..50 {
-            if runtime.renderers().len() == 1 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    async fn manifest_renderer_contribution_lands_in_registry() {
+        // P6.5 — content renderers are manifest-driven (no Node-side
+        // register RPC). `wired_pair` mirrors the activate-time call to
+        // `ContentRendererRegistry::ingest_manifest`, so the registry must
+        // already be populated by the time the peer connection is up.
+        let (runtime, _peer) = wired_pair().await;
         let r = runtime.renderers().get("alice.x.rend").unwrap();
         assert_eq!(r.owning_ext, "alice.x");
         assert_eq!(r.mime_types, vec!["text/x-alice".to_string()]);
@@ -1780,6 +1821,149 @@ mod tests {
             matches!(err, ExtensionError::NotActivated(_)),
             "got {err:?}"
         );
+    }
+
+    /// Declarative-only extension (no `manifest.main`) activates and
+    /// deactivates without spawning any Node host. Contributions ingested
+    /// during activate are visible immediately; `state.handles` stays
+    /// empty; deactivate cleans the typed registries and clears the
+    /// lifecycle bit.
+    #[tokio::test]
+    async fn activate_declarative_only_extension_skips_node_host() {
+        let raw = r#"{
+            "id": "acme.statics",
+            "name": "Statics",
+            "version": "0.1.0",
+            "publisher": "acme",
+            "engines": { "cronymax": "^1.0" },
+            "activationEvents": [],
+            "contributes": {
+                "cronymax.content.renderer": [
+                    { "id": "acme.statics.r", "mimeTypes": ["text/x-foo"], "entry": "./r.html" }
+                ]
+            }
+        }"#;
+        let manifest = Manifest::from_json(raw).expect("valid manifest");
+        assert!(manifest.main.is_none(), "main must be unset");
+
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("acme.statics", manifest);
+
+        // The cfg_builder would only be called for host-backed
+        // extensions, so panic if it fires — proves we didn't take the
+        // spawn path.
+        runtime
+            .activate("acme.statics", |_, _| {
+                panic!("cfg_builder must not run for declarative-only extension")
+            })
+            .await
+            .expect("activate should succeed without spawning a host");
+
+        // Renderer registry populated from manifest.
+        assert_eq!(runtime.renderers().len(), 1);
+        let r = runtime.renderers().get("acme.statics.r").unwrap();
+        assert_eq!(r.owning_ext, "acme.statics");
+
+        // No live host handle.
+        assert!(
+            runtime.state.handles.lock().get("acme.statics").is_none(),
+            "declarative-only extension must not insert a host handle",
+        );
+
+        // Lifecycle records the activation.
+        assert!(runtime.state.lifecycle.lock().is_activated("acme.statics"));
+
+        // Deactivate cleans up.
+        runtime
+            .deactivate("acme.statics")
+            .await
+            .expect("deactivate should succeed without a host");
+        assert_eq!(runtime.renderers().len(), 0);
+        assert!(!runtime.state.lifecycle.lock().is_activated("acme.statics"));
+    }
+
+    /// P6.5-T05: `forward_renderer_height` fires a `RendererEvent::
+    /// HeightChanged` through the composition-root-installed emitter.
+    /// The chat surface subscribes to the `extensions/renderer` topic
+    /// the emitter routes into via `RuntimeAuthority::emit`.
+    /// P6.5-T10 dogfood: load the real `examples/mermaid-renderer/
+    /// cronymax-extension.json` from disk, validate it through the same
+    /// `Manifest::from_json` path the registry uses at install time, and
+    /// confirm that an `ExtensionRuntime` activation populates the
+    /// content-renderer registry as expected. This proves the dogfood
+    /// fixture stays in sync with whatever manifest schema changes we
+    /// make — if anyone breaks the manifest contract, this test fires.
+    #[tokio::test]
+    async fn dogfood_mermaid_renderer_fixture_activates_cleanly() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace parent")
+            .parent()
+            .expect("workspace root");
+        let manifest_path = repo_root
+            .join("examples")
+            .join("mermaid-renderer")
+            .join("cronymax-extension.json");
+        let raw = std::fs::read_to_string(&manifest_path)
+            .expect("read examples/mermaid-renderer/cronymax-extension.json");
+        let manifest = Manifest::from_json(&raw).expect("manifest parses");
+        // The dogfood example MUST be declarative-only (no Node host) so
+        // the renderer-only activation path it exercises stays load-bearing.
+        assert!(
+            manifest.main.is_none(),
+            "mermaid-renderer fixture must remain declarative-only",
+        );
+        assert_eq!(manifest.id, "cronymax-examples.mermaid-renderer");
+
+        let ext_id = manifest.id.clone();
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test(&ext_id, manifest);
+        runtime
+            .activate(&ext_id, |_, _| {
+                panic!("cfg_builder must not run for declarative-only extension")
+            })
+            .await
+            .expect("activate fixture");
+
+        // Renderer registry must now hold the mermaid renderer keyed by
+        // its mime type so the chat dispatcher can find it.
+        let r = runtime
+            .renderers()
+            .first_for_mime("text/vnd.mermaid")
+            .expect("text/vnd.mermaid renderer registered");
+        assert_eq!(r.owning_ext, "cronymax-examples.mermaid-renderer");
+        assert!(r.entry.ends_with("renderer/index.html"));
+    }
+
+    #[tokio::test]
+    async fn forward_renderer_height_emits_height_changed_event() {
+        use crate::extensions::api::renderers::RendererEvent;
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let captured: Arc<StdMutex<Vec<RendererEvent>>> = Arc::new(StdMutex::new(Vec::new()));
+        let cap = captured.clone();
+        runtime.set_renderer_emitter(Arc::new(move |ev| {
+            cap.lock().unwrap().push(ev);
+        }));
+
+        runtime
+            .forward_renderer_height("inst-42", 192)
+            .await
+            .expect("forward_renderer_height should succeed");
+
+        let events = captured.lock().unwrap().clone();
+        assert!(matches!(
+            events.as_slice(),
+            [RendererEvent::HeightChanged { instance_id, px }]
+                if instance_id == "inst-42" && *px == 192
+        ));
     }
 
     #[tokio::test]
@@ -2444,7 +2628,7 @@ mod tests {
             .map(str::to_string);
         assert_eq!(
             url.as_deref(),
-            Some("cronymax-webview://alice.x/hello.html?panel=p-hello"),
+            Some("cronymax-webview://alice.x/hello.html?surface=panel&id=p-hello"),
         );
         assert_eq!(runtime.webviews().len(), 1);
         let events = log.lock().unwrap().clone();
@@ -2455,7 +2639,7 @@ mod tests {
                     panel_id, slot, url,
                     ..
                 }] if panel_id == "p-hello" && slot == "sidebar"
-                    && url == "cronymax-webview://alice.x/hello.html?panel=p-hello"
+                    && url == "cronymax-webview://alice.x/hello.html?surface=panel&id=p-hello"
             ),
             "got {events:?}",
         );

@@ -14,7 +14,6 @@ import type { Commands } from "./commands";
 import type { Events } from "./events";
 import type { ExtensionsNamespace } from "./extensions";
 import type { ExtensionContext } from "./lifecycle";
-import type { Renderers } from "./renderers";
 import type { Secrets } from "./secrets";
 import type { Window } from "./window";
 import type { Workspace } from "./workspace";
@@ -40,7 +39,11 @@ export interface Cronymax {
 
   /** L2 — extension-point client APIs. */
   readonly agents: AgentsNamespace;
-  readonly renderers: Renderers;
+
+  // NB: ContentRenderer has no Node-side API in v1. Renderer code runs in
+  // an iframe loaded from `cronymax-webview://<extId>/<entry>?surface=
+  // renderer&id=<...>` and uses the `acquireCronymaxRendererApi()` global
+  // declared in `./renderer-host`. See that file for the iframe SDK.
 }
 
 export interface EnvNamespace {
@@ -122,6 +125,7 @@ export type {
   JsonSchema,
   Manifest,
   NetworkCapability,
+  RendererCsp,
   SidebarViewContribution,
   UiSlot,
 } from "./manifest";
@@ -139,11 +143,13 @@ export type {
 // values (Disposable is both type & namespace; PlatformTopic is a const)
 export { Disposable } from "./primitives";
 export type {
-  Renderers,
-  RenderHandle,
-  RenderHandler,
-  RenderRequest,
-} from "./renderers";
+  RendererActivate,
+  RendererActivationApi,
+  RendererApi,
+  RendererContext,
+  RendererTheme,
+} from "./renderer-host";
+export type { RenderRequest, RenderRequestMetadata } from "./renderers";
 export type { Secrets, SecretsError, SecretsErrorCode } from "./secrets";
 export type {
   InputBoxOptions,

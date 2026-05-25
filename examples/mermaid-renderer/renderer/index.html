@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mermaid renderer</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #111;
+  }
+  #root {
+    padding: 8px 0;
+  }
+  #root svg {
+    display: block;
+    margin: 0 auto;
+    max-width: 100%;
+  }
+  .cronymax-err {
+    color: #b00020;
+    padding: 6px 10px;
+    border-left: 3px solid #b00020;
+    background: #fdecea;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", monospace;
+    white-space: pre-wrap;
+    border-radius: 3px;
+  }
+  .cronymax-pending {
+    color: #555;
+    font-style: italic;
+  }
+</style>
+<!--
+  Bundled mermaid.min.js (not checked in — see README). Use `npm run build`
+  from the extension directory to copy mermaid into ./mermaid.min.js.
+-->
+<script src="./mermaid.min.js"></script>
+</head>
+<body>
+<div id="root"><span class="cronymax-pending">Waiting for input…</span></div>
+<script>
+"use strict";
+(function () {
+  const root = document.getElementById("root");
+  let initialized = false;
+
+  function initMermaid(theme) {
+    // mermaid.initialize is safe to call multiple times in v11; we use it
+    // to flip themes when the chat surface tells us to.
+    if (!window.mermaid) return false;
+    window.mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: theme === "dark" ? "dark" : "default",
+      flowchart: { useMaxWidth: true },
+      sequence: { useMaxWidth: true },
+      gantt: { useMaxWidth: true },
+    });
+    initialized = true;
+    return true;
+  }
+
+  function showError(msg) {
+    const el = document.createElement("div");
+    el.className = "cronymax-err";
+    el.textContent = String(msg);
+    root.replaceChildren(el);
+  }
+
+  function showPending() {
+    const el = document.createElement("span");
+    el.className = "cronymax-pending";
+    el.textContent = "Waiting for input…";
+    root.replaceChildren(el);
+  }
+
+  async function renderDiagram(source, ctx, instanceId) {
+    if (!initMermaid(ctx.theme)) {
+      showError("mermaid library not loaded — run `npm run build` in the extension dir to copy mermaid.min.js into renderer/.");
+      ctx.setHeight(root.scrollHeight);
+      return;
+    }
+    const id = "mmd-" + (instanceId || "x").replace(/[^a-zA-Z0-9_-]/g, "_");
+    try {
+      const { svg, bindFunctions } = await window.mermaid.render(id, source);
+      root.innerHTML = svg;
+      if (typeof bindFunctions === "function") {
+        try { bindFunctions(root); } catch (_) { /* hover binds may be no-ops */ }
+      }
+    } catch (e) {
+      // mermaid throws on syntax errors and on streaming partial source.
+      // Either way, present the error inline so the user can correct it
+      // (and so the height report reflects the error UI, not stale SVG).
+      showError(e && e.message ? e.message : String(e));
+    }
+    // Report height back to the cronymax chat surface so the embedding
+    // <iframe> can size itself. Use `documentElement.scrollHeight` —
+    // that captures the full rendered content including body padding
+    // and anything outside #root — instead of only `#root`'s box,
+    // which leaves the iframe short and triggers an internal scroll
+    // bar.
+    ctx.setHeight(document.documentElement.scrollHeight);
+  }
+
+  const api = acquireCronymaxRendererApi();
+  api.activate(function (ctx) {
+    let pendingObserver = null;
+    // Re-init mermaid lazily on every render so theme flips take effect
+    // even if the SDK had to be activated before the script tag finished
+    // loading the heavy mermaid bundle.
+    if (window.mermaid) initMermaid(ctx.theme);
+    ctx.onDidChangeTheme(function (t) {
+      initialized = false;
+      initMermaid(t);
+    });
+
+    return {
+      async renderItem(_element, item) {
+        await renderDiagram(item.content, ctx, item.instanceId);
+        // Re-measure on subsequent layout changes inside the SVG (mermaid
+        // sometimes inserts foreignObject blocks asynchronously for
+        // labels). One observer per instance; disconnect on dispose.
+        if (pendingObserver) pendingObserver.disconnect();
+        if (typeof ResizeObserver !== "undefined") {
+          pendingObserver = new ResizeObserver(function () {
+            ctx.setHeight(document.documentElement.scrollHeight);
+          });
+          // Observe the document root so changes anywhere in the page
+          // (including async mermaid foreignObject inserts) reach us.
+          pendingObserver.observe(document.documentElement);
+        }
+      },
+      async updateItem(_element, item) {
+        await renderDiagram(item.content, ctx, item.instanceId);
+      },
+      disposeItem(_instanceId) {
+        if (pendingObserver) {
+          pendingObserver.disconnect();
+          pendingObserver = null;
+        }
+        showPending();
+      },
+    };
+  });
+})();
+</script>
+</body>
+</html>

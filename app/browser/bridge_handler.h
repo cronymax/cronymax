@@ -42,6 +42,16 @@ static constexpr char kMsgWebviewPost[] = "cronymax.webview.post";
 // dispatches into its `acquireCronymaxApi().onDidReceiveMessage` listeners.
 static constexpr char kMsgWebviewDeliver[] = "cronymax.webview.deliver";
 
+// ── Extension content-renderer bridge (Phase 6.5) ─────────────────────────
+// Renderer → browser: a content-renderer iframe inside `cronymax-webview://
+// ...?surface=renderer&id=<inst>` called `acquireCronymaxRendererApi().
+// setHeight(px)` to report its rendered height. Carries `(instance_id,
+// px)`. Browser-side dispatcher packages this as an
+// `ExtensionRendererSetHeight` ControlRequest the Rust side routes to
+// `ExtensionRuntime::forward_renderer_height`, which fans out to chat via
+// the `extensions/renderer` Authority topic.
+static constexpr char kMsgRendererSetHeight[] = "cronymax.renderer.setHeight";
+
 // Forward declaration; defined in bridge_handler.cc.
 class ControlEnricher;
 
@@ -327,6 +337,16 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   bool HandleWebviewPost(CefRefPtr<CefBrowser> browser,
                          CefRefPtr<CefFrame> frame,
                          CefRefPtr<CefProcessMessage> message);
+
+  // ── Extension content-renderer bridge (Phase 6.5) ────────────────────────
+  // Route a `cronymax.renderer.setHeight` process message that originated
+  // inside a content-renderer iframe (via `acquireCronymaxRendererApi().
+  // setHeight(px)`). Wraps into an `ExtensionRendererSetHeight`
+  // ControlRequest and forwards through the RuntimeProxy. Returns true
+  // if handled.
+  bool HandleRendererSetHeight(CefRefPtr<CefBrowser> browser,
+                               CefRefPtr<CefFrame> frame,
+                               CefRefPtr<CefProcessMessage> message);
 
   // Wire the renderer-bound delivery side of the webview bridge. Called
   // once at startup with a callback that locates the renderer browser /

@@ -1,0 +1,21 @@
+{
+  "id": "cronymax-examples.mermaid-renderer",
+  "name": "Mermaid Renderer",
+  "version": "0.1.0",
+  "publisher": "cronymax-examples",
+  "engines": { "cronymax": "^1.0" },
+  "description": "Renders Mermaid diagrams (graph / sequence / flowchart / ...) for fenced \"```mermaid\" blocks in chat and flow outputs. Declarative-only — no Node-side main.",
+  "activationEvents": ["onStartup"],
+  "contributes": {
+    "cronymax.content.renderer": [
+      {
+        "id": "cronymax-examples.mermaid-renderer.mermaid",
+        "mimeTypes": ["text/vnd.mermaid"],
+        "entry": "./renderer/index.html"
+      }
+    ]
+  },
+  "capabilities": {
+    "extension-points": ["cronymax.content.renderer"]
+  }
+}

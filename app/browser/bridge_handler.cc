@@ -486,8 +486,10 @@ bool BridgeHandler::HandleWebviewPost(CefRefPtr<CefBrowser> /*browser*/,
                                       CefRefPtr<CefFrame> /*frame*/,
                                       CefRefPtr<CefProcessMessage> message) {
   CEF_REQUIRE_UI_THREAD();
-  if (message->GetName() != kMsgWebviewPost) return false;
-  if (!runtime_proxy_) return true;  // nothing to forward to — drop quietly
+  if (message->GetName() != kMsgWebviewPost)
+    return false;
+  if (!runtime_proxy_)
+    return true;  // nothing to forward to — drop quietly
 
   auto margs = message->GetArgumentList();
   const std::string panel_id = margs->GetString(0).ToString();
@@ -501,8 +503,9 @@ bool BridgeHandler::HandleWebviewPost(CefRefPtr<CefBrowser> /*browser*/,
       std::vector<uint8_t> bytes(binary->GetSize());
       binary->GetData(bytes.data(), bytes.size(), 0);
       auto decoded = nlohmann::json::from_msgpack(bytes, true,
-                                                   /*allow_exceptions=*/false);
-      if (!decoded.is_discarded()) payload = std::move(decoded);
+                                                  /*allow_exceptions=*/false);
+      if (!decoded.is_discarded())
+        payload = std::move(decoded);
     }
   }
 
@@ -512,11 +515,51 @@ bool BridgeHandler::HandleWebviewPost(CefRefPtr<CefBrowser> /*browser*/,
       {"payload", std::move(payload)},
   };
   runtime_proxy_->SendControl(
-      std::move(req),
-      [panel_id](nlohmann::json /*response*/, bool is_error) {
+      std::move(req), [panel_id](nlohmann::json /*response*/, bool is_error) {
         if (is_error) {
           LOG(WARNING) << "[webview] forward to extension failed for panel "
                        << panel_id;
+        }
+      });
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// HandleRendererSetHeight — bridge `cronymax.renderer.setHeight` from a
+// content-renderer iframe up into the runtime as an
+// `ExtensionRendererSetHeight` ControlRequest (P6.5-T05).
+//   arg[0]: instance_id (string)
+//   arg[1]: px (int)
+// The reply is discarded; height is a fire-and-forget hint to chat.
+// ---------------------------------------------------------------------------
+
+bool BridgeHandler::HandleRendererSetHeight(
+    CefRefPtr<CefBrowser> /*browser*/,
+    CefRefPtr<CefFrame> /*frame*/,
+    CefRefPtr<CefProcessMessage> message) {
+  CEF_REQUIRE_UI_THREAD();
+  if (message->GetName() != kMsgRendererSetHeight)
+    return false;
+  if (!runtime_proxy_)
+    return true;  // nothing to forward to — drop quietly
+
+  auto margs = message->GetArgumentList();
+  if (margs->GetSize() < 2)
+    return true;
+  const std::string instance_id = margs->GetString(0).ToString();
+  const int px = margs->GetInt(1);
+
+  nlohmann::json req = {
+      {"kind", "extension_renderer_set_height"},
+      {"instance_id", instance_id},
+      {"px", px},
+  };
+  runtime_proxy_->SendControl(
+      std::move(req),
+      [instance_id](nlohmann::json /*response*/, bool is_error) {
+        if (is_error) {
+          LOG(WARNING) << "[renderer] forward setHeight failed for instance "
+                       << instance_id;
         }
       });
   return true;
@@ -531,11 +574,14 @@ void BridgeHandler::SetWebviewFrameResolver(WebviewFrameResolver resolver) {
   // WebviewEvent (PanelCreated / PanelDisposed / Message / VisibilityChanged).
   // We forward `Message` variants to the matching iframe as a
   // `kMsgWebviewDeliver` process message.
-  if (webview_event_token_ >= 0) return;
-  if (!runtime_proxy_) return;
-  webview_event_token_ = runtime_proxy_->SubscribeEvents(
-      [this](const nlohmann::json& event) {
-        if (!event.is_object()) return;
+  if (webview_event_token_ >= 0)
+    return;
+  if (!runtime_proxy_)
+    return;
+  webview_event_token_ =
+      runtime_proxy_->SubscribeEvents([this](const nlohmann::json& event) {
+        if (!event.is_object())
+          return;
         // Authority events come wrapped as
         //   {"topic":"extensions/webview","payload":{"kind":"raw","data":{...}}}
         // The shape varies a little across the C++/Rust boundary, so look
@@ -548,12 +594,16 @@ void BridgeHandler::SetWebviewFrameResolver(WebviewFrameResolver resolver) {
         if (node->contains("data") && (*node)["data"].is_object()) {
           node = &(*node)["data"];
         }
-        if (!node->is_object()) return;
-        if (!node->contains("kind")) return;
+        if (!node->is_object())
+          return;
+        if (!node->contains("kind"))
+          return;
         const std::string kind = node->value("kind", "");
-        if (kind != "message") return;
+        if (kind != "message")
+          return;
         const std::string panel_id = node->value("panelId", "");
-        if (panel_id.empty()) return;
+        if (panel_id.empty())
+          return;
         nlohmann::json payload = node->value("payload", nlohmann::json{});
 
         WebviewFrameResolver r;
@@ -561,9 +611,11 @@ void BridgeHandler::SetWebviewFrameResolver(WebviewFrameResolver resolver) {
           std::lock_guard lock(webview_mu_);
           r = webview_resolver_;
         }
-        if (!r) return;
+        if (!r)
+          return;
         auto [target_browser, target_frame] = r(panel_id);
-        if (!target_browser || !target_frame) return;
+        if (!target_browser || !target_frame)
+          return;
 
         auto bytes = nlohmann::json::to_msgpack(payload);
         auto post = [panel_id, target_browser, target_frame,
@@ -572,16 +624,15 @@ void BridgeHandler::SetWebviewFrameResolver(WebviewFrameResolver resolver) {
           auto args = msg->GetArgumentList();
           args->SetString(0, panel_id);
           args->SetString(1, std::string());  // reserved for ext_id
-          args->SetBinary(
-              2, CefBinaryValue::Create(bytes.data(), bytes.size()));
+          args->SetBinary(2,
+                          CefBinaryValue::Create(bytes.data(), bytes.size()));
           target_frame->SendProcessMessage(PID_RENDERER, msg);
         };
         if (CefCurrentlyOn(TID_UI)) {
           post();
         } else {
-          CefPostTask(TID_UI, base::BindOnce(
-                                  [](decltype(post) fn) { fn(); },
-                                  std::move(post)));
+          CefPostTask(TID_UI, base::BindOnce([](decltype(post) fn) { fn(); },
+                                             std::move(post)));
         }
       });
 }

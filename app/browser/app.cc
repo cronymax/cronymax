@@ -24,7 +24,8 @@ std::string ResolveExtensionsRoot() {
 #else
   const char* home = std::getenv("HOME");
 #endif
-  if (!home || !*home) return ".cronymax/extensions";
+  if (!home || !*home)
+    return ".cronymax/extensions";
   return std::string(home) + "/.cronymax/extensions";
 }
 
@@ -53,8 +54,7 @@ void App::OnContextInitialized() {
   MainWindow::Create();
 }
 
-void App::OnRegisterCustomSchemes(
-    CefRawPtr<CefSchemeRegistrar> registrar) {
+void App::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar) {
   RegisterWebviewScheme(registrar);
 }
 

@@ -32,8 +32,13 @@ pub struct Manifest {
     #[serde(default)]
     pub engines: Engines,
 
-    /// Relative path inside the extension dir.
-    pub main: String,
+    /// Relative path to the Node-side entry point, inside the extension
+    /// dir. **Optional** — extensions that ship only declarative
+    /// contributions (e.g. a content renderer with no Node-side
+    /// coordinator) may omit `main`; the platform recognises them and
+    /// skips spawning a Node host. Mirrors `cep-idl/v1/manifest.ts`.
+    #[serde(default)]
+    pub main: Option<String>,
 
     pub description: Option<String>,
     pub icon: Option<String>,
@@ -157,6 +162,31 @@ pub struct ContentRendererContribution {
     #[serde(rename = "mimeTypes")]
     pub mime_types: Vec<String>,
     pub entry: String,
+    /// Optional CSP overrides for the renderer iframe. Currently scoped
+    /// to `connect-src` host allowlisting. Mirrors `RendererCsp` in
+    /// `cep-idl/v1/manifest.ts`.
+    ///
+    /// The default iframe CSP applied by the `cronymax-webview://` scheme
+    /// handler blocks all outbound network (`connect-src 'self'`). To let
+    /// the renderer fetch from external hosts, declare them here; the
+    /// scheme handler merges them into the response CSP header.
+    ///
+    /// This is INDEPENDENT of the extension's Node-side
+    /// `capabilities.network` — Node fetch and iframe fetch are separate
+    /// origins, and each must be authorised in its own dimension.
+    #[serde(default)]
+    pub csp: Option<RendererCsp>,
+}
+
+/// CSP customisations for a content renderer's iframe. Mirrors the IDL
+/// `RendererCsp` in `cep-idl/v1/manifest.ts`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendererCsp {
+    /// Hosts merged into the iframe's `connect-src` CSP directive
+    /// (e.g. `["https://api.example.com"]`). Empty / absent = no
+    /// outbound network beyond `self`.
+    #[serde(default, rename = "connect_src")]
+    pub connect_src: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,7 +240,12 @@ impl Manifest {
         require("name", &self.name)?;
         require("version", &self.version)?;
         require("publisher", &self.publisher)?;
-        require("main", &self.main)?;
+        // `main` is optional in v1 (declarative-only extensions). When it
+        // IS present it must not be an empty string — otherwise the host
+        // spawner would try to load `<ext_dir>/`.
+        if let Some(main) = self.main.as_deref() {
+            require("main", main)?;
+        }
         require("engines.cronymax", &self.engines.cronymax)?;
         Ok(())
     }
@@ -283,7 +318,7 @@ mod tests {
         assert_eq!(m.version, "0.0.1");
         assert_eq!(m.publisher, "alice");
         assert_eq!(m.engines.cronymax, "^1.0");
-        assert_eq!(m.main, "./main.js");
+        assert_eq!(m.main.as_deref(), Some("./main.js"));
         assert!(m.activation_events.is_empty());
         // defaults
         assert!(m.contributes.commands.is_empty());

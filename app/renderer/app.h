@@ -66,7 +66,8 @@ class App : public CefApp, public CefRenderProcessHandler {
     CefRefPtr<CefV8Context> context;
     std::string panel_id;
     std::string ext_id;
-    // User-installed message handlers from `acquireCronymaxApi().onDidReceiveMessage`.
+    // User-installed message handlers from
+    // `acquireCronymaxApi().onDidReceiveMessage`.
     CefRefPtr<CefV8Value> on_message_handlers;  // V8 Array
     // Last serialised state from `setState(s)` — returned by `getState()`.
     CefRefPtr<CefV8Value> state;

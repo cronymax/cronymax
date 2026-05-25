@@ -147,6 +147,28 @@ impl RuntimeServices {
                 );
             }));
 
+            // P6.5-T05 / P6.5-T08: same pattern for content-renderer
+            // events (currently just height updates from inside renderer
+            // iframes; chat-driven instance lifecycle is emitted from
+            // chat dispatch with the same topic).
+            let auth_for_renderer = authority.clone();
+            runtime.set_renderer_emitter(std::sync::Arc::new(move |event| {
+                let payload = match serde_json::to_value(&event) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "failed to serialise RendererEvent",
+                        );
+                        return;
+                    }
+                };
+                auth_for_renderer.emit(
+                    "extensions/renderer",
+                    RuntimeEventPayload::Raw { data: payload },
+                );
+            }));
+
             spawn_startup_activation(&runtime, &to_activate);
             runtime
         });

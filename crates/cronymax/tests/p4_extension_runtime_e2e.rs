@@ -12,8 +12,10 @@
 //! 2. `cronymax.agents.registerProvider(...)` lands in
 //!    `runtime.providers()` with the metadata pulled from the manifest
 //!    (label / supports* fields)
-//! 3. `cronymax.renderers.registerRenderer(...)` lands in
-//!    `runtime.renderers()` keyed by MIME from the manifest
+//! 3. The content renderer declared in the manifest lands in
+//!    `runtime.renderers()` keyed by MIME at activate time, with NO
+//!    Node-side `registerRenderer` call (renderers are iframe-hosted in
+//!    P6.5; see `cep-idl/v1/renderer-host.ts`).
 //! 4. `cronymax.sidebar.register(...)` lands in `runtime.sidebars()`
 //! 5. `runtime.deactivate(ext_id)` drops every registration and shuts
 //!    down the host
@@ -68,12 +70,16 @@ fn skip_if_no_bundled_node() -> bool {
 ///
 /// * registers a command `alice.p4.hi`
 /// * registers an agent provider `alice.p4.gpt`
-/// * registers a content renderer `alice.p4.rend` for `text/x-alice`
 /// * registers a sidebar view `alice.p4.view`
 ///
-/// All four are also declared in the manifest's `contributes`, so the
-/// runtime's manifest lookup in the register-notify handler will find a
-/// matching declaration.
+/// All three Node-side registrations are also declared in the manifest's
+/// `contributes`, so the runtime's manifest lookup in each register-notify
+/// handler will find a matching declaration.
+///
+/// The manifest additionally declares a content renderer `alice.p4.rend`
+/// for `text/x-alice` — this is iframe-hosted in v1, so there is no Node-
+/// side `registerRenderer` call; the platform ingests it from the
+/// manifest at activate time.
 fn write_p4_extension(root: &std::path::Path) -> PathBuf {
     let dist = root.join("dist");
     std::fs::create_dir_all(&dist).unwrap();
@@ -90,9 +96,6 @@ fn write_p4_extension(root: &std::path::Path) -> PathBuf {
                     enumerate: async () => [{ id: "m1", label: "M1" }],
                     createSession: async () => ({ id: "s1", prompt: () => {}, dispose: () => {} }),
                 }),
-            );
-            ctx.subscriptions.push(
-                c.renderers.registerRenderer("alice.p4.rend", () => ({ instanceId: "i", dispose: () => {} })),
             );
             ctx.subscriptions.push(
                 c.sidebar.register("alice.p4.view"),

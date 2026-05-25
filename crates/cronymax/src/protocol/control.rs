@@ -417,6 +417,25 @@ pub enum ControlRequest {
         payload: serde_json::Value,
     },
 
+    /// Report a height update from inside a content-renderer iframe
+    /// (`acquireCronymaxRendererApi().setHeight(px)`) so the chat surface
+    /// can resize the embedding `<iframe>` element. The parent React tree
+    /// can't measure cross-origin iframe content itself, so renderers are
+    /// expected to call this every render (and on internal layout
+    /// changes via `ResizeObserver`).
+    ///
+    /// Routes via [`crate::extensions::runtime::ExtensionRuntime::
+    /// forward_renderer_height`], which fans out to chat by emitting a
+    /// `extensions/renderer` topic event keyed on `instance_id`.
+    ///
+    /// `px` is reported as `i32` because CSS pixels are signed 32-bit in
+    /// practice and JS may emit fractional values that we round before
+    /// crossing the bridge.
+    ExtensionRendererSetHeight {
+        instance_id: String,
+        px: i32,
+    },
+
     /// Request changes on a pending document review in a flow run.
     /// Calls `FlowRuntime::write_review_comments` +
     /// `FlowRuntime::on_rejected_requeue` and re-spawns the producing node.

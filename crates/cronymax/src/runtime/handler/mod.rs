@@ -303,6 +303,9 @@ impl Handler for RuntimeHandler {
             req @ ControlRequest::ExtensionWebviewPost { .. } => {
                 self.handle_extension_webview_post(req).await
             }
+            req @ ControlRequest::ExtensionRendererSetHeight { .. } => {
+                self.handle_extension_renderer_set_height(req).await
+            }
             req @ ControlRequest::FlowSaveYaml { .. } => self.handle_flow_save_yaml(req).await,
             req @ ControlRequest::FlowSaveLayout { .. } => self.handle_flow_save_layout(req).await,
             req @ ControlRequest::BlackboardInject { .. } => {

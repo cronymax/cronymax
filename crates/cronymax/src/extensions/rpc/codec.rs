@@ -72,12 +72,14 @@ pub mod method {
     pub const AUDIT: &str = "audit";
 }
 
-/// Method names for the `cronymax.content.renderer` L2 EP (extension →
-/// platform notify on register / unregister).
-pub mod renderers_method {
-    pub const REGISTER: &str = "renderers/register";
-    pub const UNREGISTER: &str = "renderers/unregister";
-}
+// NB: no `renderers_method` constants in v1. The content-renderer L2 EP
+// has no Node-side RPC surface — extensions declare renderers in their
+// manifest only (`cronymax.content.renderer` contributes), the platform
+// ingests them at activate time (`ContentRendererRegistry::ingest_
+// manifest`), and the renderer code itself runs inside a `cronymax-
+// webview://` iframe using `acquireCronymaxRendererApi()`. The earlier
+// `renderers/register` / `renderers/unregister` notify pair was removed
+// in P6.5 (IDL decisions D1+D2).
 
 /// Method names for the `cronymax.ui.sidebar.view` L2 EP (extension →
 /// platform notify on register / unregister).

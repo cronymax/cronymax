@@ -601,18 +601,11 @@ const cronymax = {
       return sub;
     },
   },
-  renderers: {
-    // Extensions call this from activate() to make a content renderer
-    // available. The platform routes render() requests by MIME type.
-    registerRenderer(rendererId, handler) {
-      registerRpcHandler(`renderers/render:${rendererId}`, async (params) => handler(params));
-      const dispose = () => rpcNotify("renderers/unregister", { rendererId });
-      rpcNotify("renderers/register", { rendererId });
-      const sub = { dispose };
-      subscriptions.push(sub);
-      return sub;
-    },
-  },
+  // NB: there is no `cronymax.renderers` namespace in v1. ContentRenderer
+  // is iframe-hosted — handler code runs in a `cronymax-webview://<ext>/
+  // <entry>?surface=renderer&id=<inst>` iframe and uses the
+  // `acquireCronymaxRendererApi()` global (see cep-idl/v1/renderer-host.ts).
+  // Renderer-only extensions may omit `manifest.main` entirely.
   sidebar: {
     // Extensions call this from activate() to make a sidebar view
     // available. Title / icon / entry come from the manifest.
@@ -802,6 +795,16 @@ registerRpcHandler("extension/registerError", async (params) => {
 });
 
 registerRpcHandler("extension/activate", async () => {
+  // The runtime never sends `extension/activate` to a main-less extension
+  // (it doesn't even spawn a host for them in v1 — see P6.5 IDL D7), so
+  // hitting an empty `manifest.main` here is a wire-protocol bug, not a
+  // user-facing case. Throw a clear error instead of letting path.join
+  // produce a confusing TypeError.
+  if (!manifest.main) {
+    throw new Error(
+      `extension ${EXT_ID}: extension/activate received but manifest has no \`main\` (declarative-only extensions must not spawn a host)`,
+    );
+  }
   const mainPath = path.join(EXT_DIR, manifest.main);
   const userModule = require(mainPath);
   const activateFn = userModule.activate;

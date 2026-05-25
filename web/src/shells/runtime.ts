@@ -63,7 +63,11 @@ export interface AgentRunOptions {
 // ---------------------------------------------------------------------------
 
 /** Owner classification on every contribution descriptor. */
-export type ContributionOwner = { type: "platform" } | { type: "workspace" } | { type: "extension"; ext_id: string };
+// NB: wire field is `extId` (camelCase) — see `ContributionOwner` in
+// `crates/cronymax/src/extensions/contributions/mod.rs` which carries
+// `#[serde(rename = "extId")]`. Earlier drafts of this type used
+// `ext_id` and silently produced `undefined` at runtime.
+export type ContributionOwner = { type: "platform" } | { type: "workspace" } | { type: "extension"; extId: string };
 
 /** One entry returned by `contributionRegistry.list()`. */
 export interface ContributionDescriptor {

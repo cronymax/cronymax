@@ -52,7 +52,7 @@ inline constexpr const char* kWebviewScheme = "cronymax-webview";
 /// platform's baseline.
 inline constexpr const char* kWebviewDefaultCsp =
     "default-src 'none'; "
-    "script-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src cronymax-webview: data:; "
     "connect-src 'self'; "

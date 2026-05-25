@@ -2,6 +2,10 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include <cctype>
+#include <cstdlib>
+#include <string>
+
 #include "browser/app.h"
 #include "include/cef_application_mac.h"
 #include "include/cef_command_line.h"
@@ -68,6 +72,34 @@ int main(int argc, char* argv[]) {
     // composite over the NSVisualEffectView vibrancy without a white flash
     // and without an opaque GPU clear color showing through.
     settings.background_color = 0x00000000;
+
+    // Honour `CRONYMAX_LOG_LEVEL` / `CRONYMAX_LOG_FILE` (mirrors the
+    // pre-existing `CRONYMAX_DEV` / `CRONYMAX_BUNDLED_DIR` convention).
+    // Both unset = CEF defaults (severity WARNING; `debug.log` next to
+    // the binary inside the .app bundle). Set
+    // `CRONYMAX_LOG_LEVEL=info` to surface our LOG(INFO) traces, and
+    // optionally `CRONYMAX_LOG_FILE=/path/to/log` to redirect.
+    if (const char* lvl = std::getenv("CRONYMAX_LOG_LEVEL"); lvl && *lvl) {
+      std::string s(lvl);
+      for (auto& c : s)
+        c = std::tolower(static_cast<unsigned char>(c));
+      if (s == "verbose" || s == "trace" || s == "debug") {
+        settings.log_severity = LOGSEVERITY_VERBOSE;
+      } else if (s == "info") {
+        settings.log_severity = LOGSEVERITY_INFO;
+      } else if (s == "warning" || s == "warn") {
+        settings.log_severity = LOGSEVERITY_WARNING;
+      } else if (s == "error") {
+        settings.log_severity = LOGSEVERITY_ERROR;
+      } else if (s == "fatal") {
+        settings.log_severity = LOGSEVERITY_FATAL;
+      } else if (s == "disable" || s == "off" || s == "none") {
+        settings.log_severity = LOGSEVERITY_DISABLE;
+      }
+    }
+    if (const char* path = std::getenv("CRONYMAX_LOG_FILE"); path && *path) {
+      CefString(&settings.log_file) = std::string(path);
+    }
 
     // root_cache_path = $appDataDir so PK_USER_DATA resolves to the app's
     // bundle-scoped Application Support directory.
