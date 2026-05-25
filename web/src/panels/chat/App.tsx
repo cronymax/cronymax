@@ -1186,7 +1186,14 @@ export function App() {
       dispatch({ type: "setAgents", agents });
       setAgentLoadError(null);
     } catch (err) {
-      setAgentLoadError((err as Error).message);
+      const msg = (err as Error).message;
+      // Suppress the banner for the startup race where the renderer mounts
+      // before the Rust runtime finished its Hello/Welcome handshake. The
+      // browser shell rejects these with the literal string "runtime not
+      // available" (app/browser/shells/runtime.cc); the `runtime.reconnected`
+      // listener below re-runs refreshAgents the moment the runtime attaches.
+      if (msg === "runtime not available") return;
+      setAgentLoadError(msg);
     }
   };
 
