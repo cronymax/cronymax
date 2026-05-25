@@ -912,6 +912,10 @@ export function App() {
   const timelineScrollRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [agentLoadError, setAgentLoadError] = useState<string | null>(null);
+  // Fallback timer that surfaces the banner if the runtime never finishes
+  // its Hello/Welcome handshake (e.g. cronymax-runtime binary missing or
+  // crashed). See refreshAgents below for the suppression flow.
+  const agentLoadFallbackRef = useRef<number | null>(null);
   const [inputMode, setInputMode] = useState<"chat" | "shell" | "command">("chat");
   const [commentDraft, setCommentDraft] = useState("");
   /** Per-chat reasoning_effort override. "" = use agent/provider default. */
@@ -1185,6 +1189,10 @@ export function App() {
         });
       dispatch({ type: "setAgents", agents });
       setAgentLoadError(null);
+      if (agentLoadFallbackRef.current !== null) {
+        window.clearTimeout(agentLoadFallbackRef.current);
+        agentLoadFallbackRef.current = null;
+      }
     } catch (err) {
       const msg = (err as Error).message;
       // Suppress the banner for the startup race where the renderer mounts
@@ -1192,7 +1200,20 @@ export function App() {
       // browser shell rejects these with the literal string "runtime not
       // available" (app/browser/shells/runtime.cc); the `runtime.reconnected`
       // listener below re-runs refreshAgents the moment the runtime attaches.
-      if (msg === "runtime not available") return;
+      //
+      // To avoid a silent failure when the handshake never completes (binary
+      // missing / crashed), arm a one-shot fallback that promotes the error
+      // to the banner if no successful refresh has happened by then. The
+      // success branch above clears it.
+      if (msg === "runtime not available") {
+        if (agentLoadFallbackRef.current === null) {
+          agentLoadFallbackRef.current = window.setTimeout(() => {
+            agentLoadFallbackRef.current = null;
+            setAgentLoadError("runtime not available (handshake timed out)");
+          }, 10_000);
+        }
+        return;
+      }
       setAgentLoadError(msg);
     }
   };
