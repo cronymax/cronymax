@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { runtimeSend, shells } from "@/shells/bridge";
@@ -90,8 +90,53 @@ function ExtensionViewButton({
   onContextMenu: (v: ExtensionView, e: React.MouseEvent) => void;
 }) {
   const iconUrl = buildIconUrl(view);
+  const [maskUrl, setMaskUrl] = useState<string | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
-  const showImg = iconUrl !== null && !imgFailed;
+
+  // VS Code recolors monochrome icons with `-webkit-mask` + a theme color, but
+  // its icons are same-origin. Ours are cross-origin (cronymax-webview://), and
+  // a CSS mask / fetch can't read that scheme from the file:// rail. So we load
+  // the icon as a CORS-clean <img> (the scheme returns Access-Control-Allow-
+  // Origin: *), rasterize it onto a canvas, and export a same-origin data: URL
+  // — which CAN be used as a mask. Filling that mask with `currentColor` gives
+  // the exact built-in treatment (text-muted-foreground inactive /
+  // text-foreground active) and follows theme flips. The icon's own colors are
+  // irrelevant: only its alpha (shape) is used as the mask.
+  useEffect(() => {
+    setMaskUrl(null);
+    setImgFailed(false);
+    if (iconUrl === null) return;
+    let alive = true;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      if (!alive) return;
+      try {
+        const px = 40; // 2x of the 20px slot for crisp edges
+        const canvas = document.createElement("canvas");
+        canvas.width = px;
+        canvas.height = px;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          setImgFailed(true);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, px, px);
+        setMaskUrl(canvas.toDataURL());
+      } catch {
+        setImgFailed(true); // tainted canvas → fall back
+      }
+    };
+    img.onerror = () => {
+      if (alive) setImgFailed(true);
+    };
+    img.src = iconUrl;
+    return () => {
+      alive = false;
+    };
+  }, [iconUrl]);
+
+  const showImgFallback = iconUrl !== null && !imgFailed;
   return (
     <RailButton
       label={view.title}
@@ -99,13 +144,33 @@ function ExtensionViewButton({
       onClick={() => onOpen(view)}
       onContextMenu={(e) => onContextMenu(view, e)}
     >
-      {showImg ? (
+      {maskUrl ? (
+        // mask (same-origin data: URL) filled with currentColor → exact match
+        // with the built-in icons, incl. active/inactive shades + theme flips.
+        <span
+          aria-hidden="true"
+          className="h-5 w-5"
+          style={{
+            backgroundColor: "currentColor",
+            WebkitMaskImage: `url("${maskUrl}")`,
+            maskImage: `url("${maskUrl}")`,
+            WebkitMaskRepeat: "no-repeat",
+            maskRepeat: "no-repeat",
+            WebkitMaskPosition: "center",
+            maskPosition: "center",
+            WebkitMaskSize: "contain",
+            maskSize: "contain",
+          }}
+        />
+      ) : showImgFallback ? (
+        // Fallback (canvas tainted / load error): render directly, forced to a
+        // theme-colored silhouette so the icon stays visible.
         <img
           src={iconUrl}
           width={20}
           height={20}
           alt=""
-          className="h-5 w-5 object-contain"
+          className="h-5 w-5 object-contain brightness-0 dark:invert"
           onError={() => setImgFailed(true)}
         />
       ) : (

@@ -410,6 +410,11 @@ class WebviewResourceHandler : public CefResourceHandler {
       headers.emplace("X-Content-Type-Options", "nosniff");
       headers.emplace("Referrer-Policy", "no-referrer");
       headers.emplace("Cache-Control", "no-store");
+      // Allow the (cross-origin) built-in panels — e.g. the file:// activity
+      // bar rail — to fetch() an extension's icon SVG so it can be inlined and
+      // recolored to the theme. The scheme is registered CORS-enabled; this
+      // header is what actually unblocks the cross-origin read.
+      headers.emplace("Access-Control-Allow-Origin", "*");
       response->SetHeaderMap(headers);
       response_length = static_cast<int64_t>(body_.size());
     } else {
