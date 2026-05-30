@@ -134,6 +134,12 @@ class TabManager {
   // tabs so re-clicking a rail icon focuses the existing view.
   TabId FindByMeta(const std::string& key, const std::string& value) const;
 
+  // Collect every tab whose metadata `key` starts with `prefix`, scanning
+  // ALL tabs (including hidden kinds). Used to close all of an extension's
+  // open view tabs (`ext_view` = "<extId>::<viewId>") on deactivate.
+  std::vector<TabId> FindAllByMetaPrefix(const std::string& key,
+                                         const std::string& prefix) const;
+
   const TabId& active_tab_id() const { return active_tab_id_; }
   size_t size() const { return tabs_.size(); }
 

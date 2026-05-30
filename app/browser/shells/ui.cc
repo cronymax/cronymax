@@ -156,6 +156,19 @@ void RegisterShellHandlers(BridgeRegistry& r, BridgeHandler* h) {
         h->shell_cbs_.open_extension_view(url, view_key, title, target)));
   });
 
+  // ── browser.shell.close_extension_views ──────────────────────────────────
+  r.add("browser.shell.close_extension_views", [h](BridgeCtx ctx) {
+    if (!h->shell_cbs_.close_extension_views) {
+      ctx.callback->Failure(503, "not available");
+      return;
+    }
+    const std::string ext_id = ctx.payload.is_object()
+                                   ? ctx.payload.value("ext_id", std::string{})
+                                   : std::string{};
+    ctx.callback->Success(
+        ParseShellCbResult(h->shell_cbs_.close_extension_views(ext_id)));
+  });
+
   // ── browser.shell.this_tab_id ─────────────────────────────────────────────
   r.add("browser.shell.this_tab_id", [h](BridgeCtx ctx) {
     if (!h->shell_cbs_.this_tab_id) {

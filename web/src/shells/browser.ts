@@ -34,6 +34,8 @@ import {
   LlmConfigSchema,
   LlmConfigSetPayloadSchema,
   PermissionRespondPayloadSchema,
+  ShellCloseExtensionViewsPayloadSchema,
+  ShellCloseExtensionViewsResponseSchema,
   ShellNavigatePayloadSchema,
   ShellNewTabKindPayloadSchema,
   ShellNewTabKindResponseSchema,
@@ -123,6 +125,10 @@ export const Channels = {
       open_extension_view: chan({
         req: ShellOpenExtensionViewPayloadSchema,
         res: ShellOpenExtensionViewResponseSchema,
+      }),
+      close_extension_views: chan({
+        req: ShellCloseExtensionViewsPayloadSchema,
+        res: ShellCloseExtensionViewsResponseSchema,
       }),
       // Tab identity: returns the calling tab's id + arbitrary metadata.
       this_tab_id: chan({

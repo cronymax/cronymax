@@ -76,4 +76,25 @@ impl RuntimeHandler {
             },
         }
     }
+
+    pub(super) async fn handle_extension_deactivate(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::ExtensionDeactivate { ext_id } = req else {
+            unreachable!()
+        };
+        let Some(ext_rt) = self.services.extensions.as_ref() else {
+            return ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: "extension runtime not configured".into(),
+                },
+            };
+        };
+        match ext_rt.deactivate(&ext_id).await {
+            Ok(()) => ControlResponse::Ack,
+            Err(e) => ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: format!("deactivate failed: {e}"),
+                },
+            },
+        }
+    }
 }

@@ -224,6 +224,20 @@ TabId TabManager::FindByMeta(const std::string& key,
   return {};
 }
 
+std::vector<TabId> TabManager::FindAllByMetaPrefix(
+    const std::string& key,
+    const std::string& prefix) const {
+  std::vector<TabId> out;
+  for (const auto& t : tabs_) {
+    if (!t)
+      continue;
+    const std::string v = t->GetMeta(key);
+    if (v.size() >= prefix.size() && v.compare(0, prefix.size(), prefix) == 0)
+      out.push_back(t->tab_id());
+  }
+  return out;
+}
+
 std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
     TabKind kind,
     const OpenParams& params) {

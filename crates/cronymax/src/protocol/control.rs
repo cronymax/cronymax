@@ -436,6 +436,14 @@ pub enum ControlRequest {
         px: i32,
     },
 
+    /// Deactivate a running extension (activity-bar "Disable" action). The
+    /// platform tears down the extension's host + registries; the
+    /// contribution-changed signal then drops its rail icon. The C++ side
+    /// closes any open view tab/dock for the extension separately.
+    ExtensionDeactivate {
+        ext_id: String,
+    },
+
     /// Request changes on a pending document review in a flow run.
     /// Calls `FlowRuntime::write_review_comments` +
     /// `FlowRuntime::on_rejected_requeue` and re-spawns the producing node.

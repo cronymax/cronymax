@@ -306,6 +306,15 @@ void ViewDispatcher::Wire() {
     return "{\"ok\":true}";
   };
 
+  // Rail "Disable": close the extension's open view tab/dock + switch to chat.
+  sh.close_extension_views =
+      [this](const std::string& ext_id) -> std::string {
+    if (ext_id.empty() || !host_.close_extension_views)
+      return "{\"ok\":false}";
+    host_.close_extension_views(ext_id);
+    return "{\"ok\":true}";
+  };
+
   sh.set_toolbar_state = [this, kind_from_string](
                              const std::string& tab_id,
                              const std::string& state_json) -> bool {

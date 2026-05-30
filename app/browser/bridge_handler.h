@@ -158,6 +158,10 @@ struct ShellCallbacks {
                             const std::string& title,
                             const std::string& target)>
       open_extension_view;
+  // Activity-bar rail "Disable": close an extension's open view tab/dock and
+  // switch to the latest chat tab. The Rust-side deactivate (which drops the
+  // rail icon) is a separate runtime control request issued by the rail.
+  std::function<std::string(const std::string& ext_id)> close_extension_views;
   // Renderer push: replace the toolbar widgets for tab_id from a serialized
   // ToolbarState (kind-tagged). The dispatcher pre-validates that
   // payload.state.kind matches the tab's kind. Returns false on mismatch.

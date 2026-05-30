@@ -102,6 +102,12 @@ class MainWindow : public CefWindowDelegate,
   // key. Sends `shell.active_view_changed {main, dock}`.
   void PushActiveViewToRail();
 
+  // Tear down an extension's open operation views when it is deactivated:
+  // close any kExtensionView tab whose `ext_view` starts with "<ext_id>::",
+  // collapse the right dock if it shows one of them, then activate the most
+  // recent chat tab (falling back to any remaining tab).
+  void CloseExtensionViews(const std::string& ext_id);
+
   // native-views-mvc Phase 4: shared state (TabManager, SpaceManager, theme,
   // observer lists) lives in ShellModel. Declared before client_handler_ so
   // the member initializer list can pass &shell_model_.space_manager_ to

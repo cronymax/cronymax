@@ -625,6 +625,9 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
       body_panel_->Layout();
     PushActiveViewToRail();
   };
+  disp_host.close_extension_views = [this](const std::string& ext_id) {
+    CloseExtensionViews(ext_id);
+  };
 
   dispatcher_ = std::make_unique<ViewDispatcher>(
       /*tabs_ctx=*/this, /*space_ctx=*/this,
@@ -1326,6 +1329,55 @@ void MainWindow::PushActiveViewToRail() {
                                           payload);
     }
   }
+}
+
+void MainWindow::CloseExtensionViews(const std::string& ext_id) {
+  if (!CefCurrentlyOn(TID_UI)) {
+    CefPostTask(TID_UI, base::BindOnce(
+                            [](CefRefPtr<MainWindow> self, std::string id) {
+                              self->CloseExtensionViews(id);
+                            },
+                            CefRefPtr<MainWindow>(this), ext_id));
+    return;
+  }
+  if (!shell_model_.tabs_)
+    return;
+  const std::string prefix = ext_id + "::";
+
+  // Collapse the dock if it is showing one of this extension's views.
+  if (right_dock_view_obj_) {
+    const std::string dk = right_dock_view_obj_->active_view_key();
+    if (dk.size() >= prefix.size() && dk.compare(0, prefix.size(), prefix) == 0) {
+      right_dock_view_obj_->Hide();
+      if (body_panel_)
+        body_panel_->Layout();
+    }
+  }
+
+  // Close every open view tab owned by this extension.
+  for (const TabId& id :
+       shell_model_.tabs_->FindAllByMetaPrefix("ext_view", prefix)) {
+    if (content_view_)
+      content_view_->RemoveCard(id);
+    shell_model_.tabs_->Close(id);
+  }
+
+  // Activate the most recent chat tab (or any remaining tab) so the user
+  // isn't left on a blank content area.
+  TabId target;
+  for (const auto& s : shell_model_.tabs_->Snapshot()) {
+    if (s.kind == TabKind::kChat)
+      target = s.id;  // Snapshot is creation-ordered; keep the last chat.
+  }
+  if (target.empty()) {
+    const auto snap = shell_model_.tabs_->Snapshot();
+    if (!snap.empty())
+      target = snap.back().id;
+  }
+  if (!target.empty())
+    shell_model_.tabs_->Activate(target);
+
+  PushActiveViewToRail();
 }
 
 // ---------------------------------------------------------------------------

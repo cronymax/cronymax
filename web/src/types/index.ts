@@ -163,6 +163,14 @@ export const ShellOpenExtensionViewPayloadSchema = z.object({
 export const ShellOpenExtensionViewResponseSchema = z.object({
   ok: z.boolean(),
 });
+
+// Rail "Disable" → close an extension's open view tab(s)/dock (C++ side).
+export const ShellCloseExtensionViewsPayloadSchema = z.object({
+  ext_id: z.string(),
+});
+export const ShellCloseExtensionViewsResponseSchema = z.object({
+  ok: z.boolean(),
+});
 export const ShellTabOpenSingletonResponseSchema = z.object({
   tabId: z.string(),
   created: z.boolean(),
