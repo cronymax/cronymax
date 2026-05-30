@@ -624,6 +624,13 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     if (body_panel_)
       body_panel_->Layout();
     PushActiveViewToRail();
+    // Round the dock's bottom-right corner once the browser + layout settle.
+    CefPostTask(TID_UI, base::BindOnce(
+                            [](CefRefPtr<MainWindow> self) {
+                              if (self->right_dock_view_obj_)
+                                self->right_dock_view_obj_->ApplyCornerRounding();
+                            },
+                            CefRefPtr<MainWindow>(this)));
   };
   disp_host.close_extension_views = [this](const std::string& ext_id) {
     CloseExtensionViews(ext_id);
@@ -1123,6 +1130,9 @@ void MainWindow::OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
   if (overlay_open_)
     UpdateOverlayRect();
   RefreshTitleBarDragRegion();
+  // The dock's corner mask is computed from its bounds — recompute on resize.
+  if (right_dock_view_obj_)
+    right_dock_view_obj_->ApplyCornerRounding();
 }
 
 // ---------------------------------------------------------------------------
