@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
+import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { shells } from "@/shells/bridge";
 import type { SingletonViewKind } from "@/types";
 import { buildIconUrl, buildViewUrl, type ExtensionView, useExtensionViewRegistry, viewKey } from "./extensionViews";
@@ -13,6 +14,10 @@ import { buildIconUrl, buildViewUrl, type ExtensionView, useExtensionViewRegistr
  * `shell.tab_open_singleton`; extension views open via
  * `shell.open_extension_view` (main area or right dock per the view's
  * declared target).
+ *
+ * The native side pushes `shell.active_view_changed {main, dock}` whenever
+ * the active main view or the dock changes; the rail highlights the matching
+ * icon(s).
  */
 
 interface BuiltinView {
@@ -26,28 +31,62 @@ const BUILTIN_VIEWS: BuiltinView[] = [
   { id: "flows", label: "Flows", icon: "layers" },
 ];
 
-function RailButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+/** Which rail view(s) are currently active. `main` is the main content
+ *  area's view ("activity" | "flows" | a view_key); `dock` is the open dock
+ *  view_key. Either may be "". */
+interface ActiveViews {
+  main: string;
+  dock: string;
+}
+
+function RailButton({
+  label,
+  active,
+  onClick,
+  children,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
   return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      onClick={onClick}
-      className="no-drag flex h-10 w-10 flex-none items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-    >
-      {children}
-    </button>
+    <div className="relative flex w-full flex-none justify-center">
+      {active && <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-primary" aria-hidden="true" />}
+      <button
+        type="button"
+        title={label}
+        aria-label={label}
+        aria-current={active ? "true" : undefined}
+        onClick={onClick}
+        className={`no-drag flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
+          active
+            ? "bg-cronymax-selected text-foreground"
+            : "text-muted-foreground hover:bg-accent hover:text-foreground"
+        }`}
+      >
+        {children}
+      </button>
+    </div>
   );
 }
 
 /** One extension-contributed view icon. Falls back to a generic glyph when
  *  the extension declared no icon or the image fails to load. */
-function ExtensionViewButton({ view, onOpen }: { view: ExtensionView; onOpen: (v: ExtensionView) => void }) {
+function ExtensionViewButton({
+  view,
+  active,
+  onOpen,
+}: {
+  view: ExtensionView;
+  active: boolean;
+  onOpen: (v: ExtensionView) => void;
+}) {
   const iconUrl = buildIconUrl(view);
   const [imgFailed, setImgFailed] = useState(false);
   const showImg = iconUrl !== null && !imgFailed;
   return (
-    <RailButton label={view.title} onClick={() => onOpen(view)}>
+    <RailButton label={view.title} active={active} onClick={() => onOpen(view)}>
       {showImg ? (
         <img
           src={iconUrl}
@@ -66,6 +105,11 @@ function ExtensionViewButton({ view, onOpen }: { view: ExtensionView; onOpen: (v
 
 export function App() {
   const views = useExtensionViewRegistry();
+  const [active, setActive] = useState<ActiveViews>({ main: "", dock: "" });
+
+  useBridgeEvent("shell.active_view_changed" as never, (p: ActiveViews) => {
+    setActive({ main: p?.main ?? "", dock: p?.dock ?? "" });
+  });
 
   const openSingleton = useCallback(async (kind: SingletonViewKind) => {
     try {
@@ -98,14 +142,22 @@ export function App() {
       style={{ background: "color-mix(in srgb, var(--color-cronymax-body), #000 18%)" }}
     >
       {BUILTIN_VIEWS.map((v) => (
-        <RailButton key={v.id} label={v.label} onClick={() => void openSingleton(v.id)}>
+        <RailButton key={v.id} label={v.label} active={active.main === v.id} onClick={() => void openSingleton(v.id)}>
           <Icon name={v.icon} size={20} aria-hidden="true" />
         </RailButton>
       ))}
       {views.length > 0 && <div className="my-1 h-px w-6 flex-none bg-border" />}
-      {views.map((v) => (
-        <ExtensionViewButton key={viewKey(v)} view={v} onOpen={() => void openView(v)} />
-      ))}
+      {views.map((v) => {
+        const key = viewKey(v);
+        return (
+          <ExtensionViewButton
+            key={key}
+            view={v}
+            active={active.main === key || active.dock === key}
+            onOpen={() => void openView(v)}
+          />
+        );
+      })}
     </nav>
   );
 }

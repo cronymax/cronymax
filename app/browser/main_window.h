@@ -96,6 +96,12 @@ class MainWindow : public CefWindowDelegate,
   void BroadcastToAllPanels(const std::string& event_name,
                             const std::string& json_payload);
 
+  // Push the currently-active rail view(s) to the activity-bar rail so it can
+  // highlight the matching icon(s): the main content area's active view
+  // ("activity" / "flows" / an extension view_key) and the dock's open view
+  // key. Sends `shell.active_view_changed {main, dock}`.
+  void PushActiveViewToRail();
+
   // native-views-mvc Phase 4: shared state (TabManager, SpaceManager, theme,
   // observer lists) lives in ShellModel. Declared before client_handler_ so
   // the member initializer list can pass &shell_model_.space_manager_ to

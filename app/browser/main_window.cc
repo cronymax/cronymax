@@ -613,6 +613,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   disp_host.notify_sidebar_active_kind = [this](const std::string& kind) {
     if (sidebar_view_obj_)
       sidebar_view_obj_->UpdateActiveButtonState(kind);
+    PushActiveViewToRail();
   };
   disp_host.open_right_dock = [this](const std::string& view_key,
                                      const std::string& url,
@@ -622,6 +623,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     // Reflow the body so the content area shrinks/expands for the dock.
     if (body_panel_)
       body_panel_->Layout();
+    PushActiveViewToRail();
   };
 
   dispatcher_ = std::make_unique<ViewDispatcher>(
@@ -1280,6 +1282,48 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
     if (bv) {
       if (auto browser = bv->GetBrowser())
         client_handler_->SendBrowserEvent(browser, event_name, json_payload);
+    }
+  }
+}
+
+void MainWindow::PushActiveViewToRail() {
+  if (!CefCurrentlyOn(TID_UI)) {
+    CefPostTask(TID_UI, base::BindOnce(
+                            [](CefRefPtr<MainWindow> self) {
+                              self->PushActiveViewToRail();
+                            },
+                            CefRefPtr<MainWindow>(this)));
+    return;
+  }
+  // Main content area: which rail-owned view is active (if any).
+  std::string main_view;
+  if (Tab* active = shell_model_.tabs_ ? shell_model_.tabs_->Active() : nullptr) {
+    switch (active->kind()) {
+      case TabKind::kActivity:
+        main_view = "activity";
+        break;
+      case TabKind::kFlows:
+        main_view = "flows";
+        break;
+      case TabKind::kExtensionView:
+        main_view = active->GetMeta("ext_view");
+        break;
+      default:
+        break;
+    }
+  }
+  // Right dock: the open view key, if any.
+  std::string dock_view =
+      right_dock_view_obj_ ? right_dock_view_obj_->active_view_key()
+                           : std::string();
+
+  const std::string payload =
+      nlohmann::json{{"main", main_view}, {"dock", dock_view}}.dump();
+  if (activitybar_view_obj_) {
+    if (auto bv = activitybar_view_obj_->browser_view()) {
+      if (auto browser = bv->GetBrowser())
+        client_handler_->SendBrowserEvent(browser, "shell.active_view_changed",
+                                          payload);
     }
   }
 }

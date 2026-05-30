@@ -169,6 +169,22 @@ impl RuntimeServices {
                 );
             }));
 
+            // Contribution-registry changes (extension activate/deactivate)
+            // → `extensions/contributions` topic. The activity-bar rail
+            // refetches its operation-view list on each signal. Important
+            // for correctness, not just polish: startup activation is async
+            // and can complete *after* the rail's initial fetch / reconnect,
+            // so without this the rail can miss extension view icons.
+            let auth_for_contrib = authority.clone();
+            runtime.set_contributions_emitter(std::sync::Arc::new(move || {
+                auth_for_contrib.emit(
+                    "extensions/contributions",
+                    RuntimeEventPayload::Raw {
+                        data: serde_json::json!({ "changed": true }),
+                    },
+                );
+            }));
+
             spawn_startup_activation(&runtime, &to_activate);
             runtime
         });

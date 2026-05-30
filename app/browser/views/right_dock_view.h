@@ -44,6 +44,12 @@ class RightDockView : public ThemeAwareView {
   // Collapse the dock without changing the loaded view.
   void Hide();
 
+  // The view key currently shown in the dock, or "" when collapsed. Used by
+  // the rail to highlight the matching icon.
+  std::string active_view_key() const {
+    return shown_ ? current_view_key_ : std::string();
+  }
+
   void ApplyTheme(const ThemeChrome& chrome) override;
 
  private:

@@ -128,6 +128,12 @@ pub struct ExtensionRuntime {
     state: Arc<RuntimeState>,
 }
 
+/// Composition-root callback fired when the contribution registry changes
+/// (extension activate / deactivate). A bare signal — the UI refetches the
+/// full snapshot. No payload keeps it cheap and avoids leaking descriptor
+/// shape into the emit path.
+pub type ContributionsChangedEmitter = Arc<dyn Fn() + Send + Sync>;
+
 struct RuntimeState {
     registry: Mutex<ExtensionRegistry>,
     contributions: Mutex<ContributionRegistry>,
@@ -162,6 +168,10 @@ struct RuntimeState {
     /// `extensions/renderer`. Defaults to a no-op so unit tests can
     /// drive the runtime without a renderer attached.
     renderer_event_emitter: RwLock<RendererEventEmitter>,
+    /// Composition-root callback fired on contribution-registry changes;
+    /// pipes into the `extensions/contributions` authority topic so the
+    /// activity-bar rail refetches. No-op default for tests.
+    contributions_changed_emitter: RwLock<ContributionsChangedEmitter>,
 }
 
 impl std::fmt::Debug for RuntimeState {
@@ -182,6 +192,7 @@ impl std::fmt::Debug for RuntimeState {
             .field("session_router", &self.session_router)
             .field("events", &self.events)
             .field("renderer_event_emitter", &"<fn>")
+            .field("contributions_changed_emitter", &"<fn>")
             .finish()
     }
 }
@@ -202,6 +213,7 @@ impl ExtensionRuntime {
                 session_router: AgentSessionRouter::new(),
                 events: EventBus::new(),
                 renderer_event_emitter: RwLock::new(Arc::new(|_| {})),
+                contributions_changed_emitter: RwLock::new(Arc::new(|| {})),
             }),
         }
     }
@@ -249,6 +261,18 @@ impl ExtensionRuntime {
         // re-enter the runtime don't deadlock.
         let emitter = self.state.renderer_event_emitter.read().clone();
         emitter(event);
+    }
+
+    /// Replace the contribution-changed emitter. Called once at composition
+    /// root so registry changes flow into the `extensions/contributions`
+    /// authority topic the activity-bar rail subscribes to.
+    pub fn set_contributions_emitter(&self, emitter: ContributionsChangedEmitter) {
+        *self.state.contributions_changed_emitter.write() = emitter;
+    }
+
+    fn emit_contributions_changed(&self) {
+        let emitter = self.state.contributions_changed_emitter.read().clone();
+        emitter();
     }
 
     /// L1.5 platform-event bus. Chat / tool dispatch sites call
@@ -453,6 +477,7 @@ impl ExtensionRuntime {
         // 1. Ingest contributions immediately — they survive even if
         //    activate() throws, so the settings UI can still surface them.
         self.state.contributions.lock().ingest(&manifest);
+        self.emit_contributions_changed();
 
         // 1.b. Populate the manifest-driven typed registries. Currently this
         //      is just content renderers; agent providers and sidebar views
@@ -503,6 +528,7 @@ impl ExtensionRuntime {
                     self.state.contributions.lock().remove_extension(ext_id);
                     self.state.renderers.unregister_all_for(ext_id);
                     let _ = self.state.events.unregister_extension(ext_id);
+                    self.emit_contributions_changed();
                     return Err(e);
                 }
             };
@@ -517,6 +543,7 @@ impl ExtensionRuntime {
                     self.state.contributions.lock().remove_extension(ext_id);
                     self.state.renderers.unregister_all_for(ext_id);
                     let _ = self.state.events.unregister_extension(ext_id);
+                    self.emit_contributions_changed();
                     let _ = host.shutdown().await;
                     return Err(ExtensionError::HostSpawn(
                         "host spawned but connection unavailable".into(),
@@ -597,6 +624,7 @@ impl ExtensionRuntime {
         let _ = self.state.webviews.dispose_all_for(ext_id);
         let _ = self.state.events.unregister_extension(ext_id);
         let _ = self.state.lifecycle.lock().mark_deactivated(ext_id);
+        self.emit_contributions_changed();
 
         if let Some(handle) = handle {
             // Destructure the handle so `event_subscriptions` drops here
@@ -622,6 +650,7 @@ impl ExtensionRuntime {
         self.state.sidebars.unregister_all_for(ext_id);
         let _ = self.state.webviews.dispose_all_for(ext_id);
         let _ = self.state.events.unregister_extension(ext_id);
+        self.emit_contributions_changed();
         if let Some(h) = handle {
             let _ = h.host.shutdown().await;
         }
@@ -2002,6 +2031,53 @@ mod tests {
             .find(|d| d.id == "cronymax-examples.panel-explorer.dock")
             .expect("dock view present");
         assert_eq!(dock.metadata["target"], "right");
+    }
+
+    #[tokio::test]
+    async fn activate_and_deactivate_fire_contributions_changed() {
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let count: Arc<StdMutex<usize>> = Arc::new(StdMutex::new(0));
+        let c = count.clone();
+        runtime.set_contributions_emitter(Arc::new(move || {
+            *c.lock().unwrap() += 1;
+        }));
+
+        // Declarative manifest (no `main`) so activate stays in-process.
+        let manifest = Manifest::from_json(
+            r#"{
+                "id": "alice.x",
+                "name": "X",
+                "version": "0.1.0",
+                "publisher": "alice",
+                "engines": { "cronymax": "^1.0" },
+                "activationEvents": [],
+                "contributes": {
+                    "cronymax.ui.sidebar.view": [
+                        { "id": "alice.x.v", "title": "V", "entry": "v.html" }
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+        let ext_id = manifest.id.clone();
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test(&ext_id, manifest);
+
+        runtime
+            .activate(&ext_id, |_, _| panic!("declarative-only"))
+            .await
+            .unwrap();
+        let after_activate = *count.lock().unwrap();
+        assert!(after_activate >= 1, "activate fires contributions-changed");
+
+        runtime.deactivate(&ext_id).await.unwrap();
+        assert!(
+            *count.lock().unwrap() > after_activate,
+            "deactivate fires contributions-changed"
+        );
     }
 
     #[tokio::test]

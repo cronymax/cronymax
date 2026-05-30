@@ -9,7 +9,7 @@
 // live updates are P10 hardening (mirrors extensionRenderers.ts).
 
 import { useEffect, useRef, useState } from "react";
-import { browser } from "@/shells/bridge";
+import { browser, runtime } from "@/shells/bridge";
 import { type ContributionDescriptor, ContributionKind, contributionRegistry } from "@/shells/runtime";
 import type { ViewTarget } from "@/types";
 
@@ -105,13 +105,20 @@ export function useExtensionViewRegistry(): ExtensionView[] {
       initialFetched.current = true;
       void refetch();
     }
-    const off = browser.on("runtime.reconnected", () => {
+    // Reconnect refetch (runtime restart) + contribution-change refetch
+    // (extension activate/deactivate; startup activation is async so the
+    // first fetch can land before any extension has been ingested).
+    const offReconnect = browser.on("runtime.reconnected", () => {
+      void refetch();
+    });
+    const offContrib = runtime.on("extensions/contributions", () => {
       void refetch();
     });
 
     return () => {
       cancelled = true;
-      off();
+      offReconnect();
+      offContrib?.();
     };
   }, []);
 
