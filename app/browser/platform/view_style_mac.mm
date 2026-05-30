@@ -735,35 +735,6 @@ void StyleContentBrowserView(void* window_nsview_ptr,
   }
 }
 
-void RoundBrowserViewCorners(void* nsview_ptr,
-                             double radius,
-                             int corner_mask) {
-  if (!nsview_ptr)
-    return;
-  NSView* view = (__bridge NSView*)nsview_ptr;
-  view.wantsLayer = YES;
-  CALayer* layer = view.layer;
-  if (!layer)
-    return;
-  if (corner_mask == kCornerNone || radius <= 0.0) {
-    layer.mask = nil;
-    return;
-  }
-  const CGRect b = layer.bounds;
-  if (b.size.width <= 0 || b.size.height <= 0)
-    return;
-  // A layer.mask (CAShapeLayer) is applied by WindowServer to the layer's
-  // full composited output — including the Chromium IOSurface sublayers that
-  // bypass cornerRadius+masksToBounds — so it actually rounds the browser.
-  const CACornerMask cm = ToCACornerMask(corner_mask);
-  CAShapeLayer* shapeMask = [CAShapeLayer layer];
-  shapeMask.frame = b;
-  CGPathRef path = RoundedRectPathForLayer(b, (CGFloat)radius, cm);
-  shapeMask.path = path;
-  CGPathRelease(path);
-  layer.mask = shapeMask;
-}
-
 void AddContentCardShadow(void* bv_nsview_ptr) {
   if (!bv_nsview_ptr)
     return;

@@ -50,12 +50,6 @@ class RightDockView : public ThemeAwareView {
     return shown_ ? current_view_key_ : std::string();
   }
 
-  // Round the dock browser's bottom-right corner to match the window's
-  // rounded edge (the flush IOSurface otherwise pokes a square corner past
-  // the window round). Recomputes from current bounds, so MainWindow calls
-  // it on window-bounds changes; also called when the dock is shown.
-  void ApplyCornerRounding();
-
   void ApplyTheme(const ThemeChrome& chrome) override;
 
  private:

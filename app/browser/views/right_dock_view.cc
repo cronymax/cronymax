@@ -6,7 +6,6 @@
 
 #include "browser/client_handler.h"
 #include "browser/models/view_context.h"
-#include "browser/platform/view_style.h"
 #include "browser/views/view_helpers.h"
 #include "include/views/cef_browser_view_delegate.h"
 // Required for the complete CefFillLayout type returned by SetToFillLayout()
@@ -108,21 +107,6 @@ void RightDockView::OpenOrToggle(const std::string& view_key,
 
 void RightDockView::Hide() {
   SetShown(false);
-}
-
-void RightDockView::ApplyCornerRounding() {
-  if (!shown_ || !browser_view_)
-    return;
-  auto browser = browser_view_->GetBrowser();
-  if (!browser)
-    return;
-  auto host = browser->GetHost();
-  if (!host)
-    return;
-  // Match the window's outer radius (12) on the bottom-right corner — the
-  // only dock corner that meets the window's rounded edge (top is below the
-  // title bar; left is interior against the content area).
-  RoundBrowserViewCorners(host->GetWindowHandle(), 12.0, kCornerBottomRight);
 }
 
 void RightDockView::ApplyTheme(const ThemeChrome& chrome) {

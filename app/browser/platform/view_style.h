@@ -125,15 +125,6 @@ void StyleContentBrowserView(void* window_nsview,
 // so the card corner punch views cover content_frame_'s corners too).
 inline void StyleContentFrame(void* /*bv_nsview*/, double /*radius*/) {}
 
-// Round the selected corners of a browser view's own NSView via a
-// CAShapeLayer mask (which, unlike cornerRadius+masksToBounds, clips the
-// IOSurface sublayers). `nsview` is the browser's CefWindowHandle
-// (`bv->GetBrowser()->GetHost()->GetWindowHandle()`). Pass `kCornerNone` to
-// clear. The path is computed from the layer's current bounds, so re-call on
-// resize. Used to round the right-side dock's bottom-right corner so it
-// matches the window's rounded edge.
-void RoundBrowserViewCorners(void* nsview, double radius, int corner_mask);
-
 // Apply a soft drop shadow to the embedded content BrowserView so the tab
 // card appears to float above the window background. Takes the BrowserView's
 // own CefWindowHandle (bv->GetBrowser()->GetHost()->GetWindowHandle()).
@@ -264,7 +255,6 @@ inline void StyleContentBrowserView(void*,
                                     cef_color_t,
                                     const CefRect&) {}
 // StyleContentFrame is already an inline no-op in the Apple section.
-inline void RoundBrowserViewCorners(void*, double, int) {}
 inline void AddContentCardShadow(void*) {}
 inline void MakeBrowserViewTransparent(void*) {}
 inline void ApplyCardStyle(void*) {}
