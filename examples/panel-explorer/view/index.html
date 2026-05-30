@@ -11,10 +11,12 @@
         height: 100%;
         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
         color: #1f2328;
-        background: #ffffff;
+        /* No background here on purpose: the platform injects the content
+           surface color into every cronymax webview, so a plugin never
+           hard-codes its own background and stays consistent with the app. */
       }
       @media (prefers-color-scheme: dark) {
-        html, body { color: #e6e6ea; background: #1a1a1a; }
+        html, body { color: #e6e6ea; }
       }
       .wrap { box-sizing: border-box; padding: 24px; max-width: 720px; }
       h1 { font-size: 18px; margin: 0 0 8px; }

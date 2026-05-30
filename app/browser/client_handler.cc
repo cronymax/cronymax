@@ -4,6 +4,7 @@
 #include <sstream>
 
 #include "include/cef_parser.h"
+#include "include/cef_values.h"
 #include "include/wrapper/cef_helpers.h"
 
 namespace cronymax {
@@ -63,6 +64,7 @@ bool ClientHandler::OnProcessMessageReceived(
 void ClientHandler::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
   CEF_REQUIRE_UI_THREAD();
   browser_ids_.push_back(browser->GetIdentifier());
+  browsers_[browser->GetIdentifier()] = browser;
   if (on_browser_created)
     on_browser_created(browser->GetIdentifier());
 }
@@ -72,6 +74,7 @@ void ClientHandler::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
   const auto id = browser->GetIdentifier();
   browser_ids_.erase(std::remove(browser_ids_.begin(), browser_ids_.end(), id),
                      browser_ids_.end());
+  browsers_.erase(id);
   browser_listeners_.erase(id);
   if (bridge_handler_)
     bridge_handler_->OnBrowserClosed(id);
@@ -133,6 +136,54 @@ void ClientHandler::OnAddressChange(CefRefPtr<CefBrowser> browser,
   auto it = browser_listeners_.find(bid);
   if (it != browser_listeners_.end() && it->second.on_address_change) {
     it->second.on_address_change(url.ToString());
+  }
+}
+
+void ClientHandler::OnLoadStart(CefRefPtr<CefBrowser> browser,
+                                CefRefPtr<CefFrame> frame,
+                                TransitionType /*transition_type*/) {
+  CEF_REQUIRE_UI_THREAD();
+  if (!frame || !frame->IsMain())
+    return;
+  ApplyColorSchemeEmulation(browser);
+}
+
+void ClientHandler::ApplyColorSchemeEmulation(CefRefPtr<CefBrowser> browser) {
+  CEF_REQUIRE_UI_THREAD();
+  if (!browser)
+    return;
+  auto frame = browser->GetMainFrame();
+  if (!frame)
+    return;
+  const std::string url = frame->GetURL().ToString();
+  static constexpr char kWebviewScheme[] = "cronymax-webview://";
+  if (url.rfind(kWebviewScheme, 0) != 0)
+    return;
+  // Force the extension view's `prefers-color-scheme` to match the cronymax
+  // theme. Extension HTML uses the standard CSS media query, which otherwise
+  // follows the OS appearance and clashes with the app chrome (e.g. a dark
+  // view inside a light app). DevTools media emulation is the only reliable
+  // per-browser override; re-issuing it also forces a repaint so a transparent
+  // view picks up the container's new background color on a theme flip.
+  auto host = browser->GetHost();
+  if (!host)
+    return;
+  const bool dark = is_dark_theme ? is_dark_theme() : false;
+  auto feature = CefDictionaryValue::Create();
+  feature->SetString("name", "prefers-color-scheme");
+  feature->SetString("value", dark ? "dark" : "light");
+  auto features = CefListValue::Create();
+  features->SetDictionary(0, feature);
+  auto params = CefDictionaryValue::Create();
+  params->SetList("features", features);
+  host->ExecuteDevToolsMethod(0, "Emulation.setEmulatedMedia", params);
+}
+
+void ClientHandler::ReapplyColorSchemeAll() {
+  CEF_REQUIRE_UI_THREAD();
+  for (auto& [id, browser] : browsers_) {
+    (void)id;
+    ApplyColorSchemeEmulation(browser);
   }
 }
 

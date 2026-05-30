@@ -397,6 +397,26 @@ void App::OnContextCreated(CefRefPtr<CefBrowser> browser,
   // extension (and receive replies); they cannot reach any built-in IPC.
   if (IsExtensionWebviewUrl(frame_url)) {
     InjectAcquireCronymaxApi(frame, context);
+    // Platform-provided content surface: inject a low-priority default
+    // background matching the cronymax content surface (CSS `--background`:
+    // #ffffff light / #3a3a3a dark — the same surface the chat renders on) so a
+    // plugin never needs to set its own background and stays consistent with
+    // the rest of the app. Without this, a transparent body + `color-scheme`
+    // shows the browser's UA canvas (white in light, a dark UA default in
+    // dark), which mismatches the app in dark mode. Inserted as the first
+    // <style> so a plugin can still override it. The platform forces
+    // prefers-color-scheme to the app theme (ClientHandler::OnLoadStart /
+    // ReapplyColorSchemeAll), so the right branch applies and updates live.
+    static const char kSurfaceCss[] =
+        "(function(){var c='html,body{background:#ffffff;}"
+        "@media (prefers-color-scheme: dark){html,body{background:#3a3a3a;}}';"
+        "function j(){if(document.getElementById('__cronymax_surface'))return;"
+        "var s=document.createElement('style');s.id='__cronymax_surface';"
+        "s.textContent=c;var h=document.head||document.documentElement;"
+        "h.insertBefore(s,h.firstChild);}"
+        "if(document.head){j();}else{"
+        "document.addEventListener('DOMContentLoaded',j);}})();";
+    frame->ExecuteJavaScript(kSurfaceCss, frame->GetURL(), 0);
     return;
   }
 

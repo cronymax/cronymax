@@ -624,6 +624,13 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     if (body_panel_)
       body_panel_->Layout();
     PushActiveViewToRail();
+    // The content card just shrank/expanded for the dock — re-punch its
+    // corners at the new position, and (re)round or clear the dock card.
+    // Both post their own TID_UI task, so they run after layout settles.
+    if (content_view_)
+      content_view_->RefreshCornerMasks();
+    if (right_dock_view_obj_)
+      right_dock_view_obj_->RoundCorners();
   };
   disp_host.close_extension_views = [this](const std::string& ext_id) {
     CloseExtensionViews(ext_id);
@@ -777,6 +784,10 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
       ContentView::RoundCornersFor(bv, main_window_,
                                    shell_model_.current_chrome_.bg_body);
     }
+    // If the just-realized browser is the dock's, round its card now (on first
+    // open GetBrowser() was null when open_right_dock posted RoundCorners).
+    if (right_dock_view_obj_)
+      right_dock_view_obj_->RoundCorners();
     // If the overlay browser just finished async creation and there is a
     // pending URL queued from an OpenOverlay() call that arrived before
     // GetBrowser() became non-null, dispatch the navigation now.
@@ -786,6 +797,12 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
       overlay_bv_->GetBrowser()->GetMainFrame()->LoadURL(overlay_pending_url_);
       overlay_pending_url_.clear();
     }
+  };
+
+  // Extension views (cronymax-webview://) follow the cronymax theme's
+  // light/dark via DevTools media emulation in ClientHandler::OnLoadStart.
+  client_handler_->is_dark_theme = [this]() {
+    return shell_model_.ResolveAppearance() == "dark";
   };
 
   client_handler_->on_title_change = [this](int browser_id,
@@ -1361,6 +1378,11 @@ void MainWindow::CloseExtensionViews(const std::string& ext_id) {
       right_dock_view_obj_->Hide();
       if (body_panel_)
         body_panel_->Layout();
+      // Dock collapsed → clear its punches and re-round the (now expanded)
+      // content card.
+      right_dock_view_obj_->RoundCorners();
+      if (content_view_)
+        content_view_->RefreshCornerMasks();
     }
   }
 
@@ -1618,6 +1640,12 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
   // ThemeAwareView subscribers (titlebar, sidebar, content, popover, tabs)
   // receive ApplyTheme() via OnEvent() — no direct calls needed.
   shell_model_.NotifyThemeChanged(chrome);
+  // Extension webviews use the CSS prefers-color-scheme query (emulated at
+  // load), not the data-theme mirror — re-apply the emulation so any open
+  // plugin view follows the new light/dark instead of staying on its load-time
+  // scheme.
+  if (client_handler_)
+    client_handler_->ReapplyColorSchemeAll();
 }
 
 void MainWindow::HandleThemeModeChange(const std::string& mode) {

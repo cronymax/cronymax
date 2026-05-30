@@ -115,10 +115,31 @@ void RemoveSystemAppearanceObserver(void* token);
 // `window_nsview`, each painting `bg` at one card corner with a quarter-circle
 // cutout so the card appears rounded.  Because the card fills content_frame_
 // exactly, these punch views also visually round content_frame_'s corners.
+// `group` lets multiple independent cards (e.g. the main content card and the
+// right-dock card) each own a punch set: a call only removes/replaces punches
+// tagged with the same group, so refreshing one card does not wipe the other.
 void StyleContentBrowserView(void* window_nsview,
                              double radius,
                              cef_color_t bg,
-                             const CefRect& card_rect);
+                             const CefRect& card_rect,
+                             int group = 0);
+
+// Remove the corner-punch views for a single `group` (e.g. when the right
+// dock collapses) without touching other groups' punches.
+void ClearCardCorners(void* window_nsview, int group);
+
+// Round a content card's webview corners automatically: locate the card's
+// WebContentsViewCocoa (a direct child of the window root whose frame equals
+// `card_rect`) and install a tracker that re-paints the corner-punch overlays
+// whenever that view's frame changes. Unlike the bare punch call this needs no
+// manual repositioning — the rounding follows the view as the sidebar/dock open
+// or the window resizes. `bg` is the shell color painted at the corners;
+// `group` keeps each card's punch set independent (main content = 0, dock = 1).
+void RoundBrowserCardAuto(void* window_nsview,
+                          double radius,
+                          cef_color_t bg,
+                          const CefRect& card_rect,
+                          int group);
 
 // No-op: corner rounding for content_frame_ is handled by the punch views
 // installed by StyleContentBrowserView (the card fills content_frame_ exactly,
@@ -253,7 +274,11 @@ inline void RemoveSystemAppearanceObserver(void*) {}
 inline void StyleContentBrowserView(void*,
                                     double,
                                     cef_color_t,
-                                    const CefRect&) {}
+                                    const CefRect&,
+                                    int = 0) {}
+inline void ClearCardCorners(void*, int) {}
+inline void RoundBrowserCardAuto(void*, double, cef_color_t, const CefRect&, int) {
+}
 // StyleContentFrame is already an inline no-op in the Apple section.
 inline void AddContentCardShadow(void*) {}
 inline void MakeBrowserViewTransparent(void*) {}

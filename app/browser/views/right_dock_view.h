@@ -18,6 +18,7 @@
 
 #include "browser/models/theme_aware_view.h"
 #include "browser/models/view_context.h"
+#include "include/views/cef_box_layout.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_panel.h"
 
@@ -44,6 +45,11 @@ class RightDockView : public ThemeAwareView {
   // Collapse the dock without changing the loaded view.
   void Hide();
 
+  // Re-apply (or, when collapsed, clear) the dock card's rounded-corner punch
+  // overlays. Posts a TID_UI task so it runs after layout settles. Called by
+  // MainWindow whenever the dock opens/closes or its browser is (re)created.
+  void RoundCorners();
+
   // The view key currently shown in the dock, or "" when collapsed. Used by
   // the rail to highlight the matching icon.
   std::string active_view_key() const {
@@ -60,6 +66,7 @@ class RightDockView : public ThemeAwareView {
   CefRefPtr<ClientHandler> client_handler_;
 
   CefRefPtr<CefPanel> column_panel_;
+  CefRefPtr<CefBoxLayout> dock_layout_;
   CefRefPtr<CefBrowserView> browser_view_;
   std::string current_view_key_;
   bool shown_ = false;
