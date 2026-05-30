@@ -47,8 +47,14 @@
         activity-bar rail. It is served over <code>cronymax-webview://</code>
         and isolated to its own origin.
       </p>
-      <button id="ping">Send ping to extension</button>
+      <button id="ping">Acquire API &amp; post a message</button>
       <div class="log" id="log">Ready.</div>
+      <p style="margin-top:16px;font-size:12px;opacity:0.6">
+        The view renders and can <code>acquireCronymaxApi()</code>. Full
+        two-way messaging for a platform-opened contribution view needs the
+        extension to register a view provider (a future SDK surface);
+        <code>createWebviewPanel</code> panels already round-trip.
+      </p>
     </div>
     <script>
       // The platform injects acquireCronymaxApi() for ?surface=panel iframes.

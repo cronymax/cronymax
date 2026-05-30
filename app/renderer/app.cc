@@ -32,6 +32,10 @@ static constexpr char kMsgBrowserEvent[] = "cronymax.browser.event";
 // compilation unit doesn't pull in the full browser bridge header.
 static constexpr char kMsgWebviewPost[] = "cronymax.webview.post";
 static constexpr char kMsgWebviewDeliver[] = "cronymax.webview.deliver";
+// Panel iframe → browser: announce / retract this frame so the browser can
+// route extension → view delivery (kMsgWebviewDeliver) back to it.
+static constexpr char kMsgWebviewRegister[] = "cronymax.webview.register";
+static constexpr char kMsgWebviewUnregister[] = "cronymax.webview.unregister";
 // Content-renderer iframe → browser process (P6.5). Same locality
 // rationale as the webview constants above.
 static constexpr char kMsgRendererSetHeight[] = "cronymax.renderer.setHeight";
@@ -476,6 +480,10 @@ void App::OnContextReleased(CefRefPtr<CefBrowser> browser,
   // we identify the frame by V8 context identity rather than panel id.
   for (auto it = webview_frames_.begin(); it != webview_frames_.end();) {
     if (it->second.context && it->second.context->IsSame(context)) {
+      // Retract this panel's frame registration in the browser process.
+      auto unreg = CefProcessMessage::Create(kMsgWebviewUnregister);
+      unreg->GetArgumentList()->SetString(0, it->first);
+      frame->SendProcessMessage(PID_BROWSER, unreg);
       it = webview_frames_.erase(it);
     } else {
       ++it;
@@ -833,6 +841,12 @@ void App::InjectAcquireCronymaxApi(CefRefPtr<CefFrame> frame,
         CefV8Value::CreateFunction("acquireCronymaxApi",
                                    new WebviewAcquireHandler(this, id, ext_id)),
         V8_PROPERTY_ATTRIBUTE_NONE);
+
+    // Tell the browser process which (browser, frame) hosts this panel so
+    // extension → view `postMessage` (kMsgWebviewDeliver) reaches us.
+    auto reg = CefProcessMessage::Create(kMsgWebviewRegister);
+    reg->GetArgumentList()->SetString(0, id);
+    frame->SendProcessMessage(PID_BROWSER, reg);
     return;
   }
 

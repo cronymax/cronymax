@@ -50,6 +50,12 @@ bool ClientHandler::OnProcessMessageReceived(
   if (bridge_handler_ && message->GetName() == kMsgRendererSetHeight &&
       bridge_handler_->HandleRendererSetHeight(browser, frame, message))
     return true;
+  if (bridge_handler_ && message->GetName() == kMsgWebviewRegister &&
+      bridge_handler_->HandleWebviewRegister(browser, frame, message))
+    return true;
+  if (bridge_handler_ && message->GetName() == kMsgWebviewUnregister &&
+      bridge_handler_->HandleWebviewUnregister(browser, frame, message))
+    return true;
   return message_router_->OnProcessMessageReceived(browser, frame,
                                                    source_process, message);
 }

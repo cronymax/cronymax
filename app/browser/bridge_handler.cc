@@ -642,6 +642,20 @@ void BridgeHandler::SetWebviewFrameResolver(WebviewFrameResolver resolver) {
 // ---------------------------------------------------------------------------
 
 void BridgeHandler::OnBrowserClosed(int browser_id) {
+  // Drop any panel-frame registrations hosted in the closing browser so the
+  // resolver never hands out a dead frame.
+  {
+    std::lock_guard lock(webview_mu_);
+    for (auto it = webview_panel_frames_.begin();
+         it != webview_panel_frames_.end();) {
+      const auto& b = it->second.first;
+      if (b && b->GetIdentifier() == browser_id)
+        it = webview_panel_frames_.erase(it);
+      else
+        ++it;
+    }
+  }
+
   std::vector<std::function<void()>> cbs;
   {
     std::lock_guard<std::mutex> g(browser_subs_mutex_);
@@ -653,6 +667,52 @@ void BridgeHandler::OnBrowserClosed(int browser_id) {
   }
   for (auto& f : cbs)
     f();
+}
+
+// ---------------------------------------------------------------------------
+// Webview panel-frame registration (extension → view delivery resolver)
+// ---------------------------------------------------------------------------
+
+bool BridgeHandler::HandleWebviewRegister(CefRefPtr<CefBrowser> browser,
+                                          CefRefPtr<CefFrame> frame,
+                                          CefRefPtr<CefProcessMessage> message) {
+  auto args = message->GetArgumentList();
+  const std::string panel_id = args ? args->GetString(0).ToString() : "";
+  if (panel_id.empty())
+    return true;
+  std::lock_guard lock(webview_mu_);
+  webview_panel_frames_[panel_id] = {browser, frame};
+  return true;
+}
+
+bool BridgeHandler::HandleWebviewUnregister(
+    CefRefPtr<CefBrowser> /*browser*/,
+    CefRefPtr<CefFrame> /*frame*/,
+    CefRefPtr<CefProcessMessage> message) {
+  auto args = message->GetArgumentList();
+  const std::string panel_id = args ? args->GetString(0).ToString() : "";
+  if (panel_id.empty())
+    return true;
+  std::lock_guard lock(webview_mu_);
+  webview_panel_frames_.erase(panel_id);
+  return true;
+}
+
+std::pair<CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>>
+BridgeHandler::LookupPanelFrame(const std::string& panel_id) {
+  std::lock_guard lock(webview_mu_);
+  auto it = webview_panel_frames_.find(panel_id);
+  if (it == webview_panel_frames_.end())
+    return {nullptr, nullptr};
+  return it->second;
+}
+
+void BridgeHandler::InstallWebviewDelivery() {
+  // SetWebviewFrameResolver subscribes to extensions/webview exactly once
+  // (guarded by webview_event_token_), so repeated SetRuntimeProxy attaches
+  // are safe. The resolver reads the renderer-self-registered frame map.
+  SetWebviewFrameResolver(
+      [this](const std::string& panel_id) { return LookupPanelFrame(panel_id); });
 }
 
 }  // namespace cronymax

@@ -19,6 +19,21 @@ namespace {
 // Width of the rail (icon column). Roughly matches the VS Code activity bar.
 constexpr int kRailW = 52;
 
+// The rail paints a shade darker than the body so it reads as a distinct
+// surface from the sidebar. Mirrors the web nav's
+// `color-mix(in srgb, body, #000 18%)` — i.e. each RGB channel × 0.82,
+// alpha preserved. Theme-correct in both light and dark modes.
+cef_color_t RailBg(cef_color_t body) {
+  const auto scale = [](uint32_t v) -> uint32_t {
+    return static_cast<uint32_t>(v * 82 / 100);
+  };
+  const uint32_t a = (body >> 24) & 0xFF;
+  const uint32_t r = scale((body >> 16) & 0xFF);
+  const uint32_t g = scale((body >> 8) & 0xFF);
+  const uint32_t b = scale(body & 0xFF);
+  return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
 // Fixed-width delegate for the rail browser view.
 class RailBrowserViewDelegate : public CefBrowserViewDelegate {
  public:
@@ -50,9 +65,10 @@ CefRefPtr<CefPanel> ActivityBarView::Build() {
   const ThemeChrome chrome =
       theme_ctx_ ? theme_ctx_->GetCurrentChrome() : ThemeChrome{};
 
+  const cef_color_t rail_bg = RailBg(chrome.bg_body);
   column_panel_ =
       CefPanel::CreatePanel(new SizedPanelDelegate(CefSize(kRailW, 0)));
-  column_panel_->SetBackgroundColor(chrome.bg_body);
+  column_panel_->SetBackgroundColor(rail_bg);
 
   CefBoxLayoutSettings col_box;
   col_box.horizontal = false;
@@ -60,7 +76,7 @@ CefRefPtr<CefPanel> ActivityBarView::Build() {
   auto col_layout = column_panel_->SetToBoxLayout(col_box);
 
   CefBrowserSettings settings;
-  settings.background_color = chrome.bg_body;
+  settings.background_color = rail_bg;
   browser_view_ = CefBrowserView::CreateBrowserView(
       client_handler_, resource_ctx_->AliasedResourceUrl("activitybar"),
       settings, nullptr, nullptr, new RailBrowserViewDelegate());
@@ -72,10 +88,11 @@ CefRefPtr<CefPanel> ActivityBarView::Build() {
 }
 
 void ActivityBarView::ApplyTheme(const ThemeChrome& chrome) {
+  const cef_color_t rail_bg = RailBg(chrome.bg_body);
   if (column_panel_)
-    column_panel_->SetBackgroundColor(chrome.bg_body);
+    column_panel_->SetBackgroundColor(rail_bg);
   if (browser_view_)
-    browser_view_->SetBackgroundColor(chrome.bg_body);
+    browser_view_->SetBackgroundColor(rail_bg);
 }
 
 void ActivityBarView::SetVisible(bool visible) {

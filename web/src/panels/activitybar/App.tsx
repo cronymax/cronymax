@@ -89,7 +89,14 @@ export function App() {
   }, []);
 
   return (
-    <nav className="app-drag flex h-full w-full flex-col items-center gap-1 bg-cronymax-body pt-7 pb-2 text-foreground">
+    // Rail sits a shade darker than the sidebar/body in both themes so the
+    // two columns read as distinct surfaces. Derived from the body token so
+    // it tracks the theme (light → darker gray, dark → near-black); the
+    // native ActivityBarView column uses the matching ×0.82 darken.
+    <nav
+      className="app-drag flex h-full w-full flex-col items-center gap-1 pt-7 pb-2 text-foreground"
+      style={{ background: "color-mix(in srgb, var(--color-cronymax-body), #000 18%)" }}
+    >
       {BUILTIN_VIEWS.map((v) => (
         <RailButton key={v.id} label={v.label} onClick={() => void openSingleton(v.id)}>
           <Icon name={v.icon} size={20} aria-hidden="true" />
