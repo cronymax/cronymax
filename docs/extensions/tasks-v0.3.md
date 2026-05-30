@@ -1108,3 +1108,44 @@ P6.5 的核心区别是:不复用 `createWebviewPanel`(语义不同 —— 用�
 - mermaid bundle ~3.2 MB 是 mermaid 上游包的体积,不在我们控制内;`@mermaid-js/mermaid-zenuml` 等分块加载是 M1 优化
 - theme 同步 — `ctx.onDidChangeTheme` SDK 通路就位但 chat 端没 push 主题事件,默认 light
 - renderer iframe 启动开销 — 当前一块一 iframe,P7 dogfood 时如果 perf 真扛不住再做 `(ext, rendererId)` 共享 iframe 池
+
+---
+
+## 活动栏 Rail + 扩展操作视图(2026-05-30 / 05-31)
+
+把扩展的「操作视图」做成产品形态:窗口最左侧新增竖排图标 **rail**(VS Code 活动栏风格),内置 **Activities / Flows** 从 sidebar 底部迁入;有 `cronymax.ui.sidebar.view` contribution 的扩展在分隔线之后显示图标。点击扩展图标按 manifest `target` 决定打开方式:`"main"` 替换主内容区(类似 Flows),`"right"` 在最右侧 **dock** 打开、不影响 chat。
+
+### 落地
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 活动栏 rail web 面板 | ✅ | `web/src/panels/activitybar/`;内置 Activities/Flows(`tab_open_singleton`)+ 扩展视图图标;右键「停用扩展」 |
+| 原生 rail 列 + 右侧 dock 列 | ✅ | `app/browser/views/activitybar_view.{h,cc}` / `right_dock_view.{h,cc}`;`main_window` body 布局 `[rail \| sidebar \| content \| dock]` |
+| 主区替换 / 右侧 dock 两种 target | ✅ | manifest `SidebarViewContribution.target: "main" \| "right"`;`TabKind::kExtensionView` tab(主区)/ `RightDockView`(dock) |
+| 声明式(无 main)扩展贡献视图 | ✅ | 复用 P6.5 declarative-only activate 路径 |
+| rail 高亮 + contributions-changed 刷新 | ✅ | 订阅 `shell.active_view_changed`;`extensions/contributions` topic + `runtime.reconnected` 重订阅(修了 rail 漏 `BroadcastToAllPanels` 导致扩展图标偶发消失的 bug,`cc9fb4a`) |
+| 停用扩展:销毁 view + 移除 rail 图标 + 切回最新 chat | ✅ | `shell.close_extension_views` + `extension.deactivate` ControlRequest |
+| dogfood `examples/panel-explorer/` | ✅ | 两个视图:`...main`(target main)/ `...dock`(target right),同一 `view/index.html` |
+
+提交:`f84a027`(rail + 操作视图)、`cd998e1`(rail 深色面 + P6 ext→iframe 投递补全)、`9811e9a`(Phase D 高亮 + 刷新)、`516edcc`(rail 停用扩展)、`724490f`(panel-explorer e2e 测试)、`cc9fb4a`(broadcast 修复)。
+
+### 视觉打磨(2026-05-31,`e759e3b` / `b338058`)
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| 圆角自动跟随 view | ✅ | 给卡片 webview 的 `WebContentsViewCocoa`(窗口根直接子视图,frame == 卡片区)挂 `NSViewFrameDidChange` 监听器,frame 变化自动重打 corner-punch → 侧栏/dock 开合、resize 都不再手动刷新。**IOSurface 无法被 CALayer mask 裁**(只有独立子窗口的 popover 行),故圆角仍用 punch overlay,但改为 observer 驱动 |
+| 内容表面统一 `bg_content` | ✅ | chat / 主区扩展视图 / dock 统一 `#ffffff`(浅)/`#3a3a3a`(深);平台在每个 `cronymax-webview` 注入内容表面底色(`app/renderer/app.cc`),插件不写 background |
+| dock 浮卡 | ✅ | 列内 inset `{0,8,8,8}` 露出外壳底色(消除右侧细条)+ 收起时 `ClearCardCorners` 清圆角 + 与主区单一 8px 间距 |
+| 插件视图随主题切换底色 | ✅ | 主题翻转时 `ClientHandler::ReapplyColorSchemeAll` 对开着的 webview 重发 `prefers-color-scheme` 模拟 |
+| rail 扩展图标随主题着色、匹配内置 | ✅ | `<img crossOrigin>`(scheme 加 `Access-Control-Allow-Origin: *`)→ canvas → 同源 `data:` URL → `mask-image` + `background: currentColor`,精确等于内置图标(实测 `#B0B0B0`) |
+
+### 经验
+
+- **web 改动必须用会同步进 app bundle 的构建**:`cmake --build build`(ALL,含 `cronymax_web_sync`)或 `--target cronymax_web_sync`。`--target cronymax_app` 只重建 `web/dist`、**不拷进** `cronymax.app/Contents/Resources/web` → 改动「不进包」,表现为反复「不生效」(stale bundle)。
+- **跨 origin 资源(`file://` rail ↔ `cronymax-webview://` 插件)**:CSS `mask-image` 用 *no-cors* 抓取 → 跨域 mask 一律当空(图标隐形),加 ACAO 也没用;`fetch()` 从 `file://` 源被禁。唯一拿到「同源、可做 mask」字节的路径 = `<img crossOrigin>` + canvas → `data:` URL。
+- **颜色**:HDR/广色域屏 `screencapture` 抓到的是色调映射后的帧(灰阶有偏移),不是 app bug;「HDR 屏正常、SDR 屏偏色」的 `--force-color-profile=srgb` 方案本轮按需求**撤销**未采用。
+
+### 遗留
+
+- 视图↔扩展完整双向消息仍需 `WebviewViewProvider` 式 SDK 表面(当前 panel-explorer 视图能 `acquireCronymaxApi()` 但平台侧未注册 view provider;`createWebviewPanel` 面板已可双向往返)。
+- 跨屏 HDR/SDR 颜色一致性未处理(按需求搁置)。
