@@ -2033,6 +2033,59 @@ mod tests {
         assert_eq!(dock.metadata["target"], "right");
     }
 
+    /// End-to-end of the *real* startup path the app runs: drop the example
+    /// into a registry root, `refresh()` (which validates the manifest — the
+    /// step `dogfood_panel_explorer_fixture_activates_cleanly` skips), then
+    /// activate and confirm the operation views reach the contribution list
+    /// the rail reads. Guards against a manifest that parses but fails
+    /// validation (and so would silently never appear in the rail).
+    #[tokio::test]
+    async fn panel_explorer_install_refresh_activate_surfaces_views() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let manifest_raw = std::fs::read_to_string(
+            repo_root
+                .join("examples")
+                .join("panel-explorer")
+                .join("cronymax-extension.json"),
+        )
+        .expect("read example manifest");
+
+        // Lay the example out exactly like an install: <root>/<id>/manifest.
+        let root = tempfile::TempDir::new().unwrap();
+        let ext_dir = root.path().join("cronymax-examples.panel-explorer");
+        std::fs::create_dir_all(&ext_dir).unwrap();
+        std::fs::write(ext_dir.join("cronymax-extension.json"), &manifest_raw).unwrap();
+
+        // refresh() scans + validates + reconciles registry.json.
+        let mut registry = ExtensionRegistry::new(root.path().to_path_buf());
+        registry.refresh().expect("refresh");
+        let entry = registry
+            .get("cronymax-examples.panel-explorer")
+            .expect("entry present after refresh");
+        assert!(entry.enabled, "out-of-band install defaults enabled");
+
+        // Activate (declarative — no Node host) and confirm the views land.
+        let runtime = ExtensionRuntime::new(registry);
+        runtime
+            .activate("cronymax-examples.panel-explorer", |_, _| {
+                panic!("declarative-only")
+            })
+            .await
+            .expect("activate");
+
+        use crate::extensions::contributions::kind::UI_SIDEBAR_VIEW;
+        let views = runtime
+            .contributions_snapshot()
+            .into_iter()
+            .filter(|d| d.kind == UI_SIDEBAR_VIEW)
+            .count();
+        assert_eq!(views, 2, "both operation views reach the contribution list");
+    }
+
     #[tokio::test]
     async fn activate_and_deactivate_fire_contributions_changed() {
         let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
