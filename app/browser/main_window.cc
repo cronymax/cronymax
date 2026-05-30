@@ -232,7 +232,8 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   shell_model_.tabs_->RegisterSingletonKind(TabKind::kSettings);
   shell_model_.tabs_->RegisterSingletonKind(TabKind::kActivity);
   shell_model_.tabs_->RegisterSingletonKind(TabKind::kFlows);
-  shell_model_.tabs_->SetHiddenFromList({TabKind::kActivity, TabKind::kFlows});
+  shell_model_.tabs_->SetHiddenFromList(
+      {TabKind::kActivity, TabKind::kFlows, TabKind::kExtensionView});
 
   // refine-ui-theme-layout: load persisted theme mode (defaults to
   // "system") and seed shell_model_.current_chrome_ before BuildChrome so the
@@ -457,32 +458,22 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   window->AddChildView(body_panel_);
   root_layout->SetFlexForView(body_panel_, 1);
 
-  // ── Sidebar (Phase 10: owned by SidebarView) ─────────────────────────────
+  // ── Activity bar (leftmost vertical icon rail) ───────────────────────────
+  // Added first so it sits left of the sidebar in the horizontal body row.
+  activitybar_view_obj_ = std::make_unique<ActivityBarView>(
+      /*resource_ctx=*/this, /*theme_ctx=*/this, client_handler_);
   {
-    SidebarView::Host sv_host;
-    sv_host.open_panel_window = [this](const std::string& url,
-                                       const std::string& title) {
-      OpenPanelWindow(url, title);
-    };
-    sv_host.open_singleton_tab = [this](const std::string& kind_s) {
-      TabKind kind;
-      if (kind_s == "activity")
-        kind = TabKind::kActivity;
-      else if (kind_s == "flows")
-        kind = TabKind::kFlows;
-      else
-        return;
-      if (!shell_model_.tabs_->IsSingletonKind(kind))
-        return;
-      bool created = false;
-      TabId id = shell_model_.tabs_->FindOrCreateSingleton(kind, &created);
-      if (!id.empty())
-        shell_model_.tabs_->Activate(id);
-    };
-    sidebar_view_obj_ = std::make_unique<SidebarView>(
-        /*resource_ctx=*/this,
-        /*theme_ctx=*/this, client_handler_, std::move(sv_host));
+    auto ab = activitybar_view_obj_->Build();
+    body_panel_->AddChildView(ab);
+    body_layout->SetFlexForView(ab, 0);
   }
+
+  // ── Sidebar (Phase 10: owned by SidebarView) ─────────────────────────────
+  // Activities / Flows opens now route from the ActivityBarView rail through
+  // the `shell.tab_open_singleton` bridge channel (view_dispatcher.cc), so
+  // SidebarView no longer needs host callbacks.
+  sidebar_view_obj_ = std::make_unique<SidebarView>(
+      /*resource_ctx=*/this, /*theme_ctx=*/this, client_handler_);
   auto sv = sidebar_view_obj_->Build();
   body_panel_->AddChildView(sv);
   body_layout->SetFlexForView(sv, 0);
@@ -532,6 +523,15 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     auto content_outer = content_view_->Build();
     body_panel_->AddChildView(content_outer);
     body_layout->SetFlexForView(content_outer, 1);
+  }
+
+  // ── Right-side dock (rightmost, collapsible; target="right" views) ───────
+  right_dock_view_obj_ =
+      std::make_unique<RightDockView>(/*theme_ctx=*/this, client_handler_);
+  {
+    auto dock = right_dock_view_obj_->Build();
+    body_panel_->AddChildView(dock);
+    body_layout->SetFlexForView(dock, 0);
   }
 
   // ── native-views-mvc Phase 5: ShellDispatcher ───────────────────────────
@@ -613,6 +613,15 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   disp_host.notify_sidebar_active_kind = [this](const std::string& kind) {
     if (sidebar_view_obj_)
       sidebar_view_obj_->UpdateActiveButtonState(kind);
+  };
+  disp_host.open_right_dock = [this](const std::string& view_key,
+                                     const std::string& url,
+                                     const std::string& title) {
+    if (right_dock_view_obj_)
+      right_dock_view_obj_->OpenOrToggle(view_key, url, title);
+    // Reflow the body so the content area shrinks/expands for the dock.
+    if (body_panel_)
+      body_panel_->Layout();
   };
 
   dispatcher_ = std::make_unique<ViewDispatcher>(

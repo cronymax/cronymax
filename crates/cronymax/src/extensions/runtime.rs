@@ -1943,6 +1943,67 @@ mod tests {
         assert!(r.entry.ends_with("renderer/index.html"));
     }
 
+    /// Dogfood: load the real `examples/panel-explorer/cronymax-extension.json`
+    /// and confirm activation ingests both operation-view contributions
+    /// (one `target: main`, one `target: right`) into the contribution
+    /// registry the activity-bar rail reads from. Keeps the fixture in sync
+    /// with the manifest schema (`target` field, declarative-only).
+    #[tokio::test]
+    async fn dogfood_panel_explorer_fixture_activates_cleanly() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace parent")
+            .parent()
+            .expect("workspace root");
+        let manifest_path = repo_root
+            .join("examples")
+            .join("panel-explorer")
+            .join("cronymax-extension.json");
+        let raw = std::fs::read_to_string(&manifest_path)
+            .expect("read examples/panel-explorer/cronymax-extension.json");
+        let manifest = Manifest::from_json(&raw).expect("manifest parses");
+        assert!(
+            manifest.main.is_none(),
+            "panel-explorer fixture must remain declarative-only",
+        );
+        assert_eq!(manifest.id, "cronymax-examples.panel-explorer");
+
+        let ext_id = manifest.id.clone();
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test(&ext_id, manifest);
+        runtime
+            .activate(&ext_id, |_, _| {
+                panic!("cfg_builder must not run for declarative-only extension")
+            })
+            .await
+            .expect("activate fixture");
+
+        use crate::extensions::contributions::kind::UI_SIDEBAR_VIEW;
+        let views: Vec<_> = runtime
+            .contributions_snapshot()
+            .into_iter()
+            .filter(|d| d.kind == UI_SIDEBAR_VIEW)
+            .collect();
+        assert_eq!(views.len(), 2, "two operation views declared");
+
+        let main = views
+            .iter()
+            .find(|d| d.id == "cronymax-examples.panel-explorer.main")
+            .expect("main view present");
+        assert_eq!(main.metadata["target"], "main");
+        assert_eq!(main.metadata["entry"], "view/index.html");
+
+        let dock = views
+            .iter()
+            .find(|d| d.id == "cronymax-examples.panel-explorer.dock")
+            .expect("dock view present");
+        assert_eq!(dock.metadata["target"], "right");
+    }
+
     #[tokio::test]
     async fn forward_renderer_height_emits_height_changed_event() {
         use crate::extensions::api::renderers::RendererEvent;

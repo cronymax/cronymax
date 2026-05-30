@@ -214,11 +214,21 @@ export interface RendererCsp {
   connect_src?: string[];
 }
 
+/** Where an operation view opens when its activity-bar icon is clicked. */
+export type ViewTarget = "main" | "right";
+
 export interface SidebarViewContribution {
   id: string;
   title: string;
   icon?: string;
   entry: string;
+  /**
+   * Where the view opens when the user clicks its activity-bar rail icon:
+   * "main" replaces the main content area (like the built-in Flows view);
+   * "right" opens a collapsible right-side dock without disturbing the main
+   * area. Defaults to "main".
+   */
+  target?: ViewTarget;
 }
 
 // ─── JSON schema (subset) ──────────────────────────────────────────────────

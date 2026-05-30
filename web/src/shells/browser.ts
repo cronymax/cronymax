@@ -37,6 +37,8 @@ import {
   ShellNavigatePayloadSchema,
   ShellNewTabKindPayloadSchema,
   ShellNewTabKindResponseSchema,
+  ShellOpenExtensionViewPayloadSchema,
+  ShellOpenExtensionViewResponseSchema,
   ShellPopoverOpenPayloadSchema,
   ShellSettingsPopoverOpenPayloadSchema,
   ShellSettingsPopoverOpenResponseSchema,
@@ -117,6 +119,10 @@ export const Channels = {
       tab_new_kind: chan({
         req: ShellNewTabKindPayloadSchema,
         res: ShellNewTabKindResponseSchema,
+      }),
+      open_extension_view: chan({
+        req: ShellOpenExtensionViewPayloadSchema,
+        res: ShellOpenExtensionViewResponseSchema,
       }),
       // Tab identity: returns the calling tab's id + arbitrary metadata.
       this_tab_id: chan({

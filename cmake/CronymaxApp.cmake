@@ -68,6 +68,12 @@ set(CRONYMAX_APP_SRCS
   app/browser/views/titlebar_view.cc
   app/browser/views/sidebar_view.h
   app/browser/views/sidebar_view.cc
+  # Activity bar: leftmost vertical icon rail (web panel host).
+  app/browser/views/activitybar_view.h
+  app/browser/views/activitybar_view.cc
+  # Right-side dock: collapsible host for target="right" extension views.
+  app/browser/views/right_dock_view.h
+  app/browser/views/right_dock_view.cc
   app/browser/views/profile_picker_overlay.cc
   app/browser/views/profile_picker_overlay.h
   # Independent top-level window for panel popups (settings, flows,

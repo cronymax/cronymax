@@ -33,6 +33,7 @@ const srcDir = resolve(__dirname, "src");
 const panelsDir = resolve(srcDir, "panels");
 
 const panelEntries = {
+  activitybar: resolve(panelsDir, "activitybar/index.html"),
   sidebar: resolve(panelsDir, "sidebar/index.html"),
   popover: resolve(panelsDir, "popover/index.html"),
   chat: resolve(panelsDir, "chat/index.html"),

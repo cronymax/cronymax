@@ -17,7 +17,9 @@ import Close from "@vscode/codicons/src/icons/close.svg?react";
 import CommentDiscussion from "@vscode/codicons/src/icons/comment-discussion.svg?react";
 import DebugStop from "@vscode/codicons/src/icons/debug-stop.svg?react";
 import Globe from "@vscode/codicons/src/icons/globe.svg?react";
+import Layers from "@vscode/codicons/src/icons/layers.svg?react";
 import LinkExternal from "@vscode/codicons/src/icons/link-external.svg?react";
+import Pulse from "@vscode/codicons/src/icons/pulse.svg?react";
 import Refresh from "@vscode/codicons/src/icons/refresh.svg?react";
 import Save from "@vscode/codicons/src/icons/save.svg?react";
 import SettingsGear from "@vscode/codicons/src/icons/settings-gear.svg?react";
@@ -56,6 +58,8 @@ export type IconName =
   | "tools"
   | "save"
   | "trash"
+  | "pulse"
+  | "layers"
   | "link-external"
   | "chevron-left"
   | "chevron-right"
@@ -79,6 +83,8 @@ export const codiconComponents: Record<IconName, SvgComponent> = {
   tools: Tools,
   save: Save,
   trash: Trash,
+  pulse: Pulse,
+  layers: Layers,
   "link-external": LinkExternal,
   "chevron-left": ChevronLeft,
   "chevron-right": ChevronRight,

@@ -90,11 +90,19 @@ pub struct PanelView {
 /// The event shape is mirrored on the wire as a `RuntimeEventPayload::Raw`
 /// JSON object — keeping it `serde`-serializable here means renderer code
 /// can typecheck the same shape via `cep-idl/v1` codegen.
+// NB: `rename_all = "camelCase"` on the enum only renames the *variant*
+// tags (`panelCreated`, `message`, …); it does NOT propagate to struct-
+// variant fields. Each variant therefore declares its own
+// `rename_all = "camelCase"` so `panel_id` / `ext_id` serialize as
+// `panelId` / `extId` on the wire — which is what both the C++
+// `BridgeHandler` (`node.value("panelId", …)`) and the web renderer read.
+// (Same gotcha fixed for `RendererEvent` in P6.5; see extension-logs.)
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WebviewEvent {
     /// A new panel was created. Renderer mounts an iframe at `url`
     /// (`cronymax-webview://<extId>/<entry>`) into the named `slot`.
+    #[serde(rename_all = "camelCase")]
     PanelCreated {
         ext_id: String,
         panel_id: String,
@@ -108,12 +116,15 @@ pub enum WebviewEvent {
     },
     /// Owner extension (or the platform via deactivate cleanup) asked
     /// the panel be torn down. Renderer unmounts the iframe.
+    #[serde(rename_all = "camelCase")]
     PanelDisposed { panel_id: String },
     /// Extension → iframe `postMessage`. Renderer forwards to the
     /// iframe's `acquireCronymaxApi().onDidReceiveMessage` listeners.
+    #[serde(rename_all = "camelCase")]
     Message { panel_id: String, payload: Value },
     /// Extension toggled visibility. Renderer adjusts CSS / mounts to
     /// the corresponding slot.
+    #[serde(rename_all = "camelCase")]
     VisibilityChanged { panel_id: String, visible: bool },
 }
 
@@ -766,5 +777,44 @@ mod tests {
             .deliver_message("alice.x", "ghost", serde_json::json!({}))
             .unwrap_err();
         assert!(matches!(err, ExtensionError::BadContribution { .. }));
+    }
+
+    #[test]
+    fn webview_event_serializes_camelcase_fields() {
+        // The C++ BridgeHandler (`node.value("panelId", …)`) and the web
+        // renderer both read camelCase field names. Pin the wire shape so a
+        // future refactor can't silently regress to snake_case (P6.5 bug #5):
+        // the enum-level `rename_all` only renames variant tags, not fields.
+        let created = WebviewEvent::PanelCreated {
+            ext_id: "alice.x".into(),
+            panel_id: "p1".into(),
+            title: "T".into(),
+            slot: "sidebar".into(),
+            entry: "panel.html".into(),
+            url: "cronymax-webview://alice.x/panel.html?surface=panel&id=p1".into(),
+        };
+        let v = serde_json::to_value(&created).unwrap();
+        assert_eq!(v["kind"], "panelCreated");
+        assert_eq!(v["extId"], "alice.x");
+        assert_eq!(v["panelId"], "p1");
+        assert!(v.get("ext_id").is_none(), "snake_case ext_id leaked");
+        assert!(v.get("panel_id").is_none(), "snake_case panel_id leaked");
+
+        let msg = WebviewEvent::Message {
+            panel_id: "p1".into(),
+            payload: serde_json::json!({ "a": 1 }),
+        };
+        let mv = serde_json::to_value(&msg).unwrap();
+        assert_eq!(mv["kind"], "message");
+        assert_eq!(mv["panelId"], "p1");
+
+        let vis = WebviewEvent::VisibilityChanged {
+            panel_id: "p1".into(),
+            visible: true,
+        };
+        let vv = serde_json::to_value(&vis).unwrap();
+        assert_eq!(vv["kind"], "visibilityChanged");
+        assert_eq!(vv["panelId"], "p1");
+        assert_eq!(vv["visible"], true);
     }
 }

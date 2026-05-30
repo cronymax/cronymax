@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Panel Explorer</title>
+    <style>
+      :root { color-scheme: light dark; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        color: #1f2328;
+        background: #ffffff;
+      }
+      @media (prefers-color-scheme: dark) {
+        html, body { color: #e6e6ea; background: #1a1a1a; }
+      }
+      .wrap { box-sizing: border-box; padding: 24px; max-width: 720px; }
+      h1 { font-size: 18px; margin: 0 0 8px; }
+      p { margin: 0 0 16px; opacity: 0.8; }
+      button {
+        font: inherit;
+        padding: 6px 14px;
+        border-radius: 8px;
+        border: 1px solid currentColor;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+      }
+      button:hover { background: rgba(127, 127, 127, 0.15); }
+      .log {
+        margin-top: 16px;
+        padding: 12px;
+        border-radius: 8px;
+        background: rgba(127, 127, 127, 0.1);
+        white-space: pre-wrap;
+        min-height: 1.5em;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Panel Explorer</h1>
+      <p>
+        This is an extension-contributed operation view, opened from the
+        activity-bar rail. It is served over <code>cronymax-webview://</code>
+        and isolated to its own origin.
+      </p>
+      <button id="ping">Send ping to extension</button>
+      <div class="log" id="log">Ready.</div>
+    </div>
+    <script>
+      // The platform injects acquireCronymaxApi() for ?surface=panel iframes.
+      const log = document.getElementById("log");
+      let api = null;
+      try {
+        api = acquireCronymaxApi();
+        // Replies arrive once the extension has a Node host + the platform's
+        // ext→view delivery resolver is wired (see Phase B messaging).
+        api.onDidReceiveMessage((msg) => {
+          log.textContent = "received: " + JSON.stringify(msg);
+        });
+        log.textContent = "Acquired cronymax API. Ready.";
+      } catch (e) {
+        log.textContent = "acquireCronymaxApi unavailable: " + e;
+      }
+      document.getElementById("ping").addEventListener("click", () => {
+        if (!api) {
+          log.textContent = "No API handle.";
+          return;
+        }
+        api.postMessage({ type: "ping", at: Date.now() });
+        log.textContent = "ping sent →";
+      });
+    </script>
+  </body>
+</html>

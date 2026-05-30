@@ -60,6 +60,10 @@ IconId IconIdForKind(TabKind kind) {
       return IconId::kActivities;
     case TabKind::kSettings:
       return IconId::kSettings;
+    case TabKind::kExtensionView:
+      // Extension views have no native toolbar (HasToolbar() == false), so
+      // this glyph is never shown; provide a case to satisfy -Wswitch.
+      return IconId::kSettings;
   }
   return IconId::kSettings;
 }

@@ -189,6 +189,18 @@ pub struct RendererCsp {
     pub connect_src: Vec<String>,
 }
 
+/// Where an operation view opens when its activity-bar icon is clicked.
+/// Mirrors the `ViewTarget` IDL string union in `cep-idl/v1/manifest.ts`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewTarget {
+    /// Replace the main content area (like the built-in Flows view).
+    #[default]
+    Main,
+    /// Open in the collapsible right-side dock, leaving the main area intact.
+    Right,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SidebarViewContribution {
     pub id: String,
@@ -196,6 +208,9 @@ pub struct SidebarViewContribution {
     #[serde(default)]
     pub icon: Option<String>,
     pub entry: String,
+    /// Where clicking the rail icon opens the view. Defaults to `main`.
+    #[serde(default)]
+    pub target: ViewTarget,
 }
 
 impl Manifest {

@@ -185,6 +185,14 @@ void ViewDispatcher::Wire() {
       *out = TabKind::kSettings;
       return true;
     }
+    if (s == "activity") {
+      *out = TabKind::kActivity;
+      return true;
+    }
+    if (s == "flows") {
+      *out = TabKind::kFlows;
+      return true;
+    }
     return false;
   };
 
@@ -265,6 +273,37 @@ void ViewDispatcher::Wire() {
                                          {"is_pinned", false}}
                               .dump());
     return nlohmann::json{{"tabId", id}, {"kind", kind_s}}.dump();
+  };
+
+  // Activity-bar rail: open or focus an extension operation view. The web
+  // rail supplies the pre-built `cronymax-webview://` URL.
+  sh.open_extension_view = [this](const std::string& url,
+                                  const std::string& view_key,
+                                  const std::string& title,
+                                  const std::string& target) -> std::string {
+    if (url.empty() || view_key.empty())
+      return "{\"ok\":false}";
+    // target="right" → open (or toggle) the collapsible right-side dock.
+    if (target == "right") {
+      if (!host_.open_right_dock)
+        return "{\"ok\":false}";
+      host_.open_right_dock(view_key, url, title);
+      return "{\"ok\":true}";
+    }
+    // target="main" (default) → open/focus a view tab in the content area.
+    // Dedup: re-clicking a rail icon focuses the already-open view tab.
+    TabId id = model_->tabs_->FindByMeta("ext_view", view_key);
+    if (id.empty()) {
+      OpenParams params;
+      params.url = url;
+      params.display_name = title.empty() ? std::string("View") : title;
+      params.meta["ext_view"] = view_key;
+      id = model_->tabs_->Open(TabKind::kExtensionView, params);
+    }
+    if (id.empty())
+      return "{\"ok\":false}";
+    model_->tabs_->Activate(id);
+    return "{\"ok\":true}";
   };
 
   sh.set_toolbar_state = [this, kind_from_string](

@@ -12,7 +12,9 @@
 #include "browser/models/view_context.h"
 #include "browser/models/view_dispatcher.h"
 #include "browser/models/view_model.h"
+#include "browser/views/activitybar_view.h"
 #include "browser/views/content_view.h"
+#include "browser/views/right_dock_view.h"
 #include "browser/views/popover.h"
 #include "browser/views/profile_picker_overlay.h"
 #include "browser/views/sidebar_view.h"
@@ -121,6 +123,10 @@ class MainWindow : public CefWindowDelegate,
   // arc-style-tab-cards: TabManager lives in shell_model_.tabs_.
 
   // Layout views.
+  // Activity bar: leftmost vertical icon rail, owned by ActivityBarView.
+  std::unique_ptr<ActivityBarView> activitybar_view_obj_;
+  // Right-side dock for target="right" extension views (collapsible).
+  std::unique_ptr<RightDockView> right_dock_view_obj_;
   // native-views-mvc Phase 10: sidebar owned by SidebarView.
   std::unique_ptr<SidebarView> sidebar_view_obj_;
   // Convenience accessor — returns the sidebar CefBrowserView (webview panel)

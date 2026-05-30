@@ -26,6 +26,8 @@ const char* TabKindToString(TabKind kind) {
       return "activity";
     case TabKind::kSettings:
       return "settings";
+    case TabKind::kExtensionView:
+      return "extension_view";
   }
   return "unknown";
 }

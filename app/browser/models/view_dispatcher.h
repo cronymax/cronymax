@@ -59,6 +59,14 @@ struct DispatcherHost {
   // Called whenever the active tab changes; passes the TabKindToString of
   // the new active tab (or "" if no tab is active).
   std::function<void(const std::string& kind)> notify_sidebar_active_kind;
+
+  // ── Right-side dock (target="right" extension views) ─────────────────────
+  // Open `url` (a cronymax-webview:// view URL) keyed by `view_key` in the
+  // collapsible right dock, or collapse it if that view is already showing.
+  std::function<void(const std::string& view_key,
+                     const std::string& url,
+                     const std::string& title)>
+      open_right_dock;
 };
 
 class ViewDispatcher {

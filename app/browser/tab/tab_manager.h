@@ -128,6 +128,12 @@ class TabManager {
                   const std::string& value);
   std::string GetTabMeta(const TabId& id, const std::string& key) const;
 
+  // Find the first tab whose metadata `key` equals `value`, scanning ALL
+  // tabs (including kinds hidden from Snapshot, e.g. extension views).
+  // Returns the empty string if none match. Used to dedup operation-view
+  // tabs so re-clicking a rail icon focuses the existing view.
+  TabId FindByMeta(const std::string& key, const std::string& value) const;
+
   const TabId& active_tab_id() const { return active_tab_id_; }
   size_t size() const { return tabs_.size(); }
 

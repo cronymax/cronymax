@@ -141,6 +141,17 @@ struct ShellCallbacks {
   // Always creates a fresh tab (multi-instance for terminal/chat). Returns
   // JSON: {"tabId":"tab-N","kind":"..."}. Empty tabId on error.
   std::function<std::string(const std::string& kind)> new_tab_kind;
+  // Activity-bar rail: open or focus an extension-contributed operation
+  // view. `url` is the pre-built `cronymax-webview://` URL (the web rail
+  // assembles it); `view_key` is a stable dedup key ("<extId>::<viewId>");
+  // `title` is the display name; `target` is "main" (replace the main
+  // content area, like Flows) or "right" (the collapsible right dock).
+  // Returns JSON {"ok":bool}.
+  std::function<std::string(const std::string& url,
+                            const std::string& view_key,
+                            const std::string& title,
+                            const std::string& target)>
+      open_extension_view;
   // Renderer push: replace the toolbar widgets for tab_id from a serialized
   // ToolbarState (kind-tagged). The dispatcher pre-validates that
   // payload.state.kind matches the tab's kind. Returns false on mismatch.
