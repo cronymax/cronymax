@@ -8,7 +8,7 @@
 // Live activate/deactivate updates are refetched on reconnect; finer-grained
 // live updates are P10 hardening (mirrors extensionRenderers.ts).
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { browser, runtime } from "@/shells/bridge";
 import { type ContributionDescriptor, ContributionKind, contributionRegistry } from "@/shells/runtime";
 import type { ViewTarget } from "@/types";
@@ -83,10 +83,11 @@ export function buildIconUrl(view: ExtensionView): string | null {
  */
 export function useExtensionViewRegistry(): ExtensionView[] {
   const [views, setViews] = useState<ExtensionView[]>([]);
-  const initialFetched = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    let contribOff: (() => void) | null = null;
+
     const refetch = async () => {
       try {
         const { contributions } = await contributionRegistry.list();
@@ -101,24 +102,34 @@ export function useExtensionViewRegistry(): ExtensionView[] {
       }
     };
 
-    if (!initialFetched.current) {
-      initialFetched.current = true;
-      void refetch();
-    }
-    // Reconnect refetch (runtime restart) + contribution-change refetch
-    // (extension activate/deactivate; startup activation is async so the
-    // first fetch can land before any extension has been ingested).
+    // (Re)establish the contribution-change subscription. `runtime.on` returns
+    // null if the runtime proxy isn't attached yet, so the initial call early
+    // in startup may no-op — we re-subscribe on `runtime.reconnected` once the
+    // runtime is up, which closes the window where the post-activation event
+    // would otherwise be missed.
+    const subscribeContrib = () => {
+      contribOff?.();
+      contribOff = runtime.on("extensions/contributions", () => {
+        void refetch();
+      });
+    };
+
+    void refetch();
+    subscribeContrib();
+
+    // `runtime.reconnected` is a bridge broadcast (delivered even before the
+    // first runtime subscription is possible). Startup activation is async and
+    // may finish after the first fetch, so refetch AND re-establish the
+    // contribution subscription when the runtime comes up.
     const offReconnect = browser.on("runtime.reconnected", () => {
       void refetch();
-    });
-    const offContrib = runtime.on("extensions/contributions", () => {
-      void refetch();
+      subscribeContrib();
     });
 
     return () => {
       cancelled = true;
       offReconnect();
-      offContrib?.();
+      contribOff?.();
     };
   }, []);
 

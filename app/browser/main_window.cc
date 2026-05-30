@@ -1241,6 +1241,16 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
     if (auto browser = bv->GetBrowser())
       client_handler_->SendBrowserEvent(browser, event_name, json_payload);
   }
+  // Activity-bar rail — also a chrome panel; needs broadcasts (theme.changed,
+  // runtime.reconnected, …). Without this the rail misses `runtime.reconnected`
+  // and never refetches its extension-view list after the runtime comes up,
+  // so extension icons intermittently fail to appear.
+  if (activitybar_view_obj_) {
+    if (auto bv = activitybar_view_obj_->browser_view()) {
+      if (auto browser = bv->GetBrowser())
+        client_handler_->SendBrowserEvent(browser, event_name, json_payload);
+    }
+  }
   // Also push to the in-window overlay popover (transient web URL popover)
   // when one is open.
   if (popover_ && popover_->IsOpen()) {
