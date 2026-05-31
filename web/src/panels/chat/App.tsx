@@ -2807,6 +2807,44 @@ export function App() {
       await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
         /* ignore */
       });
+
+      // Race recovery: the run was started (agentRun above) before this
+      // subscription existed, and subscriptions don't replay. An agent that
+      // requests permission in the first tick of its turn — e.g. an extension
+      // provider gating on approval — emits `permission_request` in that gap,
+      // so the live handler never sees it and the run hangs forever waiting on
+      // a card that never rendered. Catch up by querying the run's current
+      // pending approval and surfacing it. Idempotent: an already-shown review
+      // re-sets the same state; an auto-resolved review is simply absent.
+      try {
+        if (chatId) {
+          const { approvals } = await flowRun.getSessionPendingActions(chatId);
+          const pending = (approvals as Array<Record<string, unknown>>).find(
+            (a) => (a.run_id as string | undefined) === runId,
+          );
+          if (pending) {
+            const reviewId = (pending.id as string | undefined) ?? "";
+            const reqOuter = (pending.request as Record<string, unknown> | undefined) ?? {};
+            const reqInner = (reqOuter.request as Record<string, unknown> | undefined) ?? {};
+            const toolName = (reqInner.tool_name as string | undefined) ?? (reqOuter.tool as string | undefined) ?? "";
+            const args = reqInner.args ?? reqOuter.arguments ?? {};
+            const category = toolName.split("_")[0] ?? toolName;
+            let effectiveTrust: "autopilot" | "bypass" | "ask";
+            if (globalApprovalMode === "autopilot") effectiveTrust = "autopilot";
+            else if (globalApprovalMode === "bypass") effectiveTrust = "bypass";
+            else effectiveTrust = (loadTrustMap()[category] ?? "ask") as "autopilot" | "bypass" | "ask";
+            if (effectiveTrust === "autopilot") {
+              browser.send("review.approve", { run_id: runId, review_id: reviewId }).catch(() => undefined);
+            } else if (effectiveTrust === "bypass") {
+              browser.send("review.request_changes", { run_id: runId, review_id: reviewId }).catch(() => undefined);
+            } else {
+              dispatch({ type: "setAwaitingApproval", runId, reviewId, toolName, args });
+            }
+          }
+        }
+      } catch {
+        /* best-effort catch-up — the live handler covers the non-raced case */
+      }
     } catch (err) {
       teardown();
       const errMsg = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
