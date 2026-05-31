@@ -16,6 +16,7 @@ import type {
   ContributionItem,
   Cronymax,
   ExtensionContext,
+  LogOutputChannel,
   PermissionDecision,
   PromptMessage,
   SessionOptions,
@@ -25,6 +26,11 @@ import type {
 declare const globalThis: { cronymax: Cronymax };
 
 const PROVIDER_ID = "cronymax-examples.echo-agent.echo";
+
+// Module-level log channel so the session can log too (set in `activate`).
+// Doubles as a demo of the settings → Extensions → Logs tab: a turn emits a
+// few lines at different levels (info / warn / debug) via this channel.
+let log: LogOutputChannel | null = null;
 
 // Model id that exercises the permission round-trip — the session yields
 // a `permissionRequest` event, parks on `resolvePermission`, and only
@@ -46,6 +52,9 @@ class EchoSession implements AgentSession {
   }
 
   async *prompt(message: PromptMessage, token: CancellationToken): AsyncIterable<AgentEvent> {
+    const preview = message.text.length > 60 ? `${message.text.slice(0, 60)}…` : message.text;
+    log?.info(`prompt: model=${this.model || "(default)"} text=${JSON.stringify(preview)}`);
+
     // When the picker selected the permission model, gate the echo
     // behind a host-side permission decision. The `await` below parks
     // the iterator until `resolvePermission()` resolves the matching
@@ -56,6 +65,7 @@ class EchoSession implements AgentSession {
       const decisionPromise = new Promise<PermissionDecision>((resolve) => {
         this.pendingDecisions.set(requestId, resolve);
       });
+      log?.warn(`permission requested: echo.reply (${requestId})`);
       yield {
         kind: "permissionRequest",
         requestId,
@@ -63,7 +73,9 @@ class EchoSession implements AgentSession {
         options: { preview: message.text },
       };
       const decision = await decisionPromise;
+      log?.info(`permission ${decision.allow ? "granted" : "denied"}`);
       if (this.cancelled || token.isCancellationRequested) {
+        log?.debug("cancelled while awaiting permission");
         yield { kind: "done", stopReason: "cancelled" };
         return;
       }
@@ -77,8 +89,10 @@ class EchoSession implements AgentSession {
     const header = `[model=${this.model || "(default)"}] `;
     const reply = `${header}Echo: ${message.text}`;
 
+    log?.debug(`streaming ${reply.length} chars in ${Math.ceil(reply.length / 8)} chunks`);
     for (const chunk of chunkText(reply, 8)) {
       if (this.cancelled || token.isCancellationRequested) {
+        log?.debug("cancelled mid-stream");
         yield { kind: "done", stopReason: "cancelled" };
         return;
       }
@@ -86,6 +100,7 @@ class EchoSession implements AgentSession {
       await delay(40);
     }
 
+    log?.info("turn complete");
     yield { kind: "done", stopReason: "end_turn" };
   }
 
@@ -130,7 +145,7 @@ const echoProvider: AgentProvider = {
 
 export async function activate(ctx: ExtensionContext): Promise<void> {
   const c = globalThis.cronymax;
-  const log = c.window.createOutputChannel("Echo Agent", { log: true });
+  log = c.window.createOutputChannel("Echo Agent", { log: true });
   ctx.subscriptions.push(log);
   log.info("echo-agent activate()");
 
@@ -139,6 +154,7 @@ export async function activate(ctx: ExtensionContext): Promise<void> {
 
 export async function deactivate(): Promise<void> {
   // ctx.subscriptions are disposed by the host.
+  log = null;
 }
 
 function chunkText(text: string, size: number): string[] {
