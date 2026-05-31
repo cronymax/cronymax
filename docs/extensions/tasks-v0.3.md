@@ -1501,3 +1501,56 @@ T04b 初版 ship 后 DRI 连续实测,暴露 4 个问题,逐个定位修掉(全�
 
 - 退出 app 时残留 ~10+ 个旧 session 的 node host 进程未回收(host 生命周期清理缺口)—— 与本串无关,留 **P10 crash-recovery / lifecycle**
 - Open Log Folder / 导出 .log 仍并入 T05c
+
+---
+
+## P9-T05b + T05c(2026-05-31 · diagnostic-bundle CLI + Open Log Folder)
+
+接 P9-T04b 落下的日志基建,补两个共享同一套落盘前置的子任务。
+
+### T05c — 设置「Logs」tab 的「Open folder」按钮(DRI 实测确认 ✅)
+
+收掉 T04b 明确遗留(打开 logs 目录需要平台解析 `~`/session 路径,web 不知道)。注:当前 app **没有命令面板**,故任务卡里的「Developer: Show Logs…」无处可挂,本轮只做 logs tab 的按钮(命令面板那部分留待有面板时)。
+
+| 层 | 改动 |
+|---|---|
+| Rust | `ExtensionRuntime::log_folder(ext_id)`(per-ext 目录存在则返回,否则回退 session 根;无 log manager → None)+ `ControlRequest::ExtensionLogFolder` + handler(`extension_ops.rs`)+ 路由 |
+| C++ | `RevealPathInFinder(path)`(NSWorkspace;目录→openURL 打开、文件→activateFileViewerSelectingURLs;`fileURLWithPath` 处理 `$HOME` 编码)+ `browser.shell.reveal_path` 桥(`ui.cc`)+ `ShellCallbacks.reveal_path`(`bridge_handler.h`)+ 接线(`view_dispatcher.cc::Wire`) |
+| web | `extensionRegistry.logFolder()` + `reveal_path` 通道(`browser.ts` `Channels.browser.shell`)+「Open folder」按钮(`ExtensionLogsView.tsx`) |
+
+#### dogfood「点了没反应」根因(CEF 主线程 dispatch 陷阱)
+
+DRI 实测点击无响应。**没有靠推理**——逐层用真机产物 + 设备数据核查:三层改动都在 .app 里、`Channels.browser.shell.reveal_path` 已注册、`RevealPathInFinder` 符号在二进制、app 无沙盒、echo-agent 日志目录真实存在 → 静态全通。加文件日志探针后(`log show` **抓不到 NSLog**,改写 `/tmp` 文件才看清)确认:web 调用→C++ handler→`RevealPathInFinder` **都进了**,路径正确。
+
+**真因**:`RevealPathInFinder` 用 `dispatch_async(dispatch_get_main_queue(), …)` 把 NSWorkspace 调用丢到 GCD 主队列;但本 app 跑 `CefRunMessageLoop()`(`main_mac.mm`),**不消费 GCD 主队列** → block 永不执行 → Finder 不弹。全代码库主线程活儿一律 `CefPostTask(TID_UI)`,`dispatch_get_main_queue` 是异类。
+
+**修复**:`open_url_mac.mm` 两个函数都改成 `CefCurrentlyOn(TID_UI) ? 直调 : CefPostTask(TID_UI, …)`。顺手修了 `OpenUrlExternal`(OAuth「在浏览器打开」)——同一潜在 bug,之前应也不工作。DRI 重启实测:Finder 正常弹出 ✅。
+
+(教训沉淀进 memory `cef-main-thread-cefposttask`。)
+
+### T05b — `cronymax diagnostic-bundle` CLI
+
+收集所有 session 日志 + 每个扩展 manifest + `registry.json` + 版本(cronymax / OS / 探测 bundled Node)→ 脱敏 → zip。
+
+| 模块 | 改动 |
+|---|---|
+| `extensions/diagnostic.rs`(新) | `build_diagnostic_bundle(BundleInputs, out)`:walk logs(跳 symlink,`current` 不重复)、收 manifests(**只 manifest,不打包扩展源码/dist**)、写 `metadata.json`;`redact_text` = `$HOME→~` + `Bearer <token>→REDACTED`(header+JSON 通杀)+ `Authorization:` 头行整值 REDACTED。纯函数(`generated_at_ms` 由调用方传,无时钟依赖);7 单测 |
+| CLI(`bin/cronymax.rs`) | 顶层 `diagnostic-bundle [-o file]`(`--root` 复用 ext 根、logs 取同级);`os_description()`(`uname -mrs` 兜底)、`node_version()`(`CRONYMAX_NODE` 或 `default_bundled_node`)、默认输出名 `cronymax-diagnostic-<ts>.zip` |
+| `mod.rs` | `pub mod diagnostic;` |
+
+> Node 26 Permission Model + audit.log 已在 v1 撤回,任务卡「audit args 列删」不再适用(无 audit 可脱敏)。已知缺口:JSON 内非 Bearer 的 `"authorization"`(如 Basic)不抓;Bearer(OAuth 常态)抓。
+
+### 验证
+
+- T05c:`log_folder` 单测 + extensions 311 测试全过;`cargo fmt/clippy` 0;web `tsc -b` 0、biome clean;`cronymax_app` + `cronymax_web_sync` 构建 exit 0 进 .app;**DRI 重启实测 Open folder 弹 Finder ✅**
+- T05b:`cargo test -p cronymax --lib extensions::diagnostic` → 7 passed;真机 CLI 冒烟 `diagnostic-bundle` 对真实 `~/.cronymax` 产 zip(10 session + 2 manifest + metadata,`grep /Users` **0 泄漏**,`current` symlink 正确排除)
+- `cargo test -p cronymax --lib` → 547 passed(+ `log_folder` + 7 diagnostic - 原合并 7)
+
+### Phase 9 子任务状态
+
+| 子任务 | 状态 |
+|---|---|
+| T04 扩展管理 tab / T04b 日志 tab / T05 `ext package` | ✅(早先) |
+| **T05c Open Log Folder(按钮)** | **✅ 本轮(DRI 实测)** |
+| **T05b diagnostic-bundle** | **✅ 本轮** |
+| T05 `ext dev --watch` / T05c 命令面板 Developer 命令(缺面板)/ 导出 .log 按钮 / T03 模板仓 / T06 通用性 checkpoint | 待做 |
