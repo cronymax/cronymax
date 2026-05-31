@@ -1147,5 +1147,55 @@ P6.5 的核心区别是:不复用 `createWebviewPanel`(语义不同 —— 用�
 
 ### 遗留
 
-- 视图↔扩展完整双向消息仍需 `WebviewViewProvider` 式 SDK 表面(当前 panel-explorer 视图能 `acquireCronymaxApi()` 但平台侧未注册 view provider;`createWebviewPanel` 面板已可双向往返)。
+- ~~视图↔扩展完整双向消息仍需 `WebviewViewProvider` 式 SDK 表面~~ → ✅ 已完成,见下「WebviewViewProvider 视图双向消息」节(2026-05-31)。
 - 跨屏 HDR/SDR 颜色一致性未处理(按需求搁置)。
+
+---
+
+## WebviewViewProvider 视图双向消息(2026-05-31)
+
+补完上面「活动栏 Rail + 扩展操作视图」节的遗留:平台打开的操作视图(rail → 主区 / 右 dock)现在能与扩展 Node host 完整双向通信,对齐 VS Code 的 `WebviewViewProvider`。`createWebviewPanel` 面板早已双向往返,这一节给「平台驱动打开」的视图补上对称能力。
+
+### 关键事实(决定了改动范围)
+
+ext→视图 的投递在 **C++ 层早已通**:视图 iframe 用 `?surface=panel&id=<viewId>` 加载,`app/renderer/app.cc::InjectAcquireCronymaxApi` 对每个 `surface=panel` 帧(无论 `<iframe>` 还是原生 WebContentsView)都 `kMsgWebviewRegister` 按 `id` 注册帧。所以缺口纯在 **Rust + SDK**:viewId 不在 `WebviewRegistry` 里,`forward_panel_message` 直接丢弃;也没有 `WebviewView` 句柄 / resolve 生命周期。**未改任何 C++。**
+
+### 设计(VS Code 对齐)
+
+- **注册**:`window.registerWebviewViewProvider(viewId, provider)` 复用既有 `sidebar/register` wire 填充 `SidebarViewRegistry`(平台据此知道 viewId 的属主)+ 本地存 provider。
+- **resolve 触发**:web `openView` 在 `shell.open_extension_view` 之后 `runtimeSend("extension.view.resolve",{view_id})` → 新增 `ControlRequest::ExtensionViewResolve` → `resolve_view(view_id)` → 查 `SidebarViewRegistry` 属主 → `webviewView/resolve` notify。bootstrap 构造 `WebviewView` 调 `provider.resolveWebviewView(view)`。无 provider / 无 host(声明式扩展)时是良性 no-op。
+- **ext→视图**:`view.webview.postMessage` → `webviewView/postMessage` notify → runtime handler 校验属主 → `WebviewRegistry::deliver_to_frame(viewId, payload)`(新方法,emit `Message{panelId:viewId}` 不要求 panel 条目)→ 复用 C++ 投递到帧。
+- **视图→ext**:iframe `acquireCronymaxApi().postMessage` → `kMsgWebviewPost{panel_id:viewId}` → `ExtensionWebviewPost` → `forward_panel_message` 加 view 回退(不是 panel 就查 `SidebarViewRegistry` → `webviewView/onDidReceiveMessage` 给属主)。
+- **生命周期**:`onDidReceiveMessage` 收到未 resolve 的 viewId 会隐式 resolve(应对 iframe onload post 与 resolve notify 的竞态);每次 resolve 重建 `WebviewView`(对齐 VS Code 视图重显即重建 webview);deactivate 经 provider 的 Disposable 触发 `onDidDispose` + `sidebar/unregister`。
+
+### IDL(v1 未 ship 前的受控新增,已落档)
+
+`cep-idl/v1/window.ts` + `sdk/extension/src/window.ts`(两份保持字节一致)新增 `Webview` / `WebviewView` / `WebviewViewProvider` + `Window.registerWebviewViewProvider`;两边 `index.ts` 同步导出。
+
+### 改动
+
+| 层 | 文件 | 改动 |
+|---|---|---|
+| codec | `rpc/codec.rs` | 新增 `webview_view_method`(resolve / postMessage / onDidReceiveMessage / onDidChangeVisibility / onDidDispose) |
+| control | `protocol/control.rs` + `runtime/handler/{mod,extension_ops}.rs` | `ExtensionViewResolve{view_id}` 变体 + `handle_extension_view_resolve` + 路由 arm |
+| registry | `extensions/api/webview.rs` | `deliver_to_frame(frame_id,payload)`(无 panel-map lookup 的 Message emit) |
+| runtime | `extensions/runtime.rs` | `webviewView/postMessage` notify handler(属主校验 via SidebarViewRegistry);`forward_panel_message` view 回退;`resolve_view` / `dispose_view` |
+| SDK | `bundled/extension-host-bootstrap.js` | `window.registerWebviewViewProvider` + `buildWebviewView` + 4 个 `webviewView/*` 入站 handler + 隐式 resolve |
+| web | `web/src/panels/activitybar/App.tsx` | `openView` 打开后 `runtimeSend("extension.view.resolve",{view_id})` |
+| dogfood | `examples/view-messaging/`(新)| 带 main 的扩展:provider resolve→greet、onDidReceiveMessage→echo;view/index.html 往返 UI。panel-explorer 保留作声明式 demo |
+
+### 验证
+
+- `cargo test -p cronymax --lib` → **525 passed**(含 5 个新单测:`deliver_to_frame_fires_message_without_a_panel_entry` + `forward_panel_message_routes_registered_view_to_provider` + `resolve_view_notifies_owner_and_noops_for_unknown` + `resolve_view_for_owner_without_host_is_noop` + `webview_view_post_message_emits_for_owner_and_rejects_others`)
+- `cargo test -p cronymax --test p6_webview_view_e2e` → **1 passed**(真实 Node 26:registerWebviewViewProvider → resolve→greeting → forward→echo 全链路)
+- `p1_acceptance` 4 / `p2_node_host_e2e` 3 / `p4_extension_runtime_e2e` 2 仍全过
+- `cargo clippy -p cronymax --lib --tests -- -D warnings` → 0;`cargo fmt -p cronymax --check` → clean
+- `node --check bundled/extension-host-bootstrap.js` → OK
+- `tsc` sdk/extension → 0 errors(`dist` 重建含新类型);`examples/view-messaging` tsc → 0 errors;`npm --prefix web typecheck` → 0
+- 注:`cep-idl/v1` 因无网装不了本地 `node_modules` 自检,但其 `window.ts` 与已过 tsc 的 sdk 副本字节一致
+
+### 遗留 / 后续
+
+- **视图侧 `show()` / 主动聚焦**:IDL `WebviewView` v1 未含 `show()`(VS Code 有);需要时再补 + 平台聚焦路由。
+- **`onDidChangeVisibility` 真实触发**:目前只在 resolve(visible=true)时拉起;hide / 切走时的 visibility=false 事件待接 `shell.active_view_changed` → Rust。
+- **显式 view 关闭(非 deactivate)→ dispose**:`dispose_view` 已就位,但 web 端没有「视图 tab 关闭」钩子去调它(切走目前等价于 hidden,provider 存活,符合 VS Code 语义)。

@@ -444,6 +444,22 @@ pub enum ControlRequest {
         ext_id: String,
     },
 
+    /// Tell the owning extension to resolve one of its operation views
+    /// (activity-bar rail view opened into the main area or right dock).
+    /// The web rail fires this right after `shell.open_extension_view`
+    /// mounts the view's iframe, so the extension's registered
+    /// `WebviewViewProvider.resolveWebviewView(view)` runs and can start
+    /// posting into the view.
+    ///
+    /// Routes via [`crate::extensions::runtime::ExtensionRuntime::
+    /// resolve_view`]. A no-op (returns `Ack`) when the view has no
+    /// registered provider yet (e.g. declarative-only extension, or the
+    /// provider hasn't registered) — the view still renders, it just
+    /// doesn't get a Node-side resolve.
+    ExtensionViewResolve {
+        view_id: String,
+    },
+
     /// Request changes on a pending document review in a flow run.
     /// Calls `FlowRuntime::write_review_comments` +
     /// `FlowRuntime::on_rejected_requeue` and re-spawns the producing node.

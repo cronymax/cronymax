@@ -101,7 +101,9 @@ use crate::extensions::events::{EventBus, EventPayload, SubscriptionGuard};
 use crate::extensions::host::node::{NodeHost, SpawnConfig};
 use crate::extensions::manifest::{AgentProviderContribution, Manifest, SidebarViewContribution};
 use crate::extensions::registry::ExtensionRegistry;
-use crate::extensions::rpc::codec::{agents_method, method, sidebar_method, webview_method};
+use crate::extensions::rpc::codec::{
+    agents_method, method, sidebar_method, webview_method, webview_view_method,
+};
 use crate::extensions::rpc::{Connection, RpcServer};
 
 /// Live state for one activated extension. Held inside `ExtensionRuntime`
@@ -1121,6 +1123,50 @@ impl ExtensionRuntime {
             });
         }
 
+        // ── webviewView/postMessage (notify) ──────────────────────────
+        //
+        // Extension → operation-view iframe payload. Unlike a panel, the
+        // view is not in `WebviewRegistry`; ownership is enforced against
+        // the sidebar-view registry (which `registerWebviewViewProvider`
+        // populates via the `sidebar/register` wire). On success we emit a
+        // `Message` keyed by the viewId — the view frame self-registered
+        // under that id in the renderer, so the existing C++ delivery
+        // bridge routes it to the right frame.
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.on_notify(webview_view_method::POST_MESSAGE, move |params| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let view_id = extract_str_field(&params, "viewId")?;
+                    let payload_rmpv = lookup_field(&params, "payload").unwrap_or(Value::Nil);
+                    let payload = rmpv_to_json(&payload_rmpv);
+                    let owner = state.sidebars.get(&view_id).map(|v| v.owning_ext);
+                    match owner {
+                        Some(o) if o == ext_id => {
+                            state.webviews.deliver_to_frame(&view_id, payload);
+                            Ok(())
+                        }
+                        Some(other) => Err(ExtensionError::BadContribution {
+                            point: "cronymax.ui.sidebar.view".into(),
+                            ext_id: ext_id.clone(),
+                            reason: format!(
+                                "view `{view_id}` is owned by `{other}`, not `{ext_id}`"
+                            ),
+                        }),
+                        None => Err(ExtensionError::BadContribution {
+                            point: "cronymax.ui.sidebar.view".into(),
+                            ext_id: ext_id.clone(),
+                            reason: format!(
+                                "view `{view_id}` has no registered provider (did you call registerWebviewViewProvider?)"
+                            ),
+                        }),
+                    }
+                }
+            });
+        }
+
         builder.build()
     }
 
@@ -1139,22 +1185,102 @@ impl ExtensionRuntime {
         panel_id: &str,
         payload: serde_json::Value,
     ) -> ExtensionResult<()> {
-        let owner = self.state.webviews.owner_of(panel_id)?.ok_or_else(|| {
-            ExtensionError::BadContribution {
-                point: "cronymax.window.panel".into(),
-                ext_id: "<renderer>".into(),
-                reason: format!("panel `{panel_id}` does not exist"),
-            }
-        })?;
+        // The `id` carried by the renderer can be either a webview *panel*
+        // (created via `createWebviewPanel`) or an operation *view* frame
+        // (contributed via `cronymax.ui.sidebar.view`). Try the panel
+        // registry first; fall back to the sidebar-view registry. The two
+        // route to different extension-side RPC methods so the SDK can fan
+        // out to `panel.onDidReceiveMessage` vs the view provider.
+        if let Some(owner) = self.state.webviews.owner_of(panel_id)? {
+            let frame = Value::Map(vec![
+                (
+                    Value::String("panelId".into()),
+                    Value::String(panel_id.to_string().into()),
+                ),
+                (Value::String("payload".into()), json_to_rmpv(&payload)),
+            ]);
+            return self
+                .notify_extension(&owner, webview_method::ON_DID_RECEIVE_MESSAGE, frame)
+                .await;
+        }
+
+        if let Some(view) = self.state.sidebars.get(panel_id) {
+            let frame = Value::Map(vec![
+                (
+                    Value::String("viewId".into()),
+                    Value::String(panel_id.to_string().into()),
+                ),
+                (Value::String("payload".into()), json_to_rmpv(&payload)),
+            ]);
+            return self
+                .notify_extension(
+                    &view.owning_ext,
+                    webview_view_method::ON_DID_RECEIVE_MESSAGE,
+                    frame,
+                )
+                .await;
+        }
+
+        Err(ExtensionError::BadContribution {
+            point: "cronymax.window.panel".into(),
+            ext_id: "<renderer>".into(),
+            reason: format!("no panel or registered view with id `{panel_id}`"),
+        })
+    }
+
+    /// Ask the extension that owns operation view `view_id` to resolve it
+    /// (run its `WebviewViewProvider.resolveWebviewView`). Triggered by the
+    /// web rail's `extension.view.resolve` control request right after the
+    /// view's iframe is mounted.
+    ///
+    /// No-op (Ok) when the view has no registered provider — either the
+    /// owning extension is declarative-only (no Node host) or it never
+    /// called `registerWebviewViewProvider`. The view still renders; it
+    /// just gets no Node-side resolve. This keeps the rail open path from
+    /// erroring on views that only need to display static content.
+    pub async fn resolve_view(&self, view_id: &str) -> ExtensionResult<()> {
+        let Some(view) = self.state.sidebars.get(view_id) else {
+            return Ok(());
+        };
+        // Only host-backed extensions can resolve. `notify_extension`
+        // returns `NotActivated` for declarative-only ones; treat that as
+        // a benign no-op rather than surfacing it to the rail.
         let frame = Value::Map(vec![
             (
-                Value::String("panelId".into()),
-                Value::String(panel_id.to_string().into()),
+                Value::String("viewId".into()),
+                Value::String(view_id.to_string().into()),
             ),
-            (Value::String("payload".into()), json_to_rmpv(&payload)),
+            (Value::String("visible".into()), Value::Boolean(true)),
         ]);
-        self.notify_extension(&owner, webview_method::ON_DID_RECEIVE_MESSAGE, frame)
+        match self
+            .notify_extension(&view.owning_ext, webview_view_method::RESOLVE, frame)
             .await
+        {
+            Ok(()) => Ok(()),
+            Err(ExtensionError::NotActivated(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Tell the owning extension an operation view was torn down so its
+    /// provider's `WebviewView.onDidDispose` fires. No-op when the view
+    /// has no registered provider / live host.
+    pub async fn dispose_view(&self, view_id: &str) -> ExtensionResult<()> {
+        let Some(view) = self.state.sidebars.get(view_id) else {
+            return Ok(());
+        };
+        let frame = Value::Map(vec![(
+            Value::String("viewId".into()),
+            Value::String(view_id.to_string().into()),
+        )]);
+        match self
+            .notify_extension(&view.owning_ext, webview_view_method::ON_DID_DISPOSE, frame)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(ExtensionError::NotActivated(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Forward a renderer-driven view-state change (visibility / focus)
@@ -3064,6 +3190,216 @@ mod tests {
         assert!(
             matches!(err, ExtensionError::BadContribution { .. }),
             "got {err:?}",
+        );
+    }
+
+    /// Register one sidebar view owned by `alice.x` directly in the
+    /// registry (what `registerWebviewViewProvider` does over the wire).
+    fn seed_view(runtime: &ExtensionRuntime, view_id: &str, owner: &str) {
+        runtime
+            .sidebars()
+            .register(crate::extensions::api::sidebar::SidebarViewEntry {
+                view_id: view_id.into(),
+                owning_ext: owner.into(),
+                title: "V".into(),
+                icon: None,
+                entry: "./v.html".into(),
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn forward_panel_message_routes_registered_view_to_provider() {
+        // A view frame's iframe→ext post arrives as forward_panel_message
+        // keyed by the viewId (not a panel). It must fall back to the
+        // sidebar-view registry and route `webviewView/onDidReceiveMessage`.
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        seed_view(&runtime, "alice.x.view", "alice.x");
+
+        type Captured = Arc<StdMutex<Vec<(String, serde_json::Value)>>>;
+        let captured: Captured = Arc::new(StdMutex::new(Vec::new()));
+        let cap_c = captured.clone();
+        let peer_server = RpcServer::builder()
+            .on_notify(webview_view_method::ON_DID_RECEIVE_MESSAGE, move |params| {
+                let cap = cap_c.clone();
+                async move {
+                    let view_id = extract_str_field(&params, "viewId").unwrap_or_default();
+                    let payload = lookup_field(&params, "payload")
+                        .map(|v| rmpv_to_json(&v))
+                        .unwrap_or(serde_json::Value::Null);
+                    cap.lock().unwrap().push((view_id, payload));
+                    Ok(())
+                }
+            })
+            .build();
+
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (runtime_conn, _t1) = Connection::open(a_r, a_w, RpcServer::builder().build());
+        let (_peer_conn, _t2) = Connection::open(b_r, b_w, peer_server);
+        runtime.install_test_handle_conn_only("alice.x", runtime_conn);
+
+        runtime
+            .forward_panel_message("alice.x.view", serde_json::json!({"from": "view-iframe"}))
+            .await
+            .expect("view route must succeed");
+
+        for _ in 0..50 {
+            if !captured.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let caps = captured.lock().unwrap().clone();
+        assert_eq!(caps.len(), 1, "expected one onDidReceiveMessage notify");
+        assert_eq!(caps[0].0, "alice.x.view");
+        assert_eq!(
+            caps[0].1.get("from").and_then(|v| v.as_str()),
+            Some("view-iframe"),
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_view_notifies_owner_and_noops_for_unknown() {
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        seed_view(&runtime, "alice.x.view", "alice.x");
+
+        type Captured = Arc<StdMutex<Vec<String>>>;
+        let captured: Captured = Arc::new(StdMutex::new(Vec::new()));
+        let cap_c = captured.clone();
+        let peer_server = RpcServer::builder()
+            .on_notify(webview_view_method::RESOLVE, move |params| {
+                let cap = cap_c.clone();
+                async move {
+                    let view_id = extract_str_field(&params, "viewId").unwrap_or_default();
+                    cap.lock().unwrap().push(view_id);
+                    Ok(())
+                }
+            })
+            .build();
+
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (runtime_conn, _t1) = Connection::open(a_r, a_w, RpcServer::builder().build());
+        let (_peer_conn, _t2) = Connection::open(b_r, b_w, peer_server);
+        runtime.install_test_handle_conn_only("alice.x", runtime_conn);
+
+        // Unknown view → benign no-op (Ok), no notify.
+        runtime
+            .resolve_view("nope.view")
+            .await
+            .expect("unknown view resolves to Ok");
+
+        runtime
+            .resolve_view("alice.x.view")
+            .await
+            .expect("resolve must succeed");
+
+        for _ in 0..50 {
+            if !captured.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let caps = captured.lock().unwrap().clone();
+        assert_eq!(caps, vec!["alice.x.view".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn resolve_view_for_owner_without_host_is_noop() {
+        // Declarative-only / not-yet-host-backed views: notify_extension
+        // returns NotActivated, which resolve_view swallows.
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        seed_view(&runtime, "alice.x.view", "alice.x");
+        runtime
+            .resolve_view("alice.x.view")
+            .await
+            .expect("resolve with no live host must be a no-op");
+    }
+
+    #[tokio::test]
+    async fn webview_view_post_message_emits_for_owner_and_rejects_others() {
+        use crate::extensions::api::webview::WebviewEvent;
+
+        // Capture WebviewEvent::Message emitted by the runtime's
+        // `webviewView/postMessage` handler (ext → view direction).
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        let manifest = alice_x_manifest_all_six();
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("alice.x", manifest.clone());
+        // The view is owned by alice.x; the handler we build is alice.x's.
+        seed_view(&runtime, "alice.x.view", "alice.x");
+
+        let events: Arc<StdMutex<Vec<WebviewEvent>>> = Arc::new(StdMutex::new(Vec::new()));
+        let cap = events.clone();
+        runtime.set_webview_emitter(Arc::new(move |ev| cap.lock().unwrap().push(ev)));
+
+        let runtime_rpc = runtime.build_per_extension_handlers("alice.x", &manifest);
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (_runtime_conn, _t1) = Connection::open(a_r, a_w, runtime_rpc);
+        let (peer_conn, _t2) = Connection::open(b_r, b_w, RpcServer::builder().build());
+
+        // Owner posts → one Message emitted, keyed by viewId.
+        peer_conn
+            .notify(
+                webview_view_method::POST_MESSAGE,
+                Value::Map(vec![
+                    (
+                        Value::String("viewId".into()),
+                        Value::String("alice.x.view".into()),
+                    ),
+                    (
+                        Value::String("payload".into()),
+                        Value::Map(vec![(
+                            Value::String("hi".into()),
+                            Value::String("view".into()),
+                        )]),
+                    ),
+                ]),
+            )
+            .await
+            .expect("notify sent");
+
+        for _ in 0..50 {
+            if !events.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let evs = events.lock().unwrap().clone();
+        match &evs[..] {
+            [WebviewEvent::Message { panel_id, payload }] => {
+                assert_eq!(panel_id, "alice.x.view");
+                assert_eq!(payload.get("hi").and_then(|v| v.as_str()), Some("view"));
+            }
+            other => panic!("expected one Message event, got {other:?}"),
+        }
+
+        // A post for a view this handler's ext does NOT own emits nothing.
+        seed_view(&runtime, "bob.y.view", "bob.y");
+        peer_conn
+            .notify(
+                webview_view_method::POST_MESSAGE,
+                Value::Map(vec![(
+                    Value::String("viewId".into()),
+                    Value::String("bob.y.view".into()),
+                )]),
+            )
+            .await
+            .expect("notify sent");
+        // Give the (rejected) notify time to be processed.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            events.lock().unwrap().len(),
+            1,
+            "cross-owner post must not emit a second Message",
         );
     }
 

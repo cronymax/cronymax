@@ -419,6 +419,23 @@ impl WebviewRegistry {
         Ok(())
     }
 
+    /// Emit a `Message` event keyed by an arbitrary frame id WITHOUT a
+    /// panel-registry lookup. Used for **operation views** contributed via
+    /// `cronymax.ui.sidebar.view`: those frames self-register in the
+    /// renderer under their `viewId` (the `?surface=panel&id=<viewId>`
+    /// query), so the C++ delivery bridge routes a `Message { panel_id:
+    /// viewId }` to them — but they are never `create`d as panels here.
+    ///
+    /// Ownership for view frames is enforced by the caller against the
+    /// [`crate::extensions::api::sidebar::SidebarViewRegistry`] before
+    /// calling this, so there is no per-panel ownership check to do.
+    pub fn deliver_to_frame(&self, frame_id: &str, payload: Value) {
+        self.emit(WebviewEvent::Message {
+            panel_id: frame_id.to_string(),
+            payload,
+        });
+    }
+
     /// Look up the owning extension of a panel — used by the cefQuery
     /// dispatch in the C++ renderer-side bridge to route iframe →
     /// extension `postMessage` to the right Node host.
@@ -768,6 +785,28 @@ mod tests {
             log.lock().unwrap().is_empty(),
             "no event on rejected delivery"
         );
+    }
+
+    #[test]
+    fn deliver_to_frame_fires_message_without_a_panel_entry() {
+        // Operation views are never `create`d as panels, but their frames
+        // self-register under the viewId in the renderer. `deliver_to_frame`
+        // must emit a `Message { panelId: viewId }` with no panels-map
+        // lookup so the C++ bridge can route it to that frame.
+        let r = WebviewRegistry::new();
+        let (log, em) = collect_emitter();
+        r.set_emitter(em);
+        assert!(r.is_empty(), "no panel should be created");
+        r.deliver_to_frame("alice.x.view", serde_json::json!({ "k": "v" }));
+        let events = log.lock().unwrap().clone();
+        match &events[..] {
+            [WebviewEvent::Message { panel_id, payload }] => {
+                assert_eq!(panel_id, "alice.x.view");
+                assert_eq!(payload.get("k").and_then(|v| v.as_str()), Some("v"));
+            }
+            other => panic!("expected one Message event, got {other:?}"),
+        }
+        assert!(r.is_empty(), "deliver_to_frame must not create a panel");
     }
 
     #[test]

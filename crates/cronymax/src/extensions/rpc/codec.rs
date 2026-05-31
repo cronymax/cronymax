@@ -118,6 +118,38 @@ pub mod webview_method {
     pub const ON_DID_DISPOSE: &str = "webview/onDidDispose";
 }
 
+/// Method names for the `cronymax.window.registerWebviewViewProvider`
+/// surface — bidirectional messaging for **platform-opened operation
+/// views** contributed via `cronymax.ui.sidebar.view` (the activity-bar
+/// rail views that open in the main content area or the right dock).
+///
+/// Unlike [`webview_method`] panels — which the extension *creates* — a
+/// view's iframe is mounted by the platform when the user clicks its rail
+/// icon. The frame self-registers in the renderer (it loads the same
+/// `?surface=panel&id=<viewId>` URL), so the C++ delivery bridge already
+/// routes inbound `Message` events to it; these methods carry the
+/// extension-side half of the round-trip.
+///
+/// **Platform → extension** (notify):
+/// * [`Self::RESOLVE`] — the view became visible; the extension's
+///   registered `WebviewViewProvider.resolveWebviewView(view)` runs.
+/// * [`Self::ON_DID_RECEIVE_MESSAGE`] — payload posted from inside the
+///   view iframe via `acquireCronymaxApi().postMessage(...)`.
+/// * [`Self::ON_DID_CHANGE_VISIBILITY`] — view shown / hidden.
+/// * [`Self::ON_DID_DISPOSE`] — the view was torn down.
+///
+/// **Extension → platform** (notify):
+/// * [`Self::POST_MESSAGE`] — extension → view iframe payload; the
+///   platform emits a `WebviewEvent::Message` keyed by `viewId` that the
+///   renderer delivers to the matching frame.
+pub mod webview_view_method {
+    pub const RESOLVE: &str = "webviewView/resolve";
+    pub const POST_MESSAGE: &str = "webviewView/postMessage";
+    pub const ON_DID_RECEIVE_MESSAGE: &str = "webviewView/onDidReceiveMessage";
+    pub const ON_DID_CHANGE_VISIBILITY: &str = "webviewView/onDidChangeVisibility";
+    pub const ON_DID_DISPOSE: &str = "webviewView/onDidDispose";
+}
+
 /// Method names for the `cronymax.agents.provider` L2 EP — both directions.
 ///
 /// **Extension → platform** (notify, called from the extension when its

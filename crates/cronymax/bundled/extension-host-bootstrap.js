@@ -438,6 +438,136 @@ function buildWebviewPanel({ id, slot, url, title, ownerExtId }) {
   return panel;
 }
 
+// ── Webview view (operation-view) provider state ────────────────────────
+//
+// `cronymax.window.registerWebviewViewProvider(viewId, provider)` is the
+// counterpart to `createWebviewPanel` for PLATFORM-OPENED views: the rail
+// view contributed via `cronymax.ui.sidebar.view` whose iframe the
+// platform mounts when the user clicks its icon. The extension registers a
+// provider; when the view is shown the platform sends `webviewView/resolve`
+// and we build a `WebviewView` handle and run `provider.resolveWebviewView`.
+//
+// Inbound (platform → ext): `webviewView/resolve` /
+// `onDidReceiveMessage` / `onDidChangeVisibility` / `onDidDispose`.
+// Outbound (ext → platform): `webviewView/postMessage` (from
+// `view.webview.postMessage`) and `sidebar/register` (on provider
+// registration, so the platform's sidebar-view registry knows the owner).
+const viewProviders = new Map(); // viewId → WebviewViewProvider
+const liveViews = new Map(); // viewId → live WebviewView impl
+
+function fireSafeListeners(set, arg, label) {
+  for (const cb of set) {
+    Promise.resolve()
+      .then(() => cb(arg))
+      .catch((err) => {
+        const msg = err?.message ? String(err.message) : String(err);
+        process.stderr.write(`[bootstrap] ${label} listener threw: ${msg}\n`);
+      });
+  }
+}
+
+function makeSubscribable(set) {
+  return (listener) => {
+    if (typeof listener !== "function") {
+      throw new TypeError("event listener must be a function");
+    }
+    set.add(listener);
+    return { dispose: () => set.delete(listener) };
+  };
+}
+
+function buildWebviewView({ viewId, visible }) {
+  const msgListeners = new Set();
+  const disposeListeners = new Set();
+  const visibilityListeners = new Set();
+  let isVisible = !!visible;
+  let disposed = false;
+  const webview = {
+    onDidReceiveMessage: makeSubscribable(msgListeners),
+    async postMessage(payload) {
+      if (disposed) {
+        throw new Error(`webview view '${viewId}' is disposed`);
+      }
+      rpcNotify("webviewView/postMessage", { viewId, payload });
+    },
+  };
+  const view = {
+    get viewId() { return viewId; },
+    get visible() { return isVisible; },
+    webview,
+    onDidDispose: makeSubscribable(disposeListeners),
+    onDidChangeVisibility: makeSubscribable(visibilityListeners),
+    _fireMessage(payload) {
+      fireSafeListeners(msgListeners, payload, "webview view");
+    },
+    _setVisible(next) {
+      const nv = !!next;
+      if (nv === isVisible) return;
+      isVisible = nv;
+      fireSafeListeners(visibilityListeners, undefined, "webview view visibility");
+    },
+    _fireDispose() {
+      if (disposed) return;
+      disposed = true;
+      fireSafeListeners(disposeListeners, undefined, "webview view dispose");
+    },
+  };
+  return view;
+}
+
+// Build (or rebuild) the live view for `viewId` and run the provider's
+// resolveWebviewView. A fresh handle per resolve mirrors VS Code, where the
+// webview is recreated each time the view is shown — our iframe reloads on
+// every open, so its listeners reset and the old handle is no longer wired.
+function resolveWebviewView(viewId, visible) {
+  const provider = viewProviders.get(viewId);
+  if (!provider) return false;
+  const prev = liveViews.get(viewId);
+  if (prev) prev._fireDispose();
+  const view = buildWebviewView({ viewId, visible });
+  liveViews.set(viewId, view);
+  Promise.resolve()
+    .then(() => provider.resolveWebviewView(view))
+    .catch((err) => {
+      const msg = err?.message ? String(err.message) : String(err);
+      process.stderr.write(`[bootstrap] resolveWebviewView('${viewId}') threw: ${msg}\n`);
+    });
+  return true;
+}
+
+registerRpcHandler("webviewView/resolve", (params) => {
+  const viewId = params?.viewId;
+  if (typeof viewId !== "string") return;
+  resolveWebviewView(viewId, params?.visible !== false);
+});
+
+registerRpcHandler("webviewView/onDidReceiveMessage", (params) => {
+  const viewId = params?.viewId;
+  if (typeof viewId !== "string") return;
+  let view = liveViews.get(viewId);
+  if (!view) {
+    // The view iframe can post before the explicit resolve notify lands
+    // (the rail's resolve request and the iframe's onload race). Resolve
+    // implicitly so the provider gets its handle, then deliver.
+    if (!resolveWebviewView(viewId, true)) return;
+    view = liveViews.get(viewId);
+  }
+  view?._fireMessage(params.payload);
+});
+
+registerRpcHandler("webviewView/onDidChangeVisibility", (params) => {
+  const view = liveViews.get(params?.viewId);
+  if (!view) return;
+  view._setVisible(!!params.visible);
+});
+
+registerRpcHandler("webviewView/onDidDispose", (params) => {
+  const view = liveViews.get(params?.viewId);
+  if (!view) return;
+  view._fireDispose();
+  liveViews.delete(params.viewId);
+});
+
 const cronymax = {
   ExtensionMode: { Production: 1, Development: 2, Test: 3 },
   window: {
@@ -481,6 +611,32 @@ const cronymax = {
       webviewPanels.set(panel.id, panel);
       subscriptions.push({ dispose: () => panel.dispose() });
       return panel;
+    },
+    // IDL: registerWebviewViewProvider(viewId, provider): Disposable.
+    // Backs the operation views contributed via `cronymax.ui.sidebar.view`.
+    // Registration sends `sidebar/register` so the platform's sidebar-view
+    // registry learns the owner (needed to route view messages); the
+    // provider is invoked when the platform sends `webviewView/resolve`.
+    registerWebviewViewProvider(viewId, provider) {
+      if (typeof viewId !== "string" || !provider || typeof provider.resolveWebviewView !== "function") {
+        throw new TypeError(
+          "registerWebviewViewProvider(viewId, provider): provider must implement resolveWebviewView",
+        );
+      }
+      viewProviders.set(viewId, provider);
+      rpcNotify("sidebar/register", { viewId });
+      const dispose = () => {
+        viewProviders.delete(viewId);
+        const live = liveViews.get(viewId);
+        if (live) {
+          live._fireDispose();
+          liveViews.delete(viewId);
+        }
+        rpcNotify("sidebar/unregister", { viewId });
+      };
+      const sub = { dispose };
+      subscriptions.push(sub);
+      return sub;
     },
   },
   commands: {

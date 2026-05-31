@@ -205,6 +205,14 @@ export function App() {
         title: view.title,
         target: view.target,
       });
+      // The view's iframe is now mounted (it self-registers its frame by
+      // viewId in the renderer). Ask the owning extension to resolve the
+      // view so its WebviewViewProvider can post into it. No-op on the Rust
+      // side for views without a registered provider (declarative-only).
+      // The viewId is the contributed id (`buildViewUrl` puts it in `?id=`).
+      void runtimeSend("extension.view.resolve", { view_id: view.viewId }).catch((e) =>
+        console.warn("extension.view.resolve failed", e),
+      );
     } catch (e) {
       console.warn("open_extension_view failed", e);
     }

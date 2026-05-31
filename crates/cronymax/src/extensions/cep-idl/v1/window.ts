@@ -80,6 +80,47 @@ export interface WebviewPanel extends Disposable {
   readonly onDidDispose: Event<void>;
 }
 
+// ─── webview view (operation-view provider) ──────────────────────────────────
+//
+// `createWebviewPanel` is for panels the extension *opens*. A webview VIEW is
+// the inverse: a `cronymax.ui.sidebar.view` contribution the platform mounts
+// (activity-bar rail → main content area or right dock) and hands to the
+// extension's registered provider via `resolveWebviewView`. The view's iframe
+// loads the same `cronymax-webview://<ext>/<entry>` surface, so messaging is
+// identical to a panel — only the lifecycle differs (platform-driven open,
+// not extension-driven create).
+//
+// Added after the v1 IDL freeze, before v1 ships, to complete bidirectional
+// messaging for rail operation views (the panel surface already round-trips).
+
+export interface Webview {
+  /** Send a message into the view's iframe. Resolves on platform receipt. */
+  postMessage(payload: unknown): Promise<void>;
+  /** Fired for each `acquireCronymaxApi().postMessage(...)` from the iframe. */
+  readonly onDidReceiveMessage: Event<unknown>;
+}
+
+export interface WebviewView {
+  /** The contributed view id (`publisher.name.viewId`). */
+  readonly viewId: string;
+  /** Messaging surface for the view's iframe. */
+  readonly webview: Webview;
+  /** Whether the view is currently visible. */
+  readonly visible: boolean;
+  readonly onDidChangeVisibility: Event<void>;
+  readonly onDidDispose: Event<void>;
+}
+
+export interface WebviewViewProvider {
+  /**
+   * Called when the view becomes visible. Wire up `webviewView.webview`
+   * messaging here and push any initial state. May be called again if the
+   * view is re-shown — the webview is recreated each time, mirroring VS
+   * Code, so re-attach listeners on every call.
+   */
+  resolveWebviewView(webviewView: WebviewView): void | Promise<void>;
+}
+
 // ─── window namespace ──────────────────────────────────────────────────────
 
 export interface Window {
@@ -106,6 +147,14 @@ export interface Window {
   ): Promise<QuickPickItem | QuickPickItem[] | undefined>;
 
   createWebviewPanel(options: WebviewPanelOptions): Promise<WebviewPanel>;
+
+  /**
+   * Register a provider for an operation view contributed via
+   * `cronymax.ui.sidebar.view`. The provider's `resolveWebviewView` runs
+   * when the platform mounts the view (rail icon click). Returns a
+   * Disposable that unregisters the provider.
+   */
+  registerWebviewViewProvider(viewId: string, provider: WebviewViewProvider): Disposable;
 
   /** Open a config page contributed via `cronymax.config.page`. */
   openConfigPage(pageId: string): Promise<void>;

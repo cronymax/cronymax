@@ -309,6 +309,9 @@ impl Handler for RuntimeHandler {
             req @ ControlRequest::ExtensionDeactivate { .. } => {
                 self.handle_extension_deactivate(req).await
             }
+            req @ ControlRequest::ExtensionViewResolve { .. } => {
+                self.handle_extension_view_resolve(req).await
+            }
             req @ ControlRequest::FlowSaveYaml { .. } => self.handle_flow_save_yaml(req).await,
             req @ ControlRequest::FlowSaveLayout { .. } => self.handle_flow_save_layout(req).await,
             req @ ControlRequest::BlackboardInject { .. } => {

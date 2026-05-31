@@ -156,9 +156,12 @@ export type {
   MessageOptions,
   QuickPickItem,
   QuickPickOptions,
+  Webview,
   WebviewPanel,
   WebviewPanelOptions,
   WebviewSlot,
+  WebviewView,
+  WebviewViewProvider,
   Window,
 } from "./window";
 export type {

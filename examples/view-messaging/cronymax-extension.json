@@ -1,0 +1,24 @@
+{
+  "id": "cronymax-examples.view-messaging",
+  "name": "View Messaging",
+  "version": "0.1.0",
+  "publisher": "cronymax-examples",
+  "engines": { "cronymax": "^1.0" },
+  "main": "./dist/main.js",
+  "description": "Bidirectional messaging between the extension host and a platform-opened operation view via window.registerWebviewViewProvider.",
+  "activationEvents": ["*"],
+  "contributes": {
+    "cronymax.ui.sidebar.view": [
+      {
+        "id": "cronymax-examples.view-messaging.panel",
+        "title": "View Messaging",
+        "icon": "icon.svg",
+        "entry": "view/index.html",
+        "target": "main"
+      }
+    ]
+  },
+  "capabilities": {
+    "extension-points": ["cronymax.ui.sidebar.view"]
+  }
+}
