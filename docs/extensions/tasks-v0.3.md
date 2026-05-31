@@ -1296,3 +1296,21 @@ ext→视图 的投递在 **C++ 层早已通**:视图 iframe 用 `?surface=panel
 ### 遗留
 
 - `CaptureLastChildNSView` 取「最后一个子窗口」给 overlay 上色——本 overlay 在 `BuildOverlaySlots` 最后建、deferred 一拍后捕获,正常是它;若同拍有别的 overlay 抢到「最后」会串台(低概率,真出问题改成存 controller 句柄取 nsview)。
+
+---
+
+## 进展快照(2026-05-31 · 扩展操作视图 UI + 生命周期收尾)
+
+本轮(activity-bar rail 之后)把「扩展操作视图」这一层的 UI + 生命周期收尾了。逐项见上面各节。
+
+| 模块 | 状态 | 提交 |
+|---|---|---|
+| 活动栏 Rail + 操作视图(target `main` / `right` dock) | ✅ | `f84a027`…`cc9fb4a` |
+| 视图视觉打磨(自动跟随圆角卡 / 统一内容表面色 / 图标随主题着色) | ✅ | `e759e3b` / `b338058` |
+| WebviewViewProvider 视图双向消息(resolve / postMessage / onDidReceiveMessage) | ✅ | `aa0df75` |
+| `onDidChangeVisibility` + `onDidDispose` 生命周期(open 集合差分驱动) | ✅ | `5f1113d` |
+| dock 关闭按钮(浮层 × = 收起/hide,非 dispose) | ✅ DRI 眼检确认 | `d7b277d` |
+
+**Phase 完成度(对照「任务总览」):** P0–P6 + P6.5 + P8 主体 ✅;P4.5 / P5 主体 ✅(各有推后小项);**操作视图 UI 层(rail + webview surfaces + 视图生命周期)本轮收尾 ✅**。未启动 / 待做:P7 `bytedance.coco` dogfood(卡外部 binary)、P9 扩展管理 UI(Settings 面板 / CLI 打包 / 模板仓)、P10 收尾 + Alpha。
+
+仍记在册的小遗留:`WebviewView.show()` / 主动聚焦(IDL v1 未含);visibility 的窗口失焦细分;主区单 view 关闭入口(产品决定先只给 dock)。
