@@ -50,7 +50,9 @@ import {
   b64ToUtf8,
   ContributionKind,
   contributionRegistry,
+  extensionRegistry,
   flowRun,
+  type InstalledExtension,
   terminal as rt_terminal,
 } from "@/shells/runtime";
 import { AgentThreadCard } from "./AgentThreadCard";
@@ -80,7 +82,6 @@ import {
   loadFlowsList,
   loadReasoningEffort,
   loadSelectedModel,
-  loadSelectedModelProvider,
   persistAnthropicEffort,
   persistChatData,
   persistReasoningEffort,
@@ -957,6 +958,11 @@ export function App() {
    * group (triggering per-run provider override). */
   const [activeProviderId, setActiveProviderId] = useState<string>("");
   const [activeProviderKind, setActiveProviderKind] = useState<string>("");
+  /** True once the LLM provider model list has finished loading (resolve OR
+   * reject). The selection-reconcile effect waits on this so it never judges a
+   * valid LLM model "unavailable" during the brief startup window before the
+   * provider groups populate. */
+  const [llmGroupsLoaded, setLlmGroupsLoaded] = useState(false);
   /** Controls the model Combobox popover */
   const [modelComboOpen, setModelComboOpen] = useState(false);
   /** Prompt pills attached to the current message (like VS Code slash commands). */
@@ -1095,7 +1101,8 @@ export function App() {
         // groups from the picker.
         setModelGroups((prev) => [...groups, ...prev.filter((g) => g.kind === "extension")]);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => setLlmGroupsLoaded(true));
   }, []);
 
   // Selection tooltip — freeze when comment input is focused so it doesn't
@@ -1258,38 +1265,83 @@ export function App() {
     };
   }, [state.agents]);
 
-  // Reset the model selection when the extension provider backing the
-  // currently-selected model leaves the agent catalog (disabled / uninstalled
-  // — live OR after a restart). The picker trigger renders `state.model`
-  // verbatim, so without this a gone extension's model (e.g. echo-agent's
-  // "echo-permission") lingers as the displayed selection.
+  // Drop a model selection that no longer maps to any available option, so a
+  // disabled/uninstalled extension's model (e.g. echo-agent's "echo-permission")
+  // doesn't linger as a ghost selection the dropdown can't even show.
   //
-  // Keys on the persisted provider's `agent_id` and the agent catalog
-  // (`state.agents`, the same source that reconciles on
-  // `extensions/contributions`) rather than the async-`enumerate`d
-  // `modelGroups`, and fires only on a genuine present→absent transition. The
-  // `null` first-observation never resets, so the startup-activation window
-  // (an enabled provider not spawned yet) can't clobber a valid restored
-  // selection. Mirrors the `agentId` reset in `setAgents`.
-  const selectedModelRef = useRef(state.model);
-  selectedModelRef.current = state.model;
-  const providerPresentRef = useRef<boolean | null>(null);
+  // The decisive signal is `state.model` itself, NOT the persisted provider
+  // metadata: that selection is restored per-chat (`loadChat`) as a bare model
+  // string, often with no `agentId` and no global `chat_model_provider` to
+  // identify it as extension-backed. So we judge availability directly — is
+  // `state.model` offered by any currently-loaded provider group? `modelGroups`
+  // already merges LLM groups with every *active* extension provider's
+  // enumerated models, so "not in any group" == "no available provider offers
+  // it". Keying on `modelGroups` (not `state.agents`) also dodges the window
+  // where a provider is active but its models aren't enumerated yet — the
+  // effect only re-judges once `modelGroups` reflects the new catalog.
+  //
+  // Two guards prevent clobbering a *valid* selection that's merely still
+  // loading:
+  //   • `llmGroupsLoaded` — wait for the LLM provider list before judging, or a
+  //     real LLM model reads as "unavailable" during the startup HTTP fetch.
+  //   • registry "pending" check — an enabled extension whose host is still
+  //     spawning will contribute its models shortly; don't clear those.
+  //
+  // When we do clear, scrub all three homes of the selection or it returns:
+  // live `state.model`/`state.agentId`, the global last-pick, and the active
+  // chat's saved copy (the auto-save effect only fires on a run boundary, so a
+  // model-only change never reaches the per-chat copy on its own).
   useEffect(() => {
-    const prov = loadSelectedModelProvider();
-    const agentId = prov && prov.kind === "extension" ? prov.agent_id : null;
-    if (!agentId) {
-      providerPresentRef.current = null;
-      return;
-    }
-    const present = state.agents.some((a) => a.name === agentId);
-    const wasPresent = providerPresentRef.current;
-    providerPresentRef.current = present;
-    if (wasPresent === true && !present && selectedModelRef.current) {
+    if (!llmGroupsLoaded) return; // provider groups not loaded yet — can't judge
+    const model = state.model;
+    if (!model) return; // "provider default" — nothing to reconcile
+    if (modelGroups.some((g) => g.models.includes(model))) return; // still offered
+
+    let cancelled = false;
+    void (async () => {
+      let extensions: InstalledExtension[];
+      try {
+        ({ extensions } = await extensionRegistry.list());
+      } catch {
+        return; // runtime not ready; a later refresh re-runs this
+      }
+      if (cancelled) return;
+      // An enabled-but-not-yet-active provider will contribute models once it
+      // finishes spawning — don't clear a selection it might still offer.
+      const providerPending = extensions.some(
+        (e) => e.enabled && !e.active && (e.contributes?.agent_providers ?? 0) > 0,
+      );
+      if (providerPending) return;
+
+      // Settled, and no loaded/forthcoming provider offers this model → drop it.
+      const agentGone = state.agentId !== "" && !state.agents.some((a) => a.name === state.agentId);
       dispatch({ type: "setModel", model: "" });
       persistSelectedModel("");
       persistSelectedModelProvider(null);
-    }
-  }, [state.agents]);
+      if (agentGone) dispatch({ type: "setAgentId", agentId: "" });
+      const chatId = state.activeChatId;
+      if (chatId) {
+        try {
+          const { data } = loadChatData(chatId);
+          persistChatData(chatId, {
+            ...data,
+            model: "",
+            agentId: agentGone ? undefined : data.agentId,
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `state.agents` / `state.agentId` are read for the agent-scrub but
+    // intentionally NOT deps: re-judging must wait for `modelGroups` to reflect
+    // the catalog, else an active-but-not-yet-enumerated provider's model would
+    // be cleared in the gap between `state.agents` updating and enumeration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.model, modelGroups, llmGroupsLoaded, state.activeChatId]);
 
   // ── ensure terminal session for this chat tab ─────────────────────────
   const ensureChatTerminal = async (currentTid: string | null, chatId: string) => {
