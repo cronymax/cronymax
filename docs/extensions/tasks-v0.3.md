@@ -1400,3 +1400,31 @@ enable/disable 之前俩都是同款 outline 按钮,无区分。改:禁用行描
 - B 的失败信息目前是 `session.prompt RPC failed: …`(连接断开),不是「agent 已禁用」的人话 —— 够用,要更友好需把停用原因透传进 dispatcher
 - 安装去重:同 id 已装时 `install` 原子失败报「已安装」,无 upgrade / reinstall 流程(v1 先这样)
 - `.cmx` 文件选择器 + 包格式仅 macOS 选择器侧验证;Windows `realpath`/picker 兜底留 P10
+
+---
+
+## P9-T04 dogfood 修复:chat model 选择残留(2026-05-31,`e3fa975`)
+
+P9-T04 teardown 的「Category 1 列表型 reconcile」当时只覆盖了 **agent picker** 与 **content-renderer**。dogfood 暴露出**第三处没覆盖**:chat 顶部的 **model 选择器**。禁用(或卸载)某 agent provider 扩展后,它贡献的 model(echo-agent 的 `echo-permission`)仍停在选择器上不回退 `provider default` —— 重启后尤其明显:下拉列表已没有该项,但 trigger 还显示它。
+
+### 为什么前几版没修中(三次)
+
+靠**推理**而非**实证**,连错两次。最后直接读用户机器上的持久化(CEF `Local Storage` leveldb)+ 临时面包屑,才定位真因:
+
+- model 选择被**每个 chat 各存一份**(`loadChat` 恢复成一个**裸 model 字符串**),通常**不带 `agentId`、也没有全局 `chat_model_provider` 元数据**来标识它是扩展模型。
+- 而前几版 reconcile 都在靠那份元数据(`loadSelectedModelProvider()`)判断「这是不是扩展模型」—— 它已被早先一次半吊子清理删成 `null`,所以**第一步就 bail**,永远清不掉。
+- 且自动保存只在 run 边界(`state.running`)触发,光改 model 不写盘 → 即便清了 live/全局,**per-chat 那份**仍会在下次 `loadChat` 把它带回来。
+
+### 最终修法(`web/src/panels/chat/App.tsx`,纯 web)
+
+判定唯一可靠信号:**`state.model` 是否还出现在当前可选的 `modelGroups` 里**(`modelGroups` 已合并 LLM 组 + 每个**活跃**扩展 provider enumerate 出的模型)。不在 → 幽灵选择 → 清。**三处一起清**:live `state.model`/`agentId`、全局 last-pick、**当前 chat 存的那份**。两道防误清闸:① `llmGroupsLoaded`(LLM 列表没加载完不判,否则启动 HTTP 拉取窗口里真 LLM 模型会被误判 unavailable);② registry「pending」检查(enabled 但 host 还在 spawn 的扩展马上会贡献模型,不清)。依赖键用 `modelGroups`(非 `state.agents`),避开「provider 已 active 但模型还没 enumerate」的空窗。
+
+### 验证
+
+- 临时面包屑写进 localStorage、从 leveldb 读回,确认 reset 路径真跑到(`reset:true`、`providerPending:false`、echo `enabled:false`);openai provider(42 模型)无误伤。**DRI 肉眼确认**:重启后该 chat 显示「provider default」。
+- tsc 0 错;biome 干净(仅 1840 行祖传空块 warning,无关);`cronymax_web_sync` 同步进 .app;诊断代码已全部移除后再提交。
+
+### 教训
+
+- **三次失败都因为在猜**。涉及「持久化 + 多处存储 + 启动时序」的 bug,直接读设备上的真实状态(leveldb)+ 落一个可回读的面包屑,比反复推理快得多也可靠得多。
+- teardown 的「列表型 reconcile」清单要把**所有**呈现「当前选择」的 UI 都数全:agent picker / content-renderer / **model picker**(本次补)。model picker 比另两个更坑,因为它的选择**额外存在 per-chat 数据里**,清 live + 全局不够。
