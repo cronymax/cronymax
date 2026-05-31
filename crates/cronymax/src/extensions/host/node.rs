@@ -37,6 +37,7 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
 
 use crate::extensions::error::{ExtensionError, ExtensionResult};
+use crate::extensions::logging::LogWriter;
 use crate::extensions::rpc::codec::method;
 use crate::extensions::rpc::{Connection, RpcServer};
 
@@ -69,6 +70,14 @@ pub struct SpawnConfig {
     /// Ping/pong interval. Set to `None` to disable health checks
     /// (useful in tests for mock binaries that don't speak `$/ping`).
     pub ping_interval: Option<Duration>,
+    /// Log sink for the child's stdout (`output.log` — extension `console.log`
+    /// fallback). `None` drops the stream (tests / no log manager). Attached by
+    /// [`crate::extensions::runtime::ExtensionRuntime`] at activation from the
+    /// session [`crate::extensions::logging::LogManager`].
+    pub stdout_log: Option<Arc<LogWriter>>,
+    /// Log sink for the child's stderr (`host.log` — Node warnings +
+    /// `console.error` + uncaught stacks). `None` drops the stream.
+    pub stderr_log: Option<Arc<LogWriter>>,
 }
 
 impl SpawnConfig {
@@ -180,14 +189,15 @@ impl NodeHost {
         let (reader, writer) = stream.into_split();
         let (conn, rpc_task) = Connection::open(reader, writer, handlers);
 
-        // Wire stdout/stderr drains so the child's process output isn't
-        // lost. In production these get routed to the log writers
-        // (P2-T11). For now, just consume them so the pipes don't fill.
+        // Wire stdout/stderr drains so the child's process output isn't lost:
+        // append to the per-extension `output.log` / `host.log` writers when a
+        // sink is attached (production, via the session LogManager), else just
+        // consume the bytes so the pipes don't fill (tests / no log manager).
         if let Some(stdout) = child.stdout.take() {
-            tokio::spawn(drain_pipe(stdout, "stdout"));
+            tokio::spawn(drain_pipe(stdout, cfg.stdout_log.clone()));
         }
         if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(drain_pipe(stderr, "stderr"));
+            tokio::spawn(drain_pipe(stderr, cfg.stderr_log.clone()));
         }
 
         let state = Arc::new(HostState {
@@ -340,7 +350,7 @@ fn unix_socketpair() -> ExtensionResult<(i32, i32)> {
     Ok((host_fd, child_fd))
 }
 
-async fn drain_pipe<R>(mut reader: R, label: &'static str)
+async fn drain_pipe<R>(mut reader: R, sink: Option<Arc<LogWriter>>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -349,10 +359,16 @@ where
     loop {
         match reader.read(&mut buf).await {
             Ok(0) | Err(_) => break,
-            Ok(_n) => {
-                // In production, write into the LogWriter (P2-T11). For
-                // skeleton testing, drop the bytes.
-                let _ = label;
+            Ok(n) => {
+                // Append raw bytes verbatim (the stream is plain text, not
+                // parsed — spec §2.1/§2.2). A write error (e.g. disk full)
+                // shouldn't kill the drain, or the pipe would back up and stall
+                // the child; log once and keep consuming.
+                if let Some(w) = sink.as_ref() {
+                    if let Err(e) = w.write_bytes(&buf[..n]) {
+                        tracing::warn!(error = %e, path = %w.path().display(), "extension log write failed");
+                    }
+                }
             }
         }
     }
@@ -416,6 +432,8 @@ mod tests {
             manifest_path: manifest,
             max_restarts: 0,
             ping_interval: None, // no health check — /bin/true doesn't speak RPC
+            stdout_log: None,
+            stderr_log: None,
         };
         let host = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await
@@ -446,6 +464,8 @@ mod tests {
             manifest_path: manifest,
             max_restarts: 0,
             ping_interval: None,
+            stdout_log: None,
+            stderr_log: None,
         };
         let host = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await
@@ -476,6 +496,8 @@ mod tests {
             manifest_path: manifest,
             max_restarts: 0,
             ping_interval: None,
+            stdout_log: None,
+            stderr_log: None,
         };
         let host = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await
@@ -499,6 +521,8 @@ mod tests {
             manifest_path: manifest,
             max_restarts: 0,
             ping_interval: None,
+            stdout_log: None,
+            stderr_log: None,
         };
         let host = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await
@@ -526,6 +550,8 @@ mod tests {
             manifest_path: manifest,
             max_restarts: 0,
             ping_interval: None,
+            stdout_log: None,
+            stderr_log: None,
         };
         let err = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await
@@ -556,6 +582,8 @@ mod tests {
             manifest_path: manifest,
             max_restarts: 0,
             ping_interval: None,
+            stdout_log: None,
+            stderr_log: None,
         };
         let host = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await

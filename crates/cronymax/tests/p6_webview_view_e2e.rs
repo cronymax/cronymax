@@ -173,6 +173,8 @@ async fn webview_view_provider_round_trips_through_real_host() {
             manifest_path: manifest_path_clone.clone(),
             max_restarts: 0,
             ping_interval: None,
+            stdout_log: None,
+            stderr_log: None,
         }),
     )
     .await

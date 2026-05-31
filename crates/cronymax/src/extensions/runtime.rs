@@ -100,6 +100,7 @@ use crate::extensions::error::{ExtensionError, ExtensionResult};
 use crate::extensions::events::PlatformTopic;
 use crate::extensions::events::{EventBus, EventPayload, SubscriptionGuard};
 use crate::extensions::host::node::{NodeHost, SpawnConfig};
+use crate::extensions::logging::{LogChannelInfo, LogKind, LogManager, LogReadResult};
 use crate::extensions::manifest::{AgentProviderContribution, Manifest, SidebarViewContribution};
 use crate::extensions::registry::ExtensionRegistry;
 use crate::extensions::rpc::codec::{
@@ -225,6 +226,11 @@ struct RuntimeState {
     /// path to spawn against). Tests that drive activation directly via
     /// [`ExtensionRuntime::activate`] don't need it.
     spawn_config_builder: RwLock<Option<SpawnConfigBuilder>>,
+    /// Per-session log manager (`~/.cronymax/logs/<session>/`). `None` in
+    /// tests / headless paths. When set, `activate` attaches each host's
+    /// stdout/stderr writers and the `log/channel` RPC handler appends NDJSON
+    /// to `channels/<name>.log`.
+    log_manager: RwLock<Option<Arc<LogManager>>>,
 }
 
 impl std::fmt::Debug for RuntimeState {
@@ -247,6 +253,7 @@ impl std::fmt::Debug for RuntimeState {
             .field("renderer_event_emitter", &"<fn>")
             .field("contributions_changed_emitter", &"<fn>")
             .field("spawn_config_builder", &"<fn>")
+            .field("log_manager", &self.log_manager)
             .finish()
     }
 }
@@ -269,6 +276,7 @@ impl ExtensionRuntime {
                 renderer_event_emitter: RwLock::new(Arc::new(|_| {})),
                 contributions_changed_emitter: RwLock::new(Arc::new(|| {})),
                 spawn_config_builder: RwLock::new(None),
+                log_manager: RwLock::new(None),
             }),
         }
     }
@@ -336,6 +344,55 @@ impl ExtensionRuntime {
     /// re-deriving bundled-Node / bootstrap / storage paths.
     pub fn set_spawn_config_builder(&self, builder: SpawnConfigBuilder) {
         *self.state.spawn_config_builder.write() = Some(builder);
+    }
+
+    /// Install the per-session [`LogManager`]. Called once at composition root.
+    /// Enables host stdout/stderr persistence (attached in [`Self::activate`])
+    /// and the `log/channel` RPC sink. Unset runtimes (tests) silently skip
+    /// all log persistence.
+    pub fn set_log_manager(&self, manager: Arc<LogManager>) {
+        *self.state.log_manager.write() = Some(manager);
+    }
+
+    /// The session log manager, if installed. Used by the control-protocol
+    /// handlers that enumerate / read extension log channels.
+    pub fn log_manager(&self) -> Option<Arc<LogManager>> {
+        self.state.log_manager.read().clone()
+    }
+
+    /// Log channels available for `ext_id` (settings "Logs" tab dropdown).
+    /// Empty when no log manager is installed.
+    pub fn log_channels(&self, ext_id: &str) -> Vec<LogChannelInfo> {
+        self.log_manager()
+            .map(|lm| lm.channels(ext_id))
+            .unwrap_or_default()
+    }
+
+    /// Read one channel's log (tail-bounded, optionally time-filtered). Empty
+    /// when no log manager is installed.
+    pub fn read_log(
+        &self,
+        ext_id: &str,
+        channel_id: &str,
+        since_ms: Option<u64>,
+        limit: Option<usize>,
+    ) -> LogReadResult {
+        match self.log_manager() {
+            Some(lm) => lm.read_channel(ext_id, channel_id, since_ms, limit),
+            None => LogReadResult {
+                entries: Vec::new(),
+                structured: !matches!(channel_id, "stdout" | "stderr"),
+                truncated: false,
+            },
+        }
+    }
+
+    /// Truncate one channel's log file. No-op without a log manager.
+    pub fn clear_log(&self, ext_id: &str, channel_id: &str) -> ExtensionResult<()> {
+        match self.log_manager() {
+            Some(lm) => lm.clear_channel(ext_id, channel_id),
+            None => Ok(()),
+        }
     }
 
     /// L1.5 platform-event bus. Chat / tool dispatch sites call
@@ -583,8 +640,24 @@ impl ExtensionRuntime {
             // 2. Build the per-extension RPC handler table.
             let rpc = self.build_rpc_server(ext_id.to_string(), manifest.clone());
 
-            // 3. Spawn the host.
-            let cfg = cfg_builder(&manifest, ext_dir);
+            // 3. Spawn the host. Attach the per-extension stdout/stderr log
+            //    sinks from the session LogManager (if installed) so the
+            //    child's `console.log` (output.log) and stderr / Node warnings
+            //    (host.log) are persisted. A writer-open failure is non-fatal:
+            //    log loss must never block activation.
+            let mut cfg = cfg_builder(&manifest, ext_dir);
+            if let Some(lm) = self.log_manager() {
+                match lm.writer(LogKind::ExtensionStdout(ext_id)) {
+                    Ok(w) => cfg.stdout_log = Some(w),
+                    Err(e) => {
+                        tracing::warn!(ext_id = %ext_id, error = %e, "open output.log failed")
+                    }
+                }
+                match lm.writer(LogKind::ExtensionStderr(ext_id)) {
+                    Ok(w) => cfg.stderr_log = Some(w),
+                    Err(e) => tracing::warn!(ext_id = %ext_id, error = %e, "open host.log failed"),
+                }
+            }
             let host = match NodeHost::spawn(cfg, rpc).await {
                 Ok(h) => h,
                 Err(e) => {
@@ -1380,6 +1453,64 @@ impl ExtensionRuntime {
             });
         }
 
+        // ── log/channel (notify) + log/channelClear (request) ──────────
+        // `createOutputChannel(name)` writes route here. The notify appends
+        // one NDJSON record per line to `channels/<id>.log`; the request
+        // truncates that file (`OutputChannel.clear()`). Both are silent
+        // no-ops when no session LogManager is installed (tests / headless).
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.on_notify(method::LOG_CHANNEL, move |params| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let json = rmpv_to_json(&params);
+                    let obj = json.as_object().ok_or_else(|| {
+                        ExtensionError::Rpc(format!("log/channel from `{ext_id}` is not an object"))
+                    })?;
+                    let channel = obj
+                        .get("channel")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("output");
+                    let level = obj.get("level").and_then(|v| v.as_str()).unwrap_or("info");
+                    let message = obj.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    if let Some(lm) = state.log_manager.read().clone() {
+                        let writer = lm.writer(LogKind::ExtensionChannel {
+                            ext_id: &ext_id,
+                            channel,
+                        })?;
+                        let record = serde_json::json!({
+                            "t": now_millis(),
+                            "level": level,
+                            "msg": message,
+                        });
+                        writer.write_line(&record.to_string())?;
+                    }
+                    Ok(())
+                }
+            });
+        }
+        {
+            let state = state.clone();
+            let ext_id_c = ext_id.clone();
+            builder = builder.handle(method::LOG_CHANNEL_CLEAR, move |params, _tok| {
+                let state = state.clone();
+                let ext_id = ext_id_c.clone();
+                async move {
+                    let channel = extract_str_field(&params, "channel")?;
+                    if let Some(lm) = state.log_manager.read().clone() {
+                        let writer = lm.writer(LogKind::ExtensionChannel {
+                            ext_id: &ext_id,
+                            channel: &channel,
+                        })?;
+                        writer.truncate()?;
+                    }
+                    Ok(Value::Nil)
+                }
+            });
+        }
+
         builder.build()
     }
 
@@ -1730,6 +1861,15 @@ fn lookup_field(params: &Value, field: &str) -> Option<Value> {
         }
     }
     None
+}
+
+/// Wall-clock milliseconds since the Unix epoch, for the `t` field of NDJSON
+/// channel-log records. Saturates to 0 if the clock is before the epoch.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Extract a string field from a notify params payload. Accepts either

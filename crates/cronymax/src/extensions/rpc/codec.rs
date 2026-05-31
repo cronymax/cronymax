@@ -67,6 +67,9 @@ pub mod method {
     pub const EVENTS_EMIT: &str = "events/emit";
     pub const LOG_CONSOLE: &str = "log/console";
     pub const LOG_CHANNEL: &str = "log/channel";
+    /// Extension → platform **request**, truncating the named output
+    /// channel's `channels/<id>.log` file. Issued by `OutputChannel.clear()`.
+    pub const LOG_CHANNEL_CLEAR: &str = "log/channelClear";
     pub const PING: &str = "$/ping";
     pub const READY: &str = "$/ready";
     pub const AUDIT: &str = "audit";

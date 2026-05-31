@@ -152,6 +152,8 @@ async fn bootstrap_emits_ready_notify_then_activates() {
         manifest_path: manifest,
         max_restarts: 0,
         ping_interval: None,
+        stdout_log: None,
+        stderr_log: None,
     };
 
     let host = match NodeHost::spawn(cfg, server).await {
@@ -249,6 +251,8 @@ async fn workspace_folders_array_reaches_extension() {
         manifest_path: manifest,
         max_restarts: 0,
         ping_interval: None,
+        stdout_log: None,
+        stderr_log: None,
     };
 
     let host = NodeHost::spawn(cfg, server).await.unwrap();
@@ -335,6 +339,8 @@ async fn no_workspace_open_yields_empty_array_not_null() {
         manifest_path: manifest,
         max_restarts: 0,
         ping_interval: None,
+        stdout_log: None,
+        stderr_log: None,
     };
 
     let host = NodeHost::spawn(cfg, server).await.unwrap();

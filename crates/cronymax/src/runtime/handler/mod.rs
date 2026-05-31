@@ -328,6 +328,15 @@ impl Handler for RuntimeHandler {
             req @ ControlRequest::ExtensionSetEnabled { .. } => {
                 self.handle_extension_set_enabled(req).await
             }
+            req @ ControlRequest::ExtensionLogChannels { .. } => {
+                self.handle_extension_log_channels(req).await
+            }
+            req @ ControlRequest::ExtensionLogRead { .. } => {
+                self.handle_extension_log_read(req).await
+            }
+            req @ ControlRequest::ExtensionLogClear { .. } => {
+                self.handle_extension_log_clear(req).await
+            }
             req @ ControlRequest::FlowSaveYaml { .. } => self.handle_flow_save_yaml(req).await,
             req @ ControlRequest::FlowSaveLayout { .. } => self.handle_flow_save_layout(req).await,
             req @ ControlRequest::BlackboardInject { .. } => {

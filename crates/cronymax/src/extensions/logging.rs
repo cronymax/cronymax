@@ -25,6 +25,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
+
 use super::error::{ExtensionError, ExtensionResult};
 
 /// Defaults match spec §3 of `extension-logs.md`.
@@ -70,6 +72,46 @@ pub enum LogKind<'a> {
     /// `~/.cronymax/logs/<session>/extensions/<id>/channels/<channel>.log`
     ExtensionChannel { ext_id: &'a str, channel: &'a str },
 }
+
+/// One selectable log channel for the settings "Logs" tab dropdown.
+/// `stdout` / `stderr` are the always-present `console.*` fallbacks; the rest
+/// are `createOutputChannel` channels discovered on disk.
+#[derive(Debug, Clone, Serialize)]
+pub struct LogChannelInfo {
+    /// Stable id passed back to [`LogManager::read_channel`] (`stdout`,
+    /// `stderr`, or a channel file stem).
+    pub id: String,
+    /// Human label for the dropdown.
+    pub label: String,
+    /// `"stdout" | "stderr" | "channel"`.
+    pub kind: String,
+}
+
+/// One rendered log line. `t` / `level` are populated only for structured
+/// (NDJSON channel) logs; raw stdout/stderr lines carry just `text`.
+#[derive(Debug, Clone, Serialize)]
+pub struct LogEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub t: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    pub text: String,
+}
+
+/// Result of reading one channel: the (tail-bounded, optionally time-filtered)
+/// entries, whether the source is structured NDJSON, and whether older lines
+/// were dropped by the `limit`.
+#[derive(Debug, Clone, Serialize)]
+pub struct LogReadResult {
+    pub entries: Vec<LogEntry>,
+    pub structured: bool,
+    pub truncated: bool,
+}
+
+/// Hard cap on lines returned by a single [`LogManager::read_channel`] so a
+/// runaway log can't blow the control-channel payload. The UI tails; M1 adds
+/// paging if needed.
+const READ_LINE_CAP: usize = 5000;
 
 impl LogManager {
     /// Open (or fail loudly) a new session under `root` (e.g.
@@ -152,6 +194,154 @@ impl LogManager {
                 .join(format!("{}.log", sanitize_channel_name(channel))),
         }
     }
+
+    /// On-disk path for a channel id as exposed to the UI (`stdout` / `stderr`
+    /// map to the console fallbacks; any other id is a `createOutputChannel`
+    /// file). The id is sanitised so a malicious value can't escape the
+    /// channels dir.
+    fn channel_file(&self, ext_id: &str, channel_id: &str) -> PathBuf {
+        match channel_id {
+            "stdout" => self.ext_dir(ext_id).join("output.log"),
+            "stderr" => self.ext_dir(ext_id).join("host.log"),
+            other => self
+                .ext_dir(ext_id)
+                .join("channels")
+                .join(format!("{}.log", sanitize_channel_name(other))),
+        }
+    }
+
+    /// Enumerate the log channels available for `ext_id`: the always-present
+    /// `stdout` / `stderr` console fallbacks, then each `createOutputChannel`
+    /// file found under `channels/` (live `.log` only; rotated `.log.N` are
+    /// folded into their base). Sorted by label for a stable dropdown.
+    pub fn channels(&self, ext_id: &str) -> Vec<LogChannelInfo> {
+        let mut out = vec![
+            LogChannelInfo {
+                id: "stdout".into(),
+                label: "stdout (console.log)".into(),
+                kind: "stdout".into(),
+            },
+            LogChannelInfo {
+                id: "stderr".into(),
+                label: "stderr (console.error)".into(),
+                kind: "stderr".into(),
+            },
+        ];
+        let dir = self.ext_dir(ext_id).join("channels");
+        if let Ok(entries) = fs::read_dir(&dir) {
+            let mut channels: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    // Live channel files only: `<id>.log`, not rotated `<id>.log.1`.
+                    name.strip_suffix(".log").map(|s| s.to_string())
+                })
+                .collect();
+            channels.sort();
+            channels.dedup();
+            for id in channels {
+                out.push(LogChannelInfo {
+                    label: id.clone(),
+                    id,
+                    kind: "channel".into(),
+                });
+            }
+        }
+        out
+    }
+
+    /// Read one channel's live log file, tail-bounded to [`READ_LINE_CAP`] (or
+    /// a smaller `limit`). `stdout`/`stderr` are returned as raw text lines;
+    /// any other channel is parsed as NDJSON (`{t,level,msg}`) and, when
+    /// `since_ms` is set, filtered to records at or after that wall-clock ms.
+    /// A missing file yields an empty result (the channel just hasn't written
+    /// yet), never an error.
+    pub fn read_channel(
+        &self,
+        ext_id: &str,
+        channel_id: &str,
+        since_ms: Option<u64>,
+        limit: Option<usize>,
+    ) -> LogReadResult {
+        let structured = !matches!(channel_id, "stdout" | "stderr");
+        let path = self.channel_file(ext_id, channel_id);
+        let cap = limit.unwrap_or(READ_LINE_CAP).min(READ_LINE_CAP);
+
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            // Not-yet-created file (or unreadable) → empty, not an error.
+            Err(_) => {
+                return LogReadResult {
+                    entries: Vec::new(),
+                    structured,
+                    truncated: false,
+                }
+            }
+        };
+
+        let mut entries: Vec<LogEntry> = Vec::new();
+        for line in content.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            if structured {
+                // Parse the NDJSON record; tolerate a malformed line by
+                // surfacing it raw rather than dropping it.
+                match serde_json::from_str::<serde_json::Value>(line) {
+                    Ok(v) => {
+                        let t = v.get("t").and_then(|x| x.as_u64());
+                        if let (Some(since), Some(ts)) = (since_ms, t) {
+                            if ts < since {
+                                continue;
+                            }
+                        }
+                        let level = v
+                            .get("level")
+                            .and_then(|x| x.as_str())
+                            .map(|s| s.to_string());
+                        let text = v
+                            .get("msg")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or(line)
+                            .to_string();
+                        entries.push(LogEntry { t, level, text });
+                    }
+                    Err(_) => entries.push(LogEntry {
+                        t: None,
+                        level: None,
+                        text: line.to_string(),
+                    }),
+                }
+            } else {
+                entries.push(LogEntry {
+                    t: None,
+                    level: None,
+                    text: line.to_string(),
+                });
+            }
+        }
+
+        // Tail: keep the last `cap` entries.
+        let truncated = entries.len() > cap;
+        if truncated {
+            entries.drain(0..entries.len() - cap);
+        }
+        LogReadResult {
+            entries,
+            structured,
+            truncated,
+        }
+    }
+
+    /// Truncate a channel's live log file (`OutputChannel.clear()` / the tab's
+    /// "clear" button). No-op if the file doesn't exist.
+    pub fn clear_channel(&self, ext_id: &str, channel_id: &str) -> ExtensionResult<()> {
+        let path = self.channel_file(ext_id, channel_id);
+        if path.exists() {
+            OpenOptions::new().write(true).truncate(true).open(&path)?;
+        }
+        Ok(())
+    }
 }
 
 /// Size-rotated, append-only log file. Cheap to share via `Arc`.
@@ -207,6 +397,17 @@ impl LogWriter {
             buf.push('\n');
             self.write_bytes(buf.as_bytes())
         }
+    }
+
+    /// Truncate the file to zero length. Backs `OutputChannel.clear()`.
+    /// The handle stays in append mode, so the next write lands at offset 0.
+    pub fn truncate(&self) -> ExtensionResult<()> {
+        let file = self
+            .file
+            .lock()
+            .map_err(|_| ExtensionError::ManifestInvalid("log writer mutex poisoned".into()))?;
+        file.set_len(0)?;
+        Ok(())
     }
 
     fn rotate_locked(&self, file: &mut std::sync::MutexGuard<'_, File>) -> ExtensionResult<()> {
@@ -293,6 +494,115 @@ mod tests {
         let mgr = LogManager::new_session(root.path()).unwrap();
         assert!(mgr.session_dir().is_dir());
         assert!(mgr.session_id().starts_with("session-"));
+    }
+
+    #[test]
+    fn channels_lists_stdout_stderr_fallbacks_plus_discovered_files() {
+        let root = TempDir::new().unwrap();
+        let mgr = LogManager::attach(root.path(), "S").unwrap();
+        // No channels written yet → still surfaces the two console fallbacks.
+        let base = mgr.channels("ext.a");
+        assert_eq!(
+            base.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["stdout", "stderr"]
+        );
+
+        // Writing a channel makes it appear (sorted after the fallbacks).
+        mgr.writer(LogKind::ExtensionChannel {
+            ext_id: "ext.a",
+            channel: "Coco / ACP",
+        })
+        .unwrap()
+        .write_line(r#"{"t":1,"level":"info","msg":"hi"}"#)
+        .unwrap();
+        let ids: Vec<String> = mgr.channels("ext.a").into_iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec!["stdout", "stderr", "coco-acp"]);
+        assert_eq!(
+            mgr.channels("ext.a")
+                .iter()
+                .find(|c| c.id == "coco-acp")
+                .unwrap()
+                .kind,
+            "channel"
+        );
+    }
+
+    #[test]
+    fn read_channel_parses_ndjson_and_filters_by_since_ms() {
+        let root = TempDir::new().unwrap();
+        let mgr = LogManager::attach(root.path(), "S").unwrap();
+        let w = mgr
+            .writer(LogKind::ExtensionChannel {
+                ext_id: "ext.a",
+                channel: "trace",
+            })
+            .unwrap();
+        w.write_line(r#"{"t":100,"level":"info","msg":"first"}"#)
+            .unwrap();
+        w.write_line(r#"{"t":200,"level":"error","msg":"second"}"#)
+            .unwrap();
+
+        let all = mgr.read_channel("ext.a", "trace", None, None);
+        assert!(all.structured);
+        assert_eq!(all.entries.len(), 2);
+        assert_eq!(all.entries[1].level.as_deref(), Some("error"));
+        assert_eq!(all.entries[1].text, "second");
+
+        // since_ms drops the earlier record.
+        let recent = mgr.read_channel("ext.a", "trace", Some(150), None);
+        assert_eq!(recent.entries.len(), 1);
+        assert_eq!(recent.entries[0].text, "second");
+    }
+
+    #[test]
+    fn read_channel_returns_raw_lines_for_stdout_and_empty_for_missing() {
+        let root = TempDir::new().unwrap();
+        let mgr = LogManager::attach(root.path(), "S").unwrap();
+        // Missing file → empty, not an error.
+        assert!(mgr
+            .read_channel("ext.a", "stdout", None, None)
+            .entries
+            .is_empty());
+
+        mgr.writer(LogKind::ExtensionStdout("ext.a"))
+            .unwrap()
+            .write_bytes(b"plain line one\nplain line two\n")
+            .unwrap();
+        let r = mgr.read_channel("ext.a", "stdout", None, None);
+        assert!(!r.structured);
+        assert_eq!(
+            r.entries
+                .iter()
+                .map(|e| e.text.as_str())
+                .collect::<Vec<_>>(),
+            ["plain line one", "plain line two"]
+        );
+        // since_ms is ignored for raw streams (no timestamps).
+        assert_eq!(
+            mgr.read_channel("ext.a", "stdout", Some(999), None)
+                .entries
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn clear_channel_truncates_the_file() {
+        let root = TempDir::new().unwrap();
+        let mgr = LogManager::attach(root.path(), "S").unwrap();
+        let w = mgr
+            .writer(LogKind::ExtensionChannel {
+                ext_id: "ext.a",
+                channel: "c",
+            })
+            .unwrap();
+        w.write_line(r#"{"t":1,"msg":"x"}"#).unwrap();
+        assert_eq!(mgr.read_channel("ext.a", "c", None, None).entries.len(), 1);
+        mgr.clear_channel("ext.a", "c").unwrap();
+        assert!(mgr
+            .read_channel("ext.a", "c", None, None)
+            .entries
+            .is_empty());
     }
 
     #[test]

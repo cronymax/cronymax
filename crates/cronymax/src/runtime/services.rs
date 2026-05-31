@@ -19,6 +19,7 @@ use parking_lot::Mutex;
 use crate::capability::factory::{CapabilityFactory, DefaultCapabilityFactory};
 use crate::config::RuntimeConfig;
 use crate::extensions::host::node::SpawnConfig;
+use crate::extensions::logging::LogManager;
 use crate::extensions::runtime::SpawnConfigBuilder;
 use crate::extensions::{
     default_bundled_bootstrap, default_bundled_node, default_registry_root, ExtensionRegistry,
@@ -133,6 +134,13 @@ impl RuntimeServices {
                 runtime.set_spawn_config_builder(builder);
             }
 
+            // Open this run's log session (`~/.cronymax/logs/<session>/`) so host
+            // stdout/stderr and `createOutputChannel` writes are persisted. `None`
+            // (no HOME / open failure) leaves logging disabled — never fatal.
+            if let Some(log_manager) = build_log_manager() {
+                runtime.set_log_manager(log_manager);
+            }
+
             // Bridge webview registry events into the authority's
             // "extensions/webview" topic so the C++ BridgeHandler can
             // subscribe and forward `Message` events to the matching
@@ -245,6 +253,33 @@ impl RuntimeServices {
 /// storage dirs as a side effect). Returns `None` when the bundled runtime or
 /// home dir can't be resolved — host-backed activation is then unavailable
 /// (set `CRONYMAX_BUNDLED_DIR` or run `scripts/fetch-node26.sh`).
+/// Open the per-run extension log session under `~/.cronymax/logs/`. Returns
+/// `None` when HOME can't be resolved or the session dir can't be created —
+/// logging is then disabled, which is never fatal. Best-effort maintains a
+/// `current` → `<session>` symlink so "Open Log Folder" / `diagnostic-bundle`
+/// can find the live session without knowing its id.
+fn build_log_manager() -> Option<Arc<LogManager>> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)?;
+    let logs_root = home.join(".cronymax").join("logs");
+    match LogManager::new_session(&logs_root) {
+        Ok(mgr) => {
+            #[cfg(unix)]
+            {
+                let current = logs_root.join("current");
+                let _ = std::fs::remove_file(&current);
+                let _ = std::os::unix::fs::symlink(mgr.session_id(), &current);
+            }
+            Some(Arc::new(mgr))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to open extension log session; logs disabled");
+            None
+        }
+    }
+}
+
 fn build_spawn_config_builder() -> Option<SpawnConfigBuilder> {
     let bundled_node = default_bundled_node().filter(|p| p.is_file())?;
     let bootstrap_js = default_bundled_bootstrap().filter(|p| p.is_file())?;
@@ -280,6 +315,11 @@ fn build_spawn_config_builder() -> Option<SpawnConfigBuilder> {
                 manifest_path: ext_dir.join("cronymax-extension.json"),
                 max_restarts: 0,
                 ping_interval: Some(SpawnConfig::ping_interval_default()),
+                // Per-extension stdout/stderr log sinks are attached by
+                // `ExtensionRuntime::activate` from the session LogManager — the
+                // builder doesn't have the (ext_id-keyed) writers in hand.
+                stdout_log: None,
+                stderr_log: None,
             }
         },
     ))

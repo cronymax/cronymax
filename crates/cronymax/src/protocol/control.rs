@@ -516,6 +516,36 @@ pub enum ControlRequest {
         enabled: bool,
     },
 
+    /// List the log channels available for `ext_id` (settings "Logs" tab
+    /// dropdown): the `stdout` / `stderr` console fallbacks plus any
+    /// `createOutputChannel` files. Returns
+    /// `Data { payload: { channels: [LogChannelInfo] } }`.
+    ExtensionLogChannels {
+        ext_id: String,
+    },
+
+    /// Read one log channel (tail-bounded, optionally time-filtered). `channel`
+    /// is an id from [`Self::ExtensionLogChannels`] (`stdout` / `stderr` / a
+    /// channel stem). Returns `Data { payload: LogReadResult }`.
+    ExtensionLogRead {
+        ext_id: String,
+        channel: String,
+        /// Keep only NDJSON records at/after this wall-clock ms (channel logs
+        /// only; ignored for raw stdout/stderr).
+        #[serde(default)]
+        since_ms: Option<u64>,
+        /// Max lines to return (tail). Capped server-side.
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+
+    /// Truncate one log channel's file (the "Logs" tab clear button). Returns
+    /// `Ack`.
+    ExtensionLogClear {
+        ext_id: String,
+        channel: String,
+    },
+
     /// Request changes on a pending document review in a flow run.
     /// Calls `FlowRuntime::write_review_comments` +
     /// `FlowRuntime::on_rejected_requeue` and re-spawns the producing node.

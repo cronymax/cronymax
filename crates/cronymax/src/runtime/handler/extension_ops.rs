@@ -269,4 +269,81 @@ impl RuntimeHandler {
             },
         }
     }
+
+    pub(super) async fn handle_extension_log_channels(
+        &self,
+        req: ControlRequest,
+    ) -> ControlResponse {
+        let ControlRequest::ExtensionLogChannels { ext_id } = req else {
+            unreachable!()
+        };
+        // No runtime / no log manager → empty list so the tab still renders.
+        let channels = self
+            .services
+            .extensions
+            .as_ref()
+            .map(|rt| rt.log_channels(&ext_id))
+            .unwrap_or_default();
+        match serde_json::to_value(&channels) {
+            Ok(channels) => ControlResponse::Data {
+                payload: serde_json::json!({ "channels": channels }),
+            },
+            Err(e) => ControlResponse::Err {
+                error: ControlError::Internal {
+                    message: format!("serialize log channels: {e}"),
+                },
+            },
+        }
+    }
+
+    pub(super) async fn handle_extension_log_read(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::ExtensionLogRead {
+            ext_id,
+            channel,
+            since_ms,
+            limit,
+        } = req
+        else {
+            unreachable!()
+        };
+        let result = self
+            .services
+            .extensions
+            .as_ref()
+            .map(|rt| rt.read_log(&ext_id, &channel, since_ms, limit));
+        let payload = match result {
+            Some(r) => serde_json::to_value(&r),
+            // No runtime: present as an empty read.
+            None => serde_json::to_value(serde_json::json!({
+                "entries": [],
+                "structured": channel != "stdout" && channel != "stderr",
+                "truncated": false,
+            })),
+        };
+        match payload {
+            Ok(payload) => ControlResponse::Data { payload },
+            Err(e) => ControlResponse::Err {
+                error: ControlError::Internal {
+                    message: format!("serialize log read: {e}"),
+                },
+            },
+        }
+    }
+
+    pub(super) async fn handle_extension_log_clear(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::ExtensionLogClear { ext_id, channel } = req else {
+            unreachable!()
+        };
+        let Some(ext_rt) = self.services.extensions.as_ref() else {
+            return ControlResponse::Ack; // nothing to clear
+        };
+        match ext_rt.clear_log(&ext_id, &channel) {
+            Ok(()) => ControlResponse::Ack,
+            Err(e) => ControlResponse::Err {
+                error: ControlError::InvalidRequest {
+                    message: format!("clear log failed: {e}"),
+                },
+            },
+        }
+    }
 }

@@ -202,6 +202,8 @@ async fn activate_routes_all_four_l2_registrations_into_runtime() {
             manifest_path: manifest_path_clone.clone(),
             max_restarts: 0,
             ping_interval: None,
+            stdout_log: None,
+            stderr_log: None,
         }),
     )
     .await
@@ -375,6 +377,8 @@ async fn registering_undeclared_provider_surfaces_via_register_error() {
             manifest_path: manifest_path_clone.clone(),
             max_restarts: 0,
             ping_interval: None,
+            stdout_log: None,
+            stderr_log: None,
         }),
     )
     .await
