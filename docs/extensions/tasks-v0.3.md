@@ -1291,9 +1291,8 @@ ext→视图 的投递在 **C++ 层早已通**:视图 iframe 用 `?surface=panel
 ### 验证
 
 - `cmake --build build --target cronymax_app` → **APP_BUILD4_EXIT=0**(`main_window.cc` / `right_dock_view.cc` 重编 + 链接通过)
-- ⚠️ **视觉未截图核对**:overlay 是原生 CEF 浮层,需装一个 `target:right` 扩展(`examples/panel-explorer` 的 `...dock`)打开 dock 才看得到。待眼检:× 位置(右上 inset 10 / 26px)、半透明圆底(0x66000000 / 半径13)、图标在深色衬底上是否清楚、resize 跟随、收起隐藏。要调我改。
+- ✅ **视觉已由 DRI 眼检确认 OK**(2026-05-31):× 位置/大小、半透明圆底、图标对比、resize 跟随、收起隐藏均无问题。
 
 ### 遗留
 
 - `CaptureLastChildNSView` 取「最后一个子窗口」给 overlay 上色——本 overlay 在 `BuildOverlaySlots` 最后建、deferred 一拍后捕获,正常是它;若同拍有别的 overlay 抢到「最后」会串台(低概率,真出问题改成存 controller 句柄取 nsview)。
-- 图标颜色目前用 `kClose` 资产原色,深色半透明衬底下若对比不足,需要给 × 单独着白色(待眼检)。
