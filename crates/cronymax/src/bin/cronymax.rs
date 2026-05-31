@@ -12,7 +12,9 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cronymax::extensions::{default_registry_root, package, ExtensionRegistry, Manifest};
+use cronymax::extensions::{
+    default_bundled_node, default_registry_root, diagnostic, package, ExtensionRegistry, Manifest,
+};
 
 const HELP: &str = r#"cronymax — extension platform CLI
 
@@ -26,11 +28,13 @@ COMMANDS:
     ext disable <id>       Mark an extension as disabled
     ext uninstall <id>     Uninstall an extension
     ext package <dir>      Pack an extension directory into a .cmx archive
+    diagnostic-bundle      Collect logs + manifests + versions into a redacted zip
 
 GLOBAL OPTIONS:
     --root <dir>           Override the extensions root
                            (default: ~/.cronymax/extensions)
-    -o, --output <file>    Output path for `ext package` (default: <id>-<version>.cmx)
+    -o, --output <file>    Output path for `ext package` / `diagnostic-bundle`
+                           (defaults: <id>-<version>.cmx / cronymax-diagnostic-<ts>.zip)
     -h, --help             Show this help
     --version              Show version
 "#;
@@ -70,6 +74,13 @@ fn run(argv: &[String]) -> Result<(), String> {
     }
 
     let group = args.remove(0);
+
+    // `diagnostic-bundle` is a top-level command (not under `ext`): collect
+    // logs + manifests + versions into a redacted zip for bug reports.
+    if group == "diagnostic-bundle" {
+        return run_diagnostic_bundle(root_override.as_deref(), output_override.as_deref());
+    }
+
     if group != "ext" {
         return Err(format!("unknown command `{group}`; try `cronymax --help`"));
     }
@@ -149,6 +160,96 @@ fn run_package(dir: &Path, output_override: Option<&str>) -> Result<(), String> 
     package::pack_dir_to_cmx(dir, &out_path).map_err(|e| e.to_string())?;
     println!("packaged {} → {}", dir.display(), out_path.display());
     Ok(())
+}
+
+/// Collect logs + manifests + versions into a redacted diagnostic zip.
+/// `--root` overrides the extensions root; logs are read from its sibling
+/// `logs/` under the same `~/.cronymax` base.
+fn run_diagnostic_bundle(
+    root_override: Option<&str>,
+    output_override: Option<&str>,
+) -> Result<(), String> {
+    let extensions_root = resolve_root(root_override)?; // ~/.cronymax/extensions
+    let base = extensions_root
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| extensions_root.clone()); // ~/.cronymax
+    let logs_root = base.join("logs");
+    let home = home_dir();
+
+    let generated_at_ms = now_ms();
+    let out_path = match output_override {
+        Some(o) => PathBuf::from(o),
+        None => PathBuf::from(format!(
+            "cronymax-diagnostic-{}.zip",
+            generated_at_ms / 1000
+        )),
+    };
+
+    let inputs = diagnostic::BundleInputs {
+        logs_root: &logs_root,
+        extensions_root: &extensions_root,
+        home: &home,
+        versions: diagnostic::Versions {
+            cronymax: env!("CARGO_PKG_VERSION").to_owned(),
+            os: os_description(),
+            node: node_version(),
+        },
+        generated_at_ms,
+    };
+    let written =
+        diagnostic::build_diagnostic_bundle(&inputs, &out_path).map_err(|e| e.to_string())?;
+    println!("wrote diagnostic bundle → {}", written.display());
+    Ok(())
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// OS + arch, plus a best-effort `uname -mrs` kernel string when available.
+fn os_description() -> String {
+    let base = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
+    if let Ok(out) = std::process::Command::new("uname").arg("-mrs").output() {
+        if out.status.success() {
+            let kernel = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            if !kernel.is_empty() {
+                return format!("{base} ({kernel})");
+            }
+        }
+    }
+    base
+}
+
+/// Probe the bundled Node 26 (`CRONYMAX_NODE` override, else resolved bundle)
+/// for its `--version`. `None` if it can't be found or run.
+fn node_version() -> Option<String> {
+    let node = std::env::var_os("CRONYMAX_NODE")
+        .map(PathBuf::from)
+        .or_else(default_bundled_node)?;
+    let out = std::process::Command::new(node)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
 }
 
 fn print_list(reg: &ExtensionRegistry) {

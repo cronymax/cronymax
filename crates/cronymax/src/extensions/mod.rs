@@ -43,6 +43,7 @@ pub mod activation;
 pub mod api;
 pub mod capability;
 pub mod contributions;
+pub mod diagnostic;
 pub mod error;
 pub mod events;
 pub mod host;
