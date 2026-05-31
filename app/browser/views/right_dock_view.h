@@ -66,6 +66,14 @@ class RightDockView : public ThemeAwareView {
   // a hide (visibility), not a dispose.
   std::string loaded_view_key() const { return current_view_key_; }
 
+  // Tear down the dock's currently-loaded view: clear the loaded key and
+  // navigate the dock browser to about:blank so the extension iframe is
+  // genuinely destroyed, then collapse. Distinct from Hide(), which keeps the
+  // WebContents alive for a later re-show — Close() makes `loaded_view_key()`
+  // go empty so the view leaves the rail's "open" set and its WebviewView
+  // gets onDidDispose. Used by the rail's per-view "Close view" action.
+  void Close();
+
   void ApplyTheme(const ThemeChrome& chrome) override;
 
  private:

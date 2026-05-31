@@ -108,6 +108,12 @@ class MainWindow : public CefWindowDelegate,
   // recent chat tab (falling back to any remaining tab).
   void CloseExtensionViews(const std::string& ext_id);
 
+  // Rail "Close view": tear down a single open operation view by its
+  // "<extId>::<viewId>" key — close its main-area tab and/or drop it from the
+  // dock — without deactivating the extension. The torn-down iframe leaves the
+  // rail's "open" set, so its WebviewView gets onDidDispose.
+  void CloseExtensionView(const std::string& view_key);
+
   // native-views-mvc Phase 4: shared state (TabManager, SpaceManager, theme,
   // observer lists) lives in ShellModel. Declared before client_handler_ so
   // the member initializer list can pass &shell_model_.space_manager_ to

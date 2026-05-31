@@ -171,6 +171,14 @@ export const ShellCloseExtensionViewsPayloadSchema = z.object({
 export const ShellCloseExtensionViewsResponseSchema = z.object({
   ok: z.boolean(),
 });
+// Rail "Close view" → close one open view (by "<extId>::<viewId>") without
+// deactivating the extension (C++ side).
+export const ShellCloseExtensionViewPayloadSchema = z.object({
+  view_key: z.string(),
+});
+export const ShellCloseExtensionViewResponseSchema = z.object({
+  ok: z.boolean(),
+});
 export const ShellTabOpenSingletonResponseSchema = z.object({
   tabId: z.string(),
   created: z.boolean(),

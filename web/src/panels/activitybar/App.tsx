@@ -197,6 +197,9 @@ export function App() {
   // The set of view_keys whose iframe was alive at the previous event, so we
   // can detect a teardown (a key that left the set) and fire dispose.
   const openKeysRef = useRef<Set<string>>(new Set());
+  // Same set, as state, so the rail can show "Close view" only for views that
+  // are actually open right now.
+  const [openKeys, setOpenKeys] = useState<Set<string>>(new Set());
 
   useBridgeEvent("shell.active_view_changed" as never, (p: ActiveViews) => {
     const next: ActiveViews = { main: p?.main ?? "", dock: p?.dock ?? "" };
@@ -223,6 +226,7 @@ export function App() {
         );
       }
       openKeysRef.current = openNow;
+      setOpenKeys(openNow);
     }
 
     // Visibility: a view is visible iff it's the active tab on its surface
@@ -274,6 +278,19 @@ export function App() {
       );
     } catch (e) {
       console.warn("open_extension_view failed", e);
+    }
+  }, []);
+
+  const closeView = useCallback(async (view: ExtensionView) => {
+    setMenu(null);
+    try {
+      // Native tears down the view's iframe (closes its main tab / drops it
+      // from the dock) without deactivating the extension. That removes it
+      // from the next `active_view_changed` `open` set, so the handler above
+      // fires `extension.view.dispose` → the provider's onDidDispose.
+      await shells.browser.shell.close_extension_view({ view_key: viewKey(view) });
+    } catch (e) {
+      console.warn("close_extension_view failed", e);
     }
   }, []);
 
@@ -338,6 +355,15 @@ export function App() {
             className="no-drag fixed z-50 min-w-36 rounded-md border border-border bg-cronymax-float py-1 text-xs shadow-lg"
             style={{ left: menu.x, top: menu.y }}
           >
+            {openKeys.has(viewKey(menu.view)) && (
+              <button
+                type="button"
+                className="block w-full px-3 py-1.5 text-left text-foreground hover:bg-accent"
+                onClick={() => void closeView(menu.view)}
+              >
+                Close view
+              </button>
+            )}
             <button
               type="button"
               className="block w-full px-3 py-1.5 text-left text-foreground hover:bg-accent"
