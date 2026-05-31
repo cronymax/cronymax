@@ -1428,3 +1428,50 @@ P9-T04 teardown 的「Category 1 列表型 reconcile」当时只覆盖了 **agen
 
 - **三次失败都因为在猜**。涉及「持久化 + 多处存储 + 启动时序」的 bug,直接读设备上的真实状态(leveldb)+ 落一个可回读的面包屑,比反复推理快得多也可靠得多。
 - teardown 的「列表型 reconcile」清单要把**所有**呈现「当前选择」的 UI 都数全:agent picker / content-renderer / **model picker**(本次补)。model picker 比另两个更坑,因为它的选择**额外存在 per-chat 数据里**,清 live + 全局不够。
+
+---
+
+## P9-T04b 扩展日志:落盘 + 读取 API + 设置面板「日志」tab(2026-05-31,`66994b3` / `ec787ec`)
+
+接 P9-T04。原以为 logging 基础设施就位,实测发现 **P2-T11 只写了 log writer、从没接线**:Node host 的 stdout/stderr 被 `drain_pipe` 直接丢弃("For now, just consume them"),`createOutputChannel` 的 `log/channel` RPC 也没有 server 端 handler。所以 T04b 实际是「**先把扩展日志真正落盘 + 读取 API + 再做查看器**」,这套落盘同时是 T05b 诊断包 / T05c Show Logs 的共同前置。
+
+### 落盘 + 读取 API(后端,`66994b3`)
+
+| 模块 | 改动 |
+|---|---|
+| `LogManager` 装配 | 组合根(`runtime/services.rs`)启动时开一个 session(`~/.cronymax/logs/<session>/`),维护 `current` → `<session>` 符号链接,经 `ExtensionRuntime::set_log_manager` 装上 |
+| host stdout/stderr | `activate` 从 session LogManager 取 `output.log`/`host.log` writer 挂到 `SpawnConfig`(新增 `stdout_log`/`stderr_log` 字段);`drain_pipe` 改为 append 裸字节而非丢弃;写失败只 warn 不致命(否则管道堵塞会卡死子进程) |
+| `log/channel`(notify) | 每行写一条 NDJSON `{t,level,msg}`(t = epoch ms,无 chrono 依赖)到 `channels/<id>.log` |
+| `log/channelClear`(request) | 新增 codec const + `LogWriter::truncate()`;清空 channel 文件 |
+| 读取 API | `LogManager::channels`(stdout/stderr 兜底 + 发现的 channel 文件)/ `read_channel`(tail 上限 5000 行、NDJSON 解析、可选 `since_ms` 时段过滤)/ `clear_channel`;`ExtensionRuntime` 薄封装 |
+| 控制协议 | `ExtensionLogChannels` / `ExtensionLogRead{since_ms,limit}` / `ExtensionLogClear` + handler(`extension_ops.rs`)+ 路由 |
+
+无 log manager 时(测试/headless)全部良性 no-op。
+
+### 设置面板「日志」tab(前端,`ec787ec`)
+
+`web/src/panels/settings/ExtensionLogsView.tsx`:Extensions tab 每行加「Logs」按钮 → 整个 tab 切到该扩展的查看器(返回按钮)。channel 下拉(stdout/stderr 兜底 + createOutputChannel channels)+ level 过滤(仅结构化 channel 生效)+ 时段过滤(全部/5m/1h/24h,结构化走 `since_ms`)+ tail 自动滚动正文(用户上滚时不抢滚)+ 每 2s 轮询拿增量 + Copy / Clear。`extensionRegistry.logChannels/logRead/logClear` 桥 + `LogChannelInfo`/`LogEntry`/`LogReadResult` 类型对齐 Rust。
+
+### 验证
+
+- `cargo test -p cronymax --lib` → **545 passed**(含 5 个新 LogManager 单测:channels 枚举 / NDJSON 解析 + since_ms 过滤 / stdout 裸行 / 缺文件空读 / clear 截断)
+- `p2_node_host_e2e` 3 / `p4_extension_runtime_e2e` 2 / `p6_webview_view_e2e` 1(真 Node 26,验证新 drain 接线 + activate 挂 writer 不破坏 host)
+- `cargo clippy -p cronymax --lib --tests` → 0;`cargo fmt --check` → clean
+- web `tsc -b` 0 错;biome 干净;`cmake --build build --target cronymax_app cronymax_web_sync` → 成功(crony 重编含日志改动 + 同步进 .app)
+- 注:`cmake --build build`(ALL)在 `rebuild_trace` 辅助工具 link 失败(`SpaceStore::*` undefined)—— 分支既有问题,与本次无关;直接 build `cronymax_app` 目标即可
+
+### Phase 完成度
+
+| Phase 9 子任务 | 状态 |
+|---|---|
+| T04 扩展管理 tab | ✅ |
+| **T04b 日志 tab(落盘 + 读取 + 查看器)** | **✅ 本轮** |
+| T05 `ext package` | ✅(早先) |
+| T05 `ext dev --watch` / T05b diagnostic-bundle / T05c Developer 命令 / T03 模板仓 / T06 通用性 checkpoint | 待做 |
+
+### 遗留 / 后续
+
+- **Open Log Folder / 导出 .log** 按钮:本 tab 暂未做,并入 **T05c**(需要一条「打开 logs 目录」的 shell 桥,web 不知道 `~` / session 路径)
+- 时段过滤对裸 stdout/stderr 无效(无逐行时间戳),只对 NDJSON channel 生效 —— 符合 spec v1「简版」
+- rotated `.log.N` 不进 channel 读取(只读 live `.log`),v1 够用
+- 端到端 smoke(启用扩展 → 产出日志 → tab 看到)待 DRI 重启 app 实测
