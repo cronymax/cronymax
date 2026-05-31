@@ -1283,6 +1283,45 @@ impl ExtensionRuntime {
         }
     }
 
+    /// Tell the owning extension that operation view `view_id` became
+    /// visible / hidden so its provider's `WebviewView.onDidChangeVisibility`
+    /// fires and `WebviewView.visible` flips. Triggered by the web rail's
+    /// `extension.view.visibility` control request when the active main /
+    /// dock view changes (the view's surface stays mounted but is no longer
+    /// the foreground tab, mirroring VS Code collapsing a view section).
+    ///
+    /// No-op (Ok) for views without a registered provider / live host. The
+    /// bootstrap drops a `visible` value that matches the current state, so
+    /// re-sending the same value is harmless.
+    pub async fn change_view_visibility(
+        &self,
+        view_id: &str,
+        visible: bool,
+    ) -> ExtensionResult<()> {
+        let Some(view) = self.state.sidebars.get(view_id) else {
+            return Ok(());
+        };
+        let frame = Value::Map(vec![
+            (
+                Value::String("viewId".into()),
+                Value::String(view_id.to_string().into()),
+            ),
+            (Value::String("visible".into()), Value::Boolean(visible)),
+        ]);
+        match self
+            .notify_extension(
+                &view.owning_ext,
+                webview_view_method::ON_DID_CHANGE_VISIBILITY,
+                frame,
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(ExtensionError::NotActivated(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Forward a renderer-driven view-state change (visibility / focus)
     /// to the owning extension as a `webview/onDidChangeViewState` notify.
     /// Mirrors the IDL `WebviewPanel.onDidChangeViewState` event.
@@ -3317,6 +3356,146 @@ mod tests {
             .resolve_view("alice.x.view")
             .await
             .expect("resolve with no live host must be a no-op");
+    }
+
+    #[tokio::test]
+    async fn change_view_visibility_notifies_owner_with_flag_and_noops_for_unknown() {
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        seed_view(&runtime, "alice.x.view", "alice.x");
+
+        type Captured = Arc<StdMutex<Vec<(String, bool)>>>;
+        let captured: Captured = Arc::new(StdMutex::new(Vec::new()));
+        let cap_c = captured.clone();
+        let peer_server = RpcServer::builder()
+            .on_notify(
+                webview_view_method::ON_DID_CHANGE_VISIBILITY,
+                move |params| {
+                    let cap = cap_c.clone();
+                    async move {
+                        let view_id = extract_str_field(&params, "viewId").unwrap_or_default();
+                        let visible = params
+                            .as_map()
+                            .and_then(|m| {
+                                m.iter()
+                                    .find(|(k, _)| k.as_str() == Some("visible"))
+                                    .and_then(|(_, v)| v.as_bool())
+                            })
+                            .unwrap_or(true);
+                        cap.lock().unwrap().push((view_id, visible));
+                        Ok(())
+                    }
+                },
+            )
+            .build();
+
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (runtime_conn, _t1) = Connection::open(a_r, a_w, RpcServer::builder().build());
+        let (_peer_conn, _t2) = Connection::open(b_r, b_w, peer_server);
+        runtime.install_test_handle_conn_only("alice.x", runtime_conn);
+
+        // Unknown view → benign no-op (Ok), no notify.
+        runtime
+            .change_view_visibility("nope.view", false)
+            .await
+            .expect("unknown view is Ok");
+
+        runtime
+            .change_view_visibility("alice.x.view", false)
+            .await
+            .expect("hide must succeed");
+        runtime
+            .change_view_visibility("alice.x.view", true)
+            .await
+            .expect("show must succeed");
+
+        for _ in 0..50 {
+            if captured.lock().unwrap().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let caps = captured.lock().unwrap().clone();
+        assert_eq!(
+            caps,
+            vec![
+                ("alice.x.view".to_string(), false),
+                ("alice.x.view".to_string(), true),
+            ],
+            "visibility notify must carry the per-call flag in order",
+        );
+    }
+
+    #[tokio::test]
+    async fn change_view_visibility_for_owner_without_host_is_noop() {
+        // Declarative-only / not-yet-host-backed views: notify_extension
+        // returns NotActivated, which change_view_visibility swallows.
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        seed_view(&runtime, "alice.x.view", "alice.x");
+        runtime
+            .change_view_visibility("alice.x.view", false)
+            .await
+            .expect("visibility change with no live host must be a no-op");
+    }
+
+    #[tokio::test]
+    async fn dispose_view_notifies_owner_and_noops_for_unknown() {
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        seed_view(&runtime, "alice.x.view", "alice.x");
+
+        type Captured = Arc<StdMutex<Vec<String>>>;
+        let captured: Captured = Arc::new(StdMutex::new(Vec::new()));
+        let cap_c = captured.clone();
+        let peer_server = RpcServer::builder()
+            .on_notify(webview_view_method::ON_DID_DISPOSE, move |params| {
+                let cap = cap_c.clone();
+                async move {
+                    let view_id = extract_str_field(&params, "viewId").unwrap_or_default();
+                    cap.lock().unwrap().push(view_id);
+                    Ok(())
+                }
+            })
+            .build();
+
+        let (a, b) = duplex(8192);
+        let (a_r, a_w) = split(a);
+        let (b_r, b_w) = split(b);
+        let (runtime_conn, _t1) = Connection::open(a_r, a_w, RpcServer::builder().build());
+        let (_peer_conn, _t2) = Connection::open(b_r, b_w, peer_server);
+        runtime.install_test_handle_conn_only("alice.x", runtime_conn);
+
+        // Unknown view → benign no-op (Ok), no notify.
+        runtime
+            .dispose_view("nope.view")
+            .await
+            .expect("unknown view disposes to Ok");
+
+        runtime
+            .dispose_view("alice.x.view")
+            .await
+            .expect("dispose must succeed");
+
+        for _ in 0..50 {
+            if !captured.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let caps = captured.lock().unwrap().clone();
+        assert_eq!(caps, vec!["alice.x.view".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn dispose_view_for_owner_without_host_is_noop() {
+        // Declarative-only / not-yet-host-backed views: notify_extension
+        // returns NotActivated, which dispose_view swallows.
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        seed_view(&runtime, "alice.x.view", "alice.x");
+        runtime
+            .dispose_view("alice.x.view")
+            .await
+            .expect("dispose with no live host must be a no-op");
     }
 
     #[tokio::test]

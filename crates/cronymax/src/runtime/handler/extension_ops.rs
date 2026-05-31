@@ -123,4 +123,56 @@ impl RuntimeHandler {
             },
         }
     }
+
+    pub(super) async fn handle_extension_view_visibility(
+        &self,
+        req: ControlRequest,
+    ) -> ControlResponse {
+        let ControlRequest::ExtensionViewVisibility { view_id, visible } = req else {
+            unreachable!()
+        };
+        let Some(ext_rt) = self.services.extensions.as_ref() else {
+            return ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: "extension runtime not configured".into(),
+                },
+            };
+        };
+        // Like `resolve_view`, a no-op for views without a registered
+        // provider; any error here is a genuine RPC / host failure.
+        match ext_rt.change_view_visibility(&view_id, visible).await {
+            Ok(()) => ControlResponse::Ack,
+            Err(e) => ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: format!("change_view_visibility failed: {e}"),
+                },
+            },
+        }
+    }
+
+    pub(super) async fn handle_extension_view_dispose(
+        &self,
+        req: ControlRequest,
+    ) -> ControlResponse {
+        let ControlRequest::ExtensionViewDispose { view_id } = req else {
+            unreachable!()
+        };
+        let Some(ext_rt) = self.services.extensions.as_ref() else {
+            return ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: "extension runtime not configured".into(),
+                },
+            };
+        };
+        // `dispose_view` is a no-op for views without a registered provider,
+        // so any error here is a genuine RPC / host failure worth surfacing.
+        match ext_rt.dispose_view(&view_id).await {
+            Ok(()) => ControlResponse::Ack,
+            Err(e) => ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: format!("dispose_view failed: {e}"),
+                },
+            },
+        }
+    }
 }

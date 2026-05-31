@@ -460,6 +460,33 @@ pub enum ControlRequest {
         view_id: String,
     },
 
+    /// Tell the owning extension that one of its operation views became
+    /// visible / hidden (the active main / dock tab changed but the view
+    /// surface stays mounted). The web rail fires this on
+    /// `shell.active_view_changed` so the extension's `WebviewView.visible`
+    /// flips and `onDidChangeVisibility` fires, mirroring VS Code.
+    ///
+    /// Routes via [`crate::extensions::runtime::ExtensionRuntime::
+    /// change_view_visibility`]. A no-op (returns `Ack`) when the view has
+    /// no registered provider / live host.
+    ExtensionViewVisibility {
+        view_id: String,
+        visible: bool,
+    },
+
+    /// Tell the owning extension that one of its operation views was
+    /// explicitly closed (the user closed its main-area tab — genuine
+    /// teardown, not a switch-away which only hides it). The web rail fires
+    /// this on `shell.tab_closed` for `kExtensionView` tabs so the
+    /// extension's `WebviewView.onDidDispose` fires.
+    ///
+    /// Routes via [`crate::extensions::runtime::ExtensionRuntime::
+    /// dispose_view`]. A no-op (returns `Ack`) when the view has no
+    /// registered provider / live host.
+    ExtensionViewDispose {
+        view_id: String,
+    },
+
     /// Request changes on a pending document review in a flow run.
     /// Calls `FlowRuntime::write_review_comments` +
     /// `FlowRuntime::on_rejected_requeue` and re-spawns the producing node.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { useBridgeEvent } from "@/hooks/useBridgeEvent";
 import { runtimeSend, shells } from "@/shells/bridge";
@@ -34,6 +34,10 @@ const BUILTIN_VIEWS: BuiltinView[] = [
 interface ActiveViews {
   main: string;
   dock: string;
+  /** view_keys of every extension view whose iframe is currently alive (open
+   *  main tabs + the dock's loaded view). The native side diffs against this
+   *  to fire dispose; absent on older hosts. */
+  open?: string[];
 }
 
 interface ContextMenu {
@@ -185,8 +189,63 @@ export function App() {
   const [active, setActive] = useState<ActiveViews>({ main: "", dock: "" });
   const [menu, setMenu] = useState<ContextMenu | null>(null);
 
+  // Last visibility we told each extension view's host about (viewId →
+  // visible). Lets us fire `onDidChangeVisibility` only on real transitions
+  // and keeps the redundant `visible: true` that follows a resolve from
+  // double-firing (the bootstrap drops a no-change `_setVisible` anyway).
+  const viewVisibleRef = useRef<Map<string, boolean>>(new Map());
+  // The set of view_keys whose iframe was alive at the previous event, so we
+  // can detect a teardown (a key that left the set) and fire dispose.
+  const openKeysRef = useRef<Set<string>>(new Set());
+
   useBridgeEvent("shell.active_view_changed" as never, (p: ActiveViews) => {
-    setActive({ main: p?.main ?? "", dock: p?.dock ?? "" });
+    const next: ActiveViews = { main: p?.main ?? "", dock: p?.dock ?? "" };
+    setActive(next);
+
+    const prev = viewVisibleRef.current;
+
+    // Dispose: a view_key that was alive last time but is gone now had its
+    // iframe torn down (main tab closed, or dock navigated to another view) —
+    // fire `onDidDispose`. A collapse / switch-away keeps the key alive, so it
+    // stays a hide, handled below. `open` is absent on older hosts → treat as
+    // "unknown", skip the diff so we never dispose spuriously.
+    const disposed = new Set<string>();
+    if (p?.open) {
+      const openNow = new Set(p.open);
+      for (const key of openKeysRef.current) {
+        if (openNow.has(key)) continue;
+        disposed.add(key);
+        const v = views.find((vv) => viewKey(vv) === key);
+        if (!v) continue;
+        prev.delete(v.viewId);
+        void runtimeSend("extension.view.dispose", { view_id: v.viewId }).catch((e) =>
+          console.warn("extension.view.dispose failed", e),
+        );
+      }
+      openKeysRef.current = openNow;
+    }
+
+    // Visibility: a view is visible iff it's the active tab on its surface
+    // (main area or right dock). Switching tabs keeps the surface alive but
+    // hidden, so we flip `WebviewView.visible` rather than dispose — mirrors
+    // VS Code collapsing a view section.
+    const seen = new Set<string>();
+    for (const v of views) {
+      seen.add(v.viewId);
+      const key = viewKey(v);
+      if (disposed.has(key)) continue; // just torn down — no trailing hide
+      const nowVisible = v.target === "right" ? next.dock === key : next.main === key;
+      if ((prev.get(v.viewId) ?? false) === nowVisible) continue;
+      prev.set(v.viewId, nowVisible);
+      void runtimeSend("extension.view.visibility", { view_id: v.viewId, visible: nowVisible }).catch((e) =>
+        console.warn("extension.view.visibility failed", e),
+      );
+    }
+    // Forget views no longer contributed (extension deactivated) so a later
+    // reinstall starts fresh.
+    for (const id of [...prev.keys()]) {
+      if (!seen.has(id)) prev.delete(id);
+    }
   });
 
   const openSingleton = useCallback(async (kind: SingletonViewKind) => {

@@ -312,6 +312,12 @@ impl Handler for RuntimeHandler {
             req @ ControlRequest::ExtensionViewResolve { .. } => {
                 self.handle_extension_view_resolve(req).await
             }
+            req @ ControlRequest::ExtensionViewVisibility { .. } => {
+                self.handle_extension_view_visibility(req).await
+            }
+            req @ ControlRequest::ExtensionViewDispose { .. } => {
+                self.handle_extension_view_dispose(req).await
+            }
             req @ ControlRequest::FlowSaveYaml { .. } => self.handle_flow_save_yaml(req).await,
             req @ ControlRequest::FlowSaveLayout { .. } => self.handle_flow_save_layout(req).await,
             req @ ControlRequest::BlackboardInject { .. } => {

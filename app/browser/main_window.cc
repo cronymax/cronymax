@@ -1347,8 +1347,34 @@ void MainWindow::PushActiveViewToRail() {
       right_dock_view_obj_ ? right_dock_view_obj_->active_view_key()
                            : std::string();
 
-  const std::string payload =
-      nlohmann::json{{"main", main_view}, {"dock", dock_view}}.dump();
+  // The full set of extension-view keys whose iframe is currently alive: every
+  // open main-area view tab (hidden from Snapshot, so enumerated via the meta
+  // index) plus the dock's loaded view (alive even while collapsed). The rail
+  // diffs this set across events — a key that disappears means its iframe was
+  // torn down (main tab closed, or dock navigated to a different view), so the
+  // rail fires `extension.view.dispose`. Switching away / collapsing keeps the
+  // key, so those stay hides (visibility), not disposes.
+  std::vector<std::string> open_views;
+  if (shell_model_.tabs_) {
+    for (const TabId& id : shell_model_.tabs_->FindAllByMetaPrefix("ext_view", "")) {
+      Tab* t = shell_model_.tabs_->Get(id);
+      if (t && t->kind() == TabKind::kExtensionView) {
+        const std::string vk = t->GetMeta("ext_view");
+        if (!vk.empty())
+          open_views.push_back(vk);
+      }
+    }
+  }
+  if (right_dock_view_obj_) {
+    const std::string dk = right_dock_view_obj_->loaded_view_key();
+    if (!dk.empty())
+      open_views.push_back(dk);
+  }
+
+  const std::string payload = nlohmann::json{{"main", main_view},
+                                             {"dock", dock_view},
+                                             {"open", open_views}}
+                                  .dump();
   if (activitybar_view_obj_) {
     if (auto bv = activitybar_view_obj_->browser_view()) {
       if (auto browser = bv->GetBrowser())

@@ -1197,5 +1197,67 @@ ext→视图 的投递在 **C++ 层早已通**:视图 iframe 用 `?surface=panel
 ### 遗留 / 后续
 
 - **视图侧 `show()` / 主动聚焦**:IDL `WebviewView` v1 未含 `show()`(VS Code 有);需要时再补 + 平台聚焦路由。
-- **`onDidChangeVisibility` 真实触发**:目前只在 resolve(visible=true)时拉起;hide / 切走时的 visibility=false 事件待接 `shell.active_view_changed` → Rust。
-- **显式 view 关闭(非 deactivate)→ dispose**:`dispose_view` 已就位,但 web 端没有「视图 tab 关闭」钩子去调它(切走目前等价于 hidden,provider 存活,符合 VS Code 语义)。
+- ~~`onDidChangeVisibility` 真实触发~~ → ✅ 已完成,见下「视图可见性 + 显式关闭 dispose」节(2026-05-31)。
+- ~~显式 view 关闭(非 deactivate)→ dispose~~ → ✅ 已完成,见下「视图可见性 + 显式关闭 dispose」节(2026-05-31)。
+
+---
+
+## 视图可见性 + 显式关闭 dispose(2026-05-31)
+
+补完上面「WebviewViewProvider 视图双向消息」节的两个遗留,把操作视图的生命周期补齐到 VS Code 语义:操作视图现在会随「前台 / 后台」翻转 `WebviewView.visible` 并触发 `onDidChangeVisibility`,iframe 真正被销毁时触发 `onDidDispose`。`show()` / 主动聚焦仍留作后续(IDL v1 未含)。
+
+### 两套语义:hide vs dispose
+
+| 用户动作 | iframe / WebContents | 事件 |
+|---|---|---|
+| 切到别的 tab / dock 收起 | 存活(只是隐藏) | `onDidChangeVisibility(false)` |
+| 切回来 | 复用 | `onDidChangeVisibility(true)` |
+| 主区 view tab 关闭 | 销毁 | `onDidDispose` |
+| dock 从 view A 导航到 view B | A 的 iframe 被 `LoadURL` 替换销毁 | A → `onDidDispose`,B → resolve |
+| 停用扩展 | 全销毁 | 走 deactivate / provider Disposable(既有) |
+
+判据是 **iframe 是否还活着**,不是「是否可见」:dock 收起只 `SetVisible(false)`(`right_dock_view.cc::Hide`),WebContents 不销毁 → 是 hide;dock 导航到另一个 view 是 `frame->LoadURL`(复用同一个 browser)→ 旧 view 的 iframe 被替换销毁 → 是 dispose。
+
+### 关键事实
+
+- **SDK/bootstrap 早已就绪**:`extension-host-bootstrap.js` 的 `webviewView/onDidChangeVisibility` 入站 handler(`view._setVisible` 幂等,只在值真变时 fire)和 `webviewView/onDidDispose`(fire + `liveViews.delete`)在上一节就写好了。缺口纯在 **触发侧(C++ → web → Rust)**。
+- **rail 收事件的通道**:操作视图的 rail(活动栏)通过 `SendBrowserEvent(activitybar_browser, ...)` 收 `shell.active_view_changed`,**不是** `push_to_sidebar`(那个只到 sidebar)。所以触发必须搭这条已有的 rail 事件。
+- **ext-view tab 不进 Snapshot**:主区扩展视图 tab 对 `TabManager::Snapshot()` 隐藏(没有可关闭的 tab 条),只能经 meta 索引枚举。
+
+### 设计
+
+`shell.active_view_changed` 的 payload 从 `{main, dock}` 扩成 `{main, dock, open}`,`open` = **当前 iframe 存活的全部 view_key 集合**(所有主区 ext-view tab + dock 的 `loaded_view_key()`,后者收起时仍在)。rail 在每次事件:
+
+1. **dispose 差分**:上一次 `open` 里有、这次没有的 key = iframe 被销毁 → `runtimeSend("extension.view.dispose",{view_id})`。`open` 缺失(老 host)时跳过差分,绝不误 dispose。
+2. **visibility 差分**:每个 view 按「它所在 surface(主区 / dock)的前台 tab 是不是它」算 `visible`,只在真变化时 `runtimeSend("extension.view.visibility",{view_id,visible})`。刚 dispose 的 view 跳过,避免尾随一个多余 hide。
+
+`change_view_visibility` / `dispose_view` 在 Rust 侧都查 `SidebarViewRegistry` 属主,无 provider / 无 host 时良性 no-op(对齐 `resolve_view`)。
+
+### 改动
+
+| 层 | 文件 | 改动 |
+|---|---|---|
+| control | `protocol/control.rs` | 新增 `ExtensionViewVisibility{view_id,visible}` + `ExtensionViewDispose{view_id}` 两个 ControlRequest 变体 |
+| handler | `runtime/handler/{extension_ops,mod}.rs` | `handle_extension_view_visibility` / `handle_extension_view_dispose` + 路由 arm |
+| runtime | `extensions/runtime.rs` | `change_view_visibility(view_id,visible)`(emit `webviewView/onDidChangeVisibility`);`dispose_view` 复用既有(emit `onDidDispose`)|
+| C++ | `app/browser/views/right_dock_view.h` | 新增 `loaded_view_key()`(返回 `current_view_key_`,收起时不清,区别于只在 shown 时有值的 `active_view_key()`)|
+| C++ | `app/browser/main_window.cc` | `PushActiveViewToRail` payload 加 `open`:枚举所有 `kExtensionView` tab 的 `ext_view` meta + dock loaded key |
+| web | `web/src/panels/activitybar/App.tsx` | `ActiveViews` 加 `open?`;`active_view_changed` handler 做 dispose 差分 + visibility 差分(`openKeysRef` / `viewVisibleRef` 两个 ref 存上次状态) |
+
+`tab_close_str` 里曾试过把 `ext_view` 塞进 `shell.tab_closed`,后撤回 —— 那个事件走 `push_to_sidebar` 到 sidebar,到不了 rail;改用 rail 已有的 `active_view_changed` + open 差分。
+
+### 验证
+
+- `cargo test -p cronymax --lib` → **529 passed**(含 4 个新单测:`change_view_visibility_notifies_owner_with_flag_and_noops_for_unknown` + `change_view_visibility_for_owner_without_host_is_noop` + `dispose_view_notifies_owner_and_noops_for_unknown` + `dispose_view_for_owner_without_host_is_noop`)
+- `cargo clippy -p cronymax --lib --tests -- -D warnings` → 0;`cargo fmt -p cronymax --check` → clean
+- `node --check bundled/extension-host-bootstrap.js` → OK(未改,已含两个入站 handler)
+- `npm --prefix web run typecheck` → 0;biome lint 我改的文件 0 warning
+- `cmake --build build --target cronymax_app` → **APP_BUILD_EXIT=0**(`main_window.cc` / `right_dock_view.cc` 重编 + 链接通过);`cronymax_web_sync` 同步进 bundle
+
+注:仓里 `rebuild_trace` 辅助工具 link 失败(`SpaceStore::Open/SpaceStore/~SpaceStore` undefined),与本次改动无关(没碰 SpaceStore / rebuild_trace),是分支既有问题。
+
+### 遗留 / 后续
+
+- **`show()` / 主动聚焦**:IDL `WebviewView` v1 仍未含 `show()`;需要时补 IDL + 平台聚焦路由(rail → 激活对应 tab / 展开 dock)。
+- **`onDidChangeVisibility` 的 dock-折叠粒度**:dock 收起(`Hide`)目前算 visible=false 是对的;但「主区 tab 切到后台」与「窗口失焦」未细分(VS Code 的 visible 还含窗口前台性),v1 不做。
+- **主区单 view 的关闭 UI**:ext-view tab 不进 tab 条,所以今天主区没有「关单个 view」的按钮 —— dispose 差分已就位,等后续给 rail 加「关闭视图」入口(或让 ext-view 进可关闭 tab 条)即自动生效。当前真实触发 dispose 的路径是 dock 导航换 view + 停用扩展。

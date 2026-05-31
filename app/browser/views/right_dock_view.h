@@ -56,6 +56,16 @@ class RightDockView : public ThemeAwareView {
     return shown_ ? current_view_key_ : std::string();
   }
 
+  // The view key whose iframe is currently loaded in the dock browser,
+  // regardless of whether the dock is shown. Differs from
+  // `active_view_key()` while collapsed: the WebContents survives a collapse
+  // (hide), so the loaded key persists. Used by the rail to detect a genuine
+  // teardown — navigating the dock to a different view replaces (destroys)
+  // the prior view's iframe, so the prior key leaves the "open" set and the
+  // rail fires `extension.view.dispose`. A collapse keeps the key, so it is
+  // a hide (visibility), not a dispose.
+  std::string loaded_view_key() const { return current_view_key_; }
+
   void ApplyTheme(const ThemeChrome& chrome) override;
 
  private:
