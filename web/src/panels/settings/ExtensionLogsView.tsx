@@ -2,15 +2,17 @@
  * Settings → Extensions → per-extension Logs view (P9-T04b).
  *
  * Reached from the Extensions tab's per-row "Logs" button; replaces the list
- * until dismissed. A channel dropdown (the `stdout`/`stderr` console fallbacks
- * plus any `createOutputChannel` channels), an optional level filter (channel
- * logs only — they carry levels), and a time-window filter feed a tailing,
- * auto-scrolling log view. Data comes from the `extension.log_*` control
- * requests; the view polls every 2s while open so live output appears.
+ * until dismissed. Defaults to a merged "All output" view (stdout + stderr +
+ * every createOutputChannel channel, time-ordered, each line source-tagged);
+ * the dropdown also offers "Console" (stdout+stderr) and each named channel.
+ * Level (channel logs only), time-window, and free-text filters narrow the
+ * view. Data comes from the `extension.log_*` control requests; the view polls
+ * every 2s while open so live output appears, auto-scrolling when at the bottom.
  */
 import { ArrowLeft, Copy, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Caption } from "@/components/ui/typography";
 import { cn } from "@/lib/utils";
@@ -42,27 +44,33 @@ function fmtTime(ms?: number): string {
 
 export function ExtensionLogsView({ ext, onBack }: { ext: { id: string; name: string }; onBack: () => void }) {
   const [channels, setChannels] = useState<LogChannelInfo[]>([]);
-  const [channel, setChannel] = useState<string>("stdout");
+  // Default to the merged "All output" view so output is visible without
+  // hunting channels (most extensions log via createOutputChannel, not stdout).
+  const [channel, setChannel] = useState<string>("all");
   const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [structured, setStructured] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [level, setLevel] = useState("all");
   const [timeWindow, setTimeWindow] = useState("all");
+  const [query, setQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+
+  // Merged views tag each line with its origin (stdout/stderr/channel id).
+  const isMerged = channel === "all" || channel === "console";
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   // Track whether the user is pinned to the bottom so auto-scroll doesn't
   // yank them up when they've scrolled back to read older lines.
   const atBottomRef = useRef(true);
 
-  // Channel list — load once per extension. `stdout`/`stderr` always present.
+  // Channel list — load once per extension. "All output" + "Console" are
+  // always present; named createOutputChannel channels appear as discovered.
   useEffect(() => {
     void (async () => {
       try {
         const { channels } = await extensionRegistry.logChannels(ext.id);
         setChannels(channels);
       } catch {
-        /* ignore — keep the stdout/stderr defaults */
+        /* ignore — the dropdown still offers All/Console via the default */
       }
     })();
   }, [ext.id]);
@@ -75,7 +83,6 @@ export function ExtensionLogsView({ ext, onBack }: { ext: { id: string; name: st
   const refetch = useCallback(async () => {
     try {
       const res = await extensionRegistry.logRead(ext.id, channel, { sinceMs });
-      setStructured(res.structured);
       setTruncated(res.truncated);
       setEntries(res.entries);
     } catch {
@@ -90,11 +97,17 @@ export function ExtensionLogsView({ ext, onBack }: { ext: { id: string; name: st
     return () => window.clearInterval(id);
   }, [refetch]);
 
-  // Level filter is client-side and applies only to structured channel logs.
+  // Client-side level + text filters. Level applies only to leveled lines
+  // (createOutputChannel channels); console lines have no level so they pass
+  // only at "all levels". Text matches the line text and its source tag.
   const shown = useMemo(() => {
-    if (!structured || level === "all") return entries;
-    return entries.filter((e) => (e.level ?? "info") === level);
-  }, [entries, structured, level]);
+    const q = query.trim().toLowerCase();
+    return entries.filter((e) => {
+      if (level !== "all" && (e.level ?? "") !== level) return false;
+      if (q && !e.text.toLowerCase().includes(q) && !(e.source ?? "").toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [entries, level, query]);
 
   // Auto-scroll to the newest line when pinned to the bottom.
   useEffect(() => {
@@ -130,12 +143,13 @@ export function ExtensionLogsView({ ext, onBack }: { ext: { id: string; name: st
     const text = shown
       .map((e) => {
         const ts = fmtTime(e.t);
+        const src = isMerged && e.source ? `[${e.source}] ` : "";
         const lvl = e.level ? `[${e.level}] ` : "";
-        return `${ts ? `${ts} ` : ""}${lvl}${e.text}`;
+        return `${ts ? `${ts} ` : ""}${src}${lvl}${e.text}`;
       })
       .join("\n");
     void navigator.clipboard?.writeText(text).catch(() => undefined);
-  }, [shown]);
+  }, [shown, isMerged]);
 
   return (
     <div className="flex h-full flex-col">
@@ -162,11 +176,8 @@ export function ExtensionLogsView({ ext, onBack }: { ext: { id: string; name: st
           </SelectContent>
         </Select>
 
-        <Select value={level} onValueChange={setLevel} disabled={!structured}>
-          <SelectTrigger
-            className="h-7 w-[110px] text-xs"
-            title={structured ? "Level" : "Levels apply to channel logs only"}
-          >
+        <Select value={level} onValueChange={setLevel}>
+          <SelectTrigger className="h-7 w-[110px] text-xs" title="Level (applies to channel logs)">
             <SelectValue placeholder="Level" />
           </SelectTrigger>
           <SelectContent>
@@ -190,6 +201,13 @@ export function ExtensionLogsView({ ext, onBack }: { ext: { id: string; name: st
             ))}
           </SelectContent>
         </Select>
+
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Filter…"
+          className="h-7 w-[140px] text-xs"
+        />
 
         <Button
           variant="ghost"
@@ -220,6 +238,7 @@ export function ExtensionLogsView({ ext, onBack }: { ext: { id: string; name: st
             {shown.map((e, i) => (
               <div key={`${e.t ?? 0}-${i}`} className="whitespace-pre-wrap break-words">
                 {e.t ? <span className="text-muted-foreground">{fmtTime(e.t)} </span> : null}
+                {isMerged && e.source ? <span className="text-muted-foreground/70">[{e.source}] </span> : null}
                 {e.level ? (
                   <span className={cn("font-medium", LEVEL_CLASS[e.level] ?? "text-foreground")}>[{e.level}] </span>
                 ) : null}
@@ -232,7 +251,10 @@ export function ExtensionLogsView({ ext, onBack }: { ext: { id: string; name: st
 
       {/* footer actions */}
       <div className="flex shrink-0 items-center justify-between gap-2 px-4 py-3">
-        <Caption>{structured ? "Structured channel (NDJSON)" : "Raw console output"}</Caption>
+        <Caption>
+          {shown.length} line{shown.length === 1 ? "" : "s"}
+          {query.trim() || level !== "all" || timeWindow !== "all" ? " (filtered)" : ""}
+        </Caption>
         <div className="flex items-center gap-1.5">
           <Button variant="outline" size="sm" onClick={onCopy} disabled={shown.length === 0}>
             <Copy className="size-3.5" />

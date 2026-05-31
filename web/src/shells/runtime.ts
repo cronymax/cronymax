@@ -169,11 +169,13 @@ export interface LogChannelInfo {
   kind: string;
 }
 
-/** One rendered log line (matches Rust `LogEntry`). `t` (epoch ms) and
- *  `level` are present only for structured NDJSON channel logs. */
+/** One rendered log line (matches Rust `LogEntry`). `t` (epoch ms) is present
+ *  on all lines now; `level` only on leveled channel logs; `source` (stdout /
+ *  stderr / channel id) is set in merged views (`all` / `console`). */
 export interface LogEntry {
   t?: number;
   level?: string;
+  source?: string;
   text: string;
 }
 

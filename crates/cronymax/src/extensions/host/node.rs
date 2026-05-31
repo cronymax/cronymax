@@ -350,27 +350,63 @@ fn unix_socketpair() -> ExtensionResult<(i32, i32)> {
     Ok((host_fd, child_fd))
 }
 
+/// Drain a child stdout/stderr pipe, writing one NDJSON record `{t,msg}` per
+/// line to `sink`. Timestamping each line (epoch ms) is what lets the settings
+/// "Logs" tab merge console output with `createOutputChannel` channels into one
+/// time-ordered view. `None` sink (tests) just consumes the bytes. A write
+/// error is logged, never fatal — a stalled write would back the pipe up and
+/// hang the child.
 async fn drain_pipe<R>(mut reader: R, sink: Option<Arc<LogWriter>>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     use tokio::io::AsyncReadExt;
+    // Cap an unterminated line so a child that never emits `\n` can't grow the
+    // buffer without bound; flush it as one record at the cap.
+    const MAX_LINE: usize = 64 * 1024;
     let mut buf = [0u8; 4096];
+    let mut line = Vec::<u8>::new();
     loop {
         match reader.read(&mut buf).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                // Append raw bytes verbatim (the stream is plain text, not
-                // parsed — spec §2.1/§2.2). A write error (e.g. disk full)
-                // shouldn't kill the drain, or the pipe would back up and stall
-                // the child; log once and keep consuming.
-                if let Some(w) = sink.as_ref() {
-                    if let Err(e) = w.write_bytes(&buf[..n]) {
-                        tracing::warn!(error = %e, path = %w.path().display(), "extension log write failed");
-                    }
+                let Some(w) = sink.as_ref() else { continue };
+                line.extend_from_slice(&buf[..n]);
+                while let Some(pos) = line.iter().position(|&b| b == b'\n') {
+                    let mut rest = line.split_off(pos + 1);
+                    std::mem::swap(&mut line, &mut rest);
+                    write_log_line(w, &rest); // `rest` now holds the line incl. trailing \n
+                }
+                if line.len() > MAX_LINE {
+                    let whole = std::mem::take(&mut line);
+                    write_log_line(w, &whole);
                 }
             }
         }
+    }
+    // Flush any trailing partial line at EOF.
+    if let Some(w) = sink.as_ref() {
+        if !line.is_empty() {
+            write_log_line(w, &line);
+        }
+    }
+}
+
+/// Write one drained console line as an NDJSON record. Strips the trailing
+/// CR/LF, skips truly empty lines, and stamps `t` (epoch ms).
+fn write_log_line(w: &LogWriter, bytes: &[u8]) {
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.trim_end_matches(['\r', '\n']);
+    if text.is_empty() {
+        return;
+    }
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let record = serde_json::json!({ "t": t, "msg": text }).to_string();
+    if let Err(e) = w.write_line(&record) {
+        tracing::warn!(error = %e, path = %w.path().display(), "extension log write failed");
     }
 }
 
