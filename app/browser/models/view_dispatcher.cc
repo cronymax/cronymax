@@ -315,16 +315,6 @@ void ViewDispatcher::Wire() {
     return "{\"ok\":true}";
   };
 
-  // Rail "Close view": tear down a single open view (by "<extId>::<viewId>")
-  // without deactivating the extension.
-  sh.close_extension_view =
-      [this](const std::string& view_key) -> std::string {
-    if (view_key.empty() || !host_.close_extension_view)
-      return "{\"ok\":false}";
-    host_.close_extension_view(view_key);
-    return "{\"ok\":true}";
-  };
-
   sh.set_toolbar_state = [this, kind_from_string](
                              const std::string& tab_id,
                              const std::string& state_json) -> bool {

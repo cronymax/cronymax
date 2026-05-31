@@ -71,10 +71,6 @@ struct DispatcherHost {
   // Close an extension's open view tab(s)/dock and switch to the latest chat.
   // Invoked from the rail "Disable" action before the Rust deactivate.
   std::function<void(const std::string& ext_id)> close_extension_views;
-
-  // Close a single open operation view by its "<extId>::<viewId>" key without
-  // deactivating the extension. Invoked from the rail "Close view" action.
-  std::function<void(const std::string& view_key)> close_extension_view;
 };
 
 class ViewDispatcher {

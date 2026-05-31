@@ -141,20 +141,6 @@ void RightDockView::Hide() {
                           bv));
 }
 
-void RightDockView::Close() {
-  // Drop the loaded view so loaded_view_key() goes empty → the rail's open-set
-  // diff fires dispose. Navigate to about:blank first so the extension iframe
-  // is actually torn down (Hide alone keeps it alive, hidden).
-  current_view_key_.clear();
-  if (browser_view_) {
-    if (auto browser = browser_view_->GetBrowser()) {
-      if (auto frame = browser->GetMainFrame())
-        frame->LoadURL("about:blank");
-    }
-  }
-  Hide();  // collapses + clears the dock card's corner punches
-}
-
 void RightDockView::RoundCorners() {
   // Only meaningful while shown: the dock's WebContentsViewCocoa is hidden when
   // collapsed, so the mask installer can't find it then (and the mask persists

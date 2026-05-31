@@ -635,9 +635,6 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   disp_host.close_extension_views = [this](const std::string& ext_id) {
     CloseExtensionViews(ext_id);
   };
-  disp_host.close_extension_view = [this](const std::string& view_key) {
-    CloseExtensionView(view_key);
-  };
 
   dispatcher_ = std::make_unique<ViewDispatcher>(
       /*tabs_ctx=*/this, /*space_ctx=*/this,
@@ -1437,57 +1434,6 @@ void MainWindow::CloseExtensionViews(const std::string& ext_id) {
   }
   if (!target.empty())
     shell_model_.tabs_->Activate(target);
-
-  PushActiveViewToRail();
-}
-
-void MainWindow::CloseExtensionView(const std::string& view_key) {
-  if (!CefCurrentlyOn(TID_UI)) {
-    CefPostTask(TID_UI, base::BindOnce(
-                            [](CefRefPtr<MainWindow> self, std::string vk) {
-                              self->CloseExtensionView(vk);
-                            },
-                            CefRefPtr<MainWindow>(this), view_key));
-    return;
-  }
-  if (view_key.empty() || !shell_model_.tabs_)
-    return;
-
-  // Drop it from the dock if the dock currently has this view loaded (Close()
-  // navigates to about:blank so the iframe is truly torn down, not just hidden).
-  if (right_dock_view_obj_ &&
-      right_dock_view_obj_->loaded_view_key() == view_key) {
-    right_dock_view_obj_->Close();
-    if (body_panel_)
-      body_panel_->Layout();
-    right_dock_view_obj_->RoundCorners();
-    if (content_view_)
-      content_view_->RefreshCornerMasks();
-  }
-
-  // Close its main-area view tab if one is open.
-  if (const TabId id = shell_model_.tabs_->FindByMeta("ext_view", view_key);
-      !id.empty()) {
-    if (content_view_)
-      content_view_->RemoveCard(id);
-    shell_model_.tabs_->Close(id);
-    // If that was the active tab, fall back to the latest chat (or any tab) so
-    // the user isn't stranded on a blank content area.
-    if (shell_model_.tabs_->active_tab_id().empty()) {
-      TabId target;
-      for (const auto& s : shell_model_.tabs_->Snapshot()) {
-        if (s.kind == TabKind::kChat)
-          target = s.id;  // Snapshot is creation-ordered; keep the last chat.
-      }
-      if (target.empty()) {
-        const auto snap = shell_model_.tabs_->Snapshot();
-        if (!snap.empty())
-          target = snap.back().id;
-      }
-      if (!target.empty())
-        shell_model_.tabs_->Activate(target);
-    }
-  }
 
   PushActiveViewToRail();
 }

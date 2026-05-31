@@ -1260,27 +1260,4 @@ ext→视图 的投递在 **C++ 层早已通**:视图 iframe 用 `?surface=panel
 
 - **`show()` / 主动聚焦**:IDL `WebviewView` v1 仍未含 `show()`;需要时补 IDL + 平台聚焦路由(rail → 激活对应 tab / 展开 dock)。
 - **`onDidChangeVisibility` 的 dock-折叠粒度**:dock 收起(`Hide`)目前算 visible=false 是对的;但「主区 tab 切到后台」与「窗口失焦」未细分(VS Code 的 visible 还含窗口前台性),v1 不做。
-- ~~主区单 view 的关闭 UI~~ → ✅ 已补,见下「补:per-view 关闭视图入口」(2026-05-31)。最初这节只接了 dispose 管道没给用户入口,被指出后补全。
-
----
-
-## 补:per-view「关闭视图」入口(纠偏 2026-05-31)
-
-上面只接了 dispose 的管道 + open 差分,却把「用户怎么显式关一个 view」推成遗留 —— 等于 dispose 在主区只能靠停用整个扩展触发,没真正交付。这一段把入口补上:活动栏图标右键多一个 **「Close view」**(仅当该 view 当前开着时出现),点了就真销毁这个 view 的 iframe,触发 `onDidDispose`,**不**停用扩展。
-
-| 层 | 文件 | 改动 |
-|---|---|---|
-| C++ | `app/browser/views/right_dock_view.{h,cc}` | 新增 `Close()`:清 `current_view_key_` + dock browser 导航 `about:blank`(真销毁 iframe,不是 `Hide()` 的留活隐藏)+ 收起 |
-| C++ | `app/browser/main_window.{h,cc}` | 新增 `CloseExtensionView(view_key)`:关该 view 的主区 tab(`FindByMeta`→`RemoveCard`+`Close`,关掉的是 active 就退回最近 chat)+ dock 若载着它就 `Close()`;末尾 `PushActiveViewToRail()` → open 差分发 dispose |
-| C++ | `bridge_handler.h` / `view_dispatcher.{h,cc}` / `shells/ui.cc` | `close_extension_view` 回调 + `browser.shell.close_extension_view{view_key}` bridge route(镜像 `close_extension_views` 的单数版)|
-| web | `types/index.ts` / `shells/browser.ts` | `ShellCloseExtensionView{Payload,Response}Schema` + `close_extension_view` chan |
-| web | `panels/activitybar/App.tsx` | `openKeys` state(从 `open` 来,驱动菜单项可见性)+ `closeView` 回调(`shell.close_extension_view`)+ 右键菜单「Close view」项 |
-
-没动 Rust:dispose 仍走既有 `open` 差分 → `extension.view.dispose` → `dispose_view`,「关闭」只负责制造「iframe 被销毁」这个事实。
-
-验证:`npm --prefix web run typecheck` → 0;biome 我改的文件 0 warning;`cmake --build build --target cronymax_app cronymax_web_sync` → **APP_BUILD2_EXIT=0**(`main_window` / `right_dock_view` / `view_dispatcher` / `ui.cc` 重编 + 链接通过,web 同步进 bundle)。
-
-### 仍遗留
-
-- dock 视图本身没有右键菜单入口(右键挂在 rail 图标上,对主区 / dock 都生效;dock 内部的关闭按钮是另一个 UI 议题)。
-- 让 ext-view 进可关闭 tab 条(而非只在 rail 右键)是更大的 tab-model 改动,v1 不做。
+- **主区单 view 的关闭 UI**:ext-view tab 不进 tab 条,所以今天主区没有「关单个 view」的按钮 —— dispose 差分已就位,等后续给 rail 加「关闭视图」入口(或让 ext-view 进可关闭 tab 条)即自动生效。当前真实触发 dispose 的路径是 dock 导航换 view + 停用扩展。
