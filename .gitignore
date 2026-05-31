@@ -45,3 +45,6 @@ openspec/
 
 # Per-user Claude Code overrides (settings.json is shared, *.local.json is not)
 .claude/*.local.json
+
+# Locally-built test extension packages (cronymax ext package)
+dist-examples/

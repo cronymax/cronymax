@@ -1314,3 +1314,89 @@ ext→视图 的投递在 **C++ 层早已通**:视图 iframe 用 `?surface=panel
 **Phase 完成度(对照「任务总览」):** P0–P6 + P6.5 + P8 主体 ✅;P4.5 / P5 主体 ✅(各有推后小项);**操作视图 UI 层(rail + webview surfaces + 视图生命周期)本轮收尾 ✅**。未启动 / 待做:P7 `bytedance.coco` dogfood(卡外部 binary)、P9 扩展管理 UI(Settings 面板 / CLI 打包 / 模板仓)、P10 收尾 + Alpha。
 
 仍记在册的小遗留:`WebviewView.show()` / 主动聚焦(IDL v1 未含);visibility 的窗口失焦细分;主区单 view 关闭入口(产品决定先只给 dock)。
+
+---
+
+## P9-T04 扩展管理 UI + `.cmx` 包格式 + teardown 标准化(2026-05-31)
+
+P9 第一刀:设置面板的「Extensions」管理 tab(列表 / 启用 / 禁用 / 卸载 / 详情 / 安装),配套引入 `.cmx` 分发包格式 + 原生「选目录或 .cmx」选择器。随后处理 dogfood 暴露的「disable / 卸载时,正在使用的功能没被拆干净」问题,定下**「一个信号 + 两类处置」**的标准 teardown 模型并落地。
+
+### `.cmx` 包格式(决策)
+
+不照搬 VS Code `.vsix` 的 OPC/ZIP + `[Content_Types].xml` + XML manifest 那套 NuGet 历史包袱。`.cmx` = **纯 ZIP**,根目录直接放 `cronymax-extension.json` + `dist/` 等。两端自控 + manifest 本就是 JSON,所以扁平 ZIP 就是全部格式。后缀用 `.cmx`(不用任务卡里的 `.crx` —— 撞 Chrome 扩展包)。
+
+### 落地
+
+| 模块 | 状态 | 备注 |
+|---|---|---|
+| `extensions/package.rs` | ✅ | `pack_dir_to_cmx` / `unpack_cmx_to_dir`;zip-slip 防护(`enclosed_name`)、忽略 `.git`/`node_modules`/`.DS_Store`/`*.cmx`、单层嵌套兜底;5 单测 |
+| `ExtensionRegistry::install_from_path` | ✅ | 目录 → 直接装;`.cmx` → 解压到 registry 根下临时目录再复用现成 `install` |
+| `ExtensionRuntime` 管理方法 | ✅ | `list_installed` / `install_from` / `uninstall` / `set_enabled`(开→激活、关→停用)+ 组合根存 `SpawnConfigBuilder`(`activate_default`);启动激活 DRY 到同一条路径 |
+| 控制协议 | ✅ | `ExtensionList / ExtensionInstall{source} / ExtensionUninstall / ExtensionSetEnabled` + handler(`extension_ops.rs`)|
+| CLI | ✅ | `cronymax ext package <dir> [-o x.cmx]`;`install` 认目录 / `.cmx` |
+| C++ 原生选择器 | ✅ | `ShowExtensionInstallPicker`(NSOpenPanel,canChooseDirectories + canChooseFiles + allowedFileTypes=cmx)+ `browser.shell.pick_extension_source` 桥 |
+| web `extensionRegistry` 桥 | ✅ | `list/install/uninstall/setEnabled` + `InstalledExtension` 类型 |
+| web `ExtensionsTab` | ✅ | 列表 + 状态徽标(Active/Enabled/Disabled)+ 启用·禁用 + 卸载(二次确认)+ 行展开详情 + 「Install…」(选目录或 .cmx)|
+
+新增 workspace 依赖:`zip`(default-features off,只 `deflate`)、`tempfile`(从 dev-dep 提升)。
+
+### dogfood 反馈 → teardown 标准模型
+
+实测 disable / 卸载时,扩展贡献的「正在用的功能」没拆干净(典型:disable agent 扩展后 agent picker 仍列着它;disable 后已打开的 view 没关)。定下标准:
+
+**一个信号 + 两类处置**
+- **唯一信号**:`ExtensionRuntime::deactivate` 清空全部 typed registry 并 emit `extensions/contributions`。
+- **Category 1 列表型(声明式呈现)**:凡列出贡献的 UI 都订阅这一个信号并 reconcile。本轮补齐缺口:
+  - chat agent picker —— 之前没订阅 → disabled agent 残留;已修(订阅 + `setAgents` 在选中 agent 消失时回退默认,guard 防启动竞态误清)
+  - chat content-renderer hook —— 同样的洞,一起补
+  - activity-bar rail / 设置 Extensions tab —— 本就订阅 ✅
+- **Category 2 活跃句柄型**:显式拆除。
+  - 打开的操作视图(主区 tab → 回 chat / dock → 收起):设置面板 disable/卸载现在和 rail 一样调 `close_extension_views`
+  - `createWebviewPanel` 面板:`deactivate` 既有 `dispose_all_for` + PanelDisposed 事件 ✅
+  - **正在跑的 chat run(用着该扩展 agent)→ B(见下)**
+  - flow 引用该 provider → 下次跑硬报错(既有设计,不静默回退)
+
+### B:in-flight run 优雅终止(查出两个潜在 bug)
+
+disable 正在跑的 agent 扩展,实为两个 bug:
+1. **挂死**:`ext_dispatch` 事件循环 `while let Some(msg) = sink.recv()` 在 host 被杀后再无事件,但 sink 的 sender 一直挂在 router 里(循环结束才 `unregister`)→ run 永久挂住
+2. **误成功**:「无 `done` 事件就合成 success」的兜底,极端时机会把被中断的 run 误标成功
+
+修法:`AgentSessionRouter` 增 `owning_ext` 跟踪 + `close_all_for(ext_id)`;`deactivate` 在 `host.shutdown()` 前先关掉该扩展所有在飞 session 的 sink → 循环立刻 unwind → run 在 RPC 连接断开时**干净失败**(tokio mpsc 语义保证关闭前已 buffer 的 `turn.done` 仍会被 drain,所以真完成的 turn 不会被误判)。
+
+### A:平台驱动关视图 —— 验证后并入 P10
+
+原计划「`deactivate` emit `extensions/deactivated{ext_id}` → C++ 统一关视图」。验证发现**当前 UI 路径不需要**:设置面板是 overlay,与主窗口**共用同一 `client_handler_`**(`main_window.cc:999`),所以设置面板发的 `close_extension_views` 本就能到达主窗口关视图。A 唯一多出来的价值是「插件**崩溃**被自动停用时也关视图」,而崩溃自动停用尚未接线(属 P10 crash-recovery)。**A 并入 P10**(机制备忘:deactivate emit `extensions/deactivated{ext_id}`,C++ 订阅后调 `CloseExtensionViews`)。
+
+### 视觉
+
+enable/disable 之前俩都是同款 outline 按钮,无区分。改:禁用行描述列变暗(opacity-55)+ 底色 `bg-muted/30`;Enable 按钮变实心高亮(`variant=default`),Disable 保持 outline。
+
+### 验证
+
+- `cargo test -p cronymax --lib` → **541 passed**(含新增:package 5 + registry install_from_path 2 + runtime 管理 4 + `router_close_all_for…` 1)
+- 集成:`p1_acceptance` 4 / `p2_node_host_e2e` 3 / `p4_extension_runtime_e2e` 2(真 Node 26,含 deactivate 路径)
+- CLI 真机冒烟:`package → install(.cmx) → list → disable → uninstall` 全通,`node_modules` 正确排除
+- `cargo clippy -p cronymax --bins --lib --tests` → 0;`cargo fmt --check` → clean
+- web:`tsc -b` 0 errors;biome clean(我改的文件)
+- C++ app 构建 exit 0(`ui.cc` / `mac_folder_picker.mm` 编译通过);`cronymax_web_sync` 同步进 `.app`,B 已随 crony 重建生效
+
+测试 fixture:`cronymax ext package examples/panel-explorer`(声明式,含主区 + dock 两视图,测 disable 关视图)、`examples/echo-agent`(agent provider,测 picker reconcile + B 的 in-flight 终止)产出 `.cmx`(build 产物,未入库)。
+
+### Phase 完成度(P9-T04 接入后)
+
+| Phase | 完成 / 总数 | 状态 |
+|---|---|---|
+| Phase 0–6 + P6.5 | 同上 | ✅ 主体 |
+| Phase 4.5 / 5 / 8 | 主体 ✅ | 各有推后小项 |
+| 操作视图 UI 层 + 视图生命周期 | ✅ | 上一轮收尾 |
+| **Phase 9 SDK + 扩展管理 UI** | **T04 ✅(本轮)** | T04b 日志 tab / T05 `ext dev --watch` / T03 模板仓 / T06 通用性 checkpoint 待做(T05 `ext package` 本轮已含)|
+| Phase 7 coco dogfood | 未启动(卡 binary)| |
+| Phase 10 收尾 + Alpha | 未启动 | **新增并入项:A 平台驱动关视图(崩溃/自动停用时)** |
+
+### 仍记在册的遗留
+
+- **A**(平台驱动关视图)并入 P10 crash-recovery
+- B 的失败信息目前是 `session.prompt RPC failed: …`(连接断开),不是「agent 已禁用」的人话 —— 够用,要更友好需把停用原因透传进 dispatcher
+- 安装去重:同 id 已装时 `install` 原子失败报「已安装」,无 upgrade / reinstall 流程(v1 先这样)
+- `.cmx` 文件选择器 + 包格式仅 macOS 选择器侧验证;Windows `realpath`/picker 兜底留 P10
