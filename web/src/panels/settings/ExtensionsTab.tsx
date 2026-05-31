@@ -9,7 +9,17 @@
  * (`extensionRegistry`); the list refetches on the `extensions/contributions`
  * topic and on `runtime.reconnected`, mirroring the activity-bar rail.
  */
-import { Blocks, ChevronDown, ChevronRight, FolderInput, Loader2, Power, Trash2, TriangleAlert } from "lucide-react";
+import {
+  Blocks,
+  ChevronDown,
+  ChevronRight,
+  FolderInput,
+  Loader2,
+  Power,
+  ScrollText,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +34,7 @@ import { Caption } from "@/components/ui/typography";
 import { cn } from "@/lib/utils";
 import { browser, runtime, shells } from "@/shells/bridge";
 import { extensionRegistry, type InstalledExtension } from "@/shells/runtime";
+import { ExtensionLogsView } from "./ExtensionLogsView";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -65,11 +76,13 @@ function ExtensionRow({
   busy,
   onToggle,
   onUninstall,
+  onLogs,
 }: {
   ext: InstalledExtension;
   busy: boolean;
   onToggle: (ext: InstalledExtension) => void;
   onUninstall: (ext: InstalledExtension) => void;
+  onLogs: (ext: InstalledExtension) => void;
 }) {
   const [open, setOpen] = useState(false);
   const summary = summarizeContributes(ext.contributes);
@@ -114,6 +127,15 @@ function ExtensionRow({
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => onLogs(ext)}
+            title="View logs"
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <ScrollText className="size-3.5" />
+          </Button>
           <Button
             variant={ext.enabled ? "outline" : "default"}
             size="sm"
@@ -162,6 +184,8 @@ export function ExtensionsTab() {
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<InstalledExtension | null>(null);
+  // When set, the tab shows that extension's logs instead of the list.
+  const [logsFor, setLogsFor] = useState<InstalledExtension | null>(null);
 
   const refetch = useCallback(async () => {
     try {
@@ -242,6 +266,11 @@ export function ExtensionsTab() {
     }
   }, [refetch]);
 
+  // Per-extension logs view takes over the whole tab until dismissed.
+  if (logsFor) {
+    return <ExtensionLogsView ext={logsFor} onBack={() => setLogsFor(null)} />;
+  }
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center justify-between gap-3 px-4 pt-4 pb-2">
@@ -279,6 +308,7 @@ export function ExtensionsTab() {
               busy={busyIds.has(ext.id)}
               onToggle={onToggle}
               onUninstall={setPendingUninstall}
+              onLogs={setLogsFor}
             />
           ))
         )}

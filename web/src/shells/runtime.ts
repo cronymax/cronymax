@@ -160,6 +160,32 @@ export interface InstalledExtension {
   contributes: InstalledExtensionContributes;
 }
 
+/** One selectable log channel (matches Rust `LogChannelInfo`). */
+export interface LogChannelInfo {
+  /** Id passed back to `logRead` (`stdout` / `stderr` / a channel stem). */
+  id: string;
+  label: string;
+  /** `"stdout" | "stderr" | "channel"`. */
+  kind: string;
+}
+
+/** One rendered log line (matches Rust `LogEntry`). `t` (epoch ms) and
+ *  `level` are present only for structured NDJSON channel logs. */
+export interface LogEntry {
+  t?: number;
+  level?: string;
+  text: string;
+}
+
+/** Result of reading one channel (matches Rust `LogReadResult`). */
+export interface LogReadResult {
+  entries: LogEntry[];
+  /** True for NDJSON channel logs (carry `t`/`level`); false for raw stdout/stderr. */
+  structured: boolean;
+  /** True if older lines were dropped by the tail limit. */
+  truncated: boolean;
+}
+
 export const extensionRegistry = {
   async list(): Promise<{ extensions: InstalledExtension[] }> {
     return (await runtimeSend("extension.list")) as { extensions: InstalledExtension[] };
@@ -173,6 +199,24 @@ export const extensionRegistry = {
   },
   async setEnabled(extId: string, enabled: boolean): Promise<void> {
     await runtimeSend("extension.set_enabled", { ext_id: extId, enabled });
+  },
+  /** List an extension's log channels (stdout/stderr fallbacks + channels). */
+  async logChannels(extId: string): Promise<{ channels: LogChannelInfo[] }> {
+    return (await runtimeSend("extension.log_channels", { ext_id: extId })) as {
+      channels: LogChannelInfo[];
+    };
+  },
+  /** Read one channel, tail-bounded; `sinceMs` filters NDJSON by timestamp. */
+  async logRead(extId: string, channel: string, opts?: { sinceMs?: number; limit?: number }): Promise<LogReadResult> {
+    return (await runtimeSend("extension.log_read", {
+      ext_id: extId,
+      channel,
+      since_ms: opts?.sinceMs,
+      limit: opts?.limit,
+    })) as LogReadResult;
+  },
+  async logClear(extId: string, channel: string): Promise<void> {
+    await runtimeSend("extension.log_clear", { ext_id: extId, channel });
   },
 };
 
