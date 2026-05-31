@@ -1472,6 +1472,32 @@ P9-T04 teardown 的「Category 1 列表型 reconcile」当时只覆盖了 **agen
 ### 遗留 / 后续
 
 - **Open Log Folder / 导出 .log** 按钮:本 tab 暂未做,并入 **T05c**(需要一条「打开 logs 目录」的 shell 桥,web 不知道 `~` / session 路径)
-- 时段过滤对裸 stdout/stderr 无效(无逐行时间戳),只对 NDJSON channel 生效 —— 符合 spec v1「简版」
+- ~~时段过滤对裸 stdout/stderr 无效~~ → 下面的统一视图改造里把 console drain 也改成 NDJSON 带时间戳,时段过滤现已对所有来源生效
 - rotated `.log.N` 不进 channel 读取(只读 live `.log`),v1 够用
 - 端到端 smoke(启用扩展 → 产出日志 → tab 看到)待 DRI 重启 app 实测
+
+---
+
+## P9-T04b dogfood 复盘 + 修复串(2026-05-31,DRI 实测确认)
+
+T04b 初版 ship 后 DRI 连续实测,暴露 4 个问题,逐个定位修掉(全部 DRI 眼检确认 OK)。教训沉淀:**涉及「订阅 vs 事件」时序的 bug 不要用定时器/轮询绕**,要么 stream-then-snapshot,要么补抓;**别空口说修好,要么从设备数据(leveldb)确认,要么 DRI 实测确认**。
+
+| # | 现象 | 真因 | 修法 | commit |
+|---|---|---|---|---|
+| 1 | echo-permission 选中、禁用扩展后选择器仍停在它(尤其重启后) | model 选择**每个 chat 各存一份裸字符串**,无 provider 元数据;旧 reconcile 靠已被清成 null 的全局元数据判断,第一步就 bail。三处存储(live / 全局 / per-chat)只清了全局 | 改判「`state.model` 还在不在 `modelGroups`」(唯一可靠信号),三处一起清;两道防误清闸(LLM 列表已载 + 无 provider 正在 spawn);keyon `modelGroups` 避开 active-but-not-enumerated 空窗 | `e3fa975` |
+| 2 | echo-permission 发消息卡死、不弹权限框 | **订阅竞态**:run 先 `start.run` 跑起来、再订阅 `run:<id>`;echo 在 prompt() 第一步就 yield 权限,事件在订阅建立前发出且 topic 不回放 → ApprovalCard 不渲染 → echo 永久 park。内置工具审批在中后段、订阅早建好,故不卡 | 订阅后**补抓**一次该 run 的 pending 审批(`getSessionPendingActions`),按 trust 模式自动批/弹框;幂等 | `a12d7a4` |
+| 3 | 日志「没输出」 + log/error 分开看不方便 | echo 只用 createOutputChannel、不写 console,默认选的 stdout 是空的;且 stdout/stderr 分两个 channel | 重做成**统一「All output」视图**:console drain 改成 NDJSON 带时间戳 → stdout+stderr+所有 channel 合并时间排序、每行带 source 标签;默认进 All output;加文本过滤 + 保留 level/时段 | `3578e50` |
+| 4 | 启用的 provider 冷启动后不在选择器里(关开一次才出现) | **启动激活竞态**:扩展 boot 后异步激活、发 `extensions/contributions` 时 chat 还在挂载/proxy 还在连;topic 不回放,事件丢 → 目录没刷。旧代码 refetch 和 subscribe 在两个 effect 里,reconnect 时顺序不保证留了缝 | **stream-then-snapshot**:同一步内先建监听、紧接着拉一次目录(无缝、无轮询)。中途先用 +1s/+3s 定时器轮询过(被 DRI 正确指出是偷懒),已撤换正解 | `453b8e6`→`baefc11` |
+
+配套:`6b7e42e` 给 echo-agent 补每轮日志(prompt/permission/streaming/done,info/warn/debug 多级别),让 Logs tab 有真实多行可看、能验证过滤。
+
+### 验证
+
+- `cargo test -p cronymax --lib` → 546 passed(含日志合并读单测);`p2/p4/p6` 真 Node host e2e 全过;clippy/fmt clean
+- web `tsc -b` 0 错;biome clean;`cronymax_app` + `cronymax_web_sync` 构建同步进 .app
+- **DRI 逐项实测确认**:model 回退 default ✅ / 权限框正常弹 ✅ / 统一日志可看可过滤 ✅ / provider 冷启动即出现 ✅
+
+### 仍记在册
+
+- 退出 app 时残留 ~10+ 个旧 session 的 node host 进程未回收(host 生命周期清理缺口)—— 与本串无关,留 **P10 crash-recovery / lifecycle**
+- Open Log Folder / 导出 .log 仍并入 T05c
