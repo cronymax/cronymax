@@ -80,6 +80,7 @@ import {
   loadFlowsList,
   loadReasoningEffort,
   loadSelectedModel,
+  loadSelectedModelProvider,
   persistAnthropicEffort,
   persistChatData,
   persistReasoningEffort,
@@ -1255,6 +1256,39 @@ export function App() {
     return () => {
       cancelled = true;
     };
+  }, [state.agents]);
+
+  // Reset the model selection when the extension provider backing the
+  // currently-selected model leaves the agent catalog (disabled / uninstalled
+  // — live OR after a restart). The picker trigger renders `state.model`
+  // verbatim, so without this a gone extension's model (e.g. echo-agent's
+  // "echo-permission") lingers as the displayed selection.
+  //
+  // Keys on the persisted provider's `agent_id` and the agent catalog
+  // (`state.agents`, the same source that reconciles on
+  // `extensions/contributions`) rather than the async-`enumerate`d
+  // `modelGroups`, and fires only on a genuine present→absent transition. The
+  // `null` first-observation never resets, so the startup-activation window
+  // (an enabled provider not spawned yet) can't clobber a valid restored
+  // selection. Mirrors the `agentId` reset in `setAgents`.
+  const selectedModelRef = useRef(state.model);
+  selectedModelRef.current = state.model;
+  const providerPresentRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const prov = loadSelectedModelProvider();
+    const agentId = prov && prov.kind === "extension" ? prov.agent_id : null;
+    if (!agentId) {
+      providerPresentRef.current = null;
+      return;
+    }
+    const present = state.agents.some((a) => a.name === agentId);
+    const wasPresent = providerPresentRef.current;
+    providerPresentRef.current = present;
+    if (wasPresent === true && !present && selectedModelRef.current) {
+      dispatch({ type: "setModel", model: "" });
+      persistSelectedModel("");
+      persistSelectedModelProvider(null);
+    }
   }, [state.agents]);
 
   // ── ensure terminal session for this chat tab ─────────────────────────
@@ -2875,6 +2909,28 @@ export function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch, state.runningBlockId]);
+
+  // ── extension catalog reconcile ──────────────────────────────────────────
+  // The runtime emits a single `extensions/contributions` signal whenever an
+  // extension activates/deactivates (install / enable / disable / uninstall,
+  // from anywhere). Refetch the agent catalog so a disabled extension's agent
+  // provider stops lingering in the picker; `setAgents` resets the selection
+  // if the chosen agent vanished. Mirrors the activity-bar rail. Re-subscribes
+  // on reconnect since `runtime.on` no-ops until the proxy is attached.
+  useEffect(() => {
+    let off: (() => void) | null = null;
+    const subscribe = () => {
+      off?.();
+      off = runtime.on("extensions/contributions", () => void refreshAgents());
+    };
+    subscribe();
+    const offReconnect = browser.on("runtime.reconnected", () => subscribe());
+    return () => {
+      off?.();
+      offReconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const onShellAction = (action: string, block: ShellBlock) => {
     // Spawn a thread on the block by running a prompt with context

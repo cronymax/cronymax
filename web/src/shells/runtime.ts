@@ -126,6 +126,57 @@ export const contributionRegistry = {
 };
 
 // ---------------------------------------------------------------------------
+// Extension management (settings panel → Extensions tab)
+// ---------------------------------------------------------------------------
+
+/** Per-extension contribution counts (matches Rust `ContributesSummary`). */
+export interface InstalledExtensionContributes {
+  commands: number;
+  agent_providers: number;
+  content_renderers: number;
+  sidebar_views: number;
+  config_pages: number;
+  has_config_schema: boolean;
+}
+
+/** One installed extension (matches Rust `InstalledExtensionInfo`). Field
+ *  names are snake_case to match the serde-serialized payload. */
+export interface InstalledExtension {
+  id: string;
+  name: string;
+  version: string;
+  publisher: string;
+  description: string | null;
+  /** Icon path relative to the extension dir, if declared. */
+  icon: string | null;
+  /** Persisted enable flag. */
+  enabled: boolean;
+  /** Whether a live activation record currently exists. */
+  active: boolean;
+  /** Host-backed (`main` declared) vs declarative-only. */
+  has_main: boolean;
+  installed_at: number;
+  ext_dir: string;
+  contributes: InstalledExtensionContributes;
+}
+
+export const extensionRegistry = {
+  async list(): Promise<{ extensions: InstalledExtension[] }> {
+    return (await runtimeSend("extension.list")) as { extensions: InstalledExtension[] };
+  },
+  /** Install from a directory or a `.cmx` archive path. */
+  async install(source: string): Promise<{ id: string }> {
+    return (await runtimeSend("extension.install", { source })) as { id: string };
+  },
+  async uninstall(extId: string): Promise<void> {
+    await runtimeSend("extension.uninstall", { ext_id: extId });
+  },
+  async setEnabled(extId: string, enabled: boolean): Promise<void> {
+    await runtimeSend("extension.set_enabled", { ext_id: extId, enabled });
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Flow helpers
 // ---------------------------------------------------------------------------
 

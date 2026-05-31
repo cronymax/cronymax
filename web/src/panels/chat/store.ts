@@ -867,11 +867,20 @@ function reducer(state: State, action: Action): State {
     case "setPinnedBlockId":
       return { ...state, pinnedBlockId: action.blockId };
 
-    case "setAgents":
-      return {
-        ...state,
-        agents: action.agents,
-      };
+    case "setAgents": {
+      // Reset the selection only when the selected agent *genuinely vanished*
+      // — it was in the previous list and is gone now (e.g. its extension was
+      // disabled / uninstalled). Guarding on the old list avoids clobbering a
+      // valid selection during the startup race where `agentId` is restored
+      // before the catalog first loads. Fallback prefers the builtin "Chat".
+      const newNames = new Set(action.agents.map((a) => a.name));
+      const oldNames = new Set(state.agents.map((a) => a.name));
+      let agentId = state.agentId;
+      if (agentId && oldNames.has(agentId) && !newNames.has(agentId)) {
+        agentId = newNames.has("Chat") ? "Chat" : (action.agents[0]?.name ?? "");
+      }
+      return { ...state, agents: action.agents, agentId };
+    }
 
     case "setFlows":
       return { ...state, flows: action.flows, selectedFlow: action.selected };

@@ -9,7 +9,7 @@
 // chat-panel mount time fall back to the default code block. P10 hardening.
 
 import { useEffect, useRef, useState } from "react";
-import { browser } from "../../shells/bridge";
+import { browser, runtime } from "../../shells/bridge";
 import { type ContributionDescriptor, ContributionKind, contributionRegistry } from "../../shells/runtime";
 
 export interface ExtensionRenderer {
@@ -101,13 +101,25 @@ export function useExtensionRendererRegistry(): ExtensionRenderer[] {
       initialFetched.current = true;
       void refetch();
     }
+    // Reconcile on every extension activate/deactivate so a disabled
+    // extension's renderer stops matching new fenced blocks (mirrors the
+    // rail / agent picker). `runtime.on` no-ops until the proxy attaches, so
+    // re-subscribe on reconnect.
+    let offContrib: (() => void) | null = null;
+    const subscribeContrib = () => {
+      offContrib?.();
+      offContrib = runtime.on("extensions/contributions", () => void refetch());
+    };
+    subscribeContrib();
     const off = browser.on("runtime.reconnected", () => {
       void refetch();
+      subscribeContrib();
     });
 
     return () => {
       cancelled = true;
       off();
+      offContrib?.();
     };
   }, []);
 

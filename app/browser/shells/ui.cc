@@ -12,6 +12,8 @@
 #include <nlohmann/json.hpp>
 #include "include/cef_app.h"
 
+#include "browser/platform/mac_folder_picker.h"
+
 namespace cronymax {
 
 static inline nlohmann::json ParseShellCbResult(const std::string& s) {
@@ -383,6 +385,18 @@ void RegisterShellHandlers(BridgeRegistry& r, BridgeHandler* h) {
     if (h->shell_cbs_.close_overlay)
       h->shell_cbs_.close_overlay();
     ctx.callback->Success(nlohmann::json{{"ok", true}});
+  });
+
+  // ── browser.shell.pick_extension_source ──────────────────────────────────
+  // Native picker for the settings "Extensions" tab "Install" action.
+  // Accepts an extension directory OR a `.cmx` package; resolves async with
+  // `{path}` ("" on cancel). The `BridgeCallback` is a shared_ptr captured by
+  // the completion handler, so it stays alive across the modal.
+  r.add("browser.shell.pick_extension_source", [](BridgeCtx ctx) {
+    auto cb = ctx.callback;
+    ShowExtensionInstallPicker([cb](const std::string& path) {
+      cb->Success(nlohmann::json{{"path", path}});
+    });
   });
 
   // ── browser.theme.get ─────────────────────────────────────────────────────

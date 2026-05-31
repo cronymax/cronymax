@@ -150,6 +150,13 @@ export const Channels = {
       }),
       // Close the modal overlay (e.g. Settings OVERLAY opened from titlebar).
       close_overlay: chan({ req: EmptySchema, res: EmptySchema }),
+      // Native picker for the settings Extensions tab "Install" action.
+      // Accepts an extension directory OR a `.cmx` package; `path` is "" on
+      // cancel.
+      pick_extension_source: chan({
+        req: EmptySchema,
+        res: z.object({ path: z.string() }),
+      }),
     },
 
     // refine-ui-theme-layout: theme persistence + system follow

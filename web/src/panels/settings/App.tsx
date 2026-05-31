@@ -9,7 +9,7 @@
  *   Flows      — visual agent-flow editor
  *   Runner     — legacy ReAct runner (terminal Explain/Fix/Retry target)
  */
-import { Check, Palette, Play, Plug, ShieldCheck, Wrench, X } from "lucide-react";
+import { Blocks, Check, Palette, Play, Plug, ShieldCheck, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { PanelWindowHeader } from "@/components/PanelWindowHeader";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FieldLabel, Heading } from "@/components/ui/typography";
 import { shells } from "@/shells/bridge";
 import { AppearanceTab } from "./AppearanceTab";
+import { ExtensionsTab } from "./ExtensionsTab";
 import { MaintenanceTab } from "./MaintenanceTab";
 import { ProfilesTab } from "./ProfilesTab";
 import { ProvidersTab } from "./ProvidersTab";
@@ -41,6 +42,7 @@ type SettingsTab =
   | "profiles"
   | "flows"
   | "runner"
+  | "extensions"
   | "maintenance";
 
 // ── shared Field ──────────────────────────────────────────────────────────
@@ -93,6 +95,7 @@ const TAB_LABELS: { id: SettingsTab; label: string; icon: typeof Palette }[] = [
   { id: "providers", label: "Providers", icon: Plug },
   { id: "profiles", label: "Profiles", icon: ShieldCheck },
   { id: "runner", label: "Runner", icon: Play },
+  { id: "extensions", label: "Extensions", icon: Blocks },
   { id: "maintenance", label: "Maintenance", icon: Wrench },
 ];
 
@@ -194,6 +197,9 @@ export function App() {
         </TabsContent>
         <TabsContent value="runner" className="flex-1 overflow-y-auto data-[state=inactive]:hidden">
           <RunnerTab />
+        </TabsContent>
+        <TabsContent value="extensions" className="flex-1 overflow-hidden data-[state=inactive]:hidden">
+          <ExtensionsTab />
         </TabsContent>
         <TabsContent value="maintenance" className="flex-1 overflow-y-auto data-[state=inactive]:hidden">
           <MaintenanceTab />
