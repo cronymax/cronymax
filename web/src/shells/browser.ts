@@ -106,6 +106,10 @@ export const Channels = {
         req: z.object({ url: z.string() }),
         res: EmptySchema,
       }),
+      reveal_path: chan({
+        req: z.object({ path: z.string() }),
+        res: EmptySchema,
+      }),
       window_drag: chan({ req: EmptySchema, res: EmptySchema }),
       tabs_list: chan({ req: EmptySchema, res: TabsListSnapshotSchema }),
       tab_new: chan({

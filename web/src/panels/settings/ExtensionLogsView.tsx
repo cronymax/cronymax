@@ -9,13 +9,14 @@
  * view. Data comes from the `extension.log_*` control requests; the view polls
  * every 2s while open so live output appears, auto-scrolling when at the bottom.
  */
-import { ArrowLeft, Copy, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, Copy, FolderOpen, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Caption } from "@/components/ui/typography";
 import { cn } from "@/lib/utils";
+import { shells } from "@/shells/bridge";
 import { extensionRegistry, type LogChannelInfo, type LogEntry } from "@/shells/runtime";
 
 const TIME_WINDOWS = [
@@ -151,6 +152,21 @@ export function ExtensionLogsView({ ext, onBack }: { ext: { id: string; name: st
     void navigator.clipboard?.writeText(text).catch(() => undefined);
   }, [shown, isMerged]);
 
+  // Resolve the on-disk log folder (platform owns the session path) and open
+  // it in Finder via the native reveal bridge.
+  const onOpenFolder = useCallback(() => {
+    void (async () => {
+      try {
+        const { path } = await extensionRegistry.logFolder(ext.id);
+        if (path) await shells.browser.shell.reveal_path({ path });
+      } catch (e) {
+        // No active log session (headless) — surface, don't swallow silently.
+        // eslint-disable-next-line no-console
+        console.error("[logs] open folder failed", e);
+      }
+    })();
+  }, [ext.id]);
+
   return (
     <div className="flex h-full flex-col">
       {/* header */}
@@ -256,6 +272,10 @@ export function ExtensionLogsView({ ext, onBack }: { ext: { id: string; name: st
           {query.trim() || level !== "all" || timeWindow !== "all" ? " (filtered)" : ""}
         </Caption>
         <div className="flex items-center gap-1.5">
+          <Button variant="outline" size="sm" onClick={onOpenFolder} title="Open this extension's log folder in Finder">
+            <FolderOpen className="size-3.5" />
+            Open folder
+          </Button>
           <Button variant="outline" size="sm" onClick={onCopy} disabled={shown.length === 0}>
             <Copy className="size-3.5" />
             Copy

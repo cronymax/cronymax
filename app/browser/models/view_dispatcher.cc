@@ -148,6 +148,7 @@ void ViewDispatcher::Wire() {
 
 #if defined(__APPLE__)
   sh.open_external = [](const std::string& url) { OpenUrlExternal(url); };
+  sh.reveal_path = [](const std::string& path) { RevealPathInFinder(path); };
 #endif
 
   sh.reload = [this]() {

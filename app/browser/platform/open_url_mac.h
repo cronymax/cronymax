@@ -12,4 +12,11 @@ namespace cronymax {
 // Must be called from the main thread.
 void OpenUrlExternal(const std::string& url);
 
+// Reveal `path` in Finder: opens the folder when `path` is a directory, or
+// selects the file in its parent folder otherwise. `path` is a filesystem
+// path (not a URL); encoding is handled internally. Used by the settings
+// "Logs" tab "Open folder" button. Safe to call from any thread (hops to the
+// main queue).
+void RevealPathInFinder(const std::string& path);
+
 }  // namespace cronymax

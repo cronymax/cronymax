@@ -112,6 +112,9 @@ struct ShellCallbacks {
   // Open a URL in the user's default system browser (not in the app).
   // Used for OAuth flows where the app must not navigate its own popover.
   std::function<void(const std::string& url)> open_external;
+  // Reveal a filesystem path in Finder (open folder / select file). Used by
+  // the settings "Logs" tab "Open folder" button.
+  std::function<void(const std::string& path)> reveal_path;
   // Restart the terminal panel (clears blocks + restarts PTY)
   std::function<void()> terminal_restart;
   // Begin a native window drag (used by web chrome to make blank areas

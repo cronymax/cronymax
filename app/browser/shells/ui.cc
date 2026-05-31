@@ -324,6 +324,16 @@ void RegisterShellHandlers(BridgeRegistry& r, BridgeHandler* h) {
     ctx.callback->Success(nlohmann::json{{"ok", true}});
   });
 
+  // ── browser.shell.reveal_path ─────────────────────────────────────────────
+  r.add("browser.shell.reveal_path", [h](BridgeCtx ctx) {
+    const std::string path = ctx.payload.is_object()
+                                 ? ctx.payload.value("path", std::string{})
+                                 : std::string{};
+    if (!path.empty() && h->shell_cbs_.reveal_path)
+      h->shell_cbs_.reveal_path(path);
+    ctx.callback->Success(nlohmann::json{{"ok", true}});
+  });
+
   // ── browser.shell.popover_close ───────────────────────────────────────────
   r.add("browser.shell.popover_close", [h](BridgeCtx ctx) {
     // Forward the calling browser_id so PanelWindow can match a panel

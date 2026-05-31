@@ -346,4 +346,25 @@ impl RuntimeHandler {
             },
         }
     }
+
+    pub(super) async fn handle_extension_log_folder(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::ExtensionLogFolder { ext_id } = req else {
+            unreachable!()
+        };
+        match self
+            .services
+            .extensions
+            .as_ref()
+            .and_then(|rt| rt.log_folder(&ext_id))
+        {
+            Some(path) => ControlResponse::Data {
+                payload: serde_json::json!({ "path": path.to_string_lossy() }),
+            },
+            None => ControlResponse::Err {
+                error: ControlError::InvalidRequest {
+                    message: "no active log session".to_owned(),
+                },
+            },
+        }
+    }
 }

@@ -220,6 +220,11 @@ export const extensionRegistry = {
   async logClear(extId: string, channel: string): Promise<void> {
     await runtimeSend("extension.log_clear", { ext_id: extId, channel });
   },
+  /** Resolve the on-disk log folder for an extension (the "Logs" tab "Open
+   *  folder" button). Hand the returned `path` to `shells.browser.shell.reveal_path`. */
+  async logFolder(extId: string): Promise<{ path: string }> {
+    return (await runtimeSend("extension.log_folder", { ext_id: extId })) as { path: string };
+  },
 };
 
 // ---------------------------------------------------------------------------

@@ -395,6 +395,21 @@ impl ExtensionRuntime {
         }
     }
 
+    /// Absolute on-disk log folder for `ext_id` (the settings "Logs" tab
+    /// "Open folder" button). Returns the per-extension dir when it exists,
+    /// else the session root (always present) so the action lands somewhere
+    /// real. `None` without a log manager (tests / headless).
+    pub fn log_folder(&self, ext_id: &str) -> Option<PathBuf> {
+        self.log_manager().map(|lm| {
+            let ext = lm.ext_dir(ext_id);
+            if ext.is_dir() {
+                ext
+            } else {
+                lm.session_dir()
+            }
+        })
+    }
+
     /// L1.5 platform-event bus. Chat / tool dispatch sites call
     /// [`EventBus::emit_from_platform`] on this to fan out
     /// `cronymax.*` topics to subscribed extensions.
@@ -4178,5 +4193,26 @@ mod tests {
         runtime.set_enabled("erin.eee", true).await.unwrap();
         assert!(runtime.is_activated("erin.eee"));
         assert!(runtime.list_installed()[0].enabled);
+    }
+
+    #[test]
+    fn log_folder_resolves_ext_dir_then_session_then_none() {
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        // No log manager installed (headless / tests) → None.
+        assert!(runtime.log_folder("frank.fff").is_none());
+
+        let root = tempfile::TempDir::new().unwrap();
+        let lm = Arc::new(LogManager::new_session(root.path()).unwrap());
+        let session_dir = lm.session_dir();
+        let ext_dir = lm.ext_dir("frank.fff");
+        runtime.set_log_manager(lm);
+
+        // Before the extension has logged, its dir doesn't exist yet → fall
+        // back to the session root (always present).
+        assert_eq!(runtime.log_folder("frank.fff").unwrap(), session_dir);
+
+        // Once the per-extension dir exists, it's preferred.
+        std::fs::create_dir_all(&ext_dir).unwrap();
+        assert_eq!(runtime.log_folder("frank.fff").unwrap(), ext_dir);
     }
 }

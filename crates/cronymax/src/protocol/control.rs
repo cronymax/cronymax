@@ -546,6 +546,15 @@ pub enum ControlRequest {
         channel: String,
     },
 
+    /// Resolve the absolute on-disk log folder for `ext_id` (the "Logs" tab
+    /// "Open folder" button). Returns the per-extension dir if present, else
+    /// the session root. Returns `Data { payload: { path: String } }`, or an
+    /// error when no log session is active. The web hands `path` to the native
+    /// `browser.shell.reveal_path` bridge to open it in Finder.
+    ExtensionLogFolder {
+        ext_id: String,
+    },
+
     /// Request changes on a pending document review in a flow run.
     /// Calls `FlowRuntime::write_review_comments` +
     /// `FlowRuntime::on_rejected_requeue` and re-spawns the producing node.
