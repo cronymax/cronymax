@@ -3009,33 +3009,27 @@ export function App() {
   // on reconnect since `runtime.on` no-ops until the proxy is attached.
   useEffect(() => {
     let off: (() => void) | null = null;
-    const timers: number[] = [];
+    // Stream-then-snapshot, atomically. Extensions activate asynchronously
+    // after boot and emit `extensions/contributions` around the time the chat
+    // is still mounting / the runtime proxy is attaching; the topic doesn't
+    // replay, so a snapshot taken *before* the listener is registered can miss
+    // an activation that lands in between — which is why a freshly-enabled
+    // provider only showed up after a live disable/re-enable. Establishing the
+    // listener FIRST and then refetching in the same step closes that gap: the
+    // listener captures every change from here on, and the refetch captures
+    // whatever is already active. (The previous code refetched and subscribed
+    // in two separate effects, so their order on reconnect wasn't guaranteed —
+    // that ordering gap was the bug.)
     const subscribe = () => {
       off?.();
       off = runtime.on("extensions/contributions", () => void refreshAgents());
-      // Catch-up for the startup-activation race: extensions activate
-      // asynchronously after the app boots and emit their
-      // `extensions/contributions` event around the time the chat is still
-      // mounting / the runtime proxy is attaching. That event doesn't replay,
-      // so if it fires before this listener is registered it's lost and an
-      // enabled provider never shows up in the picker (the DRI hit exactly
-      // this — a freshly-enabled provider only appeared after a live
-      // disable/re-enable). Refetch right after (re)subscribing so the
-      // listener captures all *future* events while these snapshots capture
-      // anything that already activated; the delayed retries cover activation
-      // that completes shortly after the runtime comes up (Node host spawn +
-      // handshake takes a beat).
-      for (const t of timers.splice(0)) window.clearTimeout(t);
       void refreshAgents();
-      timers.push(window.setTimeout(() => void refreshAgents(), 1000));
-      timers.push(window.setTimeout(() => void refreshAgents(), 3000));
     };
     subscribe();
     const offReconnect = browser.on("runtime.reconnected", () => subscribe());
     return () => {
       off?.();
       offReconnect();
-      for (const t of timers) window.clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
