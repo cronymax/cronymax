@@ -318,6 +318,16 @@ impl Handler for RuntimeHandler {
             req @ ControlRequest::ExtensionViewDispose { .. } => {
                 self.handle_extension_view_dispose(req).await
             }
+            req @ ControlRequest::ExtensionList { .. } => self.handle_extension_list(req).await,
+            req @ ControlRequest::ExtensionInstall { .. } => {
+                self.handle_extension_install(req).await
+            }
+            req @ ControlRequest::ExtensionUninstall { .. } => {
+                self.handle_extension_uninstall(req).await
+            }
+            req @ ControlRequest::ExtensionSetEnabled { .. } => {
+                self.handle_extension_set_enabled(req).await
+            }
             req @ ControlRequest::FlowSaveYaml { .. } => self.handle_flow_save_yaml(req).await,
             req @ ControlRequest::FlowSaveLayout { .. } => self.handle_flow_save_layout(req).await,
             req @ ControlRequest::BlackboardInject { .. } => {

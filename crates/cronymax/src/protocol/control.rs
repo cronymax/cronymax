@@ -487,6 +487,35 @@ pub enum ControlRequest {
         view_id: String,
     },
 
+    // ── Extension management (settings panel → Extensions tab) ──────────────
+    /// Snapshot every installed extension (enabled or not) for the
+    /// settings management UI. Returns
+    /// `Data { payload: { extensions: [InstalledExtensionInfo] } }`.
+    ExtensionList {},
+
+    /// Install an extension from a local **directory** or a **`.cmx`**
+    /// archive (`source` is the path the native folder/file picker
+    /// returned). A `.cmx` is unpacked to a temp dir then installed like a
+    /// directory; the source is copied into the managed registry root.
+    /// On success the extension is activated. Returns
+    /// `Data { payload: { id: String } }`.
+    ExtensionInstall {
+        source: String,
+    },
+
+    /// Uninstall an extension: deactivate it (if active), then remove its
+    /// install dir + registry entry. Returns `Ack`.
+    ExtensionUninstall {
+        ext_id: String,
+    },
+
+    /// Flip an extension's persisted enable flag and reconcile live state
+    /// (enable → activate, disable → deactivate). Returns `Ack`.
+    ExtensionSetEnabled {
+        ext_id: String,
+        enabled: bool,
+    },
+
     /// Request changes on a pending document review in a flow run.
     /// Calls `FlowRuntime::write_review_comments` +
     /// `FlowRuntime::on_rejected_requeue` and re-spawns the producing node.

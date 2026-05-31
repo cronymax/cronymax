@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use tempfile::TempDir;
 use walkdir::WalkDir;
 
 use super::error::{ExtensionError, ExtensionResult};
@@ -260,6 +261,32 @@ impl ExtensionRegistry {
         Ok(self.entries.get(&id).expect("just inserted"))
     }
 
+    /// Install from either an extension **directory** or a **`.cmx`**
+    /// archive. A `.cmx` is unpacked into a temp dir (which lives only for
+    /// the duration of this call — [`install`][Self::install] copies its
+    /// contents into the registry) and then installed exactly like a
+    /// directory. Returns the installed extension id.
+    pub fn install_from_path(&mut self, source: &Path) -> ExtensionResult<String> {
+        if super::package::is_cmx_path(source) {
+            if !source.is_file() {
+                return Err(ExtensionError::Package(format!(
+                    "`.cmx` archive not found: {}",
+                    source.display()
+                )));
+            }
+            // Stage under the registry root so the copy in `install` is a
+            // same-filesystem move-equivalent and the temp dir is cleaned up
+            // even if install fails.
+            let staging = TempDir::new_in(&self.root)?;
+            let manifest_dir = super::package::unpack_cmx_to_dir(source, staging.path())?;
+            let entry = self.install(&manifest_dir)?;
+            Ok(entry.manifest.id.clone())
+        } else {
+            let entry = self.install(source)?;
+            Ok(entry.manifest.id.clone())
+        }
+    }
+
     /// Remove the extension's install dir and its registry entry.
     pub fn uninstall(&mut self, id: &str) -> ExtensionResult<()> {
         let entry = self
@@ -428,6 +455,40 @@ mod tests {
         // registry.json has it
         assert!(reg_root.path().join("registry.json").is_file());
         assert_eq!(reg.iter().count(), 1);
+        assert!(reg.get("alice.foo").is_some());
+    }
+
+    #[test]
+    fn install_from_path_accepts_a_cmx_archive() {
+        let reg_root = TempDir::new().unwrap();
+        let src = TempDir::new().unwrap();
+        write_minimal_source(src.path(), "alice.foo", "alice", "0.1.0");
+
+        // Pack the source into a `.cmx`, then install from the archive.
+        let out = TempDir::new().unwrap();
+        let cmx = out.path().join("alice.foo.cmx");
+        super::super::package::pack_dir_to_cmx(src.path(), &cmx).unwrap();
+
+        let mut reg = ExtensionRegistry::new(reg_root.path());
+        let id = reg.install_from_path(&cmx).unwrap();
+        assert_eq!(id, "alice.foo");
+        assert!(reg_root
+            .path()
+            .join("alice.foo/cronymax-extension.json")
+            .is_file());
+        assert!(reg_root.path().join("alice.foo/dist/main.js").is_file());
+        assert!(reg.get("alice.foo").is_some());
+    }
+
+    #[test]
+    fn install_from_path_accepts_a_directory() {
+        let reg_root = TempDir::new().unwrap();
+        let src = TempDir::new().unwrap();
+        write_minimal_source(src.path(), "alice.foo", "alice", "0.1.0");
+
+        let mut reg = ExtensionRegistry::new(reg_root.path());
+        let id = reg.install_from_path(src.path()).unwrap();
+        assert_eq!(id, "alice.foo");
         assert!(reg.get("alice.foo").is_some());
     }
 

@@ -19,9 +19,10 @@ use parking_lot::Mutex;
 use crate::capability::factory::{CapabilityFactory, DefaultCapabilityFactory};
 use crate::config::RuntimeConfig;
 use crate::extensions::host::node::SpawnConfig;
+use crate::extensions::runtime::SpawnConfigBuilder;
 use crate::extensions::{
     default_bundled_bootstrap, default_bundled_node, default_registry_root, ExtensionRegistry,
-    ExtensionRuntime,
+    ExtensionRuntime, Manifest,
 };
 use crate::flow::{FlowRuntimeOnCreate, FlowRuntimeRegistry};
 use crate::llm::factory::{DefaultLlmProviderFactory, LlmProviderFactory};
@@ -121,6 +122,16 @@ impl RuntimeServices {
                 .map(|e| e.manifest.id.clone())
                 .collect();
             let runtime = ExtensionRuntime::new(extension_registry);
+
+            // Install the spawn-config factory so the runtime can self-activate
+            // extensions from management actions (install / enable) and at
+            // startup, without each path re-deriving bundled-Node / bootstrap /
+            // storage paths. `None` when bundled Node/bootstrap are missing —
+            // host-backed activation then errors gracefully (declarative-only
+            // extensions still activate).
+            if let Some(builder) = build_spawn_config_builder() {
+                runtime.set_spawn_config_builder(builder);
+            }
 
             // Bridge webview registry events into the authority's
             // "extensions/webview" topic so the C++ BridgeHandler can
@@ -228,6 +239,55 @@ impl RuntimeServices {
 /// Requires a tokio runtime in scope; in environments without one
 /// (e.g. the synchronous `Runtime::new` unit tests in `lifecycle.rs`)
 /// this becomes a no-op so we don't panic at composition time.
+/// Build the composition-root [`SpawnConfigBuilder`]: resolves the bundled
+/// Node 26 binary, `bootstrap.js`, and `$HOME` once, then yields a factory
+/// that derives a per-extension [`SpawnConfig`] (creating the extension's
+/// storage dirs as a side effect). Returns `None` when the bundled runtime or
+/// home dir can't be resolved — host-backed activation is then unavailable
+/// (set `CRONYMAX_BUNDLED_DIR` or run `scripts/fetch-node26.sh`).
+fn build_spawn_config_builder() -> Option<SpawnConfigBuilder> {
+    let bundled_node = default_bundled_node().filter(|p| p.is_file())?;
+    let bootstrap_js = default_bundled_bootstrap().filter(|p| p.is_file())?;
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)?;
+
+    Some(Arc::new(
+        move |ext_id: &str, _manifest: &Manifest, ext_dir: &std::path::Path| {
+            let storage_dir = home
+                .join(".cronymax")
+                .join("extensions")
+                .join(ext_id)
+                .join("storage");
+            let global_storage_dir = home.join(".cronymax").join("global-state").join(ext_id);
+            // Best-effort: a missing storage dir surfaces later as an extension
+            // error, not a spawn failure.
+            if let Err(e) = std::fs::create_dir_all(&storage_dir) {
+                tracing::warn!(ext_id = %ext_id, path = %storage_dir.display(), error = %e, "failed to create extension storage dir");
+            }
+            if let Err(e) = std::fs::create_dir_all(&global_storage_dir) {
+                tracing::warn!(ext_id = %ext_id, path = %global_storage_dir.display(), error = %e, "failed to create extension global-storage dir");
+            }
+            SpawnConfig {
+                ext_id: ext_id.to_string(),
+                node_binary: bundled_node.clone(),
+                node_flags: vec!["--no-warnings".into()],
+                bootstrap_js: bootstrap_js.clone(),
+                ext_dir: ext_dir.to_path_buf(),
+                storage_dir,
+                global_storage_dir,
+                workspace_dirs: Vec::new(),
+                manifest_path: ext_dir.join("cronymax-extension.json"),
+                max_restarts: 0,
+                ping_interval: Some(SpawnConfig::ping_interval_default()),
+            }
+        },
+    ))
+}
+
+/// Activate every enabled extension at startup via the runtime's installed
+/// spawn-config builder. Each activation is independent — one failure leaves
+/// the rest unaffected.
 fn spawn_startup_activation(runtime: &ExtensionRuntime, ext_ids: &[String]) {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         if !ext_ids.is_empty() {
@@ -239,93 +299,17 @@ fn spawn_startup_activation(runtime: &ExtensionRuntime, ext_ids: &[String]) {
         return;
     };
 
-    let bundled_node = default_bundled_node();
-    let bootstrap_js = default_bundled_bootstrap();
-    let (bundled_node, bootstrap_js) = match (bundled_node, bootstrap_js) {
-        (Some(n), Some(b)) if n.is_file() && b.is_file() => (n, b),
-        _ => {
-            if !ext_ids.is_empty() {
-                tracing::warn!(
-                    count = ext_ids.len(),
-                    "bundled Node 26 or bootstrap.js not found; \
-                     skipping extension startup activation. \
-                     Set CRONYMAX_BUNDLED_DIR or run scripts/fetch-node26.sh.",
-                );
-            }
-            return;
-        }
-    };
-
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from);
-    let Some(home) = home else {
-        tracing::warn!(
-            "neither HOME nor USERPROFILE is set; skipping extension startup activation",
-        );
-        return;
-    };
-
     for ext_id in ext_ids {
         let runtime = runtime.clone();
         let ext_id = ext_id.clone();
-        let node_binary = bundled_node.clone();
-        let bootstrap_js = bootstrap_js.clone();
-        let storage_dir = home
-            .join(".cronymax")
-            .join("extensions")
-            .join(&ext_id)
-            .join("storage");
-        let global_storage_dir = home.join(".cronymax").join("global-state").join(&ext_id);
-
         handle.spawn(async move {
-            if let Err(e) = std::fs::create_dir_all(&storage_dir) {
-                tracing::warn!(
+            match runtime.activate_default(&ext_id).await {
+                Ok(()) => tracing::info!(ext_id = %ext_id, "extension activated at startup"),
+                Err(e) => tracing::warn!(
                     ext_id = %ext_id,
-                    path = %storage_dir.display(),
                     error = %e,
-                    "failed to create extension storage dir; activation may still succeed",
-                );
-            }
-            if let Err(e) = std::fs::create_dir_all(&global_storage_dir) {
-                tracing::warn!(
-                    ext_id = %ext_id,
-                    path = %global_storage_dir.display(),
-                    error = %e,
-                    "failed to create extension global-storage dir; activation may still succeed",
-                );
-            }
-
-            let result = {
-                let ext_id_for_cfg = ext_id.clone();
-                runtime
-                    .activate(&ext_id, move |_manifest, ext_dir| SpawnConfig {
-                        ext_id: ext_id_for_cfg,
-                        node_binary,
-                        node_flags: vec!["--no-warnings".into()],
-                        bootstrap_js,
-                        ext_dir: ext_dir.clone(),
-                        storage_dir,
-                        global_storage_dir,
-                        workspace_dirs: Vec::new(),
-                        manifest_path: ext_dir.join("cronymax-extension.json"),
-                        max_restarts: 0,
-                        ping_interval: Some(SpawnConfig::ping_interval_default()),
-                    })
-                    .await
-            };
-
-            match result {
-                Ok(()) => {
-                    tracing::info!(ext_id = %ext_id, "extension activated at startup");
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        ext_id = %ext_id,
-                        error = %e,
-                        "extension activation failed at startup; other extensions unaffected",
-                    );
-                }
+                    "extension activation failed at startup; other extensions unaffected",
+                ),
             }
         });
     }

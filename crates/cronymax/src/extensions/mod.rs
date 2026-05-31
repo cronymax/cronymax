@@ -48,6 +48,7 @@ pub mod events;
 pub mod host;
 pub mod logging;
 pub mod manifest;
+pub mod package;
 pub mod paths;
 pub mod registry;
 pub mod rpc;

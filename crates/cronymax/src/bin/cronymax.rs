@@ -12,7 +12,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cronymax::extensions::{default_registry_root, ExtensionRegistry};
+use cronymax::extensions::{default_registry_root, package, ExtensionRegistry, Manifest};
 
 const HELP: &str = r#"cronymax — extension platform CLI
 
@@ -20,15 +20,17 @@ USAGE:
     cronymax <command> [args...]
 
 COMMANDS:
-    ext install <dir>      Install an extension from a directory
+    ext install <path>     Install an extension from a directory or .cmx archive
     ext list               List installed extensions
     ext enable <id>        Mark an extension as enabled
     ext disable <id>       Mark an extension as disabled
     ext uninstall <id>     Uninstall an extension
+    ext package <dir>      Pack an extension directory into a .cmx archive
 
 GLOBAL OPTIONS:
     --root <dir>           Override the extensions root
                            (default: ~/.cronymax/extensions)
+    -o, --output <file>    Output path for `ext package` (default: <id>-<version>.cmx)
     -h, --help             Show this help
     --version              Show version
 "#;
@@ -57,6 +59,10 @@ fn run(argv: &[String]) -> Result<(), String> {
         return Ok(());
     }
     let root_override = take_value_flag(&mut args, "--root")?;
+    let mut output_override = take_value_flag(&mut args, "-o")?;
+    if output_override.is_none() {
+        output_override = take_value_flag(&mut args, "--output")?;
+    }
 
     if args.is_empty() {
         eprint!("{HELP}");
@@ -69,10 +75,18 @@ fn run(argv: &[String]) -> Result<(), String> {
     }
     if args.is_empty() {
         return Err(
-            "`cronymax ext` requires a subcommand (install/list/enable/disable/uninstall)".into(),
+            "`cronymax ext` requires a subcommand (install/list/enable/disable/uninstall/package)"
+                .into(),
         );
     }
     let sub = args.remove(0);
+
+    // `package` operates on a source tree, not the registry — handle it before
+    // touching the (possibly nonexistent) registry root.
+    if sub == "package" {
+        let dir = require_one_arg(&args, "package", "<source-dir>")?;
+        return run_package(Path::new(dir), output_override.as_deref());
+    }
 
     let root = resolve_root(root_override.as_deref())?;
     let mut reg = ExtensionRegistry::new(&root);
@@ -80,8 +94,11 @@ fn run(argv: &[String]) -> Result<(), String> {
 
     match sub.as_str() {
         "install" => {
-            let dir = require_one_arg(&args, "install", "<source-dir>")?;
-            let entry = reg.install(Path::new(dir)).map_err(|e| e.to_string())?;
+            let src = require_one_arg(&args, "install", "<path>")?;
+            let id = reg
+                .install_from_path(Path::new(src))
+                .map_err(|e| e.to_string())?;
+            let entry = reg.get(&id).expect("just installed");
             println!(
                 "installed {} ({}) → {}",
                 entry.manifest.id,
@@ -113,6 +130,24 @@ fn run(argv: &[String]) -> Result<(), String> {
             ));
         }
     }
+    Ok(())
+}
+
+/// Pack `dir` into a `.cmx`. Output path defaults to `<id>-<version>.cmx`
+/// (read from the manifest) in the current directory.
+fn run_package(dir: &Path, output_override: Option<&str>) -> Result<(), String> {
+    let out_path = match output_override {
+        Some(o) => PathBuf::from(o),
+        None => {
+            let manifest_path = dir.join("cronymax-extension.json");
+            let raw = std::fs::read_to_string(&manifest_path)
+                .map_err(|e| format!("could not read {}: {e}", manifest_path.display()))?;
+            let manifest = Manifest::from_json(&raw).map_err(|e| e.to_string())?;
+            PathBuf::from(format!("{}-{}.cmx", manifest.id, manifest.version))
+        }
+    };
+    package::pack_dir_to_cmx(dir, &out_path).map_err(|e| e.to_string())?;
+    println!("packaged {} → {}", dir.display(), out_path.display());
     Ok(())
 }
 

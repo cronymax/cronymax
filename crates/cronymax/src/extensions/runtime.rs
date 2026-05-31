@@ -75,11 +75,12 @@
 //! `tests/p4_extension_runtime_e2e.rs`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rmpv::Value;
+use serde::Serialize;
 
 use crate::extensions::api::agents::{
     AgentProviderRegistry, AgentSessionEvent, AgentSessionRouter, ProviderEntry,
@@ -136,6 +137,51 @@ pub struct ExtensionRuntime {
 /// shape into the emit path.
 pub type ContributionsChangedEmitter = Arc<dyn Fn() + Send + Sync>;
 
+/// Composition-root factory that turns `(ext_id, manifest, ext_dir)` into a
+/// [`SpawnConfig`]. Set once at startup (see
+/// [`ExtensionRuntime::set_spawn_config_builder`]) so the runtime can
+/// self-activate extensions from management actions (install / enable) without
+/// every caller re-deriving the bundled-Node / bootstrap / storage paths.
+pub type SpawnConfigBuilder = Arc<dyn Fn(&str, &Manifest, &Path) -> SpawnConfig + Send + Sync>;
+
+/// Flattened view of one installed extension for the settings management UI.
+/// Distinct from [`crate::extensions::contributions::ContributionDescriptor`]
+/// (which only covers *active* extensions' contributions): this lists every
+/// installed extension including disabled ones, with its enable/active state.
+#[derive(Debug, Clone, Serialize)]
+pub struct InstalledExtensionInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub publisher: String,
+    pub description: Option<String>,
+    /// Icon path relative to the extension dir (manifest `icon`), if declared.
+    pub icon: Option<String>,
+    /// Persisted enable flag (`registry.json`).
+    pub enabled: bool,
+    /// Whether the extension currently has a live activation record.
+    pub active: bool,
+    /// `true` when the manifest declares a `main` (host-backed); `false` for
+    /// declarative-only extensions (e.g. a renderer with no Node coordinator).
+    pub has_main: bool,
+    /// Unix epoch seconds.
+    pub installed_at: u64,
+    /// Absolute install directory.
+    pub ext_dir: String,
+    pub contributes: ContributesSummary,
+}
+
+/// Per-extension contribution counts for the management-UI details panel.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContributesSummary {
+    pub commands: usize,
+    pub agent_providers: usize,
+    pub content_renderers: usize,
+    pub sidebar_views: usize,
+    pub config_pages: usize,
+    pub has_config_schema: bool,
+}
+
 struct RuntimeState {
     registry: Mutex<ExtensionRegistry>,
     contributions: Mutex<ContributionRegistry>,
@@ -174,6 +220,11 @@ struct RuntimeState {
     /// pipes into the `extensions/contributions` authority topic so the
     /// activity-bar rail refetches. No-op default for tests.
     contributions_changed_emitter: RwLock<ContributionsChangedEmitter>,
+    /// Composition-root factory for [`SpawnConfig`]s. `None` until set; when
+    /// unset, [`ExtensionRuntime::activate_default`] errors (no bundled Node
+    /// path to spawn against). Tests that drive activation directly via
+    /// [`ExtensionRuntime::activate`] don't need it.
+    spawn_config_builder: RwLock<Option<SpawnConfigBuilder>>,
 }
 
 impl std::fmt::Debug for RuntimeState {
@@ -195,6 +246,7 @@ impl std::fmt::Debug for RuntimeState {
             .field("events", &self.events)
             .field("renderer_event_emitter", &"<fn>")
             .field("contributions_changed_emitter", &"<fn>")
+            .field("spawn_config_builder", &"<fn>")
             .finish()
     }
 }
@@ -216,6 +268,7 @@ impl ExtensionRuntime {
                 events: EventBus::new(),
                 renderer_event_emitter: RwLock::new(Arc::new(|_| {})),
                 contributions_changed_emitter: RwLock::new(Arc::new(|| {})),
+                spawn_config_builder: RwLock::new(None),
             }),
         }
     }
@@ -275,6 +328,14 @@ impl ExtensionRuntime {
     fn emit_contributions_changed(&self) {
         let emitter = self.state.contributions_changed_emitter.read().clone();
         emitter();
+    }
+
+    /// Install the composition-root [`SpawnConfig`] factory. Once set,
+    /// [`Self::activate_default`] (and the management helpers built on it —
+    /// install / enable) can spawn extension hosts without the caller
+    /// re-deriving bundled-Node / bootstrap / storage paths.
+    pub fn set_spawn_config_builder(&self, builder: SpawnConfigBuilder) {
+        *self.state.spawn_config_builder.write() = Some(builder);
     }
 
     /// L1.5 platform-event bus. Chat / tool dispatch sites call
@@ -605,6 +666,20 @@ impl ExtensionRuntime {
             return Err(ExtensionError::NotActivated(ext_id.to_string()));
         }
 
+        // Sever any in-flight agent sessions this extension is driving so
+        // their dispatcher event loops unwind instead of blocking on a sink
+        // that will never receive again once the host is gone. The run then
+        // fails on the dropped RPC connection (host shutdown below) rather
+        // than hanging. Must happen before `host.shutdown()`.
+        let severed = self.state.session_router.close_all_for(ext_id);
+        if severed > 0 {
+            tracing::info!(
+                ext_id = %ext_id,
+                count = severed,
+                "deactivate: severed in-flight agent sessions",
+            );
+        }
+
         // Pop the host-backed handle if present; missing means
         // declarative-only.
         let handle = self.state.handles.lock().remove(ext_id);
@@ -639,6 +714,144 @@ impl ExtensionRuntime {
             } = handle;
             drop(event_subscriptions);
             let _ = host.shutdown().await;
+        }
+        Ok(())
+    }
+
+    // ── management surface (settings UI / CLI) ───────────────────────────
+
+    /// Activate `ext_id` using the composition-root spawn-config builder.
+    ///
+    /// When no builder is installed (e.g. bundled Node missing), host-backed
+    /// extensions error with `HostSpawn` — but declarative-only extensions
+    /// (no `main`) still activate, since [`Self::activate`] never invokes the
+    /// builder for them. Production sets the builder at startup, so the
+    /// no-builder branch only matters in degraded / test environments.
+    pub async fn activate_default(&self, ext_id: &str) -> ExtensionResult<()> {
+        let builder = self.state.spawn_config_builder.read().clone();
+        match builder {
+            Some(builder) => {
+                let ext_id_owned = ext_id.to_string();
+                self.activate(ext_id, move |manifest, ext_dir| {
+                    builder(&ext_id_owned, manifest, &ext_dir)
+                })
+                .await
+            }
+            None => {
+                let needs_host = self
+                    .state
+                    .registry
+                    .lock()
+                    .get(ext_id)
+                    .map(|e| e.manifest.main.is_some())
+                    .unwrap_or(false);
+                if needs_host {
+                    return Err(ExtensionError::HostSpawn(
+                        "spawn-config builder not configured (bundled Node 26 missing?)".into(),
+                    ));
+                }
+                // Declarative-only: the closure is never called (activate()
+                // only builds a SpawnConfig when `manifest.main` is set).
+                self.activate(ext_id, |_m, _dir| {
+                    unreachable!("declarative-only extension does not spawn a host")
+                })
+                .await
+            }
+        }
+    }
+
+    /// Snapshot every installed extension (enabled or not) for the settings
+    /// management UI. Sorted by id for stable rendering.
+    pub fn list_installed(&self) -> Vec<InstalledExtensionInfo> {
+        // Clone entries out from under the registry lock first, then consult
+        // lifecycle — never hold both locks at once (no inverse ordering
+        // exists elsewhere, but this keeps it obviously deadlock-free).
+        let entries: Vec<_> = {
+            let reg = self.state.registry.lock();
+            reg.iter().cloned().collect()
+        };
+        let mut out: Vec<InstalledExtensionInfo> = entries
+            .into_iter()
+            .map(|e| {
+                let m = e.manifest;
+                let active = self.state.lifecycle.lock().is_activated(&m.id);
+                InstalledExtensionInfo {
+                    active,
+                    enabled: e.enabled,
+                    installed_at: e.installed_at,
+                    ext_dir: e.ext_dir.display().to_string(),
+                    has_main: m.main.is_some(),
+                    contributes: ContributesSummary {
+                        commands: m.contributes.commands.len(),
+                        agent_providers: m.contributes.agent_providers.len(),
+                        content_renderers: m.contributes.content_renderers.len(),
+                        sidebar_views: m.contributes.sidebar_views.len(),
+                        config_pages: m.contributes.config_pages.len(),
+                        has_config_schema: m.contributes.config_schema.is_some(),
+                    },
+                    id: m.id,
+                    name: m.name,
+                    version: m.version,
+                    publisher: m.publisher,
+                    description: m.description,
+                    icon: m.icon,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
+    /// Install from a directory or a `.cmx` archive, then activate it (newly
+    /// installed extensions default `enabled = true`). Returns the installed
+    /// id. A post-install activation failure is logged, not surfaced — the
+    /// install itself stands and the extension simply shows as inactive
+    /// (mirrors the CLI's install-then-activate split).
+    pub async fn install_from(&self, source: &Path) -> ExtensionResult<String> {
+        let id = {
+            let mut reg = self.state.registry.lock();
+            reg.install_from_path(source)?
+        };
+        if let Err(e) = self.activate_default(&id).await {
+            tracing::warn!(
+                ext_id = %id,
+                error = %e,
+                "post-install activation failed; extension installed but inactive",
+            );
+        }
+        Ok(id)
+    }
+
+    /// Tear down (if active) and remove the extension from disk + registry.
+    pub async fn uninstall(&self, ext_id: &str) -> ExtensionResult<()> {
+        if self.is_activated(ext_id) {
+            // Best-effort: a deactivate failure shouldn't block removal.
+            if let Err(e) = self.deactivate(ext_id).await {
+                tracing::warn!(
+                    ext_id = %ext_id,
+                    error = %e,
+                    "deactivate before uninstall failed; removing anyway",
+                );
+            }
+        }
+        let mut reg = self.state.registry.lock();
+        reg.uninstall(ext_id)
+    }
+
+    /// Flip an extension's persisted enable flag and reconcile its live
+    /// state: enabling activates it (if not already), disabling deactivates
+    /// it (if active). Idempotent w.r.t. the current activation state.
+    pub async fn set_enabled(&self, ext_id: &str, enabled: bool) -> ExtensionResult<()> {
+        {
+            let mut reg = self.state.registry.lock();
+            reg.set_enabled(ext_id, enabled)?;
+        }
+        if enabled {
+            if !self.is_activated(ext_id) {
+                self.activate_default(ext_id).await?;
+            }
+        } else if self.is_activated(ext_id) {
+            self.deactivate(ext_id).await?;
         }
         Ok(())
     }
@@ -2431,7 +2644,7 @@ mod tests {
         let session_id = "s-evt".to_string();
         let mut rx = runtime
             .session_router()
-            .register(session_id.clone())
+            .register(session_id.clone(), "alice.x")
             .unwrap();
 
         // Peer side emits an `agents/event` notify with a Text payload
@@ -2479,7 +2692,7 @@ mod tests {
         let session_id = "s-end".to_string();
         let mut rx = runtime
             .session_router()
-            .register(session_id.clone())
+            .register(session_id.clone(), "alice.x")
             .unwrap();
 
         peer_conn
@@ -3710,5 +3923,120 @@ mod tests {
             runtime.webviews().owner_of("b1").unwrap().as_deref(),
             Some("bob.y"),
         );
+    }
+
+    // ── management surface (settings UI / CLI) ───────────────────────────
+    //
+    // These exercise list / install / uninstall / set_enabled end-to-end
+    // against a real on-disk temp registry, using **declarative-only**
+    // (no `main`) extensions so activation needs neither a Node host nor a
+    // spawn-config builder (see `activate_default`'s no-builder branch).
+
+    /// Write a minimal declarative-only extension source tree.
+    fn write_declarative_src(dir: &std::path::Path, id: &str) {
+        let publisher = id.split('.').next().unwrap();
+        let raw = format!(
+            r#"{{
+                "id": "{id}",
+                "name": "Demo {id}",
+                "version": "0.1.0",
+                "publisher": "{publisher}",
+                "engines": {{ "cronymax": "^1.0" }},
+                "activationEvents": [],
+                "contributes": {{
+                    "cronymax.content.renderer": [
+                        {{ "id": "{id}.r", "mimeTypes": ["text/x-{publisher}"], "entry": "./r.html" }}
+                    ]
+                }}
+            }}"#
+        );
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("cronymax-extension.json"), raw).unwrap();
+        std::fs::write(dir.join("r.html"), b"<html></html>").unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_installed_reports_enabled_and_active_flags() {
+        let reg_root = tempfile::TempDir::new().unwrap();
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::new(reg_root.path()));
+
+        let src_a = tempfile::TempDir::new().unwrap();
+        write_declarative_src(src_a.path(), "alice.aaa");
+        runtime.install_from(src_a.path()).await.unwrap();
+
+        let src_b = tempfile::TempDir::new().unwrap();
+        write_declarative_src(src_b.path(), "bob.bbb");
+        runtime.install_from(src_b.path()).await.unwrap();
+        runtime.set_enabled("bob.bbb", false).await.unwrap();
+
+        let list = runtime.list_installed();
+        assert_eq!(list.len(), 2);
+        // Sorted by id.
+        assert_eq!(list[0].id, "alice.aaa");
+        assert!(list[0].enabled && list[0].active, "enabled → active");
+        assert!(!list[0].has_main, "declarative-only has no main");
+        assert_eq!(list[0].contributes.content_renderers, 1);
+        assert_eq!(list[1].id, "bob.bbb");
+        assert!(
+            !list[1].enabled && !list[1].active,
+            "disabled extension must be deactivated",
+        );
+    }
+
+    #[tokio::test]
+    async fn install_from_cmx_archive_lands_in_managed_root_and_activates() {
+        let src = tempfile::TempDir::new().unwrap();
+        write_declarative_src(src.path(), "carol.ccc");
+        let out = tempfile::TempDir::new().unwrap();
+        let cmx = out.path().join("carol.ccc.cmx");
+        crate::extensions::package::pack_dir_to_cmx(src.path(), &cmx).unwrap();
+
+        let reg_root = tempfile::TempDir::new().unwrap();
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::new(reg_root.path()));
+        let id = runtime.install_from(&cmx).await.unwrap();
+        assert_eq!(id, "carol.ccc");
+
+        let list = runtime.list_installed();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].active);
+        // Copied into the managed registry root, not referencing the source.
+        assert!(reg_root
+            .path()
+            .join("carol.ccc/cronymax-extension.json")
+            .is_file());
+    }
+
+    #[tokio::test]
+    async fn uninstall_deactivates_and_removes_from_disk() {
+        let src = tempfile::TempDir::new().unwrap();
+        write_declarative_src(src.path(), "dave.ddd");
+        let reg_root = tempfile::TempDir::new().unwrap();
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::new(reg_root.path()));
+        runtime.install_from(src.path()).await.unwrap();
+        assert!(runtime.is_activated("dave.ddd"));
+        assert!(reg_root.path().join("dave.ddd").is_dir());
+
+        runtime.uninstall("dave.ddd").await.unwrap();
+        assert!(!runtime.is_activated("dave.ddd"), "uninstall deactivates");
+        assert!(runtime.list_installed().is_empty());
+        assert!(!reg_root.path().join("dave.ddd").exists(), "dir removed");
+    }
+
+    #[tokio::test]
+    async fn set_enabled_false_then_true_round_trips_activation() {
+        let src = tempfile::TempDir::new().unwrap();
+        write_declarative_src(src.path(), "erin.eee");
+        let reg_root = tempfile::TempDir::new().unwrap();
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::new(reg_root.path()));
+        runtime.install_from(src.path()).await.unwrap();
+        assert!(runtime.is_activated("erin.eee"));
+
+        runtime.set_enabled("erin.eee", false).await.unwrap();
+        assert!(!runtime.is_activated("erin.eee"));
+        assert!(!runtime.list_installed()[0].enabled);
+
+        runtime.set_enabled("erin.eee", true).await.unwrap();
+        assert!(runtime.is_activated("erin.eee"));
+        assert!(runtime.list_installed()[0].enabled);
     }
 }

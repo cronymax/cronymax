@@ -31,6 +31,9 @@ pub enum ExtensionError {
     #[error("extension `{0}` is already installed (version `{1}`)")]
     AlreadyInstalled(String, String),
 
+    #[error("package `.cmx`: {0}")]
+    Package(String),
+
     #[error("extension `{0}` is not enabled")]
     NotEnabled(String),
 
@@ -100,6 +103,12 @@ pub enum ExtensionError {
 impl From<serde_json::Error> for ExtensionError {
     fn from(err: serde_json::Error) -> Self {
         Self::Json(err.to_string())
+    }
+}
+
+impl From<zip::result::ZipError> for ExtensionError {
+    fn from(err: zip::result::ZipError) -> Self {
+        Self::Package(err.to_string())
     }
 }
 

@@ -39,10 +39,11 @@ git2 = { workspace = true }
 rmp-serde = { workspace = true }
 rmpv = { workspace = true }
 libc = { workspace = true }
+zip = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 testing = []
 
 [dev-dependencies]
-tempfile = "3"
 cronymax = { path = ".", features = ["testing"] }

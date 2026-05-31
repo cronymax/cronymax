@@ -296,7 +296,10 @@ async fn run_extension_turn(
     // immediately, so the first `agents/event` notify can be on the wire
     // before our await on send_to_extension resumes. Registering before
     // the prompt request closes the race.
-    let mut sink = match extensions.session_router().register(session_id.clone()) {
+    let mut sink = match extensions
+        .session_router()
+        .register(session_id.clone(), provider.owning_ext.clone())
+    {
         Ok(rx) => rx,
         Err(e) => {
             let msg = format!("router register for `{session_id}` failed: {e}");

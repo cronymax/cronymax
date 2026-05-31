@@ -175,4 +175,98 @@ impl RuntimeHandler {
             },
         }
     }
+
+    // ── management (settings panel → Extensions tab) ─────────────────────
+
+    pub(super) async fn handle_extension_list(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::ExtensionList {} = req else {
+            unreachable!()
+        };
+        let Some(ext_rt) = self.services.extensions.as_ref() else {
+            // No extension runtime (e.g. couldn't resolve the registry root):
+            // present as an empty list rather than an error so the UI renders.
+            return ControlResponse::Data {
+                payload: serde_json::json!({ "extensions": [] }),
+            };
+        };
+        let infos = ext_rt.list_installed();
+        match serde_json::to_value(&infos) {
+            Ok(extensions) => ControlResponse::Data {
+                payload: serde_json::json!({ "extensions": extensions }),
+            },
+            Err(e) => ControlResponse::Err {
+                error: ControlError::Internal {
+                    message: format!("serialize installed extensions: {e}"),
+                },
+            },
+        }
+    }
+
+    pub(super) async fn handle_extension_install(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::ExtensionInstall { source } = req else {
+            unreachable!()
+        };
+        let Some(ext_rt) = self.services.extensions.as_ref() else {
+            return ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: "extension runtime not configured".into(),
+                },
+            };
+        };
+        match ext_rt.install_from(std::path::Path::new(&source)).await {
+            Ok(id) => ControlResponse::Data {
+                payload: serde_json::json!({ "id": id }),
+            },
+            Err(e) => ControlResponse::Err {
+                error: ControlError::InvalidRequest {
+                    message: format!("install failed: {e}"),
+                },
+            },
+        }
+    }
+
+    pub(super) async fn handle_extension_uninstall(&self, req: ControlRequest) -> ControlResponse {
+        let ControlRequest::ExtensionUninstall { ext_id } = req else {
+            unreachable!()
+        };
+        let Some(ext_rt) = self.services.extensions.as_ref() else {
+            return ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: "extension runtime not configured".into(),
+                },
+            };
+        };
+        match ext_rt.uninstall(&ext_id).await {
+            Ok(()) => ControlResponse::Ack,
+            Err(e) => ControlResponse::Err {
+                error: ControlError::InvalidRequest {
+                    message: format!("uninstall failed: {e}"),
+                },
+            },
+        }
+    }
+
+    pub(super) async fn handle_extension_set_enabled(
+        &self,
+        req: ControlRequest,
+    ) -> ControlResponse {
+        let ControlRequest::ExtensionSetEnabled { ext_id, enabled } = req else {
+            unreachable!()
+        };
+        let Some(ext_rt) = self.services.extensions.as_ref() else {
+            return ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: "extension runtime not configured".into(),
+                },
+            };
+        };
+        match ext_rt.set_enabled(&ext_id, enabled).await {
+            Ok(()) => ControlResponse::Ack,
+            Err(e) => ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: format!("set_enabled failed: {e}"),
+                },
+            },
+        }
+    }
 }

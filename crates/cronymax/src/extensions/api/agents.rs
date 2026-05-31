@@ -220,9 +220,18 @@ pub enum AgentSessionMessage {
 /// during normal operation, but small enough that a runaway extension can't
 /// blow memory. Cancelling the run drops the receiver, which closes the
 /// channel and surfaces the next `send` as a routing miss (logged & dropped).
+/// One registered session sink plus the id of the extension that owns the
+/// provider driving it. The owning id lets [`AgentSessionRouter::close_all_for`]
+/// sever every in-flight turn for an extension when it deactivates.
+#[derive(Debug, Clone)]
+struct SessionSink {
+    owning_ext: String,
+    tx: mpsc::Sender<AgentSessionMessage>,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct AgentSessionRouter {
-    inner: Arc<RwLock<HashMap<String, mpsc::Sender<AgentSessionMessage>>>>,
+    inner: Arc<RwLock<HashMap<String, SessionSink>>>,
 }
 
 impl AgentSessionRouter {
@@ -240,6 +249,7 @@ impl AgentSessionRouter {
     pub fn register(
         &self,
         session_id: impl Into<String>,
+        owning_ext: impl Into<String>,
     ) -> ExtensionResult<mpsc::Receiver<AgentSessionMessage>> {
         let session_id = session_id.into();
         let (tx, rx) = mpsc::channel(64);
@@ -251,7 +261,13 @@ impl AgentSessionRouter {
                 reason: format!("session id `{session_id}` already has an active sink"),
             });
         }
-        g.insert(session_id, tx);
+        g.insert(
+            session_id,
+            SessionSink {
+                owning_ext: owning_ext.into(),
+                tx,
+            },
+        );
         Ok(rx)
     }
 
@@ -260,6 +276,19 @@ impl AgentSessionRouter {
     /// removed.
     pub fn unregister(&self, session_id: &str) -> bool {
         self.inner.write().remove(session_id).is_some()
+    }
+
+    /// Sever every in-flight session whose provider belongs to `ext_id`.
+    /// Dropping the held sender closes each channel, so the dispatcher's
+    /// `sink.recv()` returns `None` and its event loop unwinds (the run then
+    /// fails on the dropped RPC connection rather than hanging forever).
+    /// Called from [`crate::extensions::runtime::ExtensionRuntime::deactivate`]
+    /// before the Node host is shut down. Returns the number of sinks closed.
+    pub fn close_all_for(&self, ext_id: &str) -> usize {
+        let mut g = self.inner.write();
+        let before = g.len();
+        g.retain(|_, sink| sink.owning_ext != ext_id);
+        before - g.len()
     }
 
     /// Forward one event to the dispatcher. Returns:
@@ -273,7 +302,7 @@ impl AgentSessionRouter {
     ) -> ExtensionResult<bool> {
         let sender = {
             let g = self.inner.read();
-            g.get(session_id).cloned()
+            g.get(session_id).map(|s| s.tx.clone())
         };
         match sender {
             Some(tx) => {
@@ -296,7 +325,7 @@ impl AgentSessionRouter {
     pub async fn route_turn_done(&self, session_id: &str) -> ExtensionResult<bool> {
         let sender = {
             let g = self.inner.read();
-            g.get(session_id).cloned()
+            g.get(session_id).map(|s| s.tx.clone())
         };
         match sender {
             Some(tx) => {
@@ -472,7 +501,7 @@ mod tests {
     #[tokio::test]
     async fn router_routes_event_to_registered_sink() {
         let router = AgentSessionRouter::new();
-        let mut rx = router.register("s-1").unwrap();
+        let mut rx = router.register("s-1", "ext.a").unwrap();
         let delivered = router
             .route_event(
                 "s-1",
@@ -510,7 +539,7 @@ mod tests {
     #[tokio::test]
     async fn router_route_turn_done_signals_dispatcher() {
         let router = AgentSessionRouter::new();
-        let mut rx = router.register("s-2").unwrap();
+        let mut rx = router.register("s-2", "ext.a").unwrap();
         router.route_turn_done("s-2").await.unwrap();
         match rx.recv().await {
             Some(AgentSessionMessage::TurnDone) => {}
@@ -521,15 +550,15 @@ mod tests {
     #[test]
     fn router_register_duplicate_session_id_rejected() {
         let router = AgentSessionRouter::new();
-        let _rx = router.register("s-dup").unwrap();
-        let err = router.register("s-dup").unwrap_err();
+        let _rx = router.register("s-dup", "ext.a").unwrap();
+        let err = router.register("s-dup", "ext.a").unwrap_err();
         assert!(matches!(err, ExtensionError::BadContribution { .. }));
     }
 
     #[tokio::test]
     async fn router_unregister_drops_sink() {
         let router = AgentSessionRouter::new();
-        let _rx = router.register("s-3").unwrap();
+        let _rx = router.register("s-3", "ext.a").unwrap();
         assert_eq!(router.len(), 1);
         assert!(router.unregister("s-3"));
         assert_eq!(router.len(), 0);
@@ -544,5 +573,30 @@ mod tests {
             .await
             .unwrap();
         assert!(!delivered);
+    }
+
+    #[tokio::test]
+    async fn router_close_all_for_severs_only_that_extensions_sinks() {
+        let router = AgentSessionRouter::new();
+        let mut rx_a = router.register("s-a", "ext.a").unwrap();
+        let mut rx_a2 = router.register("s-a2", "ext.a").unwrap();
+        let mut rx_b = router.register("s-b", "ext.b").unwrap();
+        assert_eq!(router.len(), 3);
+
+        let closed = router.close_all_for("ext.a");
+        assert_eq!(closed, 2, "both ext.a sinks severed");
+        assert_eq!(router.len(), 1, "ext.b sink survives");
+
+        // Severed receivers observe channel close (`None`) so the dispatcher
+        // loops unwind instead of hanging.
+        assert!(rx_a.recv().await.is_none());
+        assert!(rx_a2.recv().await.is_none());
+
+        // ext.b still routes normally.
+        assert!(router.route_turn_done("s-b").await.unwrap());
+        assert!(matches!(
+            rx_b.recv().await,
+            Some(AgentSessionMessage::TurnDone)
+        ));
     }
 }
