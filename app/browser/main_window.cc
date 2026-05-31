@@ -532,6 +532,8 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     auto dock = right_dock_view_obj_->Build();
     body_panel_->AddChildView(dock);
     body_layout->SetFlexForView(dock, 0);
+    // The dock header's × collapses the dock (a hide, not a teardown).
+    right_dock_view_obj_->SetOnCloseRequested([this]() { CollapseRightDock(); });
   }
 
   // ── native-views-mvc Phase 5: ShellDispatcher ───────────────────────────
@@ -1435,6 +1437,31 @@ void MainWindow::CloseExtensionViews(const std::string& ext_id) {
   if (!target.empty())
     shell_model_.tabs_->Activate(target);
 
+  PushActiveViewToRail();
+}
+
+void MainWindow::CollapseRightDock() {
+  if (!CefCurrentlyOn(TID_UI)) {
+    CefPostTask(TID_UI, base::BindOnce(
+                            [](CefRefPtr<MainWindow> self) {
+                              self->CollapseRightDock();
+                            },
+                            CefRefPtr<MainWindow>(this)));
+    return;
+  }
+  if (!right_dock_view_obj_)
+    return;
+  right_dock_view_obj_->Hide();
+  if (body_panel_)
+    body_panel_->Layout();
+  // Dock collapsed → clear its punches and re-round the (now expanded) content
+  // card, mirroring the rail-toggle collapse path.
+  right_dock_view_obj_->RoundCorners();
+  if (content_view_)
+    content_view_->RefreshCornerMasks();
+  // The active dock view is now none → rail re-highlights and the previously
+  // shown view's host gets onDidChangeVisibility(false) (loaded_view_key stays,
+  // so the open-set is unchanged — a hide, not a dispose).
   PushActiveViewToRail();
 }
 

@@ -1260,4 +1260,43 @@ ext→视图 的投递在 **C++ 层早已通**:视图 iframe 用 `?surface=panel
 
 - **`show()` / 主动聚焦**:IDL `WebviewView` v1 仍未含 `show()`;需要时补 IDL + 平台聚焦路由(rail → 激活对应 tab / 展开 dock)。
 - **`onDidChangeVisibility` 的 dock-折叠粒度**:dock 收起(`Hide`)目前算 visible=false 是对的;但「主区 tab 切到后台」与「窗口失焦」未细分(VS Code 的 visible 还含窗口前台性),v1 不做。
-- **主区单 view 的关闭 UI**:ext-view tab 不进 tab 条,所以今天主区没有「关单个 view」的按钮 —— dispose 差分已就位,等后续给 rail 加「关闭视图」入口(或让 ext-view 进可关闭 tab 条)即自动生效。当前真实触发 dispose 的路径是 dock 导航换 view + 停用扩展。
+- **主区单 view 的关闭 UI**:ext-view tab 不进 tab 条,主区暂不提供「关单个 view」的按钮(按产品决定:关闭入口先只给 dock,见下「dock 关闭按钮」节)。dispose 差分仍就位,真实触发 dispose 的路径是 dock 导航换 view + 停用扩展。
+
+---
+
+## dock 关闭按钮(2026-05-31)
+
+> 走过一段弯路:先做成「rail 图标右键 Close view → 真销毁 iframe(dispose)」(commit `f39fbff`),被指出方向不对后 revert(`8840601`)。正确产品语义:**关闭按钮放在 dock view 容器自己的 chrome 里,且「关」= 隐藏(collapse),不是销毁**。本节是改正后的实现。
+
+### 语义
+
+dock 顶部一条 header,右侧一个 × 。点 × = `Hide()` 收起 dock,载入的 view 的 WebContents/iframe **存活**,只是隐藏 → 触发 `onDidChangeVisibility(false)`,**不** dispose。下次再从 rail 打开还是原实例。dispose 只在「dock 导航换 view(旧 iframe 被 LoadURL 替换)」「停用扩展」时发。
+
+| 用户动作 | 结果 |
+|---|---|
+| 点 dock header × | 收起(hide),`onDidChangeVisibility(false)`,实例留活 |
+| 再从 rail 打开 | 复现(`shown=true`,同 key 不 reload),`onDidChangeVisibility(true)` |
+| dock 从 view A 切到 view B | A 的 iframe 被替换销毁 → A dispose,B resolve |
+
+只做 dock;主区视图按产品决定不加关闭按钮。header 只有 × ,无标题。
+
+### 改动
+
+| 层 | 文件 | 改动 |
+|---|---|---|
+| 平台 | `platform/view_style.{h,mm}` | `StyleContentBrowserView` / `RoundBrowserCardAuto` 加 `corner_mask`(默认 `kCornerAll`,不破坏既有调用);punch 安装循环按 `corner_mask` 跳过未选中的角;tracker 加 `cornerMask` 属性透传 |
+| 视图 | `views/right_dock_view.{h,cc}` | `Build()` 在 column 顶部加 `header_panel_`(横向 box,`kDockHeaderH=36`,bg=bg_content)+ flex 撑右的 × 图标按钮(`MakeIconButton(IconId::kClose)` + `FnButtonDelegate` → `on_close_requested_`);`RoundCorners()` 改 `kCornerBottom`(只圆底部,header 顶部 flush 方角贴标题栏);`SetOnCloseRequested` setter;`ApplyTheme` 给 header 上色 |
+| 窗口 | `main_window.{h,cc}` | 建 dock 后 `SetOnCloseRequested([this]{ CollapseRightDock(); })`;新增 `CollapseRightDock()`:`Hide()` + body 重排 + 角刷新 + `PushActiveViewToRail()`(→ dock 的 `onDidChangeVisibility(false)`,`loaded_view_key` 不变 → open 集合不变 → 不 dispose)|
+
+没动 web / Rust:dock 收起复用 5f1113d 的 `active_view_changed`→visibility 通路;`loaded_view_key()` 收起时仍返回 key,所以 open 差分把它当存活 → 是 hide。
+
+### 验证
+
+- `cmake --build build --target cronymax_app` → **APP_BUILD3_EXIT=0**(`view_style_mac.mm` / `right_dock_view.cc` / `main_window.cc` 重编 + 链接通过)
+- `corner_mask` 默认 `kCornerAll`,主内容卡的圆角调用未传该参 → 行为不变
+- ⚠️ **视觉未截图核对**:dock 是原生 CEF 视图,需装一个 `target:right` 的扩展(如 `examples/panel-explorer` 的 `...dock`)打开 dock 才看得到;header 高度 / × 对齐 / 底部圆角待你跑起来眼检,要调我再改。
+
+### 遗留
+
+- header 目前只在 dock;主区视图不加(产品决定)。
+- 窗口失焦 / 主区后台态的 visibility 细分仍未做(同上一节)。

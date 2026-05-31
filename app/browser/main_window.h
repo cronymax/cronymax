@@ -108,6 +108,11 @@ class MainWindow : public CefWindowDelegate,
   // recent chat tab (falling back to any remaining tab).
   void CloseExtensionViews(const std::string& ext_id);
 
+  // Collapse the right dock (the user clicked its header × ). A hide, not a
+  // teardown: the loaded view's WebContents survives, so the rail's open-set
+  // is unchanged and the view fires onDidChangeVisibility(false), not dispose.
+  void CollapseRightDock();
+
   // native-views-mvc Phase 4: shared state (TabManager, SpaceManager, theme,
   // observer lists) lives in ShellModel. Declared before client_handler_ so
   // the member initializer list can pass &shell_model_.space_manager_ to
