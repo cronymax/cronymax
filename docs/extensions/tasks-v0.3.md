@@ -1554,3 +1554,42 @@ DRI 实测点击无响应。**没有靠推理**——逐层用真机产物 + 设
 | **T05c Open Log Folder(按钮)** | **✅ 本轮(DRI 实测)** |
 | **T05b diagnostic-bundle** | **✅ 本轮** |
 | T05 `ext dev --watch` / T05c 命令面板 Developer 命令(缺面板)/ 导出 .log 按钮 / T03 模板仓 / T06 通用性 checkpoint | 待做 |
+
+---
+
+## P9-T05 — `cronymax ext dev <dir> [--watch]`(2026-05-31)
+
+补完 T05 的最后一块(`ext package` 早先已做):扩展开发者从源码目录直接跑扩展、终端实时看日志、改文件自动重载。
+
+### 设计
+
+自包含 dev harness,**不碰用户真实 `~/.cronymax`**:用 `tempfile::TempDir` 起一次性 registry + log session + storage。
+
+1. 读 `<dir>/cronymax-extension.json`,解析 bundled Node + bootstrap(缺则报错引导 `scripts/fetch-node26.sh` / `CRONYMAX_BUNDLED_DIR`)。
+2. tokio runtime 里:`ExtensionRuntime::new(临时 registry)` + `set_log_manager(临时 session)` + `set_spawn_config_builder`(临时 storage,镜像 services.rs 的 builder)。
+3. `install_from(<dir>)`(拷进临时 registry + `activate_default` 起 host)。
+4. 后台 task **poll-tail** host 的 `output.log`(stdout)/ `host.log`(stderr)/ `channels/*.log`,新增字节按行打到终端、带 `[source]` 前缀。
+5. `--watch`:**mtime 轮询**(每 500ms 取 dir 下最新 mtime,跳 `node_modules`/`.git`;变化后 300ms 去抖确认稳定再重载)→ `uninstall` + `install_from` 重起 host。无 `--watch` 则等 Ctrl-C。
+6. Ctrl-C → abort tail + `uninstall`(deactivate + 删临时拷贝)→ 退出。临时目录随 `TempDir` 自动清。
+
+### 关键选择
+
+- **mtime 轮询而非 `notify`**:`notify` 虽是 workspace dep,但它的同步回调↔tokio 异步桥接脆且啰嗦;dev 工具 500ms 轮询足够,`walkdir`(已是 dep)遍历跳 `node_modules` 更省心。
+- **临时 registry**:dev 反复重载不污染真实 registry、跨运行无「已安装」去重冲突、退出自动清。
+- **复用现成机件**:`install_from` / `activate_default` / `deactivate` / `LogManager` 全是现成的;dev 只是 CLI glue + 日志 tail + 轮询重载。日志 tail 直接读 host 写的 log 文件(T04b/T05c 那套落盘),不另开管道。
+
+### 改动
+
+`crates/cronymax/src/bin/cronymax.rs`:`ext dev` 派发(early-return,像 `package`)+ `take_bool_flag`(`--watch`)+ `run_dev`(tokio 入口)+ `dev_loop`(install→activate→tail→watch/ctrl-c→cleanup)+ `tail_logs` / `discover_log_files` / `print_tagged` / `max_mtime`。新 import:`SpawnConfig` / `SpawnConfigBuilder` / `LogManager` / `ExtensionRuntime` / `default_bundled_bootstrap`。
+
+### 验证(真机 CLI 冒烟)
+
+- `cargo clippy -p cronymax --bins -- -D warnings` → 0;`cargo fmt --check` → clean
+- `cronymax ext dev examples/echo-agent`:`installing` → `active` → tail 实时打出 echo-agent `activate()` channel 日志 → Ctrl-C → `stopping`(干净 deactivate)✅
+- `cronymax ext dev examples/echo-agent --watch`:`touch dist/main.js` → `change detected, reloading` → `reloaded` → 第二次 `activate()` 日志(host 真重起)✅
+
+### 遗留
+
+- 重载粒度 = 整扩展重启(host respawn),非 HMR;对 v1 dev loop 足够
+- mtime 轮询 500ms 延迟;需要更快可后续换 `notify` 去抖
+- 命令面板 Developer 命令(T05c 那半)仍卡「无命令面板」;导出 .log / Open Log Folder 命令同此
