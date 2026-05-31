@@ -5,7 +5,6 @@
 #include "browser/views/right_dock_view.h"
 
 #include "browser/client_handler.h"
-#include "browser/icon_registry.h"
 #include "browser/models/view_context.h"
 #include "browser/platform/view_style.h"
 #include "browser/views/view_helpers.h"
@@ -21,9 +20,6 @@ namespace {
 
 // Width of the right dock column.
 constexpr int kDockW = 360;
-
-// Height of the dock's header strip (carries the close × button).
-constexpr int kDockHeaderH = 36;
 
 class DockBrowserViewDelegate : public CefBrowserViewDelegate {
  public:
@@ -67,40 +63,6 @@ CefRefPtr<CefPanel> RightDockView::Build() {
   // right + bottom 8 clear the window's rounded corners.
   dock_box.inside_border_insets = {0, 0, 8, 8};
   dock_layout_ = column_panel_->SetToBoxLayout(dock_box);
-
-  // Header strip: a slim bar at the top of the dock carrying the close (×)
-  // button at its right edge. Clicking it collapses the dock (a hide — the
-  // loaded view's WebContents survives), wired by MainWindow via
-  // SetOnCloseRequested. The header shares the content surface color so it
-  // reads as part of the dock card.
-  const cef_color_t header_bg =
-      chrome.bg_content != 0 ? chrome.bg_content : chrome.bg_base;
-  header_panel_ = CefPanel::CreatePanel(
-      new SizedPanelDelegate(CefSize(kDockW, kDockHeaderH)));
-  header_panel_->SetBackgroundColor(header_bg);
-  CefBoxLayoutSettings header_box;
-  header_box.horizontal = true;
-  header_box.cross_axis_alignment = CEF_AXIS_ALIGNMENT_CENTER;
-  header_box.inside_border_insets = {0, 8, 0, 6};
-  CefRefPtr<CefBoxLayout> header_layout =
-      header_panel_->SetToBoxLayout(header_box);
-
-  // Flexible spacer pushes the × to the right edge.
-  CefRefPtr<CefPanel> spacer = CefPanel::CreatePanel(nullptr);
-  header_panel_->AddChildView(spacer);
-  header_layout->SetFlexForView(spacer, 1);
-
-  CefRefPtr<CefLabelButton> close_btn = MakeIconButton(
-      new FnButtonDelegate([this]() {
-        if (on_close_requested_)
-          on_close_requested_();
-      }),
-      IconId::kClose, "Close view");
-  header_panel_->AddChildView(close_btn);
-  header_layout->SetFlexForView(close_btn, 0);
-
-  column_panel_->AddChildView(header_panel_);
-  dock_layout_->SetFlexForView(header_panel_, 0);
 
   // Hidden until a view is opened.
   column_panel_->SetVisible(false);
@@ -208,24 +170,28 @@ void RightDockView::RoundCorners() {
             if (b.width <= 0 || b.height <= 0)
               return;
             const CefRect rect{origin.x, origin.y, b.width, b.height};
-            // Round only the bottom corners: the header strip sits flush
-            // above the browser, so its (and the card's) top stays square
-            // against the titlebar.
-            RoundBrowserCardAuto(win, 10.0, bgc, rect, /*group=*/1,
-                                 kCornerBottom);
+            RoundBrowserCardAuto(win, 10.0, bgc, rect, /*group=*/1);
           },
           bv, bg));
+}
+
+CefRect RightDockView::WebviewWindowBounds() {
+  if (!shown_ || !browser_view_)
+    return CefRect();
+  CefPoint origin{0, 0};
+  browser_view_->ConvertPointToWindow(origin);
+  const CefRect b = browser_view_->GetBounds();
+  if (b.width <= 0 || b.height <= 0)
+    return CefRect();
+  return CefRect(origin.x, origin.y, b.width, b.height);
 }
 
 void RightDockView::ApplyTheme(const ThemeChrome& chrome) {
   if (column_panel_)
     column_panel_->SetBackgroundColor(chrome.bg_body);
-  const cef_color_t surface =
-      chrome.bg_content != 0 ? chrome.bg_content : chrome.bg_base;
-  if (header_panel_)
-    header_panel_->SetBackgroundColor(surface);
   if (browser_view_)
-    browser_view_->SetBackgroundColor(surface);
+    browser_view_->SetBackgroundColor(chrome.bg_content != 0 ? chrome.bg_content
+                                                             : chrome.bg_base);
 }
 
 }  // namespace cronymax

@@ -532,8 +532,6 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     auto dock = right_dock_view_obj_->Build();
     body_panel_->AddChildView(dock);
     body_layout->SetFlexForView(dock, 0);
-    // The dock header's × collapses the dock (a hide, not a teardown).
-    right_dock_view_obj_->SetOnCloseRequested([this]() { CollapseRightDock(); });
   }
 
   // ── native-views-mvc Phase 5: ShellDispatcher ───────────────────────────
@@ -633,6 +631,7 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
       content_view_->RefreshCornerMasks();
     if (right_dock_view_obj_)
       right_dock_view_obj_->RoundCorners();
+    UpdateDockCloseOverlay();  // show/position (or hide on toggle-collapse)
   };
   disp_host.close_extension_views = [this](const std::string& ext_id) {
     CloseExtensionViews(ext_id);
@@ -788,8 +787,10 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     }
     // If the just-realized browser is the dock's, round its card now (on first
     // open GetBrowser() was null when open_right_dock posted RoundCorners).
-    if (right_dock_view_obj_)
+    if (right_dock_view_obj_) {
       right_dock_view_obj_->RoundCorners();
+      UpdateDockCloseOverlay();  // dock webview now realized → place the ×
+    }
     // If the overlay browser just finished async creation and there is a
     // pending URL queued from an OpenOverlay() call that arrived before
     // GetBrowser() became non-null, dispatch the navigation now.
@@ -1051,6 +1052,36 @@ void MainWindow::BuildOverlaySlots() {
   profile_picker_overlay_ = std::make_unique<ProfilePickerOverlay>(
       /*theme_ctx=*/this, main_window_, std::move(ph));
   profile_picker_overlay_->Build();
+
+  // ── Dock close (×) overlay ──────────────────────────────────────────────
+  // A floating × pinned to the right dock's top-right corner. Clicking it
+  // collapses the dock (a hide — the loaded view survives). Positioned + shown
+  // by UpdateDockCloseOverlay() as the dock opens / collapses / the window
+  // resizes; its translucent rounded backdrop is styled on first show.
+  dock_close_panel_ = CefPanel::CreatePanel(nullptr);
+  dock_close_panel_->SetToFillLayout();
+  dock_close_panel_->AddChildView(MakeIconButton(
+      new FnButtonDelegate([this]() { CollapseRightDock(); }), IconId::kClose,
+      "Close dock"));
+  dock_close_oc_ = main_window_->AddOverlayView(
+      dock_close_panel_, CEF_DOCKING_MODE_CUSTOM, /*can_activate=*/true);
+  dock_close_oc_->SetVisible(false);
+  // Style the translucent rounded backdrop. Deferred one tick so CEF has
+  // attached the overlay's child NSWindow; captured here (right after this
+  // AddOverlayView) so the "last child" is reliably this overlay. ~40% black
+  // pill rounded to a circle, with the overlay window itself made clear so
+  // only the pill shows over the dock content.
+  CefPostTask(TID_UI,
+              base::BindOnce(
+                  [](CefRefPtr<CefWindow> w) {
+                    void* nsv = CaptureLastChildNSView(
+                        reinterpret_cast<void*>(w->GetWindowHandle()));
+                    if (!nsv)
+                      return;
+                    StyleOverlayPanel(nsv, 13.0, kCornerAll, 0x66000000);
+                    SetOverlayWindowBackground(nsv, 0x00000000);
+                  },
+                  main_window_));
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,6 +1172,7 @@ void MainWindow::OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
     popover_->LayoutPopover();
   if (overlay_open_)
     UpdateOverlayRect();
+  UpdateDockCloseOverlay();  // keep the floating × pinned to the dock's corner
   RefreshTitleBarDragRegion();
 }
 
@@ -1411,6 +1443,7 @@ void MainWindow::CloseExtensionViews(const std::string& ext_id) {
       right_dock_view_obj_->RoundCorners();
       if (content_view_)
         content_view_->RefreshCornerMasks();
+      UpdateDockCloseOverlay();  // dock gone → hide the ×
     }
   }
 
@@ -1459,10 +1492,39 @@ void MainWindow::CollapseRightDock() {
   right_dock_view_obj_->RoundCorners();
   if (content_view_)
     content_view_->RefreshCornerMasks();
-  // The active dock view is now none → rail re-highlights and the previously
-  // shown view's host gets onDidChangeVisibility(false) (loaded_view_key stays,
-  // so the open-set is unchanged — a hide, not a dispose).
+  // Active dock view is now none → rail re-highlights + the previously shown
+  // view's host gets onDidChangeVisibility(false) (loaded_view_key stays, so
+  // the open-set is unchanged — a hide, not a dispose).
   PushActiveViewToRail();
+  UpdateDockCloseOverlay();  // hides the × (dock no longer shown)
+}
+
+void MainWindow::UpdateDockCloseOverlay() {
+  if (!dock_close_oc_ || !dock_close_oc_->IsValid() || !right_dock_view_obj_)
+    return;
+  // Defer so the dock webview's frame has settled after any pending layout
+  // pass (mirrors the dock's RoundCorners timing) before we read its bounds.
+  CefPostTask(
+      TID_UI,
+      base::BindOnce(
+          [](CefRefPtr<MainWindow> self) {
+            if (!self->dock_close_oc_ || !self->dock_close_oc_->IsValid() ||
+                !self->right_dock_view_obj_)
+              return;
+            const CefRect wv =
+                self->right_dock_view_obj_->WebviewWindowBounds();
+            if (wv.width <= 0 || wv.height <= 0) {
+              self->dock_close_oc_->SetVisible(false);
+              return;
+            }
+            constexpr int kBtn = 26;     // overlay (and backdrop) size
+            constexpr int kMargin = 10;  // inset from the dock's top-right
+            self->dock_close_oc_->SetBounds(
+                CefRect(wv.x + wv.width - kBtn - kMargin, wv.y + kMargin, kBtn,
+                        kBtn));
+            self->dock_close_oc_->SetVisible(true);
+          },
+          CefRefPtr<MainWindow>(this)));
 }
 
 // ---------------------------------------------------------------------------

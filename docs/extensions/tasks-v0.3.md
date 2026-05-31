@@ -1260,43 +1260,40 @@ ext→视图 的投递在 **C++ 层早已通**:视图 iframe 用 `?surface=panel
 
 - **`show()` / 主动聚焦**:IDL `WebviewView` v1 仍未含 `show()`;需要时补 IDL + 平台聚焦路由(rail → 激活对应 tab / 展开 dock)。
 - **`onDidChangeVisibility` 的 dock-折叠粒度**:dock 收起(`Hide`)目前算 visible=false 是对的;但「主区 tab 切到后台」与「窗口失焦」未细分(VS Code 的 visible 还含窗口前台性),v1 不做。
-- **主区单 view 的关闭 UI**:ext-view tab 不进 tab 条,主区暂不提供「关单个 view」的按钮(按产品决定:关闭入口先只给 dock,见下「dock 关闭按钮」节)。dispose 差分仍就位,真实触发 dispose 的路径是 dock 导航换 view + 停用扩展。
+- **主区单 view 的关闭 UI**:ext-view tab 不进 tab 条,主区暂不提供「关单个 view」的按钮(产品决定:关闭入口先只给 dock,见下「dock 关闭按钮」节)。dispose 差分仍就位,真实触发 dispose 的路径是 dock 导航换 view + 停用扩展。
 
 ---
 
-## dock 关闭按钮(2026-05-31)
+## dock 关闭按钮(overlay 浮层,2026-05-31)
 
-> 走过一段弯路:先做成「rail 图标右键 Close view → 真销毁 iframe(dispose)」(commit `f39fbff`),被指出方向不对后 revert(`8840601`)。正确产品语义:**关闭按钮放在 dock view 容器自己的 chrome 里,且「关」= 隐藏(collapse),不是销毁**。本节是改正后的实现。
+> 迭代了三版才定:① rail 右键「Close view → dispose」(`f39fbff`,方向错被 revert `8840601`);② dock 顶部 header 条 + ×(`2b5a977`,为塞 header 把圆角改成只圆底部两角,用户不接受这个妥协)→ revert;③ **本节:× 用 overlay 绝对定位浮在 dock webview 右上角**,webview 占满、四角圆角不动。产品语义始终是「关闭 = 隐藏(collapse),不是销毁」,且关闭入口只给 dock。
 
-### 语义
+### 方案
 
-dock 顶部一条 header,右侧一个 × 。点 × = `Hide()` 收起 dock,载入的 view 的 WebContents/iframe **存活**,只是隐藏 → 触发 `onDidChangeVisibility(false)`,**不** dispose。下次再从 rail 打开还是原实例。dispose 只在「dock 导航换 view(旧 iframe 被 LoadURL 替换)」「停用扩展」时发。
+不动 dock 的布局/圆角(webview 仍占满整张卡、四角全圆)。× 做成一个**独立 overlay**:`main_window_->AddOverlayView(panel, CEF_DOCKING_MODE_CUSTOM)`(和本 app 的 popover / profile-picker 同款机制),`SetBounds` 钉到 dock webview 的右上角,半透明圆形衬底。点 × → `CollapseRightDock()` = `Hide()`,载入的 view 实例留活、只发 `onDidChangeVisibility(false)`。
 
-| 用户动作 | 结果 |
+| 触发 | 行为 |
 |---|---|
-| 点 dock header × | 收起(hide),`onDidChangeVisibility(false)`,实例留活 |
-| 再从 rail 打开 | 复现(`shown=true`,同 key 不 reload),`onDidChangeVisibility(true)` |
-| dock 从 view A 切到 view B | A 的 iframe 被替换销毁 → A dispose,B resolve |
+| dock 打开 / webview 首次 realize | `UpdateDockCloseOverlay()` 算位置 + 显示 × |
+| 窗口 resize | `OnWindowBoundsChanged` → 重新 `SetBounds` 跟随 |
+| dock 收起 / 停用扩展 | `UpdateDockCloseOverlay()` → 隐藏 × |
+| 点 × | `CollapseRightDock`(hide;`loaded_view_key` 不变 → open 集合不变 → 不 dispose) |
 
-只做 dock;主区视图按产品决定不加关闭按钮。header 只有 × ,无标题。
+### 改动(纯 C++,未动 web / Rust)
 
-### 改动
+| 文件 | 改动 |
+|---|---|
+| `main_window.{h,cc}` | `BuildOverlaySlots()` 末尾建 × overlay(`CefPanel` + fill-layout + `MakeIconButton(kClose)` + `FnButtonDelegate → CollapseRightDock`;`AddOverlayView` CUSTOM;deferred `CaptureLastChildNSView` → `StyleOverlayPanel(半径13, kCornerAll, 0x66000000)` + `SetOverlayWindowBackground(透明)` 做半透明圆形衬底);`UpdateDockCloseOverlay()`(deferred 读 `WebviewWindowBounds` → `SetBounds` 右上角 inset 10 / 隐藏);`CollapseRightDock()`;四处接线(open dock / webview realize / CloseExtensionViews / OnWindowBoundsChanged) |
+| `views/right_dock_view.{h,cc}` | `WebviewWindowBounds()`:返回 dock webview 在窗口坐标系的 rect(收起 / 未 realize 时空 rect),给 overlay 定位 |
 
-| 层 | 文件 | 改动 |
-|---|---|---|
-| 平台 | `platform/view_style.{h,mm}` | `StyleContentBrowserView` / `RoundBrowserCardAuto` 加 `corner_mask`(默认 `kCornerAll`,不破坏既有调用);punch 安装循环按 `corner_mask` 跳过未选中的角;tracker 加 `cornerMask` 属性透传 |
-| 视图 | `views/right_dock_view.{h,cc}` | `Build()` 在 column 顶部加 `header_panel_`(横向 box,`kDockHeaderH=36`,bg=bg_content)+ flex 撑右的 × 图标按钮(`MakeIconButton(IconId::kClose)` + `FnButtonDelegate` → `on_close_requested_`);`RoundCorners()` 改 `kCornerBottom`(只圆底部,header 顶部 flush 方角贴标题栏);`SetOnCloseRequested` setter;`ApplyTheme` 给 header 上色 |
-| 窗口 | `main_window.{h,cc}` | 建 dock 后 `SetOnCloseRequested([this]{ CollapseRightDock(); })`;新增 `CollapseRightDock()`:`Hide()` + body 重排 + 角刷新 + `PushActiveViewToRail()`(→ dock 的 `onDidChangeVisibility(false)`,`loaded_view_key` 不变 → open 集合不变 → 不 dispose)|
-
-没动 web / Rust:dock 收起复用 5f1113d 的 `active_view_changed`→visibility 通路;`loaded_view_key()` 收起时仍返回 key,所以 open 差分把它当存活 → 是 hide。
+收起复用 5f1113d 的 `active_view_changed → visibility` 通路:`Hide()` 不清 `loaded_view_key()`,所以 web 端 open 差分把它当存活 → 是 hide 不是 dispose。
 
 ### 验证
 
-- `cmake --build build --target cronymax_app` → **APP_BUILD3_EXIT=0**(`view_style_mac.mm` / `right_dock_view.cc` / `main_window.cc` 重编 + 链接通过)
-- `corner_mask` 默认 `kCornerAll`,主内容卡的圆角调用未传该参 → 行为不变
-- ⚠️ **视觉未截图核对**:dock 是原生 CEF 视图,需装一个 `target:right` 的扩展(如 `examples/panel-explorer` 的 `...dock`)打开 dock 才看得到;header 高度 / × 对齐 / 底部圆角待你跑起来眼检,要调我再改。
+- `cmake --build build --target cronymax_app` → **APP_BUILD4_EXIT=0**(`main_window.cc` / `right_dock_view.cc` 重编 + 链接通过)
+- ⚠️ **视觉未截图核对**:overlay 是原生 CEF 浮层,需装一个 `target:right` 扩展(`examples/panel-explorer` 的 `...dock`)打开 dock 才看得到。待眼检:× 位置(右上 inset 10 / 26px)、半透明圆底(0x66000000 / 半径13)、图标在深色衬底上是否清楚、resize 跟随、收起隐藏。要调我改。
 
 ### 遗留
 
-- header 目前只在 dock;主区视图不加(产品决定)。
-- 窗口失焦 / 主区后台态的 visibility 细分仍未做(同上一节)。
+- `CaptureLastChildNSView` 取「最后一个子窗口」给 overlay 上色——本 overlay 在 `BuildOverlaySlots` 最后建、deferred 一拍后捕获,正常是它;若同拍有别的 overlay 抢到「最后」会串台(低概率,真出问题改成存 controller 句柄取 nsview)。
+- 图标颜色目前用 `kClose` 资产原色,深色半透明衬底下若对比不足,需要给 × 单独着白色(待眼检)。

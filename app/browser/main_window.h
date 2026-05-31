@@ -108,10 +108,14 @@ class MainWindow : public CefWindowDelegate,
   // recent chat tab (falling back to any remaining tab).
   void CloseExtensionViews(const std::string& ext_id);
 
-  // Collapse the right dock (the user clicked its header × ). A hide, not a
-  // teardown: the loaded view's WebContents survives, so the rail's open-set
-  // is unchanged and the view fires onDidChangeVisibility(false), not dispose.
+  // Collapse the right dock (the user clicked the floating × overlay). A hide,
+  // not a teardown: the loaded view's WebContents survives, so the rail's
+  // open-set is unchanged and the view fires onDidChangeVisibility(false).
   void CollapseRightDock();
+
+  // Position + show/hide the floating dock-close × overlay to track the dock's
+  // top-right corner. Shows when the dock is open, hides when collapsed.
+  void UpdateDockCloseOverlay();
 
   // native-views-mvc Phase 4: shared state (TabManager, SpaceManager, theme,
   // observer lists) lives in ShellModel. Declared before client_handler_ so
@@ -273,6 +277,14 @@ class MainWindow : public CefWindowDelegate,
   CefRefPtr<CefBrowserView> float_bv_;
   CefRefPtr<CefOverlayController> float_oc_;
   void* float_monitor_ = nullptr;
+
+  // Floating close (×) button overlaid on the right dock's top-right corner.
+  // A hide affordance: clicking collapses the dock (the loaded view's
+  // WebContents survives → onDidChangeVisibility(false), not dispose). Built
+  // in BuildOverlaySlots(); shown/positioned by UpdateDockCloseOverlay() as the
+  // dock opens / collapses / the window resizes.
+  CefRefPtr<CefPanel> dock_close_panel_;
+  CefRefPtr<CefOverlayController> dock_close_oc_;
 
   // Recompute and apply the OVERLAY centered rect. No-op if !overlay_open_.
   void UpdateOverlayRect();

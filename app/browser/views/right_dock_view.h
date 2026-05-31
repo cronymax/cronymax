@@ -14,7 +14,6 @@
 //
 #pragma once
 
-#include <functional>
 #include <string>
 
 #include "browser/models/theme_aware_view.h"
@@ -46,14 +45,6 @@ class RightDockView : public ThemeAwareView {
   // Collapse the dock without changing the loaded view.
   void Hide();
 
-  // Set the callback invoked when the user clicks the dock's header close (×)
-  // button. MainWindow wires this to collapse the dock (a hide — the loaded
-  // view's WebContents survives, so it fires onDidChangeVisibility(false),
-  // not dispose).
-  void SetOnCloseRequested(std::function<void()> cb) {
-    on_close_requested_ = std::move(cb);
-  }
-
   // Re-apply (or, when collapsed, clear) the dock card's rounded-corner punch
   // overlays. Posts a TID_UI task so it runs after layout settles. Called by
   // MainWindow whenever the dock opens/closes or its browser is (re)created.
@@ -75,6 +66,12 @@ class RightDockView : public ThemeAwareView {
   // a hide (visibility), not a dispose.
   std::string loaded_view_key() const { return current_view_key_; }
 
+  // The dock webview's bounds in window-content coordinates (origin top-left,
+  // y down) — what MainWindow uses to position the floating close-× overlay at
+  // the dock's top-right. Empty rect when the dock is collapsed or its browser
+  // isn't realized yet.
+  CefRect WebviewWindowBounds();
+
   void ApplyTheme(const ThemeChrome& chrome) override;
 
  private:
@@ -86,11 +83,9 @@ class RightDockView : public ThemeAwareView {
 
   CefRefPtr<CefPanel> column_panel_;
   CefRefPtr<CefBoxLayout> dock_layout_;
-  CefRefPtr<CefPanel> header_panel_;
   CefRefPtr<CefBrowserView> browser_view_;
   std::string current_view_key_;
   bool shown_ = false;
-  std::function<void()> on_close_requested_;
 };
 
 }  // namespace cronymax

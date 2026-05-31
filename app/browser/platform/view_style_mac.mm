@@ -702,7 +702,6 @@ static constexpr NSInteger kCornerPunchTag = 0x43524E58;  // "CRNX"
 @property(nonatomic, assign) CGFloat radius;
 @property(nonatomic, assign) cef_color_t bg;
 @property(nonatomic, assign) int group;
-@property(nonatomic, assign) int cornerMask;
 - (void)apply;
 @end
 
@@ -722,7 +721,7 @@ static constexpr NSInteger kCornerPunchTag = 0x43524E58;  // "CRNX"
                      static_cast<int>(rootH - NSMinY(f) - NSHeight(f)),
                      static_cast<int>(NSWidth(f)), static_cast<int>(NSHeight(f)));
   cronymax::StyleContentBrowserView((__bridge void*)root, self.radius, self.bg,
-                                    rect, self.group, self.cornerMask);
+                                    rect, self.group);
 }
 - (void)frameChanged:(NSNotification*)note {
   (void)note;
@@ -756,8 +755,7 @@ void RoundBrowserCardAuto(void* window_nsview_ptr,
                           double radius,
                           cef_color_t bg,
                           const CefRect& card_rect,
-                          int group,
-                          int corner_mask) {
+                          int group) {
   if (!window_nsview_ptr)
     return;
   NSView* root = (__bridge NSView*)window_nsview_ptr;
@@ -803,7 +801,6 @@ void RoundBrowserCardAuto(void* window_nsview_ptr,
   tracker.radius = (CGFloat)radius;
   tracker.bg = bg;
   tracker.group = group;
-  tracker.cornerMask = corner_mask;
   [tracker apply];
 }
 
@@ -811,8 +808,7 @@ void StyleContentBrowserView(void* window_nsview_ptr,
                              double radius,
                              cef_color_t bg_argb,
                              const CefRect& card_rect,
-                             int group,
-                             int corner_mask) {
+                             int group) {
   if (!window_nsview_ptr)
     return;
   NSView* root = (__bridge NSView*)window_nsview_ptr;
@@ -844,12 +840,7 @@ void StyleContentBrowserView(void* window_nsview_ptr,
       {cardX, nsCardTop - r, 3},              // TL
   };
 
-  // Patch corner index → CornerMask bit (0=BL, 1=BR, 2=TR, 3=TL).
-  const int patch_bit[4] = {kCornerBottomLeft, kCornerBottomRight,
-                            kCornerTopRight, kCornerTopLeft};
   for (int i = 0; i < 4; i++) {
-    if (!(corner_mask & patch_bit[i]))
-      continue;  // corner not selected — leave it square
     CronymaxCornerPunchView* v = [[CronymaxCornerPunchView alloc] init];
     v.punchColor = fill;
     v.punchCorner = patches[i].corner;
