@@ -28,6 +28,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { toast } from "sonner";
 import { ModelGroupCombobox } from "@/components/ModelGroupCombobox";
 import { fetchExtensionGroups, fetchLlmGroups, type ModelGroup } from "@/components/modelGroups";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -37,6 +38,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Toaster } from "@/components/ui/sonner";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Heading } from "@/components/ui/typography";
@@ -1386,6 +1388,20 @@ export function App() {
 
   // ── terminal output → ShellBlock accumulation ──────────────────────────
   // Topic-scoped to the active terminal; auto-resubscribes on space switch.
+  // Platform-originated extension notices (crash-disable, memory warnings)
+  // → toast. The payload is `{ kind: "raw", data: { ext_id, level, message } }`
+  // (same envelope the terminal subscriber below unwraps).
+  useRuntimeEvent("extensions/notice", (event: unknown) => {
+    const pl = (event as { payload?: { kind?: string; data?: unknown } })?.payload;
+    if (pl?.kind !== "raw") return;
+    const data = pl.data as { level?: string; message?: string } | undefined;
+    const message = data?.message;
+    if (!message) return;
+    if (data?.level === "error") toast.error(message);
+    else if (data?.level === "warn") toast.warning(message);
+    else toast.info(message);
+  });
+
   useRuntimeEvent(state.terminalTid ? `terminal:${state.terminalTid}` : "", (event: unknown) => {
     const blockId = runningBlockIdRef.current;
     if (!blockId) return;
@@ -3191,6 +3207,10 @@ export function App() {
 
   return (
     <TooltipProvider>
+      {/* Platform extension notices (crash-disable / memory) render here as
+          toasts. Portaled to <body>, so window-level despite living in the
+          chat panel webview. */}
+      <Toaster position="bottom-right" />
       <main className="flex h-screen flex-col bg-background text-foreground">
         {/* Header */}
         <header className="flex items-center gap-3 border-b border-border bg-card px-3 py-2">

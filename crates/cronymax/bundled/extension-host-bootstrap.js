@@ -194,6 +194,18 @@ rpcSocket.on("error", (e) => {
   process.stderr.write(`[bootstrap] rpc socket error: ${e}\n`);
 });
 
+// When the parent (crony) goes away — graceful quit or, far more commonly,
+// the hard `std::process::exit(0)` path that skips every Rust Drop — the
+// fd 3 socket EOFs here. Without this, the orphaned Node child keeps running
+// forever (the leak that stranded 14 hosts). Exit on EOF so the child dies
+// with its parent. `close` covers the abrupt teardown; `end` the clean FIN.
+rpcSocket.on("close", () => {
+  process.exit(0);
+});
+rpcSocket.on("end", () => {
+  process.exit(0);
+});
+
 // ── 2. console.* intercept (EH Layer B) ----------------------------------
 //
 // Replace the global `console` so each call lands in `output.log` *and*

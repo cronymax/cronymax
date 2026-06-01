@@ -204,6 +204,8 @@ async fn activate_routes_all_four_l2_registrations_into_runtime() {
             ping_interval: None,
             stdout_log: None,
             stderr_log: None,
+            host_event_sink: None,
+            rss_warn_bytes: None,
         }),
     )
     .await
@@ -379,6 +381,8 @@ async fn registering_undeclared_provider_surfaces_via_register_error() {
             ping_interval: None,
             stdout_log: None,
             stderr_log: None,
+            host_event_sink: None,
+            rss_warn_bytes: None,
         }),
     )
     .await

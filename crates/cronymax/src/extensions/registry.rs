@@ -43,11 +43,24 @@ pub struct ExtensionRegistry {
     entries: HashMap<String, RegistryEntry>,
 }
 
+/// Why an extension is currently disabled, when that's more than a plain
+/// user toggle. `None` (the common case) means either enabled, or disabled
+/// by the user. `Crash` means the platform auto-disabled it after it
+/// exceeded its restart budget (P10-T01) — surfaced in the settings UI so
+/// the user knows it wasn't them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisabledReason {
+    Crash,
+}
+
 #[derive(Clone, Debug)]
 pub struct RegistryEntry {
     pub manifest: Manifest,
     pub ext_dir: PathBuf,
     pub enabled: bool,
+    /// Why it's disabled, if the platform (not the user) turned it off.
+    pub disabled_reason: Option<DisabledReason>,
     /// Unix epoch seconds.
     pub installed_at: u64,
 }
@@ -64,6 +77,10 @@ struct PersistedRegistry {
 struct PersistedEntry {
     enabled: bool,
     installed_at: u64,
+    /// `#[serde(default)]` keeps old `registry.json` files (which never had
+    /// this key) loading unchanged — no version bump needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    disabled_reason: Option<DisabledReason>,
 }
 
 pub fn default_registry_root() -> Option<PathBuf> {
@@ -115,6 +132,7 @@ impl ExtensionRegistry {
                 manifest,
                 ext_dir,
                 enabled,
+                disabled_reason: None,
                 installed_at: now_seconds(),
             },
         );
@@ -183,9 +201,9 @@ impl ExtensionRegistry {
             }
 
             let id = manifest.id.clone();
-            let (enabled, installed_at) = match persisted.extensions.get(&id) {
-                Some(p) => (p.enabled, p.installed_at),
-                None => (true, now_seconds()),
+            let (enabled, installed_at, disabled_reason) = match persisted.extensions.get(&id) {
+                Some(p) => (p.enabled, p.installed_at, p.disabled_reason),
+                None => (true, now_seconds(), None),
             };
             new_entries.insert(
                 id,
@@ -193,6 +211,7 @@ impl ExtensionRegistry {
                     manifest,
                     ext_dir: path,
                     enabled,
+                    disabled_reason,
                     installed_at,
                 },
             );
@@ -246,6 +265,7 @@ impl ExtensionRegistry {
             manifest,
             ext_dir: dest,
             enabled: true,
+            disabled_reason: None,
             installed_at: now_seconds(),
         };
         self.entries.insert(id.clone(), entry);
@@ -301,13 +321,31 @@ impl ExtensionRegistry {
     }
 
     /// Flip an extension's enabled flag and persist. No-ops on the dir
-    /// itself — the host loop reads `enabled` at activation time.
+    /// itself — the host loop reads `enabled` at activation time. Enabling
+    /// always clears any prior `disabled_reason` (a manual re-enable means
+    /// the user wants it back, crash history notwithstanding).
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> ExtensionResult<()> {
         let entry = self
             .entries
             .get_mut(id)
             .ok_or_else(|| ExtensionError::NotInstalled(id.into()))?;
         entry.enabled = enabled;
+        if enabled {
+            entry.disabled_reason = None;
+        }
+        self.save()
+    }
+
+    /// Disable an extension because the platform gave up restarting it
+    /// (P10-T01 crash budget exhausted). Distinct from a user toggle so the
+    /// settings UI can say *why* it's off. Persists immediately.
+    pub fn set_disabled_by_crash(&mut self, id: &str) -> ExtensionResult<()> {
+        let entry = self
+            .entries
+            .get_mut(id)
+            .ok_or_else(|| ExtensionError::NotInstalled(id.into()))?;
+        entry.enabled = false;
+        entry.disabled_reason = Some(DisabledReason::Crash);
         self.save()
     }
 
@@ -344,6 +382,7 @@ impl ExtensionRegistry {
                         PersistedEntry {
                             enabled: e.enabled,
                             installed_at: e.installed_at,
+                            disabled_reason: e.disabled_reason,
                         },
                     )
                 })
@@ -574,6 +613,64 @@ mod tests {
             entry.installed_at, original_installed_at,
             "installed_at must survive across instances",
         );
+    }
+
+    #[test]
+    fn disabled_reason_round_trips_and_is_cleared_by_enable() {
+        let reg_root = TempDir::new().unwrap();
+        let src = TempDir::new().unwrap();
+        write_minimal_source(src.path(), "alice.foo", "alice", "0.1.0");
+
+        let mut reg = ExtensionRegistry::new(reg_root.path());
+        reg.install(src.path()).unwrap();
+        reg.set_disabled_by_crash("alice.foo").unwrap();
+        assert!(!reg.get("alice.foo").unwrap().enabled);
+        assert_eq!(
+            reg.get("alice.foo").unwrap().disabled_reason,
+            Some(DisabledReason::Crash),
+        );
+
+        // Survives a fresh instance + refresh (persisted via registry.json).
+        let mut reg2 = ExtensionRegistry::new(reg_root.path());
+        reg2.refresh().unwrap();
+        assert_eq!(
+            reg2.get("alice.foo").unwrap().disabled_reason,
+            Some(DisabledReason::Crash),
+            "crash disable reason must persist across instances",
+        );
+
+        // Re-enabling clears the reason (a manual enable overrides crash history).
+        reg2.set_enabled("alice.foo", true).unwrap();
+        assert!(reg2.get("alice.foo").unwrap().enabled);
+        assert_eq!(reg2.get("alice.foo").unwrap().disabled_reason, None);
+    }
+
+    #[test]
+    fn legacy_registry_json_without_disabled_reason_loads() {
+        // A registry.json written before `disabled_reason` existed must still
+        // load (the field is `#[serde(default)]`, no version bump).
+        let reg_root = TempDir::new().unwrap();
+        let src = TempDir::new().unwrap();
+        write_minimal_source(src.path(), "alice.foo", "alice", "0.1.0");
+        let mut reg = ExtensionRegistry::new(reg_root.path());
+        reg.install(src.path()).unwrap();
+
+        // Overwrite registry.json with a legacy-shaped entry (no reason key).
+        let legacy = serde_json::json!({
+            "version": REGISTRY_VERSION,
+            "extensions": { "alice.foo": { "enabled": false, "installed_at": 123 } },
+        });
+        std::fs::write(
+            reg_root.path().join(REGISTRY_FILENAME),
+            serde_json::to_string_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let mut reg2 = ExtensionRegistry::new(reg_root.path());
+        reg2.refresh().unwrap();
+        let entry = reg2.get("alice.foo").expect("legacy entry loads");
+        assert!(!entry.enabled);
+        assert_eq!(entry.disabled_reason, None);
     }
 
     #[test]

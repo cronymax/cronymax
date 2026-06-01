@@ -204,6 +204,19 @@ impl RuntimeServices {
                 );
             }));
 
+            // Platform-originated notices (crash-disable, memory warnings) →
+            // `extensions/notice` topic, rendered as a toast by the web UI.
+            // Free-form authority topic (no C++ allowlist) so this needs no
+            // bridge change. `RuntimeAuthority::emit` is sync; serialise the
+            // notice to JSON and forward.
+            let auth_for_notice = authority.clone();
+            runtime.set_notice_emitter(std::sync::Arc::new(move |notice| {
+                let data = serde_json::to_value(&notice).unwrap_or_else(|_| serde_json::json!({}));
+                auth_for_notice.emit("extensions/notice", RuntimeEventPayload::Raw { data });
+            }));
+            // Crash-restart budget (spec §10 default 3).
+            runtime.set_max_restarts(3);
+
             spawn_startup_activation(&runtime, &to_activate);
             runtime
         });
@@ -315,11 +328,15 @@ fn build_spawn_config_builder() -> Option<SpawnConfigBuilder> {
                 manifest_path: ext_dir.join("cronymax-extension.json"),
                 max_restarts: 0,
                 ping_interval: Some(SpawnConfig::ping_interval_default()),
-                // Per-extension stdout/stderr log sinks are attached by
-                // `ExtensionRuntime::activate` from the session LogManager — the
-                // builder doesn't have the (ext_id-keyed) writers in hand.
+                // Per-extension stdout/stderr log sinks, the crash-signal sink,
+                // and the RSS threshold are all attached by
+                // `ExtensionRuntime::activate` (it owns the supervisor channel
+                // and the ext_id-keyed log writers) — the builder leaves them
+                // unset.
                 stdout_log: None,
                 stderr_log: None,
+                host_event_sink: None,
+                rss_warn_bytes: None,
             }
         },
     ))

@@ -26,20 +26,64 @@
 //! in `P2-T01` and is interchangeable here.
 
 use std::os::unix::io::FromRawFd;
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
+use std::process::ExitStatus;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rmpv::Value;
 use tokio::net::UnixStream;
-use tokio::process::{Child, Command};
-use tokio::sync::Mutex as TokioMutex;
+use tokio::process::Command;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{Mutex as TokioMutex, Notify};
 use tokio::task::JoinHandle;
 
 use crate::extensions::error::{ExtensionError, ExtensionResult};
 use crate::extensions::logging::LogWriter;
 use crate::extensions::rpc::codec::method;
 use crate::extensions::rpc::{Connection, RpcServer};
+
+/// Why a host process ended — used to classify the exit for logging and
+/// restart policy. A clean `exit(0)` we *didn't* ask for is still abnormal
+/// (spec Layer F): the extension dropped its host without a deactivate
+/// handshake.
+#[derive(Clone, Copy, Debug)]
+pub enum HostExit {
+    /// `exit(0)` without a deactivate handshake (spec Layer F).
+    CleanUnexpected,
+    /// Non-zero exit code (spec Layer E).
+    Code(i32),
+    /// Terminated by a signal (spec Layer E).
+    Signal(i32),
+}
+
+/// Out-of-band signals a running host emits to its supervisor in
+/// [`crate::extensions::runtime::ExtensionRuntime`]. Delivered over the
+/// unbounded mpsc channel installed at spawn via
+/// [`SpawnConfig::host_event_sink`]. `None` sink (tests / dev harness)
+/// disables every signal — the host runs without supervision.
+#[derive(Clone, Debug)]
+pub enum HostEvent {
+    /// The child exited without us asking (crash / abnormal exit). The
+    /// supervisor restarts (≤ N) then disables.
+    Crashed { ext_id: String, exit: HostExit },
+    /// Ping/pong timed out — the host is wedged (spec Layer D). The
+    /// supervisor escalates this to a restart (kills then respawns).
+    Hung { ext_id: String },
+    /// Resident memory crossed the configured warn threshold. One-shot per
+    /// host lifetime. Observability only — never a kill (P10-T02 scoped
+    /// down to warn-not-enforce).
+    RssWarn {
+        ext_id: String,
+        rss: u64,
+        limit: u64,
+    },
+}
+
+/// Sender half of the host→supervisor signal channel.
+pub type HostEventSink = UnboundedSender<HostEvent>;
 
 /// Settings for spawning one extension's Node host.
 #[derive(Clone, Debug)]
@@ -78,11 +122,25 @@ pub struct SpawnConfig {
     /// Log sink for the child's stderr (`host.log` — Node warnings +
     /// `console.error` + uncaught stacks). `None` drops the stream.
     pub stderr_log: Option<Arc<LogWriter>>,
+    /// Out-of-band crash / hung / RSS signal channel back to the runtime
+    /// supervisor. `None` (tests / dev harness) means the host runs
+    /// unsupervised — no auto-restart, no RSS notice.
+    pub host_event_sink: Option<HostEventSink>,
+    /// Resident-memory warn threshold in bytes. `None` disables RSS
+    /// sampling. Crossing it logs a warning and emits one
+    /// [`HostEvent::RssWarn`] — observability only, never a kill.
+    pub rss_warn_bytes: Option<u64>,
 }
 
 impl SpawnConfig {
     pub fn ping_interval_default() -> Duration {
         Duration::from_secs(5)
+    }
+
+    /// Default resident-memory warn threshold (~1.5 GiB). A host crossing
+    /// this only triggers a log + one notice; it is never killed.
+    pub fn rss_warn_default() -> u64 {
+        1536 * 1024 * 1024
     }
 }
 
@@ -95,10 +153,36 @@ pub struct NodeHost {
 #[derive(Debug)]
 struct HostState {
     ext_id: String,
-    child: TokioMutex<Option<Child>>,
+    /// Raw child pid for signalling — `shutdown` SIGTERM/SIGKILL, the
+    /// `Drop` backstop, and RSS sampling all use it. `-1` for
+    /// [`NodeHost::dummy_for_test`] / a process that never started.
+    pid: AtomicI32,
+    /// Set true before any *planned* teardown (`shutdown`, `kill_blocking`,
+    /// the `Drop` backstop). The exit-watcher reads it to decide whether an
+    /// exit is a crash (emit [`HostEvent::Crashed`]) or expected (silent);
+    /// the health monitor reads it to stop emitting `Hung`; and it makes
+    /// `Drop` a no-op after an explicit shutdown. Shared (`Arc`) with the
+    /// watcher / health tasks — which is also why those tasks hold the
+    /// individual field `Arc`s and **not** `Arc<HostState>`, so the `Drop`
+    /// backstop's `strong_count` reflects live `NodeHost` handles only.
+    intentional_shutdown: Arc<AtomicBool>,
     connection: TokioMutex<Option<Arc<Connection>>>,
     rpc_task: TokioMutex<Option<JoinHandle<ExtensionResult<()>>>>,
     health_task: TokioMutex<Option<JoinHandle<()>>>,
+    /// The task that owns the [`Child`] and `child.wait()`s on it. Owning
+    /// the `Child` here (rather than in `HostState`) is what lets
+    /// `child.wait()` reap the zombie without `&mut HostState`, and lets
+    /// `shutdown` signal purely by pid.
+    exit_watch_task: TokioMutex<Option<JoinHandle<()>>>,
+    /// Filled by the exit-watcher when `child.wait()` returns. `is_alive`
+    /// reads it; `shutdown` polls it. `Arc` so the watcher can write it.
+    exit_status: Arc<TokioMutex<Option<ExitStatus>>>,
+    /// Notified once when `exit_status` is filled, so `shutdown` can wake
+    /// promptly instead of busy-polling.
+    exit_done: Arc<Notify>,
+    /// One-shot guard so an over-threshold host emits at most one
+    /// `RssWarn` notice per lifetime (the warn log still fires each tick).
+    rss_notice_fired: Arc<AtomicBool>,
     restart_count: TokioMutex<u32>,
 }
 
@@ -200,18 +284,71 @@ impl NodeHost {
             tokio::spawn(drain_pipe(stderr, cfg.stderr_log.clone()));
         }
 
-        let state = Arc::new(HostState {
-            ext_id: cfg.ext_id.clone(),
-            child: TokioMutex::new(Some(child)),
-            connection: TokioMutex::new(Some(conn.clone())),
-            rpc_task: TokioMutex::new(Some(rpc_task)),
-            health_task: TokioMutex::new(None),
-            restart_count: TokioMutex::new(0),
-        });
-        let host = Self { state };
+        let pid = child.id().map(|p| p as i32).unwrap_or(-1);
+        let host = Self {
+            state: Arc::new(HostState {
+                ext_id: cfg.ext_id.clone(),
+                pid: AtomicI32::new(pid),
+                intentional_shutdown: Arc::new(AtomicBool::new(false)),
+                connection: TokioMutex::new(Some(conn.clone())),
+                rpc_task: TokioMutex::new(Some(rpc_task)),
+                health_task: TokioMutex::new(None),
+                exit_watch_task: TokioMutex::new(None),
+                exit_status: Arc::new(TokioMutex::new(None)),
+                exit_done: Arc::new(Notify::new()),
+                rss_notice_fired: Arc::new(AtomicBool::new(false)),
+                restart_count: TokioMutex::new(0),
+            }),
+        };
+
+        // Exit watcher: own the `Child`, `wait()` on it (reaps the zombie),
+        // record the status, and — unless we asked for the death — emit a
+        // `Crashed` signal so the runtime supervisor can restart. Holds only
+        // the individual field `Arc`s (not `Arc<HostState>`) so the `Drop`
+        // backstop's `strong_count` counts `NodeHost` handles only.
+        {
+            let intentional = host.state.intentional_shutdown.clone();
+            let exit_status = host.state.exit_status.clone();
+            let exit_done = host.state.exit_done.clone();
+            let sink = cfg.host_event_sink.clone();
+            let ext_id = cfg.ext_id.clone();
+            let watcher = tokio::spawn(async move {
+                let status = match child.wait().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(ext_id, err = %e, "ext-host child.wait failed");
+                        return;
+                    }
+                };
+                *exit_status.lock().await = Some(status);
+                exit_done.notify_waiters();
+                if !intentional.load(Ordering::SeqCst) {
+                    tracing::warn!(
+                        ext_id,
+                        code = ?status.code(),
+                        signal = ?status.signal(),
+                        "ext-host exited unexpectedly (Layer E/F: crashed)",
+                    );
+                    if let Some(sink) = sink {
+                        let _ = sink.send(HostEvent::Crashed {
+                            ext_id: ext_id.clone(),
+                            exit: classify_exit(status),
+                        });
+                    }
+                }
+            });
+            *host.state.exit_watch_task.lock().await = Some(watcher);
+        }
 
         if let Some(interval) = cfg.ping_interval {
-            host.start_health_monitor(conn, interval).await;
+            host.start_health_monitor(
+                conn,
+                interval,
+                cfg.host_event_sink.clone(),
+                pid,
+                cfg.rss_warn_bytes,
+            )
+            .await;
         }
 
         Ok(host)
@@ -233,10 +370,15 @@ impl NodeHost {
         Self {
             state: Arc::new(HostState {
                 ext_id: ext_id.to_string(),
-                child: TokioMutex::new(None),
+                pid: AtomicI32::new(-1),
+                intentional_shutdown: Arc::new(AtomicBool::new(false)),
                 connection: TokioMutex::new(None),
                 rpc_task: TokioMutex::new(None),
                 health_task: TokioMutex::new(None),
+                exit_watch_task: TokioMutex::new(None),
+                exit_status: Arc::new(TokioMutex::new(None)),
+                exit_done: Arc::new(Notify::new()),
+                rss_notice_fired: Arc::new(AtomicBool::new(false)),
                 restart_count: TokioMutex::new(0),
             }),
         }
@@ -247,23 +389,51 @@ impl NodeHost {
         *self.state.restart_count.lock().await
     }
 
+    /// Raw child pid, or `-1` for a dummy / never-started host. Synchronous
+    /// so [`crate::extensions::runtime::ExtensionRuntime::kill_all_blocking`]
+    /// can reap on the hard-exit path without `await`.
+    pub fn pid(&self) -> i32 {
+        self.state.pid.load(Ordering::Relaxed)
+    }
+
+    /// Synchronous SIGKILL backstop for the hard-exit path
+    /// (`std::process::exit`, which skips `Drop`). Marks the death
+    /// intentional first so the watcher won't classify it as a crash.
+    pub fn kill_blocking(&self) {
+        self.state
+            .intentional_shutdown
+            .store(true, Ordering::SeqCst);
+        let pid = self.state.pid.load(Ordering::Relaxed);
+        if pid > 1 {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+    }
+
     /// Get the RPC connection, if the host is alive.
     pub async fn connection(&self) -> Option<Arc<Connection>> {
         self.state.connection.lock().await.clone()
     }
 
-    /// Whether the host's child process is still alive (returns false if
-    /// it exited).
+    /// Whether the host's child process is still alive (returns false once
+    /// the exit-watcher has recorded an exit, or for a dummy host).
     pub async fn is_alive(&self) -> bool {
-        let mut child_guard = self.state.child.lock().await;
-        match child_guard.as_mut() {
-            Some(child) => matches!(child.try_wait(), Ok(None)),
-            None => false,
+        if self.state.pid.load(Ordering::Relaxed) <= 1 {
+            return false;
         }
+        self.state.exit_status.lock().await.is_none()
     }
 
-    /// Send SIGTERM (graceful) and await exit.
-    pub async fn shutdown(self) -> ExtensionResult<std::process::ExitStatus> {
+    /// Send SIGTERM (graceful), wait briefly for the exit-watcher to record
+    /// the exit, then SIGKILL if it's still alive. Marks the death
+    /// intentional first so the watcher stays silent (no spurious
+    /// `Crashed`) and the `Drop` backstop becomes a no-op.
+    pub async fn shutdown(self) -> ExtensionResult<ExitStatus> {
+        self.state
+            .intentional_shutdown
+            .store(true, Ordering::SeqCst);
         // Abort health monitor so it stops poking a dying child.
         if let Some(task) = self.state.health_task.lock().await.take() {
             task.abort();
@@ -275,35 +445,87 @@ impl NodeHost {
         // Drop connection arc.
         let _ = self.state.connection.lock().await.take();
 
-        let mut child_guard = self.state.child.lock().await;
-        let mut child = child_guard
-            .take()
-            .ok_or_else(|| ExtensionError::HostSpawn("already shut down".into()))?;
-        // Try graceful kill first; tokio::process::Child::kill sends SIGKILL,
-        // so issue SIGTERM via nix and wait briefly first.
-        if let Some(pid) = child.id() {
-            let _ = nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(pid as i32),
-                nix::sys::signal::Signal::SIGTERM,
-            );
+        let pid = self.state.pid.load(Ordering::Relaxed);
+        if pid <= 1 {
+            return Err(ExtensionError::HostSpawn(
+                "no live process to shut down".into(),
+            ));
         }
-        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
-            Ok(Ok(status)) => Ok(status),
-            _ => {
-                let _ = child.kill().await;
-                child
-                    .wait()
-                    .await
-                    .map_err(|e| ExtensionError::HostSpawn(format!("wait: {e}")))
+        // The exit-watcher owns the `Child` and reaps it; we only signal and
+        // poll the recorded status. SIGTERM, wait ≤2s, then SIGKILL.
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGTERM,
+        );
+        if let Some(status) = self.wait_exit(Duration::from_secs(2)).await {
+            return Ok(status);
+        }
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        self.wait_exit(Duration::from_secs(2))
+            .await
+            .ok_or_else(|| ExtensionError::HostSpawn("host did not exit after SIGKILL".into()))
+    }
+
+    /// Poll the watcher-filled `exit_status` cell up to `timeout`, waking on
+    /// the `exit_done` notify between polls. Returns the recorded status, or
+    /// `None` if the deadline passed first.
+    async fn wait_exit(&self, timeout: Duration) -> Option<ExitStatus> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = *self.state.exit_status.lock().await {
+                return Some(status);
             }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            let notified = self.state.exit_done.notified();
+            let _ = tokio::time::timeout(Duration::from_millis(50), notified).await;
         }
     }
 
-    async fn start_health_monitor(&self, conn: Arc<Connection>, interval: Duration) {
+    async fn start_health_monitor(
+        &self,
+        conn: Arc<Connection>,
+        interval: Duration,
+        sink: Option<HostEventSink>,
+        pid: i32,
+        rss_warn: Option<u64>,
+    ) {
         let ext_id = self.state.ext_id.clone();
+        let intentional = self.state.intentional_shutdown.clone();
+        let rss_fired = self.state.rss_notice_fired.clone();
         let task = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(interval).await;
+                if intentional.load(Ordering::SeqCst) {
+                    break;
+                }
+                // RSS sampling (observability only — never a kill). Warn every
+                // tick over threshold but emit at most one notice.
+                if let Some(limit) = rss_warn {
+                    if let Some(rss) = read_rss_bytes(pid) {
+                        if rss > limit {
+                            tracing::warn!(
+                                ext_id,
+                                rss_mb = rss / 1_048_576,
+                                limit_mb = limit / 1_048_576,
+                                "ext-host resident memory over warn threshold",
+                            );
+                            if !rss_fired.swap(true, Ordering::SeqCst) {
+                                if let Some(s) = &sink {
+                                    let _ = s.send(HostEvent::RssWarn {
+                                        ext_id: ext_id.clone(),
+                                        rss,
+                                        limit,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
                 let res = tokio::time::timeout(
                     Duration::from_millis(2000),
                     conn.request(method::PING, Value::Nil),
@@ -312,17 +534,117 @@ impl NodeHost {
                 match res {
                     Ok(Ok(_)) => continue,
                     Ok(Err(e)) => {
+                        if intentional.load(Ordering::SeqCst) {
+                            break;
+                        }
                         tracing::warn!(ext_id, err = %e, "ext-host ping rpc error");
+                        if let Some(s) = &sink {
+                            let _ = s.send(HostEvent::Hung {
+                                ext_id: ext_id.clone(),
+                            });
+                        }
                         break;
                     }
                     Err(_) => {
+                        if intentional.load(Ordering::SeqCst) {
+                            break;
+                        }
                         tracing::warn!(ext_id, "ext-host ping timeout (Layer D: hung)");
+                        if let Some(s) = &sink {
+                            let _ = s.send(HostEvent::Hung {
+                                ext_id: ext_id.clone(),
+                            });
+                        }
                         break;
                     }
                 }
             }
         });
         *self.state.health_task.lock().await = Some(task);
+    }
+}
+
+/// Classify a child exit for logging / restart policy. A clean `exit(0)`
+/// we didn't ask for is still abnormal (spec Layer F).
+fn classify_exit(status: ExitStatus) -> HostExit {
+    if let Some(code) = status.code() {
+        if code == 0 {
+            HostExit::CleanUnexpected
+        } else {
+            HostExit::Code(code)
+        }
+    } else {
+        HostExit::Signal(status.signal().unwrap_or(0))
+    }
+}
+
+/// Read a process's resident memory in bytes. Best-effort, cross-platform,
+/// no new deps. Returns `None` on any failure (dead pid, parse error,
+/// unsupported platform) — RSS sampling must never be fatal.
+#[cfg(target_os = "linux")]
+fn read_rss_bytes(pid: i32) -> Option<u64> {
+    if pid <= 1 {
+        return None;
+    }
+    let statm = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
+    let resident_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    // SAFETY: sysconf is a pure lookup with no preconditions.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page_size <= 0 {
+        return None;
+    }
+    Some(resident_pages * page_size as u64)
+}
+
+#[cfg(target_os = "macos")]
+fn read_rss_bytes(pid: i32) -> Option<u64> {
+    if pid <= 1 {
+        return None;
+    }
+    // SAFETY: `proc_pid_rusage` fills a zeroed `rusage_info_v2` via the
+    // out-pointer; on success (rc == 0) we read only `ri_resident_size`.
+    unsafe {
+        let mut info: libc::rusage_info_v2 = std::mem::zeroed();
+        let mut ptr: libc::rusage_info_t =
+            &mut info as *mut libc::rusage_info_v2 as libc::rusage_info_t;
+        let rc = libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, &mut ptr);
+        if rc == 0 {
+            Some(info.ri_resident_size)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn read_rss_bytes(_pid: i32) -> Option<u64> {
+    None
+}
+
+impl Drop for NodeHost {
+    fn drop(&mut self) {
+        // Only the last live `NodeHost` handle reaps. The watcher / health
+        // tasks hold the field `Arc`s, not `Arc<HostState>`, so this counts
+        // handles only. `swap` makes the kill fire at most once and turns a
+        // post-`shutdown` drop into a no-op (shutdown already set the flag).
+        if Arc::strong_count(&self.state) > 1 {
+            return;
+        }
+        if self.state.intentional_shutdown.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let pid = self.state.pid.load(Ordering::Relaxed);
+        if pid <= 1 {
+            return;
+        }
+        // Best-effort SIGKILL backstop for tests / panics / forgotten
+        // handles. The graceful path is `shutdown().await`; this is the net
+        // beneath it. Only `nix::kill` (a raw syscall) — safe even if the
+        // tokio runtime is already gone.
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGKILL,
+        );
     }
 }
 
@@ -470,6 +792,8 @@ mod tests {
             ping_interval: None, // no health check — /bin/true doesn't speak RPC
             stdout_log: None,
             stderr_log: None,
+            host_event_sink: None,
+            rss_warn_bytes: None,
         };
         let host = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await
@@ -502,6 +826,8 @@ mod tests {
             ping_interval: None,
             stdout_log: None,
             stderr_log: None,
+            host_event_sink: None,
+            rss_warn_bytes: None,
         };
         let host = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await
@@ -534,6 +860,8 @@ mod tests {
             ping_interval: None,
             stdout_log: None,
             stderr_log: None,
+            host_event_sink: None,
+            rss_warn_bytes: None,
         };
         let host = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await
@@ -559,6 +887,8 @@ mod tests {
             ping_interval: None,
             stdout_log: None,
             stderr_log: None,
+            host_event_sink: None,
+            rss_warn_bytes: None,
         };
         let host = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await
@@ -588,6 +918,8 @@ mod tests {
             ping_interval: None,
             stdout_log: None,
             stderr_log: None,
+            host_event_sink: None,
+            rss_warn_bytes: None,
         };
         let err = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await
@@ -620,6 +952,8 @@ mod tests {
             ping_interval: None,
             stdout_log: None,
             stderr_log: None,
+            host_event_sink: None,
+            rss_warn_bytes: None,
         };
         let host = NodeHost::spawn(cfg, RpcServer::builder().build())
             .await

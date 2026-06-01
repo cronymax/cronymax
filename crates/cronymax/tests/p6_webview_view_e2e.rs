@@ -175,6 +175,8 @@ async fn webview_view_provider_round_trips_through_real_host() {
             ping_interval: None,
             stdout_log: None,
             stderr_log: None,
+            host_event_sink: None,
+            rss_warn_bytes: None,
         }),
     )
     .await

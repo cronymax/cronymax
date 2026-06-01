@@ -74,13 +74,16 @@
 //! a real Node 26 process is covered in
 //! `tests/p4_extension_runtime_e2e.rs`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 use rmpv::Value;
 use serde::Serialize;
+use tokio::sync::mpsc;
 
 use crate::extensions::api::agents::{
     AgentProviderRegistry, AgentSessionEvent, AgentSessionRouter, ProviderEntry,
@@ -99,10 +102,10 @@ use crate::extensions::error::{ExtensionError, ExtensionResult};
 #[cfg(test)]
 use crate::extensions::events::PlatformTopic;
 use crate::extensions::events::{EventBus, EventPayload, SubscriptionGuard};
-use crate::extensions::host::node::{NodeHost, SpawnConfig};
+use crate::extensions::host::node::{HostEvent, HostExit, NodeHost, SpawnConfig};
 use crate::extensions::logging::{LogChannelInfo, LogKind, LogManager, LogReadResult};
 use crate::extensions::manifest::{AgentProviderContribution, Manifest, SidebarViewContribution};
-use crate::extensions::registry::ExtensionRegistry;
+use crate::extensions::registry::{DisabledReason, ExtensionRegistry};
 use crate::extensions::rpc::codec::{
     agents_method, method, sidebar_method, webview_method, webview_view_method,
 };
@@ -138,6 +141,31 @@ pub struct ExtensionRuntime {
 /// shape into the emit path.
 pub type ContributionsChangedEmitter = Arc<dyn Fn() + Send + Sync>;
 
+/// Severity of a platform-originated extension notice (rendered as a toast
+/// in the UI). Mirrors the `level` field the web toast subscriber reads.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoticeLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+/// A user-facing message the *platform* (not an extension) wants to surface
+/// — e.g. "extension X disabled after repeated crashes" (P10-T01) or a
+/// memory warning (P10-T02). Emitted on the `extensions/notice` authority
+/// topic via the [`NoticeEmitter`] and shown as a toast.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExtensionNotice {
+    pub ext_id: String,
+    pub level: NoticeLevel,
+    pub message: String,
+}
+
+/// Composition-root callback that pipes an [`ExtensionNotice`] into the
+/// `extensions/notice` authority topic. No-op default for tests.
+pub type NoticeEmitter = Arc<dyn Fn(ExtensionNotice) + Send + Sync>;
+
 /// Composition-root factory that turns `(ext_id, manifest, ext_dir)` into a
 /// [`SpawnConfig`]. Set once at startup (see
 /// [`ExtensionRuntime::set_spawn_config_builder`]) so the runtime can
@@ -160,6 +188,9 @@ pub struct InstalledExtensionInfo {
     pub icon: Option<String>,
     /// Persisted enable flag (`registry.json`).
     pub enabled: bool,
+    /// Why it's disabled, when the platform (not the user) turned it off —
+    /// `Some(Crash)` after the restart budget was exhausted (P10-T01).
+    pub disabled_reason: Option<DisabledReason>,
     /// Whether the extension currently has a live activation record.
     pub active: bool,
     /// `true` when the manifest declares a `main` (host-backed); `false` for
@@ -226,6 +257,23 @@ struct RuntimeState {
     /// path to spawn against). Tests that drive activation directly via
     /// [`ExtensionRuntime::activate`] don't need it.
     spawn_config_builder: RwLock<Option<SpawnConfigBuilder>>,
+    /// Crash-restart budget (spec §10 default 3). After this many
+    /// consecutive crashes the supervisor disables the extension instead of
+    /// restarting. Set at composition root via [`ExtensionRuntime::set_max_restarts`].
+    max_restarts: AtomicU32,
+    /// Authoritative per-extension crash counter the supervisor consults.
+    /// Reset to zero on a user-initiated `activate`; incremented on each
+    /// crash; removed once the extension is disabled. Distinct from the
+    /// host's own `restart_count()` (which is per-host and always 0 after a
+    /// fresh respawn).
+    restart_counts: Mutex<HashMap<String, u32>>,
+    /// Single-flight gate so overlapping crash signals for the same
+    /// extension (e.g. `Crashed` + `Hung` for one death) don't kick off
+    /// concurrent restarts.
+    restart_in_progress: Mutex<HashSet<String>>,
+    /// Composition-root callback that pipes an [`ExtensionNotice`] into the
+    /// `extensions/notice` authority topic (toast). No-op default for tests.
+    notice_emitter: RwLock<NoticeEmitter>,
     /// Per-session log manager (`~/.cronymax/logs/<session>/`). `None` in
     /// tests / headless paths. When set, `activate` attaches each host's
     /// stdout/stderr writers and the `log/channel` RPC handler appends NDJSON
@@ -253,6 +301,10 @@ impl std::fmt::Debug for RuntimeState {
             .field("renderer_event_emitter", &"<fn>")
             .field("contributions_changed_emitter", &"<fn>")
             .field("spawn_config_builder", &"<fn>")
+            .field("max_restarts", &self.max_restarts)
+            .field("restart_counts", &self.restart_counts)
+            .field("restart_in_progress", &self.restart_in_progress)
+            .field("notice_emitter", &"<fn>")
             .field("log_manager", &self.log_manager)
             .finish()
     }
@@ -276,6 +328,10 @@ impl ExtensionRuntime {
                 renderer_event_emitter: RwLock::new(Arc::new(|_| {})),
                 contributions_changed_emitter: RwLock::new(Arc::new(|| {})),
                 spawn_config_builder: RwLock::new(None),
+                max_restarts: AtomicU32::new(3),
+                restart_counts: Mutex::new(HashMap::new()),
+                restart_in_progress: Mutex::new(HashSet::new()),
+                notice_emitter: RwLock::new(Arc::new(|_| {})),
                 log_manager: RwLock::new(None),
             }),
         }
@@ -336,6 +392,27 @@ impl ExtensionRuntime {
     fn emit_contributions_changed(&self) {
         let emitter = self.state.contributions_changed_emitter.read().clone();
         emitter();
+    }
+
+    /// Install the platform-notice emitter (toast). Called once at
+    /// composition root so crash-disable / memory warnings flow into the
+    /// `extensions/notice` authority topic.
+    pub fn set_notice_emitter(&self, emitter: NoticeEmitter) {
+        *self.state.notice_emitter.write() = emitter;
+    }
+
+    /// Override the crash-restart budget (spec §10 default 3). Called at
+    /// composition root; tests use a small value to keep crash-storm checks
+    /// fast.
+    pub fn set_max_restarts(&self, n: u32) {
+        self.state.max_restarts.store(n, Ordering::Relaxed);
+    }
+
+    fn emit_notice(&self, notice: ExtensionNotice) {
+        // Clone under the read lock then drop it before firing, matching the
+        // other emitters so a re-entrant emitter can't deadlock.
+        let emitter = self.state.notice_emitter.read().clone();
+        emitter(notice);
     }
 
     /// Install the composition-root [`SpawnConfig`] factory. Once set,
@@ -609,6 +686,10 @@ impl ExtensionRuntime {
             return Err(ExtensionError::AlreadyActivated(ext_id.to_string()));
         }
 
+        // A user-initiated activate resets the crash budget — a manual
+        // enable / restart means "try fresh", independent of past crashes.
+        self.state.restart_counts.lock().remove(ext_id);
+
         // 1. Ingest contributions immediately — they survive even if
         //    activate() throws, so the settings UI can still surface them.
         self.state.contributions.lock().ingest(&manifest);
@@ -652,67 +733,12 @@ impl ExtensionRuntime {
         //      skip the entire host pipeline; contributions already
         //      ingested at step 1 are all the platform needs.
         if manifest.main.is_some() {
-            // 2. Build the per-extension RPC handler table.
-            let rpc = self.build_rpc_server(ext_id.to_string(), manifest.clone());
-
-            // 3. Spawn the host. Attach the per-extension stdout/stderr log
-            //    sinks from the session LogManager (if installed) so the
-            //    child's `console.log` (output.log) and stderr / Node warnings
-            //    (host.log) are persisted. A writer-open failure is non-fatal:
-            //    log loss must never block activation.
-            let mut cfg = cfg_builder(&manifest, ext_dir);
-            if let Some(lm) = self.log_manager() {
-                match lm.writer(LogKind::ExtensionStdout(ext_id)) {
-                    Ok(w) => cfg.stdout_log = Some(w),
-                    Err(e) => {
-                        tracing::warn!(ext_id = %ext_id, error = %e, "open output.log failed")
-                    }
-                }
-                match lm.writer(LogKind::ExtensionStderr(ext_id)) {
-                    Ok(w) => cfg.stderr_log = Some(w),
-                    Err(e) => tracing::warn!(ext_id = %ext_id, error = %e, "open host.log failed"),
-                }
-            }
-            let host = match NodeHost::spawn(cfg, rpc).await {
-                Ok(h) => h,
-                Err(e) => {
-                    self.state.contributions.lock().remove_extension(ext_id);
-                    self.state.renderers.unregister_all_for(ext_id);
-                    let _ = self.state.events.unregister_extension(ext_id);
-                    self.emit_contributions_changed();
-                    return Err(e);
-                }
-            };
-
-            // 4. Snapshot the conn. Must happen before driving
-            //    extension/activate so that any register-notify the extension
-            //    fires from inside its activate() callback can find the conn
-            //    in state.handles.
-            let conn = match host.connection().await {
-                Some(c) => c,
-                None => {
-                    self.state.contributions.lock().remove_extension(ext_id);
-                    self.state.renderers.unregister_all_for(ext_id);
-                    let _ = self.state.events.unregister_extension(ext_id);
-                    self.emit_contributions_changed();
-                    let _ = host.shutdown().await;
-                    return Err(ExtensionError::HostSpawn(
-                        "host spawned but connection unavailable".into(),
-                    ));
-                }
-            };
-            self.state.handles.lock().insert(
-                ext_id.to_string(),
-                ExtensionHandle {
-                    host,
-                    conn: conn.clone(),
-                    event_subscriptions: HashMap::new(),
-                },
-            );
-
-            // 5. Drive extension/activate. Failure is fatal — rollback all
-            //    state and tear down the host.
-            if let Err(e) = conn.request(method::EXTENSION_ACTIVATE, Value::Nil).await {
+            // 2-5. Build the cfg, then spawn the host + handshake + attach a
+            //       crash supervisor (see `spawn_and_handshake`). Any failure
+            //       rolls back every ingested registry and tears down the
+            //       host. The same path is reused by `respawn` on crash.
+            let cfg = cfg_builder(&manifest, ext_dir);
+            if let Err(e) = self.spawn_and_handshake(ext_id, &manifest, cfg).await {
                 self.rollback_failed_activate(ext_id).await;
                 return Err(e);
             }
@@ -754,6 +780,11 @@ impl ExtensionRuntime {
             return Err(ExtensionError::NotActivated(ext_id.to_string()));
         }
 
+        // Mark deactivated *first* so a crash supervisor racing this
+        // teardown sees `!is_activated` and bails out of restarting (the
+        // user / uninstall path wins). The rest of the cleanup is idempotent.
+        let _ = self.state.lifecycle.lock().mark_deactivated(ext_id);
+
         // Sever any in-flight agent sessions this extension is driving so
         // their dispatcher event loops unwind instead of blocking on a sink
         // that will never receive again once the host is gone. The run then
@@ -788,7 +819,6 @@ impl ExtensionRuntime {
         self.state.sidebars.unregister_all_for(ext_id);
         let _ = self.state.webviews.dispose_all_for(ext_id);
         let _ = self.state.events.unregister_extension(ext_id);
-        let _ = self.state.lifecycle.lock().mark_deactivated(ext_id);
         self.emit_contributions_changed();
 
         if let Some(handle) = handle {
@@ -866,6 +896,7 @@ impl ExtensionRuntime {
                 InstalledExtensionInfo {
                     active,
                     enabled: e.enabled,
+                    disabled_reason: e.disabled_reason,
                     installed_at: e.installed_at,
                     ext_dir: e.ext_dir.display().to_string(),
                     has_main: m.main.is_some(),
@@ -944,6 +975,34 @@ impl ExtensionRuntime {
         Ok(())
     }
 
+    /// Gracefully tear down every live host. Called on clean app quit
+    /// (SIGINT/SIGTERM, while the tokio runtime is still alive) so Node
+    /// children don't outlive cronymax. Best-effort: a per-extension
+    /// deactivate failure is logged, never fatal.
+    pub async fn shutdown_all(&self) {
+        for id in self.activated_ids() {
+            if let Err(e) = self.deactivate(&id).await {
+                tracing::warn!(ext_id = %id, error = %e, "shutdown_all: deactivate failed");
+            }
+        }
+    }
+
+    /// Synchronous SIGKILL of every live host. The last-resort reaper for
+    /// the hard-exit path (`std::process::exit`, which skips `Drop` and
+    /// can't await). Pairs with the bootstrap fd-3-close handler — between
+    /// them, no Node child is orphaned. Does not touch registry / lifecycle
+    /// state (the process is dying anyway).
+    pub fn kill_all_blocking(&self) {
+        let handles = self.state.handles.lock();
+        for (id, handle) in handles.iter() {
+            let pid = handle.host.pid();
+            if pid > 1 {
+                tracing::info!(ext_id = %id, pid, "kill_all_blocking: SIGKILL");
+            }
+            handle.host.kill_blocking();
+        }
+    }
+
     async fn rollback_failed_activate(&self, ext_id: &str) {
         let handle = self.state.handles.lock().remove(ext_id);
         self.state.contributions.lock().remove_extension(ext_id);
@@ -956,6 +1015,255 @@ impl ExtensionRuntime {
         self.emit_contributions_changed();
         if let Some(h) = handle {
             let _ = h.host.shutdown().await;
+        }
+    }
+
+    // ── crash recovery (P10-T01) ──────────────────────────────────────
+
+    /// Spawn the host, snapshot the conn, register the handle, attach a
+    /// crash supervisor, and drive `extension/activate`. Shared by the
+    /// initial `activate` (host branch) and `respawn` (crash recovery). On
+    /// error the caller rolls back; this only tears down the host it spawned
+    /// when the conn never materialised (no handle was registered yet).
+    async fn spawn_and_handshake(
+        &self,
+        ext_id: &str,
+        manifest: &Manifest,
+        mut cfg: SpawnConfig,
+    ) -> ExtensionResult<()> {
+        // Install the crash-signal channel + RSS threshold. The host emits
+        // Crashed / Hung / RssWarn here; `spawn_supervisor` drains them.
+        let (tx, rx) = mpsc::unbounded_channel::<HostEvent>();
+        cfg.host_event_sink = Some(tx);
+        cfg.rss_warn_bytes = Some(SpawnConfig::rss_warn_default());
+
+        // Attach per-extension stdout/stderr log sinks from the session
+        // LogManager (if installed). A writer-open failure is non-fatal:
+        // log loss must never block activation.
+        if let Some(lm) = self.log_manager() {
+            match lm.writer(LogKind::ExtensionStdout(ext_id)) {
+                Ok(w) => cfg.stdout_log = Some(w),
+                Err(e) => tracing::warn!(ext_id = %ext_id, error = %e, "open output.log failed"),
+            }
+            match lm.writer(LogKind::ExtensionStderr(ext_id)) {
+                Ok(w) => cfg.stderr_log = Some(w),
+                Err(e) => tracing::warn!(ext_id = %ext_id, error = %e, "open host.log failed"),
+            }
+        }
+
+        let rpc = self.build_rpc_server(ext_id.to_string(), manifest.clone());
+        let host = NodeHost::spawn(cfg, rpc).await?;
+
+        // Snapshot the conn before driving extension/activate so any
+        // register-notify fired from inside activate() finds it in
+        // state.handles.
+        let conn = match host.connection().await {
+            Some(c) => c,
+            None => {
+                let _ = host.shutdown().await;
+                return Err(ExtensionError::HostSpawn(
+                    "host spawned but connection unavailable".into(),
+                ));
+            }
+        };
+
+        // Attach the crash supervisor. Detached: it self-terminates when the
+        // signal channel closes (host teardown drops the senders), so there's
+        // no JoinHandle to track or abort — which also sidesteps the
+        // self-abort hazard when a restart is driven from inside it.
+        self.spawn_supervisor(ext_id.to_string(), rx);
+
+        self.state.handles.lock().insert(
+            ext_id.to_string(),
+            ExtensionHandle {
+                host,
+                conn: conn.clone(),
+                event_subscriptions: HashMap::new(),
+            },
+        );
+
+        conn.request(method::EXTENSION_ACTIVATE, Value::Nil).await?;
+        Ok(())
+    }
+
+    /// Drain a host's crash-signal channel and drive restart / disable /
+    /// memory-notice. One detached task per live host; ends when the channel
+    /// closes (all senders dropped on host teardown).
+    fn spawn_supervisor(&self, ext_id: String, mut rx: mpsc::UnboundedReceiver<HostEvent>) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    HostEvent::Crashed { exit, .. } => this.on_host_crashed(&ext_id, exit).await,
+                    // A hung host (spec Layer D) escalates to a restart:
+                    // `respawn` kills the wedged process before spawning anew.
+                    HostEvent::Hung { .. } => {
+                        this.on_host_crashed(&ext_id, HostExit::CleanUnexpected)
+                            .await
+                    }
+                    HostEvent::RssWarn { rss, limit, .. } => this.emit_notice(ExtensionNotice {
+                        ext_id: ext_id.clone(),
+                        level: NoticeLevel::Warn,
+                        message: format!(
+                            "Extension '{}' is using {} MB of memory (over the {} MB soft limit).",
+                            ext_id,
+                            rss / 1_048_576,
+                            limit / 1_048_576,
+                        ),
+                    }),
+                }
+            }
+        });
+    }
+
+    /// React to a host crash / hang: restart up to the budget with backoff,
+    /// then disable + notify. Guarded so a racing user disable wins and
+    /// overlapping signals don't double-restart.
+    async fn on_host_crashed(&self, ext_id: &str, exit: HostExit) {
+        // Lost the race to a user disable / uninstall — nothing to restart.
+        if !self.is_activated(ext_id) {
+            return;
+        }
+        // Single-flight: ignore a second signal for the same death (e.g. a
+        // `Hung` chasing a `Crashed`).
+        if !self
+            .state
+            .restart_in_progress
+            .lock()
+            .insert(ext_id.to_string())
+        {
+            return;
+        }
+        self.try_restart(ext_id, exit).await;
+        self.state.restart_in_progress.lock().remove(ext_id);
+    }
+
+    async fn try_restart(&self, ext_id: &str, exit: HostExit) {
+        let count = {
+            let mut counts = self.state.restart_counts.lock();
+            let c = counts.entry(ext_id.to_string()).or_insert(0);
+            *c += 1;
+            *c
+        };
+        let max = self.state.max_restarts.load(Ordering::Relaxed);
+        self.write_crash_log(ext_id, exit, count, max);
+
+        if count > max {
+            tracing::error!(ext_id = %ext_id, restarts = count, max, "extension exceeded restart budget; disabling");
+            self.disable_after_crash(
+                ext_id,
+                format!("Extension '{ext_id}' was disabled after crashing {count} times."),
+            )
+            .await;
+            return;
+        }
+
+        // Backoff: immediate, 500ms, then 2s for any further attempts.
+        let backoff = match count {
+            1 => Duration::ZERO,
+            2 => Duration::from_millis(500),
+            _ => Duration::from_secs(2),
+        };
+        if !backoff.is_zero() {
+            tokio::time::sleep(backoff).await;
+        }
+        // A user disable during the backoff window wins.
+        if !self.is_activated(ext_id) {
+            return;
+        }
+        tracing::warn!(ext_id = %ext_id, attempt = count, "restarting crashed extension host");
+        if let Err(e) = self.respawn(ext_id).await {
+            tracing::error!(ext_id = %ext_id, error = %e, "respawn failed; disabling");
+            self.disable_after_crash(
+                ext_id,
+                format!("Extension '{ext_id}' failed to restart and was disabled."),
+            )
+            .await;
+        }
+    }
+
+    /// Terminal crash handling: tear down, persist a crash-disable, clear the
+    /// counter, and toast the user. Shared by "over budget" and "respawn
+    /// failed".
+    async fn disable_after_crash(&self, ext_id: &str, message: String) {
+        let _ = self.deactivate(ext_id).await;
+        {
+            let mut reg = self.state.registry.lock();
+            let _ = reg.set_disabled_by_crash(ext_id);
+        }
+        self.state.restart_counts.lock().remove(ext_id);
+        // Re-emit so the settings list reflects the now-disabled registry
+        // flag (deactivate already fired once, before the flag flipped).
+        self.emit_contributions_changed();
+        self.emit_notice(ExtensionNotice {
+            ext_id: ext_id.to_string(),
+            level: NoticeLevel::Error,
+            message,
+        });
+    }
+
+    /// Re-spawn a crashed/hung extension's host in place (lifecycle stays
+    /// "activated"). Tears down the dead host + its host-bound registrations
+    /// (providers / commands / sidebars — re-registered from the extension's
+    /// activate()), then reuses `spawn_and_handshake`. Manifest-driven
+    /// renderers and the events capability whitelist persist; the crash
+    /// counter is NOT reset.
+    async fn respawn(&self, ext_id: &str) -> ExtensionResult<()> {
+        // Tear down the dead/hung handle. `host.shutdown()` marks the death
+        // intentional (no spurious Crashed) and SIGKILLs a wedged process.
+        let stale = self.state.handles.lock().remove(ext_id);
+        if let Some(handle) = stale {
+            let ExtensionHandle {
+                host,
+                conn: _,
+                event_subscriptions,
+            } = handle;
+            drop(event_subscriptions);
+            let _ = host.shutdown().await;
+        }
+        self.state.providers.unregister_all_for(ext_id);
+        self.state.commands.lock().unregister_all_for(ext_id);
+        self.state.sidebars.unregister_all_for(ext_id);
+
+        let (manifest, ext_dir) = {
+            let reg = self.state.registry.lock();
+            let entry = reg
+                .get(ext_id)
+                .ok_or_else(|| ExtensionError::NotInstalled(ext_id.to_string()))?;
+            (entry.manifest.clone(), entry.ext_dir.clone())
+        };
+        let builder = self
+            .state
+            .spawn_config_builder
+            .read()
+            .clone()
+            .ok_or_else(|| {
+                ExtensionError::HostSpawn("no spawn-config builder for respawn".into())
+            })?;
+        let cfg = builder(ext_id, &manifest, &ext_dir);
+        self.spawn_and_handshake(ext_id, &manifest, cfg).await
+    }
+
+    /// Record a crash to `host.log` (NDJSON, same shape as the stderr drain
+    /// so the Logs tab interleaves it) plus a structured trace.
+    fn write_crash_log(&self, ext_id: &str, exit: HostExit, restart_count: u32, max: u32) {
+        let exit_desc = match exit {
+            HostExit::CleanUnexpected => "exit(0) without deactivate".to_string(),
+            HostExit::Code(c) => format!("exit code {c}"),
+            HostExit::Signal(s) => format!("signal {s}"),
+        };
+        tracing::warn!(ext_id = %ext_id, %exit_desc, restart_count, max, "ext-host crash recorded");
+        if let Some(lm) = self.log_manager() {
+            if let Ok(w) = lm.writer(LogKind::ExtensionStderr(ext_id)) {
+                let t = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let msg =
+                    format!("[cronymax] host crashed ({exit_desc}); restart {restart_count}/{max}");
+                let record = serde_json::json!({ "t": t, "msg": msg }).to_string();
+                let _ = w.write_line(&record);
+            }
         }
     }
 
@@ -2033,6 +2341,7 @@ mod tests {
     use crate::extensions::rpc::{Connection, RpcServer};
     use rmpv::Value;
     use std::sync::Mutex as StdMutex;
+    use tempfile::TempDir;
     use tokio::io::{duplex, split};
 
     fn alice_x_manifest_all_six() -> Manifest {
@@ -2064,6 +2373,101 @@ mod tests {
             }
         }"#;
         Manifest::from_json(raw).unwrap()
+    }
+
+    fn crasher_manifest() -> Manifest {
+        // A host-less (declarative) manifest is enough for the crash-policy
+        // unit tests: they call `on_host_crashed` directly, so no real host
+        // is spawned and `deactivate` takes the no-handle path.
+        Manifest::from_json(
+            r#"{
+                "id": "alice.crash",
+                "name": "Crasher",
+                "version": "0.1.0",
+                "publisher": "alice",
+                "engines": { "cronymax": "^1.0" },
+                "activationEvents": []
+            }"#,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn crash_over_budget_disables_and_emits_error_notice() {
+        // Root the registry in a TempDir: the disable path persists
+        // `registry.json`, which must not land in the CWD.
+        let td = TempDir::new().unwrap();
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::new(td.path()));
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("alice.crash", crasher_manifest());
+        runtime.test_mark_activated("alice.crash");
+        assert!(runtime.is_activated("alice.crash"));
+
+        // Budget 0 → the very first crash exceeds it → immediate disable.
+        runtime.set_max_restarts(0);
+        let notices: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let sink = notices.clone();
+            runtime.set_notice_emitter(Arc::new(move |n| {
+                sink.lock().push((format!("{:?}", n.level), n.message));
+            }));
+        }
+
+        runtime
+            .on_host_crashed("alice.crash", HostExit::Code(1))
+            .await;
+
+        assert!(
+            !runtime.is_activated("alice.crash"),
+            "over-budget crash should deactivate",
+        );
+        let info = runtime
+            .list_installed()
+            .into_iter()
+            .find(|e| e.id == "alice.crash")
+            .expect("still listed");
+        assert!(!info.enabled, "should be disabled");
+        assert_eq!(info.disabled_reason, Some(DisabledReason::Crash));
+        let got = notices.lock();
+        assert!(
+            got.iter()
+                .any(|(lvl, msg)| lvl == "Error" && msg.contains("alice.crash")),
+            "expected an Error crash-disable notice; got {got:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn crash_signal_for_inactive_extension_is_ignored() {
+        let runtime = ExtensionRuntime::new(ExtensionRegistry::default());
+        runtime
+            .state
+            .registry
+            .lock()
+            .insert_for_test("alice.crash", crasher_manifest());
+        // Deliberately NOT activated.
+        let notices: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let sink = notices.clone();
+            runtime.set_notice_emitter(Arc::new(move |n| {
+                sink.lock().push((format!("{:?}", n.level), n.message));
+            }));
+        }
+
+        runtime
+            .on_host_crashed("alice.crash", HostExit::Code(1))
+            .await;
+
+        assert!(notices.lock().is_empty(), "no notice for an inactive ext");
+        let info = runtime
+            .list_installed()
+            .into_iter()
+            .find(|e| e.id == "alice.crash")
+            .expect("still listed");
+        assert!(info.enabled, "registry must be untouched");
+        assert_eq!(info.disabled_reason, None);
     }
 
     /// Build a runtime wired to a duplex pair: one side runs the

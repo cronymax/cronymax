@@ -115,6 +115,13 @@ function ExtensionRow({
                   Enabled
                 </span>
               )
+            ) : ext.disabled_reason === "crash" ? (
+              <span
+                className="shrink-0 rounded-full bg-destructive/15 px-1.5 py-0.5 text-[10px] font-medium text-destructive"
+                title="Auto-disabled after repeated crashes. Enable to try again."
+              >
+                Disabled (crashed)
+              </span>
             ) : (
               <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                 Disabled

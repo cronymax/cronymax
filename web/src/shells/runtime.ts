@@ -151,6 +151,9 @@ export interface InstalledExtension {
   icon: string | null;
   /** Persisted enable flag. */
   enabled: boolean;
+  /** Why it's disabled, when the platform (not the user) turned it off.
+   *  `"crash"` = auto-disabled after exceeding its restart budget (P10-T01). */
+  disabled_reason: "crash" | null;
   /** Whether a live activation record currently exists. */
   active: boolean;
   /** Host-backed (`main` declared) vs declarative-only. */

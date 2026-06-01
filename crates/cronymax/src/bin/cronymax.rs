@@ -402,6 +402,8 @@ async fn dev_loop(
             ping_interval: Some(SpawnConfig::ping_interval_default()),
             stdout_log: None,
             stderr_log: None,
+            host_event_sink: None,
+            rss_warn_bytes: None,
         }
     });
     runtime.set_spawn_config_builder(builder);
