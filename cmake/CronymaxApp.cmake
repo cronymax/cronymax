@@ -409,6 +409,47 @@ add_custom_command(TARGET cronymax_app POST_BUILD
   VERBATIM
 )
 
+# Extension-host runtime: the bundled Node 26 binary + bootstrap.js + the
+# @msgpack dep that bootstrap.js require()s. The extension runtime spawns
+# `<bundle>/Contents/Resources/bundled/node/bin/node` with bootstrap.js to host
+# third-party extensions (see crates/cronymax/src/extensions/paths.rs); without
+# these, no host-backed extension can activate in the shipped app.
+#
+# These assets are downloaded by scripts/fetch-node26.sh into
+# crates/cronymax/bundled/ and are gitignored. If they aren't staged yet, fetch
+# them at configure time so a plain `cmake -B build` yields a complete app with
+# no manual prerequisite step. CI still fetches explicitly before configuring;
+# the script is idempotent, so the configure-time call is a no-op there. A fetch
+# failure (e.g. offline) is a warning, not a hard error — you get an app without
+# host-backed extensions, and re-running cmake once Node is present fixes it.
+set(_cmx_bundled_src "${CMAKE_CURRENT_SOURCE_DIR}/crates/cronymax/bundled")
+if(NOT EXISTS "${_cmx_bundled_src}/node/bin/node")
+  message(STATUS "cronymax: bundled Node 26 not found — running scripts/fetch-node26.sh ...")
+  execute_process(
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fetch-node26.sh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    RESULT_VARIABLE _cmx_fetch_node_rc
+  )
+  if(NOT _cmx_fetch_node_rc EQUAL 0)
+    message(WARNING
+      "cronymax: scripts/fetch-node26.sh failed (exit ${_cmx_fetch_node_rc}); "
+      "host-backed extensions will be UNAVAILABLE in the built app.")
+  endif()
+endif()
+# Always wire the staging step — the helper self-guards. The configure-time
+# EXISTS check above can't protect a build that runs after the (gitignored)
+# Node tree changes (a `git clean`, a manual rm, an interrupted fetch), so the
+# script warns-and-skips on a missing source rather than failing the app link.
+# It also ships only the node binary (~halving the payload), copies bootstrap.js
+# + the @msgpack dep, and ad-hoc re-signs the binary.
+set(_cmx_bundled_dst "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/bundled")
+add_custom_command(TARGET cronymax_app POST_BUILD
+  COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/bundle-node-into-app.sh"
+    "${_cmx_bundled_src}" "${_cmx_bundled_dst}"
+  COMMENT "Bundling extension-host Node 26 runtime into cronymax.app"
+  VERBATIM
+)
+
 # Always-run sync of the freshly built web/dist/ into the bundle. cronymax_app
 # may not relink on every build (e.g. when only frontend files change), so its
 # POST_BUILD wouldn't fire. This phony target runs unconditionally.

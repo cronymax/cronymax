@@ -140,6 +140,12 @@ jobs:
       - name: Build (arm64)
         run: cmake --build build --config Release --parallel
 
+      - name: Verify extension-host Node bundled into app
+        # Configure auto-fetches Node (scripts/fetch-node26.sh) and the build
+        # copies it into the app. Fail loudly rather than ship a DMG whose
+        # extensions are all dead.
+        run: test -f "build/cronymax.app/Contents/Resources/bundled/node/bin/node"
+
       - name: Install create-dmg
         run: brew install create-dmg
 
@@ -235,6 +241,12 @@ jobs:
 
       - name: Build (x86_64)
         run: cmake --build build --config Release --parallel
+
+      - name: Verify extension-host Node bundled into app
+        # Configure auto-fetches Node (scripts/fetch-node26.sh) and the build
+        # copies it into the app. Fail loudly rather than ship a DMG whose
+        # extensions are all dead.
+        run: test -f "build/cronymax.app/Contents/Resources/bundled/node/bin/node"
 
       - name: Install create-dmg
         run: brew install create-dmg

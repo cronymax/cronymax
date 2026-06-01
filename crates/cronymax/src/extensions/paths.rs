@@ -8,10 +8,13 @@
 //! Resolution order (first hit wins):
 //!
 //! 1. `CRONYMAX_BUNDLED_DIR` env override — used by packaging and tests.
-//! 2. Walk up from `std::env::current_exe()`, checking each ancestor for
-//!    either a sibling `bundled/` (future Resources layout) or the
-//!    in-repo `crates/cronymax/bundled/` layout. This covers
-//!    `cargo run -p crony` and the .app bundle once packaging lands.
+//! 2. Walk up from `std::env::current_exe()`, checking each ancestor for a
+//!    `bundled/`, a `Resources/bundled/`, or a `crates/cronymax/bundled/`
+//!    child. The `Resources/bundled/` case is the shipped macOS .app layout:
+//!    the exe sits at `Contents/MacOS/cronymax` and the bundle at
+//!    `Contents/Resources/bundled/`, so walking up to `Contents/` finds it
+//!    (see cmake/CronymaxApp.cmake). The `crates/cronymax/bundled/` case
+//!    covers `cargo run`.
 //! 3. `CARGO_MANIFEST_DIR/bundled/` — only present when built via cargo
 //!    (covers integration tests that exercise `RuntimeServices::new`).
 //!
@@ -73,6 +76,13 @@ fn walk_up_for_bundled(start: &Path) -> Option<PathBuf> {
         if nested.join(BOOTSTRAP_FILENAME).is_file() {
             return Some(nested);
         }
+        // Shipped macOS .app: exe at `Contents/MacOS/cronymax`, bundle at
+        // `Contents/Resources/bundled/`. Walking up from `Contents/MacOS`
+        // reaches `Contents`, whose `Resources/bundled/` matches here.
+        let resources = dir.join("Resources").join("bundled");
+        if resources.join(BOOTSTRAP_FILENAME).is_file() {
+            return Some(resources);
+        }
         cursor = dir.parent();
     }
     None
@@ -120,6 +130,21 @@ mod tests {
         let deep = td.path().join("Resources/macos");
         std::fs::create_dir_all(&deep).unwrap();
         let found = walk_up_for_bundled(&deep).unwrap();
+        assert_eq!(found, bundled);
+    }
+
+    #[test]
+    fn walk_up_finds_macos_app_layout() {
+        // Shipped .app: exe at `Contents/MacOS/cronymax`, bundle one level up
+        // at `Contents/Resources/bundled/`. Walking up from `Contents/MacOS`
+        // must reach `Contents` and match its `Resources/bundled/`.
+        let td = TempDir::new().unwrap();
+        let bundled = td.path().join("Contents/Resources/bundled");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(bundled.join(BOOTSTRAP_FILENAME), "// hi\n").unwrap();
+        let macos = td.path().join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let found = walk_up_for_bundled(&macos).unwrap();
         assert_eq!(found, bundled);
     }
 
