@@ -440,7 +440,7 @@ Phase 3 任务依赖 P2-T06（已完成）—— 状态层都可在无 Node host
 
 | ID | 状态 | 备注 |
 |---|---|---|
-| **P2-T01** (部分) | ✅ | `scripts/fetch-node26.sh` 单平台 Node 26 下载脚本（macOS arm64 起步，自动检测 OS/arch）；多平台 CI 工作未做 |
+| **P2-T01** (部分) | ✅ | `scripts/fetch-node26.sh` 自动检测 OS/arch 下载 Node 26；macOS arm64+x64 已打进 `cronymax.app`（cmake POST_BUILD 经 `scripts/bundle-node-into-app.sh` slim 拷 `bin/node`+bootstrap+@msgpack + ad-hoc 签名；release.yml 双 native job build 后 `test -f` 守卫）；Win/Linux 多平台 CI 仍未做（详见文末 2026-06-01 段） |
 | **P2-T03** | ✅ | `extensions/host/node.rs`：`NodeHost::spawn` + socketpair + `pre_exec` dup2 fd 3 + UnixStream → Connection 集成 + ping/pong health monitor + SIGTERM/SIGKILL graceful shutdown；6 单测（mock 用 `/bin/true` / `/bin/sleep` + env-dump shell 脚本） |
 | **P2-T05** | ✅ | bootstrap.js 已存在；本批仅修正 `commands.register/execute` 命名对齐 IDL |
 | **P2-T07** | ✅ | `sdk/extension/` TypeScript 包：14 个 IDL `.ts` + `runtime.ts` globalThis shim；tsc 编译产出 `dist/`，0 type errors |
@@ -1622,3 +1622,26 @@ DRI 指出第一版在 AgentsTab 自造了「Backed by」两步选择 + 又新�
 - `cargo test -p cronymax --lib` → **554 passed**(含 flow model 断言);`cargo clippy -p cronymax --lib --tests` → 0;`cargo fmt --check` → clean
 - web `tsc -b` → 0;biome 干净(仅 1840 行祖传空块 warning,无关);`chat_store` 28 测试过;`cronymax_app` + `cronymax_web_sync` 构建 exit 0 进 .app
 - ⚠️ chat model 选择器(核心面)已重构成公用件,需 DRI 重启眼检:chat 选择器正常 / AgentsTab 同款分组下拉 / 建 agent A 绑 echo-agent → @A 路由到 echo-agent
+
+---
+
+## Node 26 打包进 .app(P2-T01 续,2026-06-01)
+
+Node 26 之前 staged 在 `crates/cronymax/bundled/` 但**没进 `.app`** → 出厂 DMG 里 `default_bundled_dir()` 解析不到,host-backed 扩展全失活(开局问题)。本批把它打进 `Contents/Resources/bundled/`,macOS arm64+x64 全链路打通并实跑验证。Win/Linux 仍未进 `release.yml`。
+
+### 实现
+
+- **解析(`extensions/paths.rs`)**:`walk_up_for_bundled` 加 `Resources/bundled` 分支——出厂 exe 在 `Contents/MacOS/cronymax`、bundle 在 `Contents/Resources/bundled/`,往上走到 `Contents` 命中。补 `.app` 布局单测。
+- **打包(`cmake/CronymaxApp.cmake`)**:configure 期缺 node → `execute_process` 跑 `fetch-node26.sh`(新 checkout 零前置步骤);POST_BUILD **无条件**调 `scripts/bundle-node-into-app.sh`。
+- **`scripts/bundle-node-into-app.sh`(新)**:slim 拷贝**只 `node/bin/node`**(216M→138M,丢 npm/lib/include)+ bootstrap.js + `node_modules/@msgpack` + ad-hoc `codesign`。**源缺失 warn-and-skip,不 brick app 链接**。
+- **发布守卫**:`release.yml` 双 native job + `verify-release.sh` 在 build 后 `test -f .../bundled/node/bin/node`——本地软(可无扩展)、发布硬(缺则 fail)。
+
+### 教训
+
+- **configure 期 `if(EXISTS)` 守不住 build**:gitignored 的 `node/`+`node_modules/` 会在 configure 之后被清掉(疑似 `git clean -fdx`:现场只剩 tracked 的 `extension-host-bootstrap.js`)。原 POST_BUILD 直接 `cmake -E copy` 硬失败,把整个 app 链接也带挂(`make` 还删了 `cronymax` 二进制)。改走**可选-非致命** helper:源缺 warn-skip,发布层另有 `test -f` 兜底。
+- ad-hoc 重签 node 后仍能 exec(arm64 必须有有效签名);`cmake -E copy` 保留内嵌签名,重签是 belt-and-suspenders。
+
+### 验证(实跑)
+
+- `cmake --build build --target cronymax_app` → `[100%] Built target`;POST_BUILD 打出 `bundle-node: staged 138M ...`;`Contents/Resources/bundled/node/bin/node` 实存、跑 `v26.1.0`;@msgpack + bootstrap.js 在;app 二进制(96M)正常链接。
+- `cargo test -p cronymax --lib extensions::paths` → **5/5**(含新 `.app` 布局测试);`cmake -B build` reconfigure clean。
