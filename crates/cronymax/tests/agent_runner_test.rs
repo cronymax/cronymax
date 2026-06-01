@@ -77,6 +77,7 @@ async fn spawn_agent_completes_without_network() {
         capability_factory: Arc::new(FakeCapabilityFactory),
         terminal_managers: Arc::new(Mutex::new(HashMap::new())),
         memory_manager: None,
+        extensions: None,
     });
 
     let runner = AgentRunner::new(services);
@@ -134,6 +135,7 @@ async fn spawn_chat_binds_session_in_authority() {
         capability_factory: Arc::new(FakeCapabilityFactory),
         terminal_managers: Arc::new(Mutex::new(HashMap::new())),
         memory_manager: None,
+        extensions: None,
     });
 
     let runner = AgentRunner::new(services);
@@ -222,6 +224,7 @@ async fn supervisor_invoke_agent_result_appears_in_history() {
         capability_factory: Arc::new(FakeCapabilityFactory),
         terminal_managers: Arc::new(Mutex::new(HashMap::new())),
         memory_manager: None,
+        extensions: None,
     });
 
     let runner = AgentRunner::new(services);

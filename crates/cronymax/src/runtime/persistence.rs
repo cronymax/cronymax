@@ -154,6 +154,11 @@ mod tests {
             history: vec![],
             created_at_ms: 1,
             updated_at_ms: 2,
+            goal: None,
+            parent_run_id: None,
+            produces: vec![],
+            resolved_reviews: vec![],
+            file_changes: vec![],
         };
         snap.runs.insert(run.id, run);
         snap

@@ -215,6 +215,29 @@ std::string TabManager::GetTabMeta(const TabId& id,
   return {};
 }
 
+TabId TabManager::FindByMeta(const std::string& key,
+                             const std::string& value) const {
+  for (const auto& t : tabs_) {
+    if (t && t->GetMeta(key) == value)
+      return t->tab_id();
+  }
+  return {};
+}
+
+std::vector<TabId> TabManager::FindAllByMetaPrefix(
+    const std::string& key,
+    const std::string& prefix) const {
+  std::vector<TabId> out;
+  for (const auto& t : tabs_) {
+    if (!t)
+      continue;
+    const std::string v = t->GetMeta(key);
+    if (v.size() >= prefix.size() && v.compare(0, prefix.size(), prefix) == 0)
+      out.push_back(t->tab_id());
+  }
+  return out;
+}
+
 std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
     TabKind kind,
     const OpenParams& params) {
@@ -292,6 +315,21 @@ std::unique_ptr<TabBehavior> TabManager::MakeBehavior(
         auto beh = std::make_unique<SimpleTabBehavior>(
             client_handler_, theme_ctx_, kind, std::string("\xE2\x9A\x99"),
             "Settings", resolve_url("settings"));
+        beh->SetRequestContext(request_context_);
+        return beh;
+      }
+    case TabKind::kExtensionView:
+      if (!client_handler_)
+        return nullptr;
+      {
+        // Content URL is the extension's `cronymax-webview://` URL, always
+        // supplied via params.url (no resource alias). resolve_url returns
+        // params.url verbatim when set.
+        auto beh = std::make_unique<SimpleTabBehavior>(
+            client_handler_, theme_ctx_, kind, std::string("\xE2\x9A\x99"),
+            params.display_name.empty() ? std::string("View")
+                                        : params.display_name,
+            resolve_url("", "about:blank"));
         beh->SetRequestContext(request_context_);
         return beh;
       }

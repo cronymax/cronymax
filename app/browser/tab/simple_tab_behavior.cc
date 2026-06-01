@@ -60,6 +60,10 @@ IconId IconIdForKind(TabKind kind) {
       return IconId::kActivities;
     case TabKind::kSettings:
       return IconId::kSettings;
+    case TabKind::kExtensionView:
+      // Extension views have no native toolbar (HasToolbar() == false), so
+      // this glyph is never shown; provide a case to satisfy -Wswitch.
+      return IconId::kSettings;
   }
   return IconId::kSettings;
 }
@@ -103,8 +107,12 @@ void SimpleTabBehavior::BuildToolbar(TabToolbar* toolbar,
 CefRefPtr<CefView> SimpleTabBehavior::BuildContent(TabContext* /*context*/) {
   CefBrowserSettings settings;
   if (theme_ctx_) {
-    settings.background_color = theme_ctx_->GetCurrentChrome().bg_base != 0
-                                    ? theme_ctx_->GetCurrentChrome().bg_base
+    // The webview container paints the content surface (bg_content = the CSS
+    // `--background`: #ffffff light / #3a3a3a dark) so every content view —
+    // chat AND transparent plugin views — shows one uniform surface, floating
+    // as a card on the bg_body shell.
+    settings.background_color = theme_ctx_->GetCurrentChrome().bg_content != 0
+                                    ? theme_ctx_->GetCurrentChrome().bg_content
                                     : kBrowserViewBg;
   }
   browser_view_ = CefBrowserView::CreateBrowserView(
@@ -118,8 +126,8 @@ CefRefPtr<CefView> SimpleTabBehavior::BuildContent(TabContext* /*context*/) {
 
 void SimpleTabBehavior::ApplyTheme(const ThemeChrome& chrome) {
   if (browser_view_) {
-    browser_view_->SetBackgroundColor(chrome.bg_base != 0 ? chrome.bg_base
-                                                          : kBrowserViewBg);
+    browser_view_->SetBackgroundColor(
+        chrome.bg_content != 0 ? chrome.bg_content : kBrowserViewBg);
   }
 }
 

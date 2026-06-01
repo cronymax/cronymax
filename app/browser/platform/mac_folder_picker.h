@@ -17,4 +17,10 @@ namespace cronymax {
 void ShowNativeFolderPicker(
     std::function<void(const std::string& path)> callback);
 
+// Show a native "Install Extension" dialog that accepts either an extension
+// **directory** or a **.cmx** package file. `callback` receives the selected
+// path (directory or .cmx file), or an empty string on cancel.
+void ShowExtensionInstallPicker(
+    std::function<void(const std::string& path)> callback);
+
 }  // namespace cronymax

@@ -63,6 +63,10 @@ class ClientHandler : public CefClient,
                    const CefString& error_text,
                    const CefString& failed_url) override;
 
+  void OnLoadStart(CefRefPtr<CefBrowser> browser,
+                   CefRefPtr<CefFrame> frame,
+                   TransitionType transition_type) override;
+
   void OnLoadingStateChange(CefRefPtr<CefBrowser> browser,
                             bool isLoading,
                             bool canGoBack,
@@ -135,6 +139,21 @@ class ClientHandler : public CefClient,
   // Fired when the user hits the DevTools shortcut (F12 / Cmd+Opt+I).
   // `browser_id` is the originating browser; 0 means no browser context.
   std::function<void(int browser_id)> on_devtools_requested;
+  // Returns true when the cronymax app theme is dark. Used by OnLoadStart to
+  // force a `cronymax-webview://` view's emulated `prefers-color-scheme` to
+  // match the app theme (extension views use the standard CSS media query,
+  // which otherwise follows the OS rather than the cronymax theme).
+  std::function<bool()> is_dark_theme;
+
+  // Force `browser`'s emulated `prefers-color-scheme` to the current app theme
+  // (no-op unless its main frame is a `cronymax-webview://` view). Applied at
+  // load (OnLoadStart) and re-applied on theme change so open plugin views
+  // follow light/dark at runtime.
+  void ApplyColorSchemeEmulation(CefRefPtr<CefBrowser> browser);
+
+  // Re-apply ApplyColorSchemeEmulation to every live browser. Called by
+  // MainWindow when the app theme flips so open extension views update.
+  void ReapplyColorSchemeAll();
 
   // ── arc-style-tab-cards (Phase 3): per-browser listener registry ──────
   // Behaviors (e.g. WebTabBehavior) register one listener per browser_id
@@ -152,6 +171,9 @@ class ClientHandler : public CefClient,
 
  private:
   std::vector<int> browser_ids_;
+  // Live browsers by id, so ReapplyColorSchemeAll can iterate them on a theme
+  // change (the vector above only tracks ids).
+  std::map<int, CefRefPtr<CefBrowser>> browsers_;
   std::map<int, BrowserListener> browser_listeners_;
   std::unique_ptr<BridgeHandler> bridge_handler_;
   CefRefPtr<CefMessageRouterBrowserSide> message_router_;

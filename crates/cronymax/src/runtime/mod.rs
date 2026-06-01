@@ -37,6 +37,7 @@
 pub mod agent_runner;
 pub mod authority;
 pub mod chat_store;
+pub mod ext_dispatch;
 pub mod handler;
 pub mod middleware;
 pub mod persistence;

@@ -69,6 +69,54 @@ impl AgentRunner {
         tokio::spawn(async move {
             let agent_def = agent_loader::load_agent(&run_ctx.workspace_root, &agent_id).await;
 
+            // Engine fork: an agent whose YAML declares `agent_provider:` is
+            // driven through the extension dispatcher instead of the native
+            // ReactLoop. `Ok(None)` falls through to the native path below.
+            match crate::runtime::ext_dispatch::resolve_agent_provider(
+                &agent_def,
+                services.extensions.as_ref(),
+            ) {
+                Ok(None) => {}
+                Ok(Some((provider_ref, entry))) => {
+                    // P8 v1 is worker-only — a reviewer-kind agent backed by an
+                    // extension is rejected rather than silently mishandled.
+                    if agent_def.kind == crate::capability::agent_loader::AgentKind::Reviewer {
+                        let msg = format!(
+                            "agent `{agent_id}` is a reviewer backed by extension \
+                             provider `{}`; extension-backed reviewer agents are not \
+                             supported in v1",
+                            provider_ref.id
+                        );
+                        warn!(%run_id, "{msg}");
+                        let _ = authority.fail_run(run_id, msg);
+                        return;
+                    }
+                    let extensions = services
+                        .extensions
+                        .clone()
+                        .expect("resolve_agent_provider Ok(Some) implies a runtime");
+                    crate::runtime::ext_dispatch::drive_extension_flow_agent(
+                        authority.clone(),
+                        extensions,
+                        crate::runtime::ext_dispatch::ExtensionFlowParams {
+                            provider: entry,
+                            provider_ref,
+                            run_id,
+                            run_ctx,
+                            inv_ctx,
+                            agent_def,
+                        },
+                    )
+                    .await;
+                    return;
+                }
+                Err(msg) => {
+                    warn!(%run_id, "{msg}");
+                    let _ = authority.fail_run(run_id, msg);
+                    return;
+                }
+            }
+
             // Build system prompt: agent persona + flow invocation rendering.
             let inv_system_message = render_system_message(&inv_ctx);
             let agent_system_prompt_raw = if agent_def.system_prompt.is_empty() {
@@ -632,12 +680,30 @@ impl AgentRunner {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// How an agent receiving a rendered invocation message delivers its result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubmitMode {
+    /// Native agent — calls the `submit_document` tool when ready.
+    Tool,
+    /// Extension-backed agent — its entire turn reply is captured verbatim as
+    /// the submitted document (it has no `submit_document` tool).
+    TurnOutput,
+}
+
+/// Render the system message for a native flow agent (submits via the
+/// `submit_document` tool). Thin wrapper over [`render_system_message_with`].
+pub fn render_system_message(inv_ctx: &InvocationContext) -> String {
+    render_system_message_with(inv_ctx, SubmitMode::Tool)
+}
+
 /// Render the system message that gets prepended to an agent's initial history.
 ///
 /// This is a pure function of the `InvocationContext` fields; no side-effects.
 /// Centralised here so the rendering boundary is co-located with the
-/// `AgentRunner` that consumes it.
-pub fn render_system_message(inv_ctx: &InvocationContext) -> String {
+/// `AgentRunner` that consumes it. `submit_mode` controls only the closing
+/// instruction — extension-backed agents are told their reply *is* the
+/// document, since they cannot call the `submit_document` tool.
+pub fn render_system_message_with(inv_ctx: &InvocationContext, submit_mode: SubmitMode) -> String {
     let node_id = &inv_ctx.node_id;
     let owner = &inv_ctx.owner;
     let trigger = &inv_ctx.trigger;
@@ -734,6 +800,17 @@ pub fn render_system_message(inv_ctx: &InvocationContext) -> String {
         None => String::new(),
     };
 
+    let submit_instruction = match submit_mode {
+        SubmitMode::Tool => {
+            "Proceed with your next task. Use the `submit_document` tool when ready."
+        }
+        SubmitMode::TurnOutput => {
+            "Write the document now. Your entire reply is captured verbatim as the \
+             submitted document — output only the document content itself, with no \
+             preamble, no commentary, and no tool calls."
+        }
+    };
+
     // Task 2.5: HUMAN-PROVIDED banner for keys that were manually supplied.
     let human_provided_section = if inv_ctx.human_provided_keys.is_empty() {
         String::new()
@@ -761,7 +838,7 @@ pub fn render_system_message(inv_ctx: &InvocationContext) -> String {
          {pending_summary}\n\n\
          ### Available Approved Documents\n\
          {available_summary}{human_provided_section}{feedback_section}\n\n\
-         Proceed with your next task. Use the `submit_document` tool when ready."
+         {submit_instruction}"
     )
 }
 
@@ -939,6 +1016,7 @@ mod tests {
             }],
             pending_ports: vec!["tech-spec".to_owned(), "code-description".to_owned()],
             review_comments: None,
+            human_provided_keys: Vec::new(),
         };
         let msg = render_system_message(&ctx);
         assert!(msg.contains("## FlowRuntime: Invocation Context"));
@@ -959,6 +1037,7 @@ mod tests {
             available_docs: vec![],
             pending_ports: vec![],
             review_comments: None,
+            human_provided_keys: Vec::new(),
         };
         let msg = render_system_message(&ctx);
         assert!(msg.starts_with("## FlowRuntime: Review Assignment"));
@@ -980,6 +1059,7 @@ mod tests {
                 message: "Missing scalability section".to_owned(),
                 suggestion: Some("Add a scalability section".to_owned()),
             }]),
+            human_provided_keys: Vec::new(),
         };
         let msg = render_system_message(&ctx);
         assert!(msg.contains("## FlowRuntime: Invocation Context"));
@@ -1002,6 +1082,7 @@ mod tests {
             available_docs: vec![],
             pending_ports: vec!["code-description".to_owned()],
             review_comments: None,
+            human_provided_keys: Vec::new(),
         };
         let msg = render_system_message(&ctx);
         assert!(msg.contains("Your output `tech-spec` was approved."));
@@ -1017,9 +1098,35 @@ mod tests {
             available_docs: vec![],
             pending_ports: vec![],
             review_comments: None,
+            human_provided_keys: Vec::new(),
         };
         let msg = render_system_message(&ctx);
         assert!(msg.contains("All your ports are complete."));
         assert!(msg.contains("Submit a document of type: **none**"));
+    }
+
+    #[test]
+    fn render_turn_output_mode_omits_submit_document_tool() {
+        let ctx = InvocationContext {
+            node_id: "rd-design".to_owned(),
+            owner: "rd".to_owned(),
+            trigger: trigger_with_port("and_join", "prd", "pm-design"),
+            available_docs: vec![],
+            pending_ports: vec!["tech-spec".to_owned()],
+            review_comments: None,
+            human_provided_keys: Vec::new(),
+        };
+        // Extension-backed agents have no `submit_document` tool.
+        let ext_msg = render_system_message_with(&ctx, SubmitMode::TurnOutput);
+        assert!(
+            !ext_msg.contains("submit_document"),
+            "TurnOutput mode must not mention the submit_document tool"
+        );
+        assert!(ext_msg.contains("captured verbatim"));
+        // The invocation context itself is still rendered.
+        assert!(ext_msg.contains("## FlowRuntime: Invocation Context"));
+        // Tool mode (the default) still instructs the tool call.
+        let tool_msg = render_system_message_with(&ctx, SubmitMode::Tool);
+        assert!(tool_msg.contains("Use the `submit_document` tool"));
     }
 }

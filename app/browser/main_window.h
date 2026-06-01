@@ -12,7 +12,9 @@
 #include "browser/models/view_context.h"
 #include "browser/models/view_dispatcher.h"
 #include "browser/models/view_model.h"
+#include "browser/views/activitybar_view.h"
 #include "browser/views/content_view.h"
+#include "browser/views/right_dock_view.h"
 #include "browser/views/popover.h"
 #include "browser/views/profile_picker_overlay.h"
 #include "browser/views/sidebar_view.h"
@@ -94,6 +96,27 @@ class MainWindow : public CefWindowDelegate,
   void BroadcastToAllPanels(const std::string& event_name,
                             const std::string& json_payload);
 
+  // Push the currently-active rail view(s) to the activity-bar rail so it can
+  // highlight the matching icon(s): the main content area's active view
+  // ("activity" / "flows" / an extension view_key) and the dock's open view
+  // key. Sends `shell.active_view_changed {main, dock}`.
+  void PushActiveViewToRail();
+
+  // Tear down an extension's open operation views when it is deactivated:
+  // close any kExtensionView tab whose `ext_view` starts with "<ext_id>::",
+  // collapse the right dock if it shows one of them, then activate the most
+  // recent chat tab (falling back to any remaining tab).
+  void CloseExtensionViews(const std::string& ext_id);
+
+  // Collapse the right dock (the user clicked the floating × overlay). A hide,
+  // not a teardown: the loaded view's WebContents survives, so the rail's
+  // open-set is unchanged and the view fires onDidChangeVisibility(false).
+  void CollapseRightDock();
+
+  // Position + show/hide the floating dock-close × overlay to track the dock's
+  // top-right corner. Shows when the dock is open, hides when collapsed.
+  void UpdateDockCloseOverlay();
+
   // native-views-mvc Phase 4: shared state (TabManager, SpaceManager, theme,
   // observer lists) lives in ShellModel. Declared before client_handler_ so
   // the member initializer list can pass &shell_model_.space_manager_ to
@@ -121,6 +144,10 @@ class MainWindow : public CefWindowDelegate,
   // arc-style-tab-cards: TabManager lives in shell_model_.tabs_.
 
   // Layout views.
+  // Activity bar: leftmost vertical icon rail, owned by ActivityBarView.
+  std::unique_ptr<ActivityBarView> activitybar_view_obj_;
+  // Right-side dock for target="right" extension views (collapsible).
+  std::unique_ptr<RightDockView> right_dock_view_obj_;
   // native-views-mvc Phase 10: sidebar owned by SidebarView.
   std::unique_ptr<SidebarView> sidebar_view_obj_;
   // Convenience accessor — returns the sidebar CefBrowserView (webview panel)
@@ -250,6 +277,14 @@ class MainWindow : public CefWindowDelegate,
   CefRefPtr<CefBrowserView> float_bv_;
   CefRefPtr<CefOverlayController> float_oc_;
   void* float_monitor_ = nullptr;
+
+  // Floating close (×) button overlaid on the right dock's top-right corner.
+  // A hide affordance: clicking collapses the dock (the loaded view's
+  // WebContents survives → onDidChangeVisibility(false), not dispose). Built
+  // in BuildOverlaySlots(); shown/positioned by UpdateDockCloseOverlay() as the
+  // dock opens / collapses / the window resizes.
+  CefRefPtr<CefPanel> dock_close_panel_;
+  CefRefPtr<CefOverlayController> dock_close_oc_;
 
   // Recompute and apply the OVERLAY centered rect. No-op if !overlay_open_.
   void UpdateOverlayRect();

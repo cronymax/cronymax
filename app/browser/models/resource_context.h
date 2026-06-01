@@ -20,6 +20,7 @@ class ResourceContext {
  protected:
   virtual ~ResourceContext() = default;
   std::map<std::string, std::string> aliased_resource_urls_{
+      {"activitybar", ResourceUrl("panels/activitybar/index.html")},
       {"sidebar", ResourceUrl("panels/sidebar/index.html")},
       {"chat", ResourceUrl("panels/chat/index.html")},
       {"terminal", ResourceUrl("panels/terminal/index.html")},

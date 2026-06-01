@@ -37,6 +37,11 @@ enum class TabKind {
   kFlows,
   kActivity,
   kSettings,
+  // Extension-contributed operation view (cronymax.ui.sidebar.view with
+  // target "main"). Hidden from the tab list; opened from the activity-bar
+  // rail. Content is a CefBrowserView loading the extension's
+  // `cronymax-webview://` URL.
+  kExtensionView,
 };
 
 const char* TabKindToString(TabKind kind);

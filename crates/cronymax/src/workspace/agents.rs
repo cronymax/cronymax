@@ -9,6 +9,16 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
+/// Extension AgentProvider binding parsed from `agent_provider:` (P8). When
+/// present, the agent runs on an extension instead of an LLM. `None` for native
+/// (LLM-backed) agents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentProviderRef {
+    pub id: String,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
 /// Parsed `*.agent.yaml` definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDef {
@@ -19,6 +29,9 @@ pub struct AgentDef {
     /// Legacy scalar llm field (model name). May be empty.
     #[serde(default)]
     pub llm: String,
+    /// Extension provider binding (`agent_provider:`); `None` = LLM-backed.
+    #[serde(default)]
+    pub agent_provider: Option<AgentProviderRef>,
     /// Structured llm.provider (e.g. `"copilot"`, `"openai"`).
     #[serde(default)]
     pub llm_provider: String,
@@ -53,6 +66,8 @@ struct RawAgentYaml {
     kind: String,
     #[serde(default)]
     llm: serde_yml::Value,
+    #[serde(default)]
+    agent_provider: serde_yml::Value,
     #[serde(default)]
     description: String,
     #[serde(default)]
@@ -105,6 +120,32 @@ fn parse_agent_yaml(yaml: &str) -> Option<AgentDef> {
         _ => String::new(),
     };
 
+    // `agent_provider:` — scalar id or `{id, model}`. `builtin`/empty → None.
+    let agent_provider = match &raw.agent_provider {
+        serde_yml::Value::Mapping(m) => {
+            let id = m
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            if id.is_empty() || id == "builtin" {
+                None
+            } else {
+                let model = m
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                Some(AgentProviderRef { id, model })
+            }
+        }
+        serde_yml::Value::String(s) if !s.is_empty() && s != "builtin" => Some(AgentProviderRef {
+            id: s.clone(),
+            model: None,
+        }),
+        _ => None,
+    };
+
     let kind = if raw.kind == "reviewer" {
         "reviewer".to_owned()
     } else {
@@ -120,6 +161,7 @@ fn parse_agent_yaml(yaml: &str) -> Option<AgentDef> {
         name: raw.name,
         kind,
         llm,
+        agent_provider,
         llm_provider,
         llm_model,
         description: raw.description,

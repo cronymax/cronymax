@@ -127,7 +127,7 @@ function Row({
           />
         ) : (
           <>
-            <span className={"truncate leading-snug " + (chatTab?.sessionTitle ? "font-medium text-foreground" : "")}>
+            <span className={`truncate leading-snug ${chatTab?.sessionTitle ? "font-medium text-foreground" : ""}`}>
               {label}
             </span>
             {excerpt && !chatTab?.sessionTitle && (

@@ -122,6 +122,15 @@ run_native() {
   step "Build (arm64)"
   cmake --build build --config Release --parallel
   echo "  ✓ build complete"
+
+  # Mirror: "Verify extension-host Node bundled into app"
+  step "Verify extension-host Node bundled into app"
+  if [[ -f build/cronymax.app/Contents/Resources/bundled/node/bin/node ]]; then
+    echo "  ✓ bundled node present in app"
+  else
+    echo "  ERROR: bundled node missing from app (configure-time fetch may have failed)" >&2
+    exit 1
+  fi
 }
 
 # ── job: dmg ──────────────────────────────────────────────────────────────────

@@ -35,6 +35,11 @@ set(CRONYMAX_APP_SRCS
   app/browser/shells/workspace.cc
   app/browser/client_handler.cc
   app/browser/client_handler.h
+  # Phase 6 extension webview scheme handler — wires
+  # `cronymax-webview://<ext-id>/<path>` to files under
+  # `~/.cronymax/extensions/<ext-id>/` with strict CSP.
+  app/browser/webview_scheme.cc
+  app/browser/webview_scheme.h
   app/browser/main_window.cc
   app/browser/main_window.h
   # Refactor 2: generic ObserverList (header-only)
@@ -63,6 +68,12 @@ set(CRONYMAX_APP_SRCS
   app/browser/views/titlebar_view.cc
   app/browser/views/sidebar_view.h
   app/browser/views/sidebar_view.cc
+  # Activity bar: leftmost vertical icon rail (web panel host).
+  app/browser/views/activitybar_view.h
+  app/browser/views/activitybar_view.cc
+  # Right-side dock: collapsible host for target="right" extension views.
+  app/browser/views/right_dock_view.h
+  app/browser/views/right_dock_view.cc
   app/browser/views/profile_picker_overlay.cc
   app/browser/views/profile_picker_overlay.h
   # Independent top-level window for panel popups (settings, flows,
@@ -195,6 +206,10 @@ if(APPLE)
     app/renderer/main.cc
     app/renderer/app.cc
     app/renderer/app.h
+    # Renderer-process scheme registration mirrors browser side so the
+    # scheme is declared identically across processes.
+    app/browser/webview_scheme.cc
+    app/browser/webview_scheme.h
   )
   set(CRONYMAX_HELPER_TARGET      "cronymax_app_helper")
   set(CRONYMAX_HELPER_OUTPUT_NAME "cronymax Helper")
@@ -391,6 +406,47 @@ add_custom_command(TARGET cronymax_app POST_BUILD
     "${CMAKE_CURRENT_SOURCE_DIR}/.cronymax/flows"
     "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/builtin-flows"
   COMMENT "Bundling built-in preset flows into cronymax.app"
+  VERBATIM
+)
+
+# Extension-host runtime: the bundled Node 26 binary + bootstrap.js + the
+# @msgpack dep that bootstrap.js require()s. The extension runtime spawns
+# `<bundle>/Contents/Resources/bundled/node/bin/node` with bootstrap.js to host
+# third-party extensions (see crates/cronymax/src/extensions/paths.rs); without
+# these, no host-backed extension can activate in the shipped app.
+#
+# These assets are downloaded by scripts/fetch-node26.sh into
+# crates/cronymax/bundled/ and are gitignored. If they aren't staged yet, fetch
+# them at configure time so a plain `cmake -B build` yields a complete app with
+# no manual prerequisite step. CI still fetches explicitly before configuring;
+# the script is idempotent, so the configure-time call is a no-op there. A fetch
+# failure (e.g. offline) is a warning, not a hard error — you get an app without
+# host-backed extensions, and re-running cmake once Node is present fixes it.
+set(_cmx_bundled_src "${CMAKE_CURRENT_SOURCE_DIR}/crates/cronymax/bundled")
+if(NOT EXISTS "${_cmx_bundled_src}/node/bin/node")
+  message(STATUS "cronymax: bundled Node 26 not found — running scripts/fetch-node26.sh ...")
+  execute_process(
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fetch-node26.sh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    RESULT_VARIABLE _cmx_fetch_node_rc
+  )
+  if(NOT _cmx_fetch_node_rc EQUAL 0)
+    message(WARNING
+      "cronymax: scripts/fetch-node26.sh failed (exit ${_cmx_fetch_node_rc}); "
+      "host-backed extensions will be UNAVAILABLE in the built app.")
+  endif()
+endif()
+# Always wire the staging step — the helper self-guards. The configure-time
+# EXISTS check above can't protect a build that runs after the (gitignored)
+# Node tree changes (a `git clean`, a manual rm, an interrupted fetch), so the
+# script warns-and-skips on a missing source rather than failing the app link.
+# It also ships only the node binary (~halving the payload), copies bootstrap.js
+# + the @msgpack dep, and ad-hoc re-signs the binary.
+set(_cmx_bundled_dst "$<TARGET_BUNDLE_CONTENT_DIR:cronymax_app>/Resources/bundled")
+add_custom_command(TARGET cronymax_app POST_BUILD
+  COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/bundle-node-into-app.sh"
+    "${_cmx_bundled_src}" "${_cmx_bundled_dst}"
+  COMMENT "Bundling extension-host Node 26 runtime into cronymax.app"
   VERBATIM
 )
 

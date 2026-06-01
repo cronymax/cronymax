@@ -141,22 +141,36 @@ pub struct RuntimeAuthority {
 
 impl RuntimeAuthority {
     /// Build a fresh authority and rehydrate state from `persistence`.
-    /// Runs that were `Running` or `Pending` at the time of the previous
-    /// shutdown are transitioned to `Paused` — their agent-loop tasks
-    /// are gone and they would otherwise be stuck indefinitely.
-    /// Paused and `AwaitingReview` runs come back as-is.
+    /// Runs that were `Running`, `Pending`, or `AwaitingReview` at the time
+    /// of the previous shutdown are transitioned to `Paused` — their
+    /// agent-loop tasks are gone and they would otherwise be stuck
+    /// indefinitely. `AwaitingReview` is included because we drop all
+    /// reviews below, so any surviving `AwaitingReview` run is an orphan
+    /// with no review entry to act on.
     pub fn rehydrate(persistence: Arc<dyn Persistence>) -> Result<Self, AuthorityError> {
         let mut snapshot = persistence.load()?;
         let now = now_ms();
         let mut abandoned = 0usize;
         for run in snapshot.runs.values_mut() {
-            if matches!(run.status, RunStatus::Running | RunStatus::Pending) {
+            if matches!(
+                run.status,
+                RunStatus::Running | RunStatus::Pending | RunStatus::AwaitingReview
+            ) {
                 run.status = RunStatus::Paused;
                 run.updated_at_ms = now;
                 abandoned += 1;
             }
         }
-        if abandoned > 0 {
+        // Drop ALL reviews on rehydrate. Their `pending_resolutions`
+        // oneshot listeners died with the previous process — resolving
+        // them now can't unblock the agent loops that requested them.
+        // Showing them in the UI would let the user click Approve on
+        // dead reviews, which is at best a no-op and at worst (as we
+        // saw) crashes the native shell. If a paused run resumes and
+        // still needs approval, the agent loop will request it again.
+        let stale_reviews = snapshot.reviews.len();
+        snapshot.reviews.clear();
+        if abandoned > 0 || stale_reviews > 0 {
             persistence.save(&snapshot)?;
         }
         info!(
@@ -165,6 +179,7 @@ impl RuntimeAuthority {
             runs = snapshot.runs.len(),
             reviews = snapshot.reviews.len(),
             abandoned,
+            stale_reviews_purged = stale_reviews,
             "runtime authority rehydrated from persistence"
         );
         Ok(Self {
@@ -222,7 +237,9 @@ impl RuntimeAuthority {
             .snapshot
             .reviews
             .values()
-            .filter(|rv| run_ids.contains(&rv.run_id))
+            .filter(|rv| {
+                run_ids.contains(&rv.run_id) && matches!(rv.state, PermissionState::Pending)
+            })
             .cloned()
             .collect();
         (runs, reviews)

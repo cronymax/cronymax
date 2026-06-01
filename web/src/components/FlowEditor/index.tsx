@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { agentRegistry, docType, flow, flowRun } from "@/shells/runtime";
+import { ContributionKind, contributionRegistry, docType, flow, flowRun } from "@/shells/runtime";
 import {
   type FlowSpec,
   flowSpecFromDef,
@@ -322,21 +322,28 @@ export function FlowEditor({
 
     // Load agent + doc-type registries from the native bridge.
     // If the registry is empty on first run, auto-seed a default "Chat" agent.
-    agentRegistry
+    const pickAgents = (descriptors: { kind: string; id: string; metadata?: unknown }[]) =>
+      descriptors
+        .filter((d) => d.kind === ContributionKind.AgentsBuiltin || d.kind === ContributionKind.AgentsWorkspace)
+        .map((d) => {
+          const meta = (d.metadata && typeof d.metadata === "object" ? d.metadata : {}) as Record<string, unknown>;
+          return { name: d.id, llm: typeof meta.llm === "string" ? meta.llm : "" };
+        });
+    contributionRegistry
       .list()
       .then(async (res) => {
-        let agents = res.agents ?? [];
+        let agents = pickAgents(res.contributions ?? []);
         if (agents.length === 0) {
           try {
-            await agentRegistry.save({
-              name: "Chat",
+            await contributionRegistry.save(ContributionKind.AgentsWorkspace, "Chat", {
+              kind: "worker",
               llm: "",
               system_prompt: "You are a helpful assistant.",
               memory_namespace: "",
-              tools_csv: "",
+              tools: [],
             });
-            const refreshed = await agentRegistry.list();
-            agents = refreshed.agents ?? [];
+            const refreshed = await contributionRegistry.list();
+            agents = pickAgents(refreshed.contributions ?? []);
           } catch {
             // Seeding failed (e.g. bridge not available); continue with empty catalog.
           }
@@ -345,7 +352,7 @@ export function FlowEditor({
       })
       .catch((err: Error) => {
         // eslint-disable-next-line no-console
-        console.warn("[flow] agent.registry.list failed:", err.message);
+        console.warn("[flow] contribution.list failed:", err.message);
       });
     docType
       .list()

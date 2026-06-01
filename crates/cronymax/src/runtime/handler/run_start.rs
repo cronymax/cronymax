@@ -42,10 +42,11 @@ impl RuntimeHandler {
     pub(super) async fn handle_start_run(&self, req: ControlRequest) -> ControlResponse {
         let ControlRequest::StartRun {
             space_id,
-            payload,
+            mut payload,
             session_id,
             session_name,
             agent_id,
+            contribution_kind,
             child_session_id,
             goal: explicit_goal,
         } = req
@@ -143,8 +144,106 @@ impl RuntimeHandler {
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or(crate::crony::CronyBuiltin::ID);
+
+        // Persist the resolved agent id into the run spec. The StartRun
+        // control message carries `agent_id` as a sibling field of
+        // `payload`, and `start_run_with_session` is called with a `None`
+        // typed agent_id (the typed slot is for persisted Agent entities,
+        // not chat agents / extension providers). Without this line the
+        // run's identity is lost: ResumeRun reconstructs from the spec
+        // and would otherwise always fall back to the Crony builtin —
+        // and the extension-provider ResumeRun guard could never fire.
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "agent_id".to_string(),
+                serde_json::Value::String(resolved_agent_id.to_string()),
+            );
+            if let Some(ref k) = contribution_kind {
+                obj.insert(
+                    "contribution_kind".to_string(),
+                    serde_json::Value::String(k.clone()),
+                );
+            }
+        }
+
+        // Pre-load the agent definition for direct-chat runs (no flow_id) —
+        // before `start_run_with_session` so no yield-points exist between
+        // run creation (RunStatus:pending) and the RunStarted reply.
         let preloaded_chat_agent_def: Option<crate::capability::agent_loader::AgentDef> =
             Some(agent_loader::load_agent_with_builtin(&workspace_root, resolved_agent_id).await);
+
+        // Extension-provider dispatch. A chat run routes to an extension
+        // instead of the native ReactLoop in two ways:
+        //   Case A — the picked agent id IS an extension provider id (the
+        //            agent picker lists raw providers as `extension_provider`).
+        //   Case B — the picked agent is a named workspace agent whose YAML
+        //            declares `agent_provider:` (P8). `extension_agent_ref`
+        //            marks this; the agent's persona and tool allow-list
+        //            become the session system prompt / allowedTools.
+        // Either way the result is a `ProviderEntry` driven through
+        // ExtensionRuntime's session.create → prompt → agents/event chain.
+        //
+        // The `contribution_kind` hint is authoritative: the picker has
+        // already classified what the user selected. Case A targets an
+        // extension-declared agent provider; Case B targets a workspace
+        // YAML agent that internally delegates to a provider. Neither
+        // case is probed when no kind is supplied — the caller must
+        // pick one, otherwise the run goes through the native LLM path.
+        //
+        // flow_id is NOT consulted here. The chat panel always carries a
+        // selectedFlow (often the legacy "Chat" sentinel), and gating on
+        // its absence would mean the picker's extension pick is silently
+        // ignored. The picker's own classification is the source of truth.
+        let kind_hint = contribution_kind.as_deref();
+        let mut extension_dispatch: Option<crate::extensions::api::agents::ProviderEntry> = None;
+        let mut extension_agent_ref: Option<crate::capability::agent_loader::AgentProviderRef> =
+            None;
+        if let Some(ext) = self.services.extensions.as_ref() {
+            match kind_hint {
+                Some(crate::extensions::contributions::kind::AGENTS_PROVIDER) => {
+                    if let Some(provider) = ext.providers().get(resolved_agent_id) {
+                        // Case A. Refuse upfront if the extension isn't activated —
+                        // the chat panel would otherwise see a misleading session
+                        // failure after RunStarted.
+                        if !ext.is_activated(&provider.owning_ext) {
+                            return ControlResponse::Err {
+                                error: ControlError::InvalidState {
+                                    message: format!(
+                                        "extension `{}` (owning provider `{}`) is not activated; activate it before chatting",
+                                        provider.owning_ext, provider.provider_id
+                                    ),
+                                },
+                            };
+                        }
+                        extension_dispatch = Some(provider);
+                    }
+                }
+                Some(crate::extensions::contributions::kind::AGENTS_WORKSPACE) => {
+                    if let Some(ref agent_def) = preloaded_chat_agent_def {
+                        // Case B. `resolve_agent_provider` performs the same
+                        // activation check and reports a clear error otherwise.
+                        match crate::runtime::ext_dispatch::resolve_agent_provider(
+                            agent_def,
+                            Some(ext),
+                        ) {
+                            Ok(None) => {}
+                            Ok(Some((agent_ref, entry))) => {
+                                extension_dispatch = Some(entry);
+                                extension_agent_ref = Some(agent_ref);
+                            }
+                            Err(message) => {
+                                return ControlResponse::Err {
+                                    error: ControlError::InvalidState { message },
+                                };
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // AGENTS_BUILTIN, None, or any other kind: native path.
+                }
+            }
+        }
 
         // Resolve session: if session_id present, upsert the session
         // and retrieve the prior conversation thread from the ChatStore
@@ -258,6 +357,69 @@ impl RuntimeHandler {
                     self.fanout.lock().insert(sub_id, task);
                 } else {
                     info!("start_run: no sink available, fan-out task NOT spawned");
+                }
+
+                // Extension-provider dispatch path: bypass the
+                // legacy ReactLoop + agent_loader scaffold below
+                // entirely and drive the session through
+                // `runtime::ext_dispatch`. Reply RunStarted
+                // immediately so the chat panel transitions out
+                // of "pending"; the dispatcher emits Token /
+                // ThinkingToken / Trace events directly onto the
+                // run's topic via the authority.
+                if let Some(provider) = extension_dispatch.clone() {
+                    let extensions = self
+                        .services
+                        .extensions
+                        .as_ref()
+                        .expect("checked when computing extension_dispatch")
+                        .clone();
+                    let authority = self.authority.clone();
+                    // The model is the chat panel's runtime pick (payload) for
+                    // both cases — matching native chat, which never consults
+                    // the agent YAML's model. `agent_provider.model` is a
+                    // flow-only default (flow has no runtime picker); `mode` is
+                    // likewise runtime-only and stays unset here.
+                    let payload_model = if model.is_empty() {
+                        None
+                    } else {
+                        Some(model.clone())
+                    };
+                    // Case B (a named workspace agent backed by a provider)
+                    // sources the persona + tool allow-list from the agent
+                    // definition; Case A (a raw provider pick) uses the chat
+                    // payload's system prompt and applies no tool filter.
+                    let (ext_system_prompt, ext_allowed_tools) = if extension_agent_ref.is_some() {
+                        let def = preloaded_chat_agent_def.as_ref();
+                        let sp = def
+                            .map(|d| d.system_prompt.clone())
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| system_prompt.clone());
+                        let tools = def.map(|d| d.tools.clone()).filter(|t| !t.is_empty());
+                        (sp, tools)
+                    } else {
+                        (system_prompt.clone(), None)
+                    };
+                    let params = crate::runtime::ext_dispatch::ExtensionRunParams {
+                        provider,
+                        run_id,
+                        workspace_root: workspace_root.clone(),
+                        user_input: user_input.clone(),
+                        system_prompt: ext_system_prompt,
+                        model: payload_model,
+                        mode: None,
+                        allowed_tools: ext_allowed_tools,
+                    };
+                    tokio::spawn(async move {
+                        crate::runtime::ext_dispatch::drive_extension_session(
+                            authority, extensions, params,
+                        )
+                        .await;
+                    });
+                    return ControlResponse::RunStarted {
+                        run_id: run_id.to_string(),
+                        subscription: sub_id,
+                    };
                 }
 
                 // Build doc-submission channel shared across all

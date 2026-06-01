@@ -26,6 +26,8 @@ const char* TabKindToString(TabKind kind) {
       return "activity";
     case TabKind::kSettings:
       return "settings";
+    case TabKind::kExtensionView:
+      return "extension_view";
   }
   return "unknown";
 }
@@ -156,12 +158,14 @@ void Tab::SetChromeTheme(const std::string& css_color_or_empty) {
 void Tab::ApplyTheme(const ThemeChrome& chrome) {
   text_fg_ = chrome.text_title;
   surface_bg_ = chrome.bg_float;
-  // Keep default_chrome_argb_ in sync for SetChromeTheme fallback.
-  default_chrome_argb_ = chrome.bg_base;
+  // The content card surface is bg_content (#ffffff / #3a3a3a — the CSS
+  // `--background`), matching the chat/plugin webview. Web tabs still override
+  // via SetChromeTheme (page-driven).
+  default_chrome_argb_ = chrome.bg_content != 0 ? chrome.bg_content : chrome.bg_base;
   // A full shell theme switch clears any stale page-driven chrome override.
   chrome_override_.clear();
   if (card_)
-    card_->SetBackgroundColor(chrome.bg_base);
+    card_->SetBackgroundColor(default_chrome_argb_);
 }
 
 void Tab::RequestClose() {

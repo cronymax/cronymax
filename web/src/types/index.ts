@@ -136,8 +136,40 @@ export const ToolbarStateSchema = z.discriminatedUnion("kind", [
 ]);
 export type ToolbarState = z.infer<typeof ToolbarStateSchema>;
 
+// Singleton views opened from the activity-bar rail / chrome. These are
+// native singleton TabKinds that are hidden from the normal tab list
+// (Activities, Flows) plus Settings — they are NOT in TabKindEnum (which
+// only covers user-openable content tabs). The native `kind_from_string`
+// in view_dispatcher.cc maps these strings to their TabKind.
+export const SingletonViewKindEnum = z.enum(["activity", "flows", "settings"]);
+export type SingletonViewKind = z.infer<typeof SingletonViewKindEnum>;
+
 export const ShellTabOpenSingletonPayloadSchema = z.object({
-  kind: TabKindEnum,
+  kind: SingletonViewKindEnum,
+});
+
+// Activity-bar rail → open an extension operation view. The web rail builds
+// the `cronymax-webview://` URL and the dedup key; native opens/focuses the
+// view tab (target "main") or the right dock (target "right").
+export const ViewTargetEnum = z.enum(["main", "right"]);
+export type ViewTarget = z.infer<typeof ViewTargetEnum>;
+
+export const ShellOpenExtensionViewPayloadSchema = z.object({
+  url: z.string(),
+  view_key: z.string(),
+  title: z.string(),
+  target: ViewTargetEnum,
+});
+export const ShellOpenExtensionViewResponseSchema = z.object({
+  ok: z.boolean(),
+});
+
+// Rail "Disable" → close an extension's open view tab(s)/dock (C++ side).
+export const ShellCloseExtensionViewsPayloadSchema = z.object({
+  ext_id: z.string(),
+});
+export const ShellCloseExtensionViewsResponseSchema = z.object({
+  ok: z.boolean(),
 });
 export const ShellTabOpenSingletonResponseSchema = z.object({
   tabId: z.string(),

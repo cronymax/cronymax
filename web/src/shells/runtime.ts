@@ -21,24 +21,8 @@ export function b64ToUtf8(b64: string): string {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Agent registry helpers
+// Agent run options
 // ---------------------------------------------------------------------------
-
-export interface AgentEntry {
-  name: string;
-  kind: string;
-  llm: string;
-  builtin?: boolean;
-  prompt_sealed?: boolean;
-}
-
-export interface AgentDetail extends AgentEntry {
-  system_prompt: string;
-  memory_namespace: string;
-  tools: string[];
-  /** OpenAI reasoning_effort hint (`minimal` | `low` | `medium` | `high`). */
-  reasoning_effort?: string;
-}
 
 /** Per-message LLM overrides for an agent run (chat-UI selections, etc.). */
 export interface AgentRunOptions {
@@ -62,6 +46,9 @@ export interface AgentRunOptions {
   session_name?: string;
   /** Authored agent id (chat agent selector). */
   agent_id?: string;
+  /** ContributionKind of the picked agent. Required for new callers; legacy
+   * sites that omit it fall through to the runtime's probing heuristic. */
+  contribution_kind?: string;
   /** When set, starts a flow run with this flow id instead of a direct agent run. */
   flow_id?: string;
   /** Frontend-generated child session id for the flow thread (crypto.randomUUID()).
@@ -70,18 +57,176 @@ export interface AgentRunOptions {
   child_session_id?: string;
 }
 
-export const agentRegistry = {
-  async list(): Promise<{ agents: AgentEntry[] }> {
-    return (await runtimeSend("agent.registry.list")) as { agents: AgentEntry[] };
+// ---------------------------------------------------------------------------
+// Contribution registry helpers — unified surface across platform / workspace
+// / extension contributions. Mirrors the Rust `ContributionRegistry`.
+// ---------------------------------------------------------------------------
+
+/** Owner classification on every contribution descriptor. */
+// NB: wire field is `extId` (camelCase) — see `ContributionOwner` in
+// `crates/cronymax/src/extensions/contributions/mod.rs` which carries
+// `#[serde(rename = "extId")]`. Earlier drafts of this type used
+// `ext_id` and silently produced `undefined` at runtime.
+export type ContributionOwner = { type: "platform" } | { type: "workspace" } | { type: "extension"; extId: string };
+
+/** One entry returned by `contributionRegistry.list()`. */
+export interface ContributionDescriptor {
+  kind: string;
+  id: string;
+  owner: ContributionOwner;
+  label: string;
+  description?: string;
+  icon?: string;
+  metadata?: unknown;
+}
+
+/** One enumerable item under a descriptor (e.g. a model under an agent provider). */
+export interface ContributionItem {
+  id: string;
+  label: string;
+  description?: string;
+  icon?: string;
+  metadata?: unknown;
+}
+
+/** Known contribution kinds. Match `crate::extensions::contributions::kind`. */
+export const ContributionKind = {
+  AgentsBuiltin: "cronymax.agents.builtin",
+  AgentsWorkspace: "cronymax.agents.workspace",
+  AgentsProvider: "cronymax.agents.provider",
+  Command: "cronymax.command",
+  ConfigSchema: "cronymax.config.schema",
+  ConfigPage: "cronymax.config.page",
+  ContentRenderer: "cronymax.content.renderer",
+  SidebarView: "cronymax.ui.sidebar.view",
+} as const;
+export type ContributionKindId = (typeof ContributionKind)[keyof typeof ContributionKind];
+
+export const contributionRegistry = {
+  async list(): Promise<{ contributions: ContributionDescriptor[] }> {
+    return (await runtimeSend("contribution.list")) as { contributions: ContributionDescriptor[] };
   },
-  async load(name: string): Promise<AgentDetail> {
-    return (await runtimeSend("agent.registry.load", { name })) as AgentDetail;
+  async enumerate(contribution_kind: string, id: string): Promise<{ items: ContributionItem[] }> {
+    return (await runtimeSend("contribution.enumerate", { contribution_kind, id })) as {
+      items: ContributionItem[];
+    };
   },
-  async save(fields: Record<string, unknown>): Promise<{ ok: boolean }> {
-    return (await runtimeSend("agent.registry.save", fields)) as { ok: boolean };
+  async load(contribution_kind: string, id: string): Promise<{ descriptor: ContributionDescriptor; source: unknown }> {
+    return (await runtimeSend("contribution.load", { contribution_kind, id })) as {
+      descriptor: ContributionDescriptor;
+      source: unknown;
+    };
   },
-  async delete(name: string): Promise<{ ok: boolean }> {
-    return (await runtimeSend("agent.registry.delete", { name })) as { ok: boolean };
+  async save(contribution_kind: string, id: string, payload: Record<string, unknown>): Promise<{ ok: boolean }> {
+    return (await runtimeSend("contribution.save", { contribution_kind, id, payload })) as { ok: boolean };
+  },
+  async delete(contribution_kind: string, id: string): Promise<{ ok: boolean }> {
+    return (await runtimeSend("contribution.delete", { contribution_kind, id })) as { ok: boolean };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Extension management (settings panel → Extensions tab)
+// ---------------------------------------------------------------------------
+
+/** Per-extension contribution counts (matches Rust `ContributesSummary`). */
+export interface InstalledExtensionContributes {
+  commands: number;
+  agent_providers: number;
+  content_renderers: number;
+  sidebar_views: number;
+  config_pages: number;
+  has_config_schema: boolean;
+}
+
+/** One installed extension (matches Rust `InstalledExtensionInfo`). Field
+ *  names are snake_case to match the serde-serialized payload. */
+export interface InstalledExtension {
+  id: string;
+  name: string;
+  version: string;
+  publisher: string;
+  description: string | null;
+  /** Icon path relative to the extension dir, if declared. */
+  icon: string | null;
+  /** Persisted enable flag. */
+  enabled: boolean;
+  /** Why it's disabled, when the platform (not the user) turned it off.
+   *  `"crash"` = auto-disabled after exceeding its restart budget (P10-T01). */
+  disabled_reason: "crash" | null;
+  /** Whether a live activation record currently exists. */
+  active: boolean;
+  /** Host-backed (`main` declared) vs declarative-only. */
+  has_main: boolean;
+  installed_at: number;
+  ext_dir: string;
+  contributes: InstalledExtensionContributes;
+}
+
+/** One selectable log channel (matches Rust `LogChannelInfo`). */
+export interface LogChannelInfo {
+  /** Id passed back to `logRead` (`stdout` / `stderr` / a channel stem). */
+  id: string;
+  label: string;
+  /** `"stdout" | "stderr" | "channel"`. */
+  kind: string;
+}
+
+/** One rendered log line (matches Rust `LogEntry`). `t` (epoch ms) is present
+ *  on all lines now; `level` only on leveled channel logs; `source` (stdout /
+ *  stderr / channel id) is set in merged views (`all` / `console`). */
+export interface LogEntry {
+  t?: number;
+  level?: string;
+  source?: string;
+  text: string;
+}
+
+/** Result of reading one channel (matches Rust `LogReadResult`). */
+export interface LogReadResult {
+  entries: LogEntry[];
+  /** True for NDJSON channel logs (carry `t`/`level`); false for raw stdout/stderr. */
+  structured: boolean;
+  /** True if older lines were dropped by the tail limit. */
+  truncated: boolean;
+}
+
+export const extensionRegistry = {
+  async list(): Promise<{ extensions: InstalledExtension[] }> {
+    return (await runtimeSend("extension.list")) as { extensions: InstalledExtension[] };
+  },
+  /** Install from a directory or a `.cmx` archive path. */
+  async install(source: string): Promise<{ id: string }> {
+    return (await runtimeSend("extension.install", { source })) as { id: string };
+  },
+  async uninstall(extId: string): Promise<void> {
+    await runtimeSend("extension.uninstall", { ext_id: extId });
+  },
+  async setEnabled(extId: string, enabled: boolean): Promise<void> {
+    await runtimeSend("extension.set_enabled", { ext_id: extId, enabled });
+  },
+  /** List an extension's log channels (stdout/stderr fallbacks + channels). */
+  async logChannels(extId: string): Promise<{ channels: LogChannelInfo[] }> {
+    return (await runtimeSend("extension.log_channels", { ext_id: extId })) as {
+      channels: LogChannelInfo[];
+    };
+  },
+  /** Read one channel, tail-bounded; `sinceMs` filters NDJSON by timestamp. */
+  async logRead(extId: string, channel: string, opts?: { sinceMs?: number; limit?: number }): Promise<LogReadResult> {
+    return (await runtimeSend("extension.log_read", {
+      ext_id: extId,
+      channel,
+      since_ms: opts?.sinceMs,
+      limit: opts?.limit,
+    })) as LogReadResult;
+  },
+  async logClear(extId: string, channel: string): Promise<void> {
+    await runtimeSend("extension.log_clear", { ext_id: extId, channel });
+  },
+  /** Resolve the on-disk log folder for an extension (the "Logs" tab "Open
+   *  folder" button). Hand the returned `path` to `shells.browser.shell.reveal_path`. */
+  async logFolder(extId: string): Promise<{ path: string }> {
+    return (await runtimeSend("extension.log_folder", { ext_id: extId })) as { path: string };
   },
 };
 
@@ -271,6 +416,7 @@ export async function agentRun(task: string, opts: AgentRunOptions = {}): Promis
   if (opts.session_id) req.session_id = opts.session_id;
   if (opts.session_name) req.session_name = opts.session_name;
   if (opts.agent_id) req.agent_id = opts.agent_id;
+  if (opts.contribution_kind) req.contribution_kind = opts.contribution_kind;
   if (opts.child_session_id) req.child_session_id = opts.child_session_id;
   const res = (await runtimeSend("start.run", req)) as { run_id?: string };
   if (!res.run_id) throw new Error("runtime did not return run_id");

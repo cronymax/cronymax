@@ -4,7 +4,7 @@
  *   - clearPinnedComments reducer action
  */
 import { describe, expect, it } from "vitest";
-import { stripAnsi } from "../src/panels/chat/store";
+import { agentPickerDescription, stripAnsi } from "../src/panels/chat/store";
 
 // ── OSC 133 tests ──────────────────────────────────────────────────────
 
@@ -12,6 +12,24 @@ import { stripAnsi } from "../src/panels/chat/store";
 // a ShellBlock and running it through the reducer actions exported from
 // store. Since the reducer is not exported directly, we test the strip
 // function and reconstruction logic.
+
+describe("agentPickerDescription", () => {
+  it("labels extension providers with their owner", () => {
+    expect(
+      agentPickerDescription({
+        name: "alice.agent",
+        kind: "extension_provider",
+        llm: "alice.agent",
+        label: "Alice Agent",
+        owning_ext: "alice.ext",
+      }),
+    ).toBe("extension: Alice Agent · alice.ext");
+  });
+
+  it("keeps legacy agent descriptions unchanged", () => {
+    expect(agentPickerDescription({ name: "crony", kind: "worker", llm: "" })).toBe("kind: worker");
+  });
+});
 
 describe("stripAnsi", () => {
   it("strips CSI sequences", () => {

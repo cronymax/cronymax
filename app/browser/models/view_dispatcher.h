@@ -59,6 +59,18 @@ struct DispatcherHost {
   // Called whenever the active tab changes; passes the TabKindToString of
   // the new active tab (or "" if no tab is active).
   std::function<void(const std::string& kind)> notify_sidebar_active_kind;
+
+  // ── Right-side dock (target="right" extension views) ─────────────────────
+  // Open `url` (a cronymax-webview:// view URL) keyed by `view_key` in the
+  // collapsible right dock, or collapse it if that view is already showing.
+  std::function<void(const std::string& view_key,
+                     const std::string& url,
+                     const std::string& title)>
+      open_right_dock;
+
+  // Close an extension's open view tab(s)/dock and switch to the latest chat.
+  // Invoked from the rail "Disable" action before the Rust deactivate.
+  std::function<void(const std::string& ext_id)> close_extension_views;
 };
 
 class ViewDispatcher {

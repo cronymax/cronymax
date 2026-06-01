@@ -52,7 +52,7 @@ export function RunRow({ run, review, onReviewResolved, depth = 0 }: Props) {
   // Outcome-first label: goal or agent_id fallback (task 16.3)
   const primaryLabel = run.goal
     ? run.goal.length > 60
-      ? run.goal.slice(0, 60) + "…"
+      ? `${run.goal.slice(0, 60)}…`
       : run.goal
     : (run.agent_id ?? shortId);
   const tooltipParts: string[] = [];

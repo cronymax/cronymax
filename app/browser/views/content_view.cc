@@ -65,7 +65,11 @@ void ContentView::ApplyTheme(const ThemeChrome& chrome) {
   if (content_outer_)
     content_outer_->SetBackgroundColor(chrome.bg_body);
   if (content_frame_)
-    content_frame_->SetBackgroundColor(chrome.bg_base);
+    // The content card surface is bg_content (#ffffff / #3a3a3a — the CSS
+    // `--background`), matching the chat/plugin webview, floating on the
+    // bg_body shell. Rounded corners + the gap read it as a card.
+    content_frame_->SetBackgroundColor(chrome.bg_content != 0 ? chrome.bg_content
+                                                              : chrome.bg_base);
   // Re-round active tab's corners with the new bg (theme switch can alter
   // the color used for the shadow sibling).
   auto [tab_id, card, bv] = host_.active_tab();
@@ -129,13 +133,15 @@ void ContentView::RoundCornersFor(CefRefPtr<CefBrowserView> bv,
             CefRect card_rect{origin.x, origin.y, bounds.width, bounds.height};
 
             // w->GetWindowHandle() = BridgedContentView (window root NSView).
-            // StyleContentBrowserView places CronymaxCornerPunchView instances
-            // at the card's four corners, painting bg with a quarter-circle
-            // cutout so both the card AND content_frame_ appear rounded (the
-            // card fills content_frame_ exactly via FillLayout).
+            // Round the card by installing an auto-tracking punch set on its
+            // WebContentsViewCocoa (located by card_rect). The tracker re-paints
+            // the corner punches whenever the view's frame changes, so the
+            // rounding follows layout (sidebar/dock open, resize) without manual
+            // repositioning. Group 0 = the main content card. `bg` is the shell
+            // color painted at the corner cut-outs.
             void* window_nsview = w->GetWindowHandle();
-            StyleContentBrowserView(window_nsview, kContentCornerRadius, bg,
-                                    card_rect);
+            RoundBrowserCardAuto(window_nsview, kContentCornerRadius, bg,
+                                 card_rect, /*group=*/0);
           },
           bv, win, bg_body));
 }

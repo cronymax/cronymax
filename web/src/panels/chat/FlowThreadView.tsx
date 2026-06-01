@@ -32,6 +32,15 @@ export function FlowThreadView({ taskId }: Props) {
     [blocks, taskId],
   );
 
+  // Find the parent ConversationBlock for dispatching blackboard injection records (task 8.7).
+  // Must be called before any early return so hook order is stable across renders.
+  const parentConvBlockId = useMemo(
+    () =>
+      blocks.find((b) => b.kind === "conversation" && b.flowThread?.childSessionId === block?.childSessionId)?.id ??
+      null,
+    [blocks, block?.childSessionId],
+  );
+
   if (!block) {
     return (
       <div className="flex h-full flex-col">
@@ -40,14 +49,6 @@ export function FlowThreadView({ taskId }: Props) {
       </div>
     );
   }
-
-  // Find the parent ConversationBlock for dispatching blackboard injection records (task 8.7).
-  const parentConvBlockId = useMemo(
-    () =>
-      blocks.find((b) => b.kind === "conversation" && b.flowThread?.childSessionId === block.childSessionId)?.id ??
-      null,
-    [blocks, block.childSessionId],
-  );
 
   function handleBlackboardInjected(key: string) {
     if (!parentConvBlockId) return;

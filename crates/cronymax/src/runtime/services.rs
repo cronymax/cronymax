@@ -11,12 +11,20 @@
 //!   touching any real infrastructure.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
 use crate::capability::factory::{CapabilityFactory, DefaultCapabilityFactory};
 use crate::config::RuntimeConfig;
+use crate::extensions::host::node::SpawnConfig;
+use crate::extensions::logging::LogManager;
+use crate::extensions::runtime::SpawnConfigBuilder;
+use crate::extensions::{
+    default_bundled_bootstrap, default_bundled_node, default_registry_root, ExtensionRegistry,
+    ExtensionRuntime, Manifest,
+};
 use crate::flow::{FlowRuntimeOnCreate, FlowRuntimeRegistry};
 use crate::llm::factory::{DefaultLlmProviderFactory, LlmProviderFactory};
 use crate::memory::MemoryManager;
@@ -52,6 +60,10 @@ pub struct RuntimeServices {
 
     /// Optional semantic-memory manager (present when embedding is configured).
     pub memory_manager: Option<Arc<MemoryManager>>,
+
+    /// Extension platform runtime. Consumers use this to discover and drive
+    /// activated extension contribution points.
+    pub extensions: Option<ExtensionRuntime>,
 }
 
 impl RuntimeServices {
@@ -97,6 +109,118 @@ impl RuntimeServices {
         });
         let flow_registry = Arc::new(FlowRuntimeRegistry::with_on_create(on_create));
 
+        let extensions = default_registry_root().map(|extensions_root| {
+            let mut extension_registry = ExtensionRegistry::new(extensions_root);
+            if let Err(e) = extension_registry.refresh() {
+                tracing::warn!(error = %e, "extension registry refresh failed during runtime startup");
+            }
+            // Snapshot ids to activate before moving the registry into the
+            // runtime. Filtering on `enabled` here avoids spawning hosts for
+            // extensions the user explicitly disabled via the CLI.
+            let to_activate: Vec<String> = extension_registry
+                .iter()
+                .filter(|e| e.enabled)
+                .map(|e| e.manifest.id.clone())
+                .collect();
+            let runtime = ExtensionRuntime::new(extension_registry);
+
+            // Install the spawn-config factory so the runtime can self-activate
+            // extensions from management actions (install / enable) and at
+            // startup, without each path re-deriving bundled-Node / bootstrap /
+            // storage paths. `None` when bundled Node/bootstrap are missing —
+            // host-backed activation then errors gracefully (declarative-only
+            // extensions still activate).
+            if let Some(builder) = build_spawn_config_builder() {
+                runtime.set_spawn_config_builder(builder);
+            }
+
+            // Open this run's log session (`~/.cronymax/logs/<session>/`) so host
+            // stdout/stderr and `createOutputChannel` writes are persisted. `None`
+            // (no HOME / open failure) leaves logging disabled — never fatal.
+            if let Some(log_manager) = build_log_manager() {
+                runtime.set_log_manager(log_manager);
+            }
+
+            // Bridge webview registry events into the authority's
+            // "extensions/webview" topic so the C++ BridgeHandler can
+            // subscribe and forward `Message` events to the matching
+            // iframe via `kMsgWebviewDeliver`. The PanelCreated /
+            // PanelDisposed / VisibilityChanged variants are surfaced
+            // here too so the renderer UI can react to platform-side
+            // panel lifecycle without polling.
+            let auth_for_webview = authority.clone();
+            runtime.set_webview_emitter(std::sync::Arc::new(move |event| {
+                let payload = match serde_json::to_value(&event) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "failed to serialise WebviewEvent",
+                        );
+                        return;
+                    }
+                };
+                auth_for_webview.emit(
+                    "extensions/webview",
+                    RuntimeEventPayload::Raw { data: payload },
+                );
+            }));
+
+            // P6.5-T05 / P6.5-T08: same pattern for content-renderer
+            // events (currently just height updates from inside renderer
+            // iframes; chat-driven instance lifecycle is emitted from
+            // chat dispatch with the same topic).
+            let auth_for_renderer = authority.clone();
+            runtime.set_renderer_emitter(std::sync::Arc::new(move |event| {
+                let payload = match serde_json::to_value(&event) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "failed to serialise RendererEvent",
+                        );
+                        return;
+                    }
+                };
+                auth_for_renderer.emit(
+                    "extensions/renderer",
+                    RuntimeEventPayload::Raw { data: payload },
+                );
+            }));
+
+            // Contribution-registry changes (extension activate/deactivate)
+            // → `extensions/contributions` topic. The activity-bar rail
+            // refetches its operation-view list on each signal. Important
+            // for correctness, not just polish: startup activation is async
+            // and can complete *after* the rail's initial fetch / reconnect,
+            // so without this the rail can miss extension view icons.
+            let auth_for_contrib = authority.clone();
+            runtime.set_contributions_emitter(std::sync::Arc::new(move || {
+                auth_for_contrib.emit(
+                    "extensions/contributions",
+                    RuntimeEventPayload::Raw {
+                        data: serde_json::json!({ "changed": true }),
+                    },
+                );
+            }));
+
+            // Platform-originated notices (crash-disable, memory warnings) →
+            // `extensions/notice` topic, rendered as a toast by the web UI.
+            // Free-form authority topic (no C++ allowlist) so this needs no
+            // bridge change. `RuntimeAuthority::emit` is sync; serialise the
+            // notice to JSON and forward.
+            let auth_for_notice = authority.clone();
+            runtime.set_notice_emitter(std::sync::Arc::new(move |notice| {
+                let data = serde_json::to_value(&notice).unwrap_or_else(|_| serde_json::json!({}));
+                auth_for_notice.emit("extensions/notice", RuntimeEventPayload::Raw { data });
+            }));
+            // Crash-restart budget (spec §10 default 3).
+            runtime.set_max_restarts(3);
+
+            spawn_startup_activation(&runtime, &to_activate);
+            runtime
+        });
+
         Arc::new(Self {
             authority,
             flow_registry,
@@ -104,6 +228,7 @@ impl RuntimeServices {
             capability_factory,
             terminal_managers,
             memory_manager,
+            extensions,
         })
     }
 
@@ -123,6 +248,126 @@ impl RuntimeServices {
             capability_factory,
             terminal_managers,
             memory_manager: None,
+            extensions: None,
         })
+    }
+}
+
+/// Spawn an async activation task per enabled extension. Failures are
+/// logged but never block startup — a single broken extension shouldn't
+/// take down the rest of the runtime.
+///
+/// Requires a tokio runtime in scope; in environments without one
+/// (e.g. the synchronous `Runtime::new` unit tests in `lifecycle.rs`)
+/// this becomes a no-op so we don't panic at composition time.
+/// Build the composition-root [`SpawnConfigBuilder`]: resolves the bundled
+/// Node 26 binary, `bootstrap.js`, and `$HOME` once, then yields a factory
+/// that derives a per-extension [`SpawnConfig`] (creating the extension's
+/// storage dirs as a side effect). Returns `None` when the bundled runtime or
+/// home dir can't be resolved — host-backed activation is then unavailable
+/// (set `CRONYMAX_BUNDLED_DIR` or run `scripts/fetch-node26.sh`).
+/// Open the per-run extension log session under `~/.cronymax/logs/`. Returns
+/// `None` when HOME can't be resolved or the session dir can't be created —
+/// logging is then disabled, which is never fatal. Best-effort maintains a
+/// `current` → `<session>` symlink so "Open Log Folder" / `diagnostic-bundle`
+/// can find the live session without knowing its id.
+fn build_log_manager() -> Option<Arc<LogManager>> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)?;
+    let logs_root = home.join(".cronymax").join("logs");
+    match LogManager::new_session(&logs_root) {
+        Ok(mgr) => {
+            #[cfg(unix)]
+            {
+                let current = logs_root.join("current");
+                let _ = std::fs::remove_file(&current);
+                let _ = std::os::unix::fs::symlink(mgr.session_id(), &current);
+            }
+            Some(Arc::new(mgr))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to open extension log session; logs disabled");
+            None
+        }
+    }
+}
+
+fn build_spawn_config_builder() -> Option<SpawnConfigBuilder> {
+    let bundled_node = default_bundled_node().filter(|p| p.is_file())?;
+    let bootstrap_js = default_bundled_bootstrap().filter(|p| p.is_file())?;
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)?;
+
+    Some(Arc::new(
+        move |ext_id: &str, _manifest: &Manifest, ext_dir: &std::path::Path| {
+            let storage_dir = home
+                .join(".cronymax")
+                .join("extensions")
+                .join(ext_id)
+                .join("storage");
+            let global_storage_dir = home.join(".cronymax").join("global-state").join(ext_id);
+            // Best-effort: a missing storage dir surfaces later as an extension
+            // error, not a spawn failure.
+            if let Err(e) = std::fs::create_dir_all(&storage_dir) {
+                tracing::warn!(ext_id = %ext_id, path = %storage_dir.display(), error = %e, "failed to create extension storage dir");
+            }
+            if let Err(e) = std::fs::create_dir_all(&global_storage_dir) {
+                tracing::warn!(ext_id = %ext_id, path = %global_storage_dir.display(), error = %e, "failed to create extension global-storage dir");
+            }
+            SpawnConfig {
+                ext_id: ext_id.to_string(),
+                node_binary: bundled_node.clone(),
+                node_flags: vec!["--no-warnings".into()],
+                bootstrap_js: bootstrap_js.clone(),
+                ext_dir: ext_dir.to_path_buf(),
+                storage_dir,
+                global_storage_dir,
+                workspace_dirs: Vec::new(),
+                manifest_path: ext_dir.join("cronymax-extension.json"),
+                max_restarts: 0,
+                ping_interval: Some(SpawnConfig::ping_interval_default()),
+                // Per-extension stdout/stderr log sinks, the crash-signal sink,
+                // and the RSS threshold are all attached by
+                // `ExtensionRuntime::activate` (it owns the supervisor channel
+                // and the ext_id-keyed log writers) — the builder leaves them
+                // unset.
+                stdout_log: None,
+                stderr_log: None,
+                host_event_sink: None,
+                rss_warn_bytes: None,
+            }
+        },
+    ))
+}
+
+/// Activate every enabled extension at startup via the runtime's installed
+/// spawn-config builder. Each activation is independent — one failure leaves
+/// the rest unaffected.
+fn spawn_startup_activation(runtime: &ExtensionRuntime, ext_ids: &[String]) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        if !ext_ids.is_empty() {
+            tracing::debug!(
+                count = ext_ids.len(),
+                "no tokio runtime in scope; skipping extension startup activation",
+            );
+        }
+        return;
+    };
+
+    for ext_id in ext_ids {
+        let runtime = runtime.clone();
+        let ext_id = ext_id.clone();
+        handle.spawn(async move {
+            match runtime.activate_default(&ext_id).await {
+                Ok(()) => tracing::info!(ext_id = %ext_id, "extension activated at startup"),
+                Err(e) => tracing::warn!(
+                    ext_id = %ext_id,
+                    error = %e,
+                    "extension activation failed at startup; other extensions unaffected",
+                ),
+            }
+        });
     }
 }

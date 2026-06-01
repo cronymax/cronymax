@@ -1,0 +1,30 @@
+{
+  "id": "cronymax-examples.panel-explorer",
+  "name": "Panel Explorer",
+  "version": "0.1.0",
+  "publisher": "cronymax-examples",
+  "engines": { "cronymax": "^1.0" },
+  "description": "Demo operation views contributed to the activity-bar rail: one opens in the main content area, one in the right-side dock.",
+  "activationEvents": ["*"],
+  "contributes": {
+    "cronymax.ui.sidebar.view": [
+      {
+        "id": "cronymax-examples.panel-explorer.main",
+        "title": "Explorer (Main)",
+        "icon": "icon.svg",
+        "entry": "view/index.html",
+        "target": "main"
+      },
+      {
+        "id": "cronymax-examples.panel-explorer.dock",
+        "title": "Explorer (Dock)",
+        "icon": "icon.svg",
+        "entry": "view/index.html",
+        "target": "right"
+      }
+    ]
+  },
+  "capabilities": {
+    "extension-points": ["cronymax.ui.sidebar.view"]
+  }
+}

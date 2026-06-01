@@ -232,7 +232,8 @@ void MainWindow::OnWindowCreated(CefRefPtr<CefWindow> window) {
   shell_model_.tabs_->RegisterSingletonKind(TabKind::kSettings);
   shell_model_.tabs_->RegisterSingletonKind(TabKind::kActivity);
   shell_model_.tabs_->RegisterSingletonKind(TabKind::kFlows);
-  shell_model_.tabs_->SetHiddenFromList({TabKind::kActivity, TabKind::kFlows});
+  shell_model_.tabs_->SetHiddenFromList(
+      {TabKind::kActivity, TabKind::kFlows, TabKind::kExtensionView});
 
   // refine-ui-theme-layout: load persisted theme mode (defaults to
   // "system") and seed shell_model_.current_chrome_ before BuildChrome so the
@@ -457,32 +458,22 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   window->AddChildView(body_panel_);
   root_layout->SetFlexForView(body_panel_, 1);
 
-  // ── Sidebar (Phase 10: owned by SidebarView) ─────────────────────────────
+  // ── Activity bar (leftmost vertical icon rail) ───────────────────────────
+  // Added first so it sits left of the sidebar in the horizontal body row.
+  activitybar_view_obj_ = std::make_unique<ActivityBarView>(
+      /*resource_ctx=*/this, /*theme_ctx=*/this, client_handler_);
   {
-    SidebarView::Host sv_host;
-    sv_host.open_panel_window = [this](const std::string& url,
-                                       const std::string& title) {
-      OpenPanelWindow(url, title);
-    };
-    sv_host.open_singleton_tab = [this](const std::string& kind_s) {
-      TabKind kind;
-      if (kind_s == "activity")
-        kind = TabKind::kActivity;
-      else if (kind_s == "flows")
-        kind = TabKind::kFlows;
-      else
-        return;
-      if (!shell_model_.tabs_->IsSingletonKind(kind))
-        return;
-      bool created = false;
-      TabId id = shell_model_.tabs_->FindOrCreateSingleton(kind, &created);
-      if (!id.empty())
-        shell_model_.tabs_->Activate(id);
-    };
-    sidebar_view_obj_ = std::make_unique<SidebarView>(
-        /*resource_ctx=*/this,
-        /*theme_ctx=*/this, client_handler_, std::move(sv_host));
+    auto ab = activitybar_view_obj_->Build();
+    body_panel_->AddChildView(ab);
+    body_layout->SetFlexForView(ab, 0);
   }
+
+  // ── Sidebar (Phase 10: owned by SidebarView) ─────────────────────────────
+  // Activities / Flows opens now route from the ActivityBarView rail through
+  // the `shell.tab_open_singleton` bridge channel (view_dispatcher.cc), so
+  // SidebarView no longer needs host callbacks.
+  sidebar_view_obj_ = std::make_unique<SidebarView>(
+      /*resource_ctx=*/this, /*theme_ctx=*/this, client_handler_);
   auto sv = sidebar_view_obj_->Build();
   body_panel_->AddChildView(sv);
   body_layout->SetFlexForView(sv, 0);
@@ -532,6 +523,15 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
     auto content_outer = content_view_->Build();
     body_panel_->AddChildView(content_outer);
     body_layout->SetFlexForView(content_outer, 1);
+  }
+
+  // ── Right-side dock (rightmost, collapsible; target="right" views) ───────
+  right_dock_view_obj_ =
+      std::make_unique<RightDockView>(/*theme_ctx=*/this, client_handler_);
+  {
+    auto dock = right_dock_view_obj_->Build();
+    body_panel_->AddChildView(dock);
+    body_layout->SetFlexForView(dock, 0);
   }
 
   // ── native-views-mvc Phase 5: ShellDispatcher ───────────────────────────
@@ -613,6 +613,28 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
   disp_host.notify_sidebar_active_kind = [this](const std::string& kind) {
     if (sidebar_view_obj_)
       sidebar_view_obj_->UpdateActiveButtonState(kind);
+    PushActiveViewToRail();
+  };
+  disp_host.open_right_dock = [this](const std::string& view_key,
+                                     const std::string& url,
+                                     const std::string& title) {
+    if (right_dock_view_obj_)
+      right_dock_view_obj_->OpenOrToggle(view_key, url, title);
+    // Reflow the body so the content area shrinks/expands for the dock.
+    if (body_panel_)
+      body_panel_->Layout();
+    PushActiveViewToRail();
+    // The content card just shrank/expanded for the dock — re-punch its
+    // corners at the new position, and (re)round or clear the dock card.
+    // Both post their own TID_UI task, so they run after layout settles.
+    if (content_view_)
+      content_view_->RefreshCornerMasks();
+    if (right_dock_view_obj_)
+      right_dock_view_obj_->RoundCorners();
+    UpdateDockCloseOverlay();  // show/position (or hide on toggle-collapse)
+  };
+  disp_host.close_extension_views = [this](const std::string& ext_id) {
+    CloseExtensionViews(ext_id);
   };
 
   dispatcher_ = std::make_unique<ViewDispatcher>(
@@ -763,6 +785,12 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
       ContentView::RoundCornersFor(bv, main_window_,
                                    shell_model_.current_chrome_.bg_body);
     }
+    // If the just-realized browser is the dock's, round its card now (on first
+    // open GetBrowser() was null when open_right_dock posted RoundCorners).
+    if (right_dock_view_obj_) {
+      right_dock_view_obj_->RoundCorners();
+      UpdateDockCloseOverlay();  // dock webview now realized → place the ×
+    }
     // If the overlay browser just finished async creation and there is a
     // pending URL queued from an OpenOverlay() call that arrived before
     // GetBrowser() became non-null, dispatch the navigation now.
@@ -772,6 +800,12 @@ void MainWindow::BuildChrome(CefRefPtr<CefWindow> window) {
       overlay_bv_->GetBrowser()->GetMainFrame()->LoadURL(overlay_pending_url_);
       overlay_pending_url_.clear();
     }
+  };
+
+  // Extension views (cronymax-webview://) follow the cronymax theme's
+  // light/dark via DevTools media emulation in ClientHandler::OnLoadStart.
+  client_handler_->is_dark_theme = [this]() {
+    return shell_model_.ResolveAppearance() == "dark";
   };
 
   client_handler_->on_title_change = [this](int browser_id,
@@ -1018,6 +1052,36 @@ void MainWindow::BuildOverlaySlots() {
   profile_picker_overlay_ = std::make_unique<ProfilePickerOverlay>(
       /*theme_ctx=*/this, main_window_, std::move(ph));
   profile_picker_overlay_->Build();
+
+  // ── Dock close (×) overlay ──────────────────────────────────────────────
+  // A floating × pinned to the right dock's top-right corner. Clicking it
+  // collapses the dock (a hide — the loaded view survives). Positioned + shown
+  // by UpdateDockCloseOverlay() as the dock opens / collapses / the window
+  // resizes; its translucent rounded backdrop is styled on first show.
+  dock_close_panel_ = CefPanel::CreatePanel(nullptr);
+  dock_close_panel_->SetToFillLayout();
+  dock_close_panel_->AddChildView(MakeIconButton(
+      new FnButtonDelegate([this]() { CollapseRightDock(); }), IconId::kClose,
+      "Close dock"));
+  dock_close_oc_ = main_window_->AddOverlayView(
+      dock_close_panel_, CEF_DOCKING_MODE_CUSTOM, /*can_activate=*/true);
+  dock_close_oc_->SetVisible(false);
+  // Style the translucent rounded backdrop. Deferred one tick so CEF has
+  // attached the overlay's child NSWindow; captured here (right after this
+  // AddOverlayView) so the "last child" is reliably this overlay. ~40% black
+  // pill rounded to a circle, with the overlay window itself made clear so
+  // only the pill shows over the dock content.
+  CefPostTask(TID_UI,
+              base::BindOnce(
+                  [](CefRefPtr<CefWindow> w) {
+                    void* nsv = CaptureLastChildNSView(
+                        reinterpret_cast<void*>(w->GetWindowHandle()));
+                    if (!nsv)
+                      return;
+                    StyleOverlayPanel(nsv, 13.0, kCornerAll, 0x66000000);
+                    SetOverlayWindowBackground(nsv, 0x00000000);
+                  },
+                  main_window_));
 }
 
 // ---------------------------------------------------------------------------
@@ -1108,6 +1172,7 @@ void MainWindow::OnWindowBoundsChanged(CefRefPtr<CefWindow> window,
     popover_->LayoutPopover();
   if (overlay_open_)
     UpdateOverlayRect();
+  UpdateDockCloseOverlay();  // keep the floating × pinned to the dock's corner
   RefreshTitleBarDragRegion();
 }
 
@@ -1217,6 +1282,16 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
     if (auto browser = bv->GetBrowser())
       client_handler_->SendBrowserEvent(browser, event_name, json_payload);
   }
+  // Activity-bar rail — also a chrome panel; needs broadcasts (theme.changed,
+  // runtime.reconnected, …). Without this the rail misses `runtime.reconnected`
+  // and never refetches its extension-view list after the runtime comes up,
+  // so extension icons intermittently fail to appear.
+  if (activitybar_view_obj_) {
+    if (auto bv = activitybar_view_obj_->browser_view()) {
+      if (auto browser = bv->GetBrowser())
+        client_handler_->SendBrowserEvent(browser, event_name, json_payload);
+    }
+  }
   // Also push to the in-window overlay popover (transient web URL popover)
   // when one is open.
   if (popover_ && popover_->IsOpen()) {
@@ -1273,6 +1348,183 @@ void MainWindow::BroadcastToAllPanels(const std::string& event_name,
         client_handler_->SendBrowserEvent(browser, event_name, json_payload);
     }
   }
+}
+
+void MainWindow::PushActiveViewToRail() {
+  if (!CefCurrentlyOn(TID_UI)) {
+    CefPostTask(TID_UI, base::BindOnce(
+                            [](CefRefPtr<MainWindow> self) {
+                              self->PushActiveViewToRail();
+                            },
+                            CefRefPtr<MainWindow>(this)));
+    return;
+  }
+  // Main content area: which rail-owned view is active (if any).
+  std::string main_view;
+  if (Tab* active = shell_model_.tabs_ ? shell_model_.tabs_->Active() : nullptr) {
+    switch (active->kind()) {
+      case TabKind::kActivity:
+        main_view = "activity";
+        break;
+      case TabKind::kFlows:
+        main_view = "flows";
+        break;
+      case TabKind::kExtensionView:
+        main_view = active->GetMeta("ext_view");
+        break;
+      default:
+        break;
+    }
+  }
+  // Right dock: the open view key, if any.
+  std::string dock_view =
+      right_dock_view_obj_ ? right_dock_view_obj_->active_view_key()
+                           : std::string();
+
+  // The full set of extension-view keys whose iframe is currently alive: every
+  // open main-area view tab (hidden from Snapshot, so enumerated via the meta
+  // index) plus the dock's loaded view (alive even while collapsed). The rail
+  // diffs this set across events — a key that disappears means its iframe was
+  // torn down (main tab closed, or dock navigated to a different view), so the
+  // rail fires `extension.view.dispose`. Switching away / collapsing keeps the
+  // key, so those stay hides (visibility), not disposes.
+  std::vector<std::string> open_views;
+  if (shell_model_.tabs_) {
+    for (const TabId& id : shell_model_.tabs_->FindAllByMetaPrefix("ext_view", "")) {
+      Tab* t = shell_model_.tabs_->Get(id);
+      if (t && t->kind() == TabKind::kExtensionView) {
+        const std::string vk = t->GetMeta("ext_view");
+        if (!vk.empty())
+          open_views.push_back(vk);
+      }
+    }
+  }
+  if (right_dock_view_obj_) {
+    const std::string dk = right_dock_view_obj_->loaded_view_key();
+    if (!dk.empty())
+      open_views.push_back(dk);
+  }
+
+  const std::string payload = nlohmann::json{{"main", main_view},
+                                             {"dock", dock_view},
+                                             {"open", open_views}}
+                                  .dump();
+  if (activitybar_view_obj_) {
+    if (auto bv = activitybar_view_obj_->browser_view()) {
+      if (auto browser = bv->GetBrowser())
+        client_handler_->SendBrowserEvent(browser, "shell.active_view_changed",
+                                          payload);
+    }
+  }
+}
+
+void MainWindow::CloseExtensionViews(const std::string& ext_id) {
+  if (!CefCurrentlyOn(TID_UI)) {
+    CefPostTask(TID_UI, base::BindOnce(
+                            [](CefRefPtr<MainWindow> self, std::string id) {
+                              self->CloseExtensionViews(id);
+                            },
+                            CefRefPtr<MainWindow>(this), ext_id));
+    return;
+  }
+  if (!shell_model_.tabs_)
+    return;
+  const std::string prefix = ext_id + "::";
+
+  // Collapse the dock if it is showing one of this extension's views.
+  if (right_dock_view_obj_) {
+    const std::string dk = right_dock_view_obj_->active_view_key();
+    if (dk.size() >= prefix.size() && dk.compare(0, prefix.size(), prefix) == 0) {
+      right_dock_view_obj_->Hide();
+      if (body_panel_)
+        body_panel_->Layout();
+      // Dock collapsed → clear its punches and re-round the (now expanded)
+      // content card.
+      right_dock_view_obj_->RoundCorners();
+      if (content_view_)
+        content_view_->RefreshCornerMasks();
+      UpdateDockCloseOverlay();  // dock gone → hide the ×
+    }
+  }
+
+  // Close every open view tab owned by this extension.
+  for (const TabId& id :
+       shell_model_.tabs_->FindAllByMetaPrefix("ext_view", prefix)) {
+    if (content_view_)
+      content_view_->RemoveCard(id);
+    shell_model_.tabs_->Close(id);
+  }
+
+  // Activate the most recent chat tab (or any remaining tab) so the user
+  // isn't left on a blank content area.
+  TabId target;
+  for (const auto& s : shell_model_.tabs_->Snapshot()) {
+    if (s.kind == TabKind::kChat)
+      target = s.id;  // Snapshot is creation-ordered; keep the last chat.
+  }
+  if (target.empty()) {
+    const auto snap = shell_model_.tabs_->Snapshot();
+    if (!snap.empty())
+      target = snap.back().id;
+  }
+  if (!target.empty())
+    shell_model_.tabs_->Activate(target);
+
+  PushActiveViewToRail();
+}
+
+void MainWindow::CollapseRightDock() {
+  if (!CefCurrentlyOn(TID_UI)) {
+    CefPostTask(TID_UI, base::BindOnce(
+                            [](CefRefPtr<MainWindow> self) {
+                              self->CollapseRightDock();
+                            },
+                            CefRefPtr<MainWindow>(this)));
+    return;
+  }
+  if (!right_dock_view_obj_)
+    return;
+  right_dock_view_obj_->Hide();
+  if (body_panel_)
+    body_panel_->Layout();
+  // Dock collapsed → clear its punches and re-round the (now expanded) content
+  // card, mirroring the rail-toggle collapse path.
+  right_dock_view_obj_->RoundCorners();
+  if (content_view_)
+    content_view_->RefreshCornerMasks();
+  // Active dock view is now none → rail re-highlights + the previously shown
+  // view's host gets onDidChangeVisibility(false) (loaded_view_key stays, so
+  // the open-set is unchanged — a hide, not a dispose).
+  PushActiveViewToRail();
+  UpdateDockCloseOverlay();  // hides the × (dock no longer shown)
+}
+
+void MainWindow::UpdateDockCloseOverlay() {
+  if (!dock_close_oc_ || !dock_close_oc_->IsValid() || !right_dock_view_obj_)
+    return;
+  // Defer so the dock webview's frame has settled after any pending layout
+  // pass (mirrors the dock's RoundCorners timing) before we read its bounds.
+  CefPostTask(
+      TID_UI,
+      base::BindOnce(
+          [](CefRefPtr<MainWindow> self) {
+            if (!self->dock_close_oc_ || !self->dock_close_oc_->IsValid() ||
+                !self->right_dock_view_obj_)
+              return;
+            const CefRect wv =
+                self->right_dock_view_obj_->WebviewWindowBounds();
+            if (wv.width <= 0 || wv.height <= 0) {
+              self->dock_close_oc_->SetVisible(false);
+              return;
+            }
+            constexpr int kBtn = 26;     // overlay (and backdrop) size
+            constexpr int kMargin = 10;  // inset from the dock's top-right
+            self->dock_close_oc_->SetBounds(
+                CefRect(wv.x + wv.width - kBtn - kMargin, wv.y + kMargin, kBtn,
+                        kBtn));
+            self->dock_close_oc_->SetVisible(true);
+          },
+          CefRefPtr<MainWindow>(this)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1503,6 +1755,12 @@ void MainWindow::ApplyThemeChrome(const ThemeChrome& chrome) {
   // ThemeAwareView subscribers (titlebar, sidebar, content, popover, tabs)
   // receive ApplyTheme() via OnEvent() — no direct calls needed.
   shell_model_.NotifyThemeChanged(chrome);
+  // Extension webviews use the CSS prefers-color-scheme query (emulated at
+  // load), not the data-theme mirror — re-apply the emulation so any open
+  // plugin view follows the new light/dark instead of staying on its load-time
+  // scheme.
+  if (client_handler_)
+    client_handler_->ReapplyColorSchemeAll();
 }
 
 void MainWindow::HandleThemeModeChange(const std::string& mode) {

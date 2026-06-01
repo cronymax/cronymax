@@ -62,6 +62,68 @@ impl RuntimeHandler {
             _ => return ControlResponse::Ack, // already running or terminal
         }
 
+        // Recover the agent id. `handle_start_run` mirrors the StartRun
+        // control field into `run.spec["agent_id"]`; the typed
+        // `run.agent_id` slot is only populated for persisted Agent
+        // entities. Spec first, typed field next, Crony builtin last.
+        let resolved_agent_id = run
+            .spec
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                run.agent_id
+                    .as_ref()
+                    .map(|a| a.to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_else(|| crate::crony::CronyBuiltin::ID.to_owned());
+
+        // Extension-provider runs cannot be resumed. Guard symmetric to
+        // the one in `handle_start_run`: a run originally driven by an
+        // extension AgentProvider has no resumable native state. The
+        // extension's `AgentSession` lived only in the extension host
+        // process plus the in-memory `AgentSessionRouter` sink — both are
+        // gone once the run left `Running` (notably after a runtime
+        // restart, which `RuntimeAuthority::rehydrate` pauses every
+        // `Running`/`Pending` run). Falling through to the native
+        // `agent_loader` reconstruction below would silently re-run the
+        // turn against the workspace-default LLM under the provider's
+        // name — the exact divergence `handle_start_run` rejects. Must be
+        // checked before `mark_run_running` so a rejected resume leaves
+        // the run `Paused` rather than orphaned in `Running`.
+        //
+        // The spec's `contribution_kind` is authoritative — the picker
+        // recorded what was selected when the run started. Runs without
+        // a recorded kind predate the contribution registry and are
+        // treated as native (workspace YAML / Crony) runs.
+        let persisted_kind = run
+            .spec
+            .get("contribution_kind")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        let is_extension_run = matches!(
+            persisted_kind,
+            Some(crate::extensions::contributions::kind::AGENTS_PROVIDER)
+        );
+        if is_extension_run {
+            let provider_label = self
+                .services
+                .extensions
+                .as_ref()
+                .and_then(|ext| ext.providers().get(&resolved_agent_id))
+                .map(|p| format!("`{}` (from `{}`)", p.provider_id, p.owning_ext))
+                .unwrap_or_else(|| format!("`{resolved_agent_id}`"));
+            return ControlResponse::Err {
+                error: ControlError::InvalidState {
+                    message: format!(
+                        "run `{run_id}` was driven by extension provider {provider_label}; extension sessions cannot be resumed — start a new chat",
+                    ),
+                },
+            };
+        }
+
         // ── Reconstruct startup context from the persisted spec ───
         let spec = &run.spec;
         let llm_obj = spec.get("llm");
@@ -158,12 +220,6 @@ impl RuntimeHandler {
         cap_builder.register_search(workspace_root.clone());
         cap_builder.register_git(workspace_root.clone());
 
-        let resolved_agent_id = run
-            .agent_id
-            .as_ref()
-            .map(|a| a.to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| crate::crony::CronyBuiltin::ID.to_owned());
         let workspace_root_clone = workspace_root.clone();
         let chat_agent_def =
             agent_loader::load_agent_with_builtin(&workspace_root_clone, &resolved_agent_id).await;

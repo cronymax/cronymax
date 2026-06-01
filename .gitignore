@@ -12,6 +12,22 @@ compile_commands.json
 # Runtime logs (the top-level `*.log` rule above only matches files,
 # not directories — be explicit so `log/` doesn't show up untracked).
 /log/
+web/log/
+
+# Bundled Node 26 binary — downloaded by `scripts/fetch-node26.sh`.
+# Per-platform, ~200 MB per arch. The hand-written `bootstrap.js`
+# sibling and any test fixtures stay tracked.
+crates/cronymax/bundled/node/
+
+# Flow runtime artifacts — per-run state, traces, generated docs.
+# `flow.yaml` (the flow definition) under each flow dir stays tracked.
+.cronymax/flows/*/runs/
+.cronymax/flows/*/docs/
+
+# TypeScript compile outputs for the SDK + sample extensions; rebuilt
+# from source via `tsc -p ...`.
+sdk/*/dist/
+examples/*/dist/
 
 # Web (Vite + pnpm)
 bun.lock
@@ -29,3 +45,6 @@ openspec/
 
 # Per-user Claude Code overrides (settings.json is shared, *.local.json is not)
 .claude/*.local.json
+
+# Locally-built test extension packages (cronymax ext package)
+dist-examples/

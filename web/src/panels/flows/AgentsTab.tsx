@@ -4,25 +4,32 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { type LlmProvider, ModelSelect } from "../../components/ModelSelect";
+import { ModelGroupCombobox } from "../../components/ModelGroupCombobox";
+import { fetchModelGroups, type ModelGroup } from "../../components/modelGroups";
 import { WysiwygMarkdown } from "../../components/WysiwygMarkdown";
-import { browser, shells } from "../../shells/bridge";
-import { agentRegistry } from "../../shells/runtime";
+import { browser } from "../../shells/bridge";
+import { ContributionKind, type ContributionKindId, contributionRegistry } from "../../shells/runtime";
 import { Field } from "./App";
 
 // ── Agents tab ────────────────────────────────────────────────────────────
 interface AgentSummary {
   name: string;
   llm: string;
+  /** Which Contribution kind backs this agent — picks the load/save target. */
+  contribution_kind: ContributionKindId;
 }
 interface AgentDetail {
   name: string;
   llm: string;
+  /** When set, the agent is backed by an extension AgentProvider (P8) instead
+   *  of an LLM — `llm` is then ignored. `model: ""` means the provider default. */
+  agent_provider?: { id: string; model: string } | null;
   system_prompt: string;
   memory_namespace: string;
   tools: string[];
   builtin?: boolean;
   prompt_sealed?: boolean;
+  contribution_kind: ContributionKindId;
 }
 const EMPTY_DETAIL: AgentDetail = {
   name: "",
@@ -30,7 +37,18 @@ const EMPTY_DETAIL: AgentDetail = {
   system_prompt: "You are a helpful agent.",
   memory_namespace: "",
   tools: [],
+  contribution_kind: ContributionKind.AgentsWorkspace,
 };
+
+/** Map a ContributionDescriptor into the AgentsTab summary shape. */
+function descriptorToSummary(d: { kind: string; id: string; metadata?: unknown }): AgentSummary {
+  const meta = (d.metadata && typeof d.metadata === "object" ? d.metadata : {}) as Record<string, unknown>;
+  return {
+    name: d.id,
+    llm: typeof meta.llm === "string" ? meta.llm : "",
+    contribution_kind: d.kind as ContributionKindId,
+  };
+}
 /** Canonical tool groups for the agent tools checkbox UI. */
 const TOOL_GROUPS: { label: string; tools: string[] }[] = [
   { label: "Shell", tools: ["run_shell", "run_terminal"] },
@@ -148,6 +166,7 @@ function ToolCheckboxes({ value, onChange }: { value: string[]; onChange: (v: st
     </div>
   );
 }
+
 export function AgentsTab() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -156,42 +175,50 @@ export function AgentsTab() {
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeProvider, setActiveProvider] = useState<LlmProvider | null>(null);
+  // The same grouped LLM + extension-provider catalog the chat panel uses, so
+  // an agent can be bound to any provider's model from one picker.
+  const [modelGroups, setModelGroups] = useState<ModelGroup[]>([]);
 
   useEffect(() => {
-    shells.browser.llm.providers.get().then((res) => {
-      try {
-        const list = JSON.parse(res.raw || "[]") as LlmProvider[];
-        const p = list.find((x) => x.id === res.active_id) ?? list[0] ?? null;
-        setActiveProvider(p);
-      } catch {
-        /* ignore */
-      }
-    });
+    let cancelled = false;
+    const load = () => {
+      void fetchModelGroups().then((groups) => {
+        if (!cancelled) setModelGroups(groups);
+      });
+    };
+    load();
+    const off = browser.on("runtime.reconnected", load);
+    return () => {
+      cancelled = true;
+      off();
+    };
   }, []);
 
   const loadList = useCallback(async () => {
     try {
-      let res = await agentRegistry.list();
-      const existingNames = new Set((res.agents ?? []).map((a: AgentSummary) => a.name));
+      let res = await contributionRegistry.list();
+      const filtered = (res.contributions ?? []).filter(
+        (d) => d.kind === ContributionKind.AgentsBuiltin || d.kind === ContributionKind.AgentsWorkspace,
+      );
+      const existingNames = new Set(filtered.map((d) => d.id));
 
-      // Seed the built-in agents if they are not yet registered.
+      // Seed the built-in workspace agents if they are not yet registered.
       // "Chat" is always seeded; the software-dev-cycle agents are seeded
       // alongside so the Flow editor can reference them by name.
-      type AgentSaveReq = {
+      type AgentSeed = {
         name: string;
         llm: string;
         system_prompt: string;
         memory_namespace: string;
-        tools_csv: string;
+        tools: string[];
       };
-      const BUILTIN_AGENTS: AgentSaveReq[] = [
+      const BUILTIN_AGENTS: AgentSeed[] = [
         {
           name: "Chat",
           llm: "",
           system_prompt: "You are a helpful assistant.",
           memory_namespace: "",
-          tools_csv: "",
+          tools: [],
         },
         {
           name: "pm",
@@ -200,7 +227,7 @@ export function AgentsTab() {
             "You are a product manager. Gather requirements and produce " +
             "clear prototypes and PRDs that the engineering team can act on.",
           memory_namespace: "",
-          tools_csv: "",
+          tools: [],
         },
         {
           name: "rd",
@@ -210,7 +237,7 @@ export function AgentsTab() {
             "technical specifications, implement the required changes, and " +
             "address QA feedback with focused patch notes.",
           memory_namespace: "",
-          tools_csv: "",
+          tools: [],
         },
         {
           name: "qa",
@@ -220,7 +247,7 @@ export function AgentsTab() {
             "run the test suite, file detailed bug reports, and produce a " +
             "final test report once all issues are resolved.",
           memory_namespace: "",
-          tools_csv: "",
+          tools: [],
         },
         {
           name: "critic",
@@ -230,7 +257,7 @@ export function AgentsTab() {
             "clarity, completeness, and correctness. Approve only when " +
             "the document meets the required quality bar.",
           memory_namespace: "",
-          tools_csv: "",
+          tools: [],
         },
         {
           name: "qa-critic",
@@ -240,39 +267,68 @@ export function AgentsTab() {
             "specifications and test plans for testability, coverage, and " +
             "alignment with the stated requirements.",
           memory_namespace: "",
-          tools_csv: "",
+          tools: [],
         },
       ];
 
       const missing = BUILTIN_AGENTS.filter((a) => a && !existingNames.has(a.name));
       if (missing.length > 0) {
-        await Promise.all(missing.map((a) => agentRegistry.save(a)));
-        res = await agentRegistry.list();
+        await Promise.all(
+          missing.map((a) =>
+            contributionRegistry.save(ContributionKind.AgentsWorkspace, a.name, {
+              kind: "worker",
+              llm: a.llm,
+              system_prompt: a.system_prompt,
+              memory_namespace: a.memory_namespace,
+              tools: a.tools,
+            }),
+          ),
+        );
+        res = await contributionRegistry.list();
       }
-      setAgents(res.agents ?? []);
+      const finalList = (res.contributions ?? []).filter(
+        (d) => d.kind === ContributionKind.AgentsBuiltin || d.kind === ContributionKind.AgentsWorkspace,
+      );
+      setAgents(finalList.map(descriptorToSummary));
       setLoaded(true);
     } catch (err) {
-      setError(`agent.registry.list: ${(err as Error).message}`);
+      setError(`contribution.list: ${(err as Error).message}`);
       setLoaded(true);
     }
   }, []);
 
-  const loadDetail = useCallback(async (name: string) => {
-    try {
-      const res = await agentRegistry.load(name);
-      setDraft({
-        name: res.name,
-        llm: res.llm,
-        system_prompt: res.system_prompt,
-        memory_namespace: res.memory_namespace ?? "",
-        tools: res.tools ?? [],
-      });
-      setCreating(false);
-      setError(null);
-    } catch (err) {
-      setError(`agent.registry.load: ${(err as Error).message}`);
-    }
-  }, []);
+  const loadDetail = useCallback(
+    async (name: string) => {
+      const target = agents.find((a) => a.name === name);
+      const kind = target?.contribution_kind ?? ContributionKind.AgentsWorkspace;
+      try {
+        const res = await contributionRegistry.load(kind, name);
+        const src = (res.source && typeof res.source === "object" ? res.source : {}) as Record<string, unknown>;
+        const ap = (src.agent_provider && typeof src.agent_provider === "object" ? src.agent_provider : null) as {
+          id?: unknown;
+          model?: unknown;
+        } | null;
+        setDraft({
+          name: typeof src.name === "string" ? src.name : name,
+          llm: typeof src.llm === "string" ? src.llm : "",
+          agent_provider:
+            ap && typeof ap.id === "string" && ap.id
+              ? { id: ap.id, model: typeof ap.model === "string" ? ap.model : "" }
+              : null,
+          system_prompt: typeof src.system_prompt === "string" ? src.system_prompt : "",
+          memory_namespace: typeof src.memory_namespace === "string" ? src.memory_namespace : "",
+          tools: Array.isArray(src.tools) ? (src.tools.filter((t) => typeof t === "string") as string[]) : [],
+          prompt_sealed: typeof src.prompt_sealed === "boolean" ? src.prompt_sealed : undefined,
+          contribution_kind: kind,
+        });
+        setCreating(false);
+        setError(null);
+      } catch (err) {
+        setError(`contribution.load: ${(err as Error).message}`);
+      }
+    },
+    [agents],
+  );
 
   useEffect(() => {
     void loadList();
@@ -305,12 +361,17 @@ export function AgentsTab() {
     setBusy(true);
     setError(null);
     try {
-      await agentRegistry.save({
-        name: draft.name,
-        llm: draft.llm,
+      const boundToExt = Boolean(draft.agent_provider?.id);
+      await contributionRegistry.save(ContributionKind.AgentsWorkspace, draft.name, {
+        kind: "worker",
+        // Extension-backed agents write `agent_provider:` (mutually exclusive
+        // with `llm:`); LLM-backed agents write `llm:`.
+        ...(boundToExt
+          ? { agent_provider: { id: draft.agent_provider?.id ?? "", model: draft.agent_provider?.model ?? "" } }
+          : { llm: draft.llm }),
         system_prompt: draft.system_prompt,
         memory_namespace: draft.memory_namespace,
-        tools_csv: draft.tools.join(","),
+        tools: draft.tools,
       });
       await loadList();
       setSelected(draft.name);
@@ -329,7 +390,7 @@ export function AgentsTab() {
     setBusy(true);
     setError(null);
     try {
-      await agentRegistry.delete(selected);
+      await contributionRegistry.delete(ContributionKind.AgentsWorkspace, selected);
       await loadList();
       setSelected(null);
       setDraft(null);
@@ -432,21 +493,37 @@ export function AgentsTab() {
                     <p className="mt-1 text-xs text-muted-foreground">Rename by deleting and recreating.</p>
                   )}
                 </Field>
-                <Field label="LLM model">
-                  {activeProvider ? (
-                    <ModelSelect
-                      value={draft.llm}
-                      onChange={(v) => setDraft({ ...draft, llm: v })}
-                      provider={activeProvider}
-                    />
-                  ) : (
-                    <Input
-                      className="h-7 text-xs"
-                      value={draft.llm}
-                      onChange={(e) => setDraft({ ...draft, llm: e.target.value })}
-                      placeholder="(uses provider default)"
-                    />
-                  )}
+                <Field label="Model">
+                  <ModelGroupCombobox
+                    groups={modelGroups}
+                    value={
+                      draft.agent_provider?.id
+                        ? { groupId: `ext:${draft.agent_provider.id}`, model: draft.agent_provider.model }
+                        : draft.llm
+                          ? { groupId: "", model: draft.llm }
+                          : null
+                    }
+                    triggerLabel={(() => {
+                      if (draft.agent_provider?.id) {
+                        const label =
+                          modelGroups.find((g) => g.agent_id === draft.agent_provider?.id)?.label ??
+                          draft.agent_provider.id;
+                        return draft.agent_provider.model
+                          ? `${label}: ${draft.agent_provider.model}`
+                          : `${label} (default)`;
+                      }
+                      return draft.llm || "provider default";
+                    })()}
+                    onPick={(g, m) => {
+                      if (!g) {
+                        setDraft({ ...draft, llm: "", agent_provider: null });
+                      } else if (g.kind === "extension" && g.agent_id) {
+                        setDraft({ ...draft, agent_provider: { id: g.agent_id, model: m }, llm: "" });
+                      } else {
+                        setDraft({ ...draft, llm: m, agent_provider: null });
+                      }
+                    }}
+                  />
                 </Field>
                 <Field label="Memory namespace (optional)">
                   <Input

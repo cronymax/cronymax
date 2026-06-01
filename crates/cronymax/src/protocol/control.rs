@@ -48,6 +48,13 @@ pub enum ControlRequest {
     ///
     /// `agent_id` selects which agent definition to use for the run.
     /// When absent or `""`, falls through to the builtin Crony agent.
+    ///
+    /// `contribution_kind` is the `ContributionKind` of the picked agent —
+    /// see `extensions/contributions/mod.rs::kind` for the legal strings
+    /// (e.g. `cronymax.agents.builtin`, `cronymax.agents.workspace`,
+    /// `cronymax.agents.provider`). When omitted, the runtime falls back
+    /// to a probing heuristic for back-compat with pre-contribution
+    /// callers; once Phase 4 lands this field becomes effectively required.
     StartRun {
         space_id: String,
         payload: serde_json::Value,
@@ -57,6 +64,8 @@ pub enum ControlRequest {
         session_name: Option<String>,
         #[serde(default)]
         agent_id: Option<String>,
+        #[serde(default)]
+        contribution_kind: Option<String>,
         /// Frontend-generated child session id for the flow thread.
         /// When set alongside a `flow_id` in the payload, the runtime upserts
         /// a child session with this id, sets its parent/fork_point, and routes
@@ -150,41 +159,57 @@ pub enum ControlRequest {
         graph: serde_json::Value,
     },
 
-    // ── Phase 3: Agent registry ───────────────────────────────────────────
-    /// Returns list of all agents: `{agents:[{name, kind, llm, llm_provider, llm_model}]}`
-    AgentRegistryList {
+    // ── Contributions (unified registry: platform / workspace / extension) ───
+    /// Snapshot of every `ContributionDescriptor` currently known. Sources:
+    /// the Crony built-in chat agent (`owner=platform`), every workspace
+    /// YAML agent under `<ws>/.cronymax/agents/` (`owner=workspace`), and
+    /// every active extension's manifest contributions (`owner=extension`).
+    /// Returns `Data { payload: { contributions: [ContributionDescriptor] } }`.
+    ContributionList {
         workspace_root: String,
     },
 
-    /// Full agent definition. Payload: `{name}`.
-    AgentRegistryLoad {
+    /// Enumerate items inside one descriptor (e.g. models under an
+    /// extension agent provider, or named variants of a workspace agent).
+    /// For extension-owned descriptors the runtime forwards to the
+    /// extension's `agents/enumerate:<id>` RPC. For platform / workspace
+    /// owners the runtime returns a synthesized item list.
+    /// Returns `Data { payload: { items: [ContributionItem] } }`.
+    ///
+    /// `contribution_kind` is named with the `contribution_` prefix to
+    /// avoid colliding with serde's `tag = "kind"` discriminant on this
+    /// enum.
+    ContributionEnumerate {
         workspace_root: String,
-        name: String,
+        contribution_kind: String,
+        id: String,
     },
 
-    /// Write (create or overwrite) an agent YAML file from structured fields.
-    /// The Rust runtime serialises the fields into the canonical YAML format.
-    AgentRegistrySave {
+    /// Load the full source backing one descriptor (e.g. YAML body for a
+    /// workspace agent, manifest excerpt for an extension provider).
+    /// Returns `Data { payload: { descriptor: ContributionDescriptor, source: Value } }`.
+    ContributionLoad {
         workspace_root: String,
-        name: String,
-        /// `"worker"` | `"reviewer"`. Defaults to `"worker"` if absent.
-        #[serde(default)]
-        agent_kind: String,
-        #[serde(default)]
-        llm: String,
-        #[serde(default)]
-        system_prompt: String,
-        #[serde(default)]
-        memory_namespace: String,
-        /// Comma-separated tool names. Empty string means no tools.
-        #[serde(default)]
-        tools_csv: String,
+        contribution_kind: String,
+        id: String,
     },
 
-    /// Delete an agent file.
-    AgentRegistryDelete {
+    /// Save (create or overwrite) one descriptor's backing source.
+    /// `payload` shape is kind-specific (e.g. workspace YAML body, agent
+    /// fields). Returns `Ack`.
+    ContributionSave {
         workspace_root: String,
-        name: String,
+        contribution_kind: String,
+        id: String,
+        payload: serde_json::Value,
+    },
+
+    /// Delete one descriptor's backing source (workspace YAML file, etc.).
+    /// Returns `Ack`.
+    ContributionDelete {
+        workspace_root: String,
+        contribution_kind: String,
+        id: String,
     },
 
     // ── Phase 3: Doc-type registry ────────────────────────────────────────
@@ -376,6 +401,158 @@ pub enum ControlRequest {
         /// Model name injected by LlmConfigEnricher.
         #[serde(default)]
         model: String,
+    },
+
+    /// Forward a payload that arrived from inside an extension webview
+    /// iframe (via `acquireCronymaxApi().postMessage(payload)`) to the
+    /// owning extension's Node host. The platform looks up the panel's
+    /// owning extension and translates this into a
+    /// `webview/onDidReceiveMessage` notify on its RPC channel.
+    ///
+    /// Returns `Ack` on success; rejects with `ControlError::InvalidState`
+    /// if the panel id is unknown (e.g. the extension was deactivated
+    /// after the iframe loaded).
+    ExtensionWebviewPost {
+        panel_id: String,
+        payload: serde_json::Value,
+    },
+
+    /// Report a height update from inside a content-renderer iframe
+    /// (`acquireCronymaxRendererApi().setHeight(px)`) so the chat surface
+    /// can resize the embedding `<iframe>` element. The parent React tree
+    /// can't measure cross-origin iframe content itself, so renderers are
+    /// expected to call this every render (and on internal layout
+    /// changes via `ResizeObserver`).
+    ///
+    /// Routes via [`crate::extensions::runtime::ExtensionRuntime::
+    /// forward_renderer_height`], which fans out to chat by emitting a
+    /// `extensions/renderer` topic event keyed on `instance_id`.
+    ///
+    /// `px` is reported as `i32` because CSS pixels are signed 32-bit in
+    /// practice and JS may emit fractional values that we round before
+    /// crossing the bridge.
+    ExtensionRendererSetHeight {
+        instance_id: String,
+        px: i32,
+    },
+
+    /// Deactivate a running extension (activity-bar "Disable" action). The
+    /// platform tears down the extension's host + registries; the
+    /// contribution-changed signal then drops its rail icon. The C++ side
+    /// closes any open view tab/dock for the extension separately.
+    ExtensionDeactivate {
+        ext_id: String,
+    },
+
+    /// Tell the owning extension to resolve one of its operation views
+    /// (activity-bar rail view opened into the main area or right dock).
+    /// The web rail fires this right after `shell.open_extension_view`
+    /// mounts the view's iframe, so the extension's registered
+    /// `WebviewViewProvider.resolveWebviewView(view)` runs and can start
+    /// posting into the view.
+    ///
+    /// Routes via [`crate::extensions::runtime::ExtensionRuntime::
+    /// resolve_view`]. A no-op (returns `Ack`) when the view has no
+    /// registered provider yet (e.g. declarative-only extension, or the
+    /// provider hasn't registered) — the view still renders, it just
+    /// doesn't get a Node-side resolve.
+    ExtensionViewResolve {
+        view_id: String,
+    },
+
+    /// Tell the owning extension that one of its operation views became
+    /// visible / hidden (the active main / dock tab changed but the view
+    /// surface stays mounted). The web rail fires this on
+    /// `shell.active_view_changed` so the extension's `WebviewView.visible`
+    /// flips and `onDidChangeVisibility` fires, mirroring VS Code.
+    ///
+    /// Routes via [`crate::extensions::runtime::ExtensionRuntime::
+    /// change_view_visibility`]. A no-op (returns `Ack`) when the view has
+    /// no registered provider / live host.
+    ExtensionViewVisibility {
+        view_id: String,
+        visible: bool,
+    },
+
+    /// Tell the owning extension that one of its operation views was
+    /// explicitly closed (the user closed its main-area tab — genuine
+    /// teardown, not a switch-away which only hides it). The web rail fires
+    /// this on `shell.tab_closed` for `kExtensionView` tabs so the
+    /// extension's `WebviewView.onDidDispose` fires.
+    ///
+    /// Routes via [`crate::extensions::runtime::ExtensionRuntime::
+    /// dispose_view`]. A no-op (returns `Ack`) when the view has no
+    /// registered provider / live host.
+    ExtensionViewDispose {
+        view_id: String,
+    },
+
+    // ── Extension management (settings panel → Extensions tab) ──────────────
+    /// Snapshot every installed extension (enabled or not) for the
+    /// settings management UI. Returns
+    /// `Data { payload: { extensions: [InstalledExtensionInfo] } }`.
+    ExtensionList {},
+
+    /// Install an extension from a local **directory** or a **`.cmx`**
+    /// archive (`source` is the path the native folder/file picker
+    /// returned). A `.cmx` is unpacked to a temp dir then installed like a
+    /// directory; the source is copied into the managed registry root.
+    /// On success the extension is activated. Returns
+    /// `Data { payload: { id: String } }`.
+    ExtensionInstall {
+        source: String,
+    },
+
+    /// Uninstall an extension: deactivate it (if active), then remove its
+    /// install dir + registry entry. Returns `Ack`.
+    ExtensionUninstall {
+        ext_id: String,
+    },
+
+    /// Flip an extension's persisted enable flag and reconcile live state
+    /// (enable → activate, disable → deactivate). Returns `Ack`.
+    ExtensionSetEnabled {
+        ext_id: String,
+        enabled: bool,
+    },
+
+    /// List the log channels available for `ext_id` (settings "Logs" tab
+    /// dropdown): the `stdout` / `stderr` console fallbacks plus any
+    /// `createOutputChannel` files. Returns
+    /// `Data { payload: { channels: [LogChannelInfo] } }`.
+    ExtensionLogChannels {
+        ext_id: String,
+    },
+
+    /// Read one log channel (tail-bounded, optionally time-filtered). `channel`
+    /// is an id from [`Self::ExtensionLogChannels`] (`stdout` / `stderr` / a
+    /// channel stem). Returns `Data { payload: LogReadResult }`.
+    ExtensionLogRead {
+        ext_id: String,
+        channel: String,
+        /// Keep only NDJSON records at/after this wall-clock ms (channel logs
+        /// only; ignored for raw stdout/stderr).
+        #[serde(default)]
+        since_ms: Option<u64>,
+        /// Max lines to return (tail). Capped server-side.
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+
+    /// Truncate one log channel's file (the "Logs" tab clear button). Returns
+    /// `Ack`.
+    ExtensionLogClear {
+        ext_id: String,
+        channel: String,
+    },
+
+    /// Resolve the absolute on-disk log folder for `ext_id` (the "Logs" tab
+    /// "Open folder" button). Returns the per-extension dir if present, else
+    /// the session root. Returns `Data { payload: { path: String } }`, or an
+    /// error when no log session is active. The web hands `path` to the native
+    /// `browser.shell.reveal_path` bridge to open it in Finder.
+    ExtensionLogFolder {
+        ext_id: String,
     },
 
     /// Request changes on a pending document review in a flow run.

@@ -34,9 +34,13 @@ import {
   LlmConfigSchema,
   LlmConfigSetPayloadSchema,
   PermissionRespondPayloadSchema,
+  ShellCloseExtensionViewsPayloadSchema,
+  ShellCloseExtensionViewsResponseSchema,
   ShellNavigatePayloadSchema,
   ShellNewTabKindPayloadSchema,
   ShellNewTabKindResponseSchema,
+  ShellOpenExtensionViewPayloadSchema,
+  ShellOpenExtensionViewResponseSchema,
   ShellPopoverOpenPayloadSchema,
   ShellSettingsPopoverOpenPayloadSchema,
   ShellSettingsPopoverOpenResponseSchema,
@@ -86,6 +90,7 @@ export const Channels = {
       go_back: chan({ req: EmptySchema, res: EmptySchema }),
       go_forward: chan({ req: EmptySchema, res: EmptySchema }),
       reload: chan({ req: EmptySchema, res: EmptySchema }),
+      relaunch: chan({ req: EmptySchema, res: EmptySchema }),
       popover_open: chan({
         req: ShellPopoverOpenPayloadSchema,
         res: EmptySchema,
@@ -99,6 +104,10 @@ export const Channels = {
       }),
       open_external: chan({
         req: z.object({ url: z.string() }),
+        res: EmptySchema,
+      }),
+      reveal_path: chan({
+        req: z.object({ path: z.string() }),
         res: EmptySchema,
       }),
       window_drag: chan({ req: EmptySchema, res: EmptySchema }),
@@ -116,6 +125,14 @@ export const Channels = {
       tab_new_kind: chan({
         req: ShellNewTabKindPayloadSchema,
         res: ShellNewTabKindResponseSchema,
+      }),
+      open_extension_view: chan({
+        req: ShellOpenExtensionViewPayloadSchema,
+        res: ShellOpenExtensionViewResponseSchema,
+      }),
+      close_extension_views: chan({
+        req: ShellCloseExtensionViewsPayloadSchema,
+        res: ShellCloseExtensionViewsResponseSchema,
       }),
       // Tab identity: returns the calling tab's id + arbitrary metadata.
       this_tab_id: chan({
@@ -137,6 +154,13 @@ export const Channels = {
       }),
       // Close the modal overlay (e.g. Settings OVERLAY opened from titlebar).
       close_overlay: chan({ req: EmptySchema, res: EmptySchema }),
+      // Native picker for the settings Extensions tab "Install" action.
+      // Accepts an extension directory OR a `.cmx` package; `path` is "" on
+      // cancel.
+      pick_extension_source: chan({
+        req: EmptySchema,
+        res: z.object({ path: z.string() }),
+      }),
     },
 
     // refine-ui-theme-layout: theme persistence + system follow

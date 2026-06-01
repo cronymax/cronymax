@@ -683,24 +683,140 @@ void StyleMainWindowTranslucent(void* nswindow_ptr, cef_color_t argb) {
 
 static constexpr NSInteger kCornerPunchTag = 0x43524E58;  // "CRNX"
 
+// ---------------------------------------------------------------------------
+// CronymaxCardPunchTracker — keeps a content card's corner-punch overlays in
+// sync with its webview NSView automatically.
+//
+// A card's webview is a WebContentsViewCocoa, a direct child of the window
+// root whose frame equals the card area and is re-laid-out by CEF whenever the
+// sidebar/dock opens or the window resizes. We can't clip its IOSurface with a
+// CALayer mask (that only works for popovers, which live in their own child
+// window), so we paint corner-punch overlays in the window root instead. To
+// avoid the old manual "re-punch on every layout event" wiring, this tracker
+// observes the webview's frame and re-punches at the new position itself — so
+// the rounding follows the view automatically. `group` keeps each card's
+// punch set independent (main content = 0, dock = 1).
+// ---------------------------------------------------------------------------
+@interface CronymaxCardPunchTracker : NSObject
+@property(nonatomic, unsafe_unretained) NSView* target;  // WebContentsViewCocoa
+@property(nonatomic, assign) CGFloat radius;
+@property(nonatomic, assign) cef_color_t bg;
+@property(nonatomic, assign) int group;
+- (void)apply;
+@end
+
+@implementation CronymaxCardPunchTracker
+- (void)apply {
+  NSView* v = self.target;
+  NSView* root = v.superview;  // the window root (BridgedContentView)
+  if (!v || !root)
+    return;
+  const NSRect f = v.frame;  // in root coords (AppKit, y-up)
+  if (NSWidth(f) <= 1.0 || NSHeight(f) <= 1.0)
+    return;
+  // Convert the view frame to the CEF card_rect (origin top-left, y down) the
+  // punch routine expects.
+  const CGFloat rootH = root.bounds.size.height;
+  const CefRect rect(static_cast<int>(NSMinX(f)),
+                     static_cast<int>(rootH - NSMinY(f) - NSHeight(f)),
+                     static_cast<int>(NSWidth(f)), static_cast<int>(NSHeight(f)));
+  cronymax::StyleContentBrowserView((__bridge void*)root, self.radius, self.bg,
+                                    rect, self.group);
+}
+- (void)frameChanged:(NSNotification*)note {
+  (void)note;
+  [self apply];
+}
+- (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+  [super dealloc];
+}
+@end
+
+static char kCardPunchTrackerKey;
+
 namespace cronymax {
 
-void StyleContentBrowserView(void* window_nsview_ptr,
-                             double radius,
-                             cef_color_t bg_argb,
-                             const CefRect& card_rect) {
+void ClearCardCorners(void* window_nsview_ptr, int group) {
   if (!window_nsview_ptr)
     return;
   NSView* root = (__bridge NSView*)window_nsview_ptr;
-
-  // Remove previously installed punch views.
+  const NSInteger tag = kCornerPunchTag + group;
   NSMutableArray* old = [NSMutableArray array];
   for (NSView* sv in root.subviews) {
-    if (sv.tag == kCornerPunchTag)
+    if (sv.tag == tag)
       [old addObject:sv];
   }
   for (NSView* sv in old)
     [sv removeFromSuperview];
+}
+
+void RoundBrowserCardAuto(void* window_nsview_ptr,
+                          double radius,
+                          cef_color_t bg,
+                          const CefRect& card_rect,
+                          int group) {
+  if (!window_nsview_ptr)
+    return;
+  NSView* root = (__bridge NSView*)window_nsview_ptr;
+
+  // card_rect is CEF coords (origin top-left, y down). Convert to the window
+  // root's AppKit coords (origin bottom-left, y up) to match against the
+  // WebContentsViewCocoa frames (which are direct children of the root).
+  const CGFloat rootH = root.bounds.size.height;
+  const NSRect target =
+      NSMakeRect(card_rect.x, rootH - card_rect.y - card_rect.height,
+                 card_rect.width, card_rect.height);
+
+  NSView* card = nil;
+  for (NSView* sub in root.subviews) {
+    if (sub.isHidden)
+      continue;
+    const NSRect f = sub.frame;
+    if (fabs(NSMinX(f) - NSMinX(target)) <= 2.0 &&
+        fabs(NSMinY(f) - NSMinY(target)) <= 2.0 &&
+        fabs(NSWidth(f) - NSWidth(target)) <= 2.0 &&
+        fabs(NSHeight(f) - NSHeight(target)) <= 2.0) {
+      card = sub;
+      break;
+    }
+  }
+  if (!card)
+    return;
+
+  CronymaxCardPunchTracker* tracker =
+      objc_getAssociatedObject(card, &kCardPunchTrackerKey);
+  if (!tracker) {
+    tracker = [[CronymaxCardPunchTracker alloc] init];
+    tracker.target = card;
+    objc_setAssociatedObject(card, &kCardPunchTrackerKey, tracker,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    card.postsFrameChangedNotifications = YES;
+    [[NSNotificationCenter defaultCenter]
+        addObserver:tracker
+           selector:@selector(frameChanged:)
+               name:NSViewFrameDidChangeNotification
+             object:card];
+  }
+  tracker.radius = (CGFloat)radius;
+  tracker.bg = bg;
+  tracker.group = group;
+  [tracker apply];
+}
+
+void StyleContentBrowserView(void* window_nsview_ptr,
+                             double radius,
+                             cef_color_t bg_argb,
+                             const CefRect& card_rect,
+                             int group) {
+  if (!window_nsview_ptr)
+    return;
+  NSView* root = (__bridge NSView*)window_nsview_ptr;
+  const NSInteger tag = kCornerPunchTag + group;
+
+  // Remove previously installed punch views for THIS group only, so the dock
+  // and main-content cards do not wipe each other's corners.
+  ClearCardCorners(window_nsview_ptr, group);
 
   // card_rect uses CEF coordinates: y grows down, y=0 at top of content area.
   // NSView (non-flipped): y=0 at bottom.
@@ -729,7 +845,7 @@ void StyleContentBrowserView(void* window_nsview_ptr,
     v.punchColor = fill;
     v.punchCorner = patches[i].corner;
     v.punchRadius = r;
-    v.tag = kCornerPunchTag;
+    v.tag = tag;
     v.frame = NSMakeRect(patches[i].x, patches[i].y, r, r);
     [root addSubview:v];
   }

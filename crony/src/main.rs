@@ -61,6 +61,13 @@ async fn main() -> Result<()> {
                 Ok(Err(e)) => tracing::warn!("browser transport session error: {e}; exiting"),
                 Err(e) => tracing::warn!("browser transport task panicked: {e}; exiting"),
             }
+            // Reap extension Node hosts synchronously before the hard exit.
+            // `std::process::exit` skips every `Drop`, so without this the
+            // children would orphan (the leak this fixes). Pairs with the
+            // bootstrap.js fd-3-close handler as belt-and-suspenders.
+            if let Some(ext) = bundle.runtime.services().extensions.as_ref() {
+                ext.kill_all_blocking();
+            }
             // Force-exit immediately so background threads (PTY I/O, spawn_blocking
             // tasks, etc.) cannot delay process termination.  The C++ supervisor
             // detects the exit via waitpid and respawns a fresh crony.
@@ -69,6 +76,11 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Graceful quit (SIGINT/SIGTERM): tear down extension hosts while the
+    // tokio runtime is still alive so no Node child outlives crony.
+    if let Some(ext) = bundle.runtime.services().extensions.as_ref() {
+        ext.shutdown_all().await;
+    }
     crony::lifecycle::shutdown();
     tracing::info!("crony exited cleanly");
     Ok(())

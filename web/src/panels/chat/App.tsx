@@ -3,7 +3,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  ChevronsUpDown,
   Copy,
   GitFork,
   Image as ImageIcon,
@@ -29,14 +28,17 @@ import {
   useRef,
   useState,
 } from "react";
+import { toast } from "sonner";
+import { ModelGroupCombobox } from "@/components/ModelGroupCombobox";
+import { fetchExtensionGroups, fetchLlmGroups, type ModelGroup } from "@/components/modelGroups";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Toaster } from "@/components/ui/sonner";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Heading } from "@/components/ui/typography";
@@ -44,8 +46,16 @@ import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { cn } from "@/lib/utils";
 import { FlowDocReviewPanel } from "@/panels/chat/FlowDocReviewPanel";
 import { browser, runtime, shells } from "@/shells/bridge";
-import { listProviderModels } from "@/shells/llm";
-import { agentRegistry, agentRun, b64ToUtf8, flowRun, terminal as rt_terminal } from "@/shells/runtime";
+import {
+  agentRun,
+  b64ToUtf8,
+  ContributionKind,
+  contributionRegistry,
+  extensionRegistry,
+  flowRun,
+  type InstalledExtension,
+  terminal as rt_terminal,
+} from "@/shells/runtime";
 import { AgentThreadCard } from "./AgentThreadCard";
 import { ApprovalCard, loadTrustMap } from "./ApprovalCard";
 import { ContentStreamView } from "./ContentStreamView";
@@ -53,13 +63,14 @@ import { resolveContextLimit } from "./contextLimits";
 import { FileChangesView } from "./FileChangesView";
 import { FlowGanttChart, FlowTaskTree } from "./FlowGanttChart";
 import { FlowThreadCard } from "./FlowThreadCard";
+import { FlowTrajectoryDiagram } from "./FlowTrajectoryDiagram";
 import { LiveTasksView } from "./LiveTasksView";
 import { PromptPopover } from "./PromptPopover";
-import { ReviewsPanel } from "./ReviewsPanel";
 import { StickyActiveThread } from "./StickyActiveThread";
 import {
   type AnthropicEffort,
   type Attachment,
+  agentPickerDescription,
   type Block,
   type ConversationBlock,
   ensureChat,
@@ -904,6 +915,10 @@ export function App() {
   const timelineScrollRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [agentLoadError, setAgentLoadError] = useState<string | null>(null);
+  // Fallback timer that surfaces the banner if the runtime never finishes
+  // its Hello/Welcome handshake (e.g. cronymax-runtime binary missing or
+  // crashed). See refreshAgents below for the suppression flow.
+  const agentLoadFallbackRef = useRef<number | null>(null);
   const [inputMode, setInputMode] = useState<"chat" | "shell" | "command">("chat");
   const [commentDraft, setCommentDraft] = useState("");
   /** Per-chat reasoning_effort override. "" = use agent/provider default. */
@@ -923,24 +938,19 @@ export function App() {
   /** Model options grouped by provider name, loaded from llm.providers.get.
    * Carries each group's provider config so picking a model from a non-active
    * group can override the request's base_url / api_key / kind for that run. */
-  const [modelGroups, setModelGroups] = useState<
-    {
-      label: string;
-      id: string;
-      kind: string;
-      base_url: string;
-      api_key: string;
-      models: string[];
-    }[]
-  >([]);
+  const [modelGroups, setModelGroups] = useState<ModelGroup[]>([]);
   /** ID + kind of the currently-active provider — used as the fallback when
    * `state.model` is empty (provider default) or doesn't match any known
    * model entry, and to detect when the picked model belongs to a non-active
    * group (triggering per-run provider override). */
   const [activeProviderId, setActiveProviderId] = useState<string>("");
   const [activeProviderKind, setActiveProviderKind] = useState<string>("");
+  /** True once the LLM provider model list has finished loading (resolve OR
+   * reject). The selection-reconcile effect waits on this so it never judges a
+   * valid LLM model "unavailable" during the brief startup window before the
+   * provider groups populate. */
+  const [llmGroupsLoaded, setLlmGroupsLoaded] = useState(false);
   /** Controls the model Combobox popover */
-  const [modelComboOpen, setModelComboOpen] = useState(false);
   /** Prompt pills attached to the current message (like VS Code slash commands). */
   const [attachedPrompts, setAttachedPrompts] = useState<{ id: string; label: string; content: string }[]>([]);
   /** ID of the pill whose PromptPopover is currently open (null = none). */
@@ -1024,55 +1034,16 @@ export function App() {
         if (active) setWorkspaceRoot(active.root_path);
       })
       .catch(() => undefined);
-    // Load model list from configured providers
-    shells.browser.llm.providers
-      .get()
-      .then(async ({ raw, active_id }) => {
-        if (!raw) return;
-        interface StoredProvider {
-          id: string;
-          name: string;
-          kind: "openai" | "anthropic" | "ollama" | "github_copilot" | "custom";
-          base_url: string;
-          api_key: string;
-          default_model: string;
-        }
-        const providers: StoredProvider[] = JSON.parse(raw);
-        const active = providers.find((p) => p.id === active_id);
-        if (active) {
-          setActiveProviderId(active.id);
-          setActiveProviderKind(active.kind);
-        }
-        const groups: {
-          label: string;
-          id: string;
-          kind: string;
-          base_url: string;
-          api_key: string;
-          models: string[];
-        }[] = [];
-        for (const p of providers) {
-          if (!p.base_url) continue;
-          let models: string[] = [];
-          try {
-            models = await listProviderModels(p);
-          } catch {
-            /* keep models empty; fall through to default_model below */
-          }
-          if (models.length === 0 && p.default_model) models = [p.default_model];
-          if (models.length > 0)
-            groups.push({
-              label: p.name || p.kind,
-              id: p.id,
-              kind: p.kind,
-              base_url: p.base_url,
-              api_key: p.api_key,
-              models,
-            });
-        }
-        setModelGroups(groups);
+    // LLM provider groups (shared catalog builder). Slow (HTTP per provider);
+    // preserve any extension groups the fast local-IPC effect already appended.
+    fetchLlmGroups()
+      .then(({ groups, activeProviderId: aid, activeProviderKind: akind }) => {
+        setActiveProviderId(aid);
+        setActiveProviderKind(akind);
+        setModelGroups((prev) => [...groups, ...prev.filter((g) => g.kind === "extension")]);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => setLlmGroupsLoaded(true));
   }, []);
 
   // Selection tooltip — freeze when comment input is focused so it doesn't
@@ -1134,15 +1105,162 @@ export function App() {
   };
 
   // ── agent catalog ─────────────────────────────────────────────────────
+  // Sourced from the unified ContributionRegistry: builtin + workspace agents
+  // are direct rows; extension agent providers are surfaced as agents too.
+  // Each row carries `contribution_kind` so the run dispatcher knows how to
+  // route the StartRun without re-probing the registry.
   const refreshAgents = async () => {
     try {
-      const res = await agentRegistry.list();
-      dispatch({ type: "setAgents", agents: res.agents ?? [] });
+      const res = await contributionRegistry.list();
+      const agents = (res.contributions ?? [])
+        .filter(
+          (d) =>
+            d.kind === ContributionKind.AgentsBuiltin ||
+            d.kind === ContributionKind.AgentsWorkspace ||
+            d.kind === ContributionKind.AgentsProvider,
+        )
+        .map((d) => {
+          const meta = (d.metadata && typeof d.metadata === "object" ? d.metadata : {}) as Record<string, unknown>;
+          const isExt = d.kind === ContributionKind.AgentsProvider;
+          const owningExt = d.owner.type === "extension" ? d.owner.extId : undefined;
+          return {
+            name: d.id,
+            kind: isExt ? "extension_provider" : ((meta.kind as string) ?? "worker"),
+            llm: (meta.llm as string) ?? "",
+            label: d.label,
+            owning_ext: owningExt,
+            description: d.description,
+            supports_models: Boolean(meta.supports_models),
+            supports_modes: Boolean(meta.supports_modes),
+            supports_mcp: Boolean(meta.supports_mcp),
+            contribution_kind: d.kind,
+          };
+        });
+      dispatch({ type: "setAgents", agents });
       setAgentLoadError(null);
+      if (agentLoadFallbackRef.current !== null) {
+        window.clearTimeout(agentLoadFallbackRef.current);
+        agentLoadFallbackRef.current = null;
+      }
     } catch (err) {
-      setAgentLoadError((err as Error).message);
+      const msg = (err as Error).message;
+      // Suppress the banner for the startup race where the renderer mounts
+      // before the Rust runtime finished its Hello/Welcome handshake. The
+      // browser shell rejects these with the literal string "runtime not
+      // available" (app/browser/shells/runtime.cc); the `runtime.reconnected`
+      // listener below re-runs refreshAgents the moment the runtime attaches.
+      //
+      // To avoid a silent failure when the handshake never completes (binary
+      // missing / crashed), arm a one-shot fallback that promotes the error
+      // to the banner if no successful refresh has happened by then. The
+      // success branch above clears it.
+      if (msg === "runtime not available") {
+        if (agentLoadFallbackRef.current === null) {
+          agentLoadFallbackRef.current = window.setTimeout(() => {
+            agentLoadFallbackRef.current = null;
+            setAgentLoadError("runtime not available (handshake timed out)");
+          }, 10_000);
+        }
+        return;
+      }
+      setAgentLoadError(msg);
     }
   };
+
+  // Enumerate extension agent providers and add them as additional groups in
+  // the model picker. Re-runs whenever the agent catalog refreshes so newly
+  // installed providers show up live. Each item under the provider is one of
+  // its enumerated models; picking it sets agent_id + contribution_kind so
+  // the run goes through the extension rather than an LLM HTTP endpoint.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchExtensionGroups().then((groups) => {
+      if (cancelled) return;
+      // Drop prior extension groups, append the fresh set; LLM groups preserved.
+      setModelGroups((prev) => [...prev.filter((g) => g.kind !== "extension"), ...groups]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [state.agents]);
+
+  // Drop a model selection that no longer maps to any available option, so a
+  // disabled/uninstalled extension's model (e.g. echo-agent's "echo-permission")
+  // doesn't linger as a ghost selection the dropdown can't even show.
+  //
+  // The decisive signal is `state.model` itself, NOT the persisted provider
+  // metadata: that selection is restored per-chat (`loadChat`) as a bare model
+  // string, often with no `agentId` and no global `chat_model_provider` to
+  // identify it as extension-backed. So we judge availability directly — is
+  // `state.model` offered by any currently-loaded provider group? `modelGroups`
+  // already merges LLM groups with every *active* extension provider's
+  // enumerated models, so "not in any group" == "no available provider offers
+  // it". Keying on `modelGroups` (not `state.agents`) also dodges the window
+  // where a provider is active but its models aren't enumerated yet — the
+  // effect only re-judges once `modelGroups` reflects the new catalog.
+  //
+  // Two guards prevent clobbering a *valid* selection that's merely still
+  // loading:
+  //   • `llmGroupsLoaded` — wait for the LLM provider list before judging, or a
+  //     real LLM model reads as "unavailable" during the startup HTTP fetch.
+  //   • registry "pending" check — an enabled extension whose host is still
+  //     spawning will contribute its models shortly; don't clear those.
+  //
+  // When we do clear, scrub all three homes of the selection or it returns:
+  // live `state.model`/`state.agentId`, the global last-pick, and the active
+  // chat's saved copy (the auto-save effect only fires on a run boundary, so a
+  // model-only change never reaches the per-chat copy on its own).
+  useEffect(() => {
+    if (!llmGroupsLoaded) return; // provider groups not loaded yet — can't judge
+    const model = state.model;
+    if (!model) return; // "provider default" — nothing to reconcile
+    if (modelGroups.some((g) => g.models.includes(model))) return; // still offered
+
+    let cancelled = false;
+    void (async () => {
+      let extensions: InstalledExtension[];
+      try {
+        ({ extensions } = await extensionRegistry.list());
+      } catch {
+        return; // runtime not ready; a later refresh re-runs this
+      }
+      if (cancelled) return;
+      // An enabled-but-not-yet-active provider will contribute models once it
+      // finishes spawning — don't clear a selection it might still offer.
+      const providerPending = extensions.some(
+        (e) => e.enabled && !e.active && (e.contributes?.agent_providers ?? 0) > 0,
+      );
+      if (providerPending) return;
+
+      // Settled, and no loaded/forthcoming provider offers this model → drop it.
+      const agentGone = state.agentId !== "" && !state.agents.some((a) => a.name === state.agentId);
+      dispatch({ type: "setModel", model: "" });
+      persistSelectedModel("");
+      persistSelectedModelProvider(null);
+      if (agentGone) dispatch({ type: "setAgentId", agentId: "" });
+      const chatId = state.activeChatId;
+      if (chatId) {
+        try {
+          const { data } = loadChatData(chatId);
+          persistChatData(chatId, {
+            ...data,
+            model: "",
+            agentId: agentGone ? undefined : data.agentId,
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `state.agents` / `state.agentId` are read for the agent-scrub but
+    // intentionally NOT deps: re-judging must wait for `modelGroups` to reflect
+    // the catalog, else an active-but-not-yet-enumerated provider's model would
+    // be cleared in the gap between `state.agents` updating and enumeration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.model, modelGroups, llmGroupsLoaded, state.activeChatId]);
 
   // ── ensure terminal session for this chat tab ─────────────────────────
   const ensureChatTerminal = async (currentTid: string | null, chatId: string) => {
@@ -1270,6 +1388,20 @@ export function App() {
 
   // ── terminal output → ShellBlock accumulation ──────────────────────────
   // Topic-scoped to the active terminal; auto-resubscribes on space switch.
+  // Platform-originated extension notices (crash-disable, memory warnings)
+  // → toast. The payload is `{ kind: "raw", data: { ext_id, level, message } }`
+  // (same envelope the terminal subscriber below unwraps).
+  useRuntimeEvent("extensions/notice", (event: unknown) => {
+    const pl = (event as { payload?: { kind?: string; data?: unknown } })?.payload;
+    if (pl?.kind !== "raw") return;
+    const data = pl.data as { level?: string; message?: string } | undefined;
+    const message = data?.message;
+    if (!message) return;
+    if (data?.level === "error") toast.error(message);
+    else if (data?.level === "warn") toast.warning(message);
+    else toast.info(message);
+  });
+
   useRuntimeEvent(state.terminalTid ? `terminal:${state.terminalTid}` : "", (event: unknown) => {
     const blockId = runningBlockIdRef.current;
     if (!blockId) return;
@@ -1577,7 +1709,11 @@ export function App() {
 
     let speaker = "";
     let body = rawText;
-    const agentNames = state.agents.map((a) => a.name);
+    // Extension providers aren't @-mentionable (see the @ picker) — exclude them
+    // from mention resolution too, so a bare @<provider> never routes directly.
+    const agentNames = state.agents
+      .filter((a) => a.contribution_kind !== ContributionKind.AgentsProvider)
+      .map((a) => a.name);
     const parsed = parseMention(rawText, agentNames);
     if (parsed.agent) {
       speaker = parsed.agent;
@@ -1616,9 +1752,12 @@ export function App() {
     let hasContent = false;
     let thinkingStartedAt: number | null = null;
     let thinkingSealed = false;
-    // Dedup key = "<subscription_id>:<sequence>" so that concurrent
-    // conversations whose Rust subscriptions independently start at seq=0
-    // never cross-contaminate each other's dedup sets.
+    // Dedup key MUST be identical across both delivery channels
+    // (`browser.on("event")` wildcard + `runtime.on("run:{id}")` targeted).
+    // The two paths see the same event twice; if the keys diverge, both
+    // pass and every event is processed twice. Both handlers filter by
+    // runId before consulting this set, so `seq` alone is unique within
+    // the run we're tracking.
     const seenSeqs = new Set<string>();
     let runId = "";
     // Last error surfaced via a "trace.error" event from the runtime
@@ -1822,10 +1961,9 @@ export function App() {
         // Filter by run_id BEFORE deduplicating so that a different run's
         // seq=0 does not consume our seq=0 from the dedup set.
         if (pRunId && runId && pRunId !== runId) return;
-        const subId = (ev.subscription as string | undefined) ?? "";
         const seq = inner.sequence as number | undefined;
         if (typeof seq === "number") {
-          const dedupKey = `${subId}:${seq}`;
+          const dedupKey = String(seq);
           if (seenSeqs.has(dedupKey)) return;
           seenSeqs.add(dedupKey);
         }
@@ -1917,8 +2055,12 @@ export function App() {
           // Tool approval request: check global mode first, then per-category trust
           const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
           const req = (pl.request as Record<string, unknown> | undefined) ?? {};
-          const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
-          const args = req.args ?? pl.args ?? {};
+          const toolName =
+            (req.tool_name as string | undefined) ??
+            (req.tool as string | undefined) ??
+            (pl.tool_name as string | undefined) ??
+            "";
+          const args = req.args ?? req.arguments ?? pl.args ?? {};
           const category = toolName.split("_")[0] ?? toolName;
 
           // Global approval mode takes precedence over per-category trust map
@@ -2087,7 +2229,7 @@ export function App() {
             });
           } else if (traceKind === "review_resolved") {
             const resolvedId = (trace.review_id as string | undefined) ?? "";
-            const decision = (trace.decision as string | undefined) === "approve" ? "approve" : "reject";
+            const decision = (trace.decision as string | undefined) === "approved" ? "approve" : "reject";
             dispatch({
               type: "appendTraceEntry",
               id: blockId,
@@ -2240,8 +2382,12 @@ export function App() {
       } else if (kind === "permission_request") {
         const reviewId = (pl.review_id as string | undefined) ?? pendingReviewId ?? "";
         const req = (pl.request as Record<string, unknown> | undefined) ?? {};
-        const toolName = (req.tool_name as string | undefined) ?? (pl.tool_name as string | undefined) ?? "";
-        const args = req.args ?? pl.args ?? {};
+        const toolName =
+          (req.tool_name as string | undefined) ??
+          (req.tool as string | undefined) ??
+          (pl.tool_name as string | undefined) ??
+          "";
+        const args = req.args ?? req.arguments ?? pl.args ?? {};
         const category = toolName.split("_")[0] ?? toolName;
         let effectiveTrust: "autopilot" | "bypass" | "ask";
         if (globalApprovalMode === "autopilot") {
@@ -2420,7 +2566,7 @@ export function App() {
           });
         } else if (traceKind === "review_resolved") {
           const resolvedId = (trace.review_id as string | undefined) ?? "";
-          const decision = (trace.decision as string | undefined) === "approve" ? "approve" : "reject";
+          const decision = (trace.decision as string | undefined) === "approved" ? "approve" : "reject";
           dispatch({
             type: "appendTraceEntry",
             id: blockId,
@@ -2498,7 +2644,7 @@ export function App() {
       // the agent/provider default kicks in.
       const runOpts: Parameters<typeof agentRun>[1] = {
         session_id: chatId,
-        agent_id: state.selectedFlow ? undefined : state.agentId || undefined,
+        agent_id: state.selectedFlow ? undefined : speaker || state.agentId || undefined,
         flow_id: state.selectedFlow || undefined,
         // When starting a flow run, pass the frontend-generated child session id so
         // the Rust runtime can route all flow node sub-runs into it.
@@ -2513,17 +2659,32 @@ export function App() {
       // stored `default_model` which may be stale, mismatched, or from a different
       // provider than what the user currently has selected.
       if (state.model) runOpts.model = state.model;
-      // If the picked model belongs to a non-active provider group, send
-      // that provider's wire config alongside so the request actually
-      // routes there instead of being sent to the active provider's
-      // endpoint with a model name it doesn't recognise.
+      // If the picked model belongs to a non-active group, dispatch overrides.
+      // Two cases:
+      //   • LLM-provider group: override wire fields (provider_kind / base_url
+      //     / api_key) so the request routes to that provider's endpoint.
+      //   • Extension agent provider group: override agent_id +
+      //     contribution_kind so the runtime dispatches through the extension
+      //     instead of an HTTP LLM call. We do NOT set base_url/api_key here;
+      //     extensions own their auth.
       if (state.model) {
         const owner = modelGroups.find((g) => g.models.includes(state.model));
-        if (owner && owner.id !== activeProviderId) {
-          runOpts.provider_kind = owner.kind;
-          runOpts.base_url = owner.base_url;
-          if (owner.api_key) runOpts.api_key = owner.api_key;
+        if (owner) {
+          if (owner.contribution_kind === ContributionKind.AgentsProvider && owner.agent_id) {
+            runOpts.agent_id = owner.agent_id;
+            runOpts.contribution_kind = ContributionKind.AgentsProvider;
+          } else if (owner.id !== activeProviderId) {
+            runOpts.provider_kind = owner.kind;
+            runOpts.base_url = owner.base_url;
+            if (owner.api_key) runOpts.api_key = owner.api_key;
+          }
         }
+      }
+      // For builtin / workspace agent picks, forward the kind too so the
+      // runtime doesn't have to probe; extension providers handled above.
+      if (!runOpts.contribution_kind) {
+        const picked = state.agents.find((a) => a.name === runOpts.agent_id);
+        if (picked?.contribution_kind) runOpts.contribution_kind = picked.contribution_kind;
       }
       runId = await agentRun(body, runOpts);
       if (!runId) throw new Error("runtime did not return run_id");
@@ -2583,6 +2744,44 @@ export function App() {
       await shells.browser.events.subscribe({ run_id: runId }).catch(() => {
         /* ignore */
       });
+
+      // Race recovery: the run was started (agentRun above) before this
+      // subscription existed, and subscriptions don't replay. An agent that
+      // requests permission in the first tick of its turn — e.g. an extension
+      // provider gating on approval — emits `permission_request` in that gap,
+      // so the live handler never sees it and the run hangs forever waiting on
+      // a card that never rendered. Catch up by querying the run's current
+      // pending approval and surfacing it. Idempotent: an already-shown review
+      // re-sets the same state; an auto-resolved review is simply absent.
+      try {
+        if (chatId) {
+          const { approvals } = await flowRun.getSessionPendingActions(chatId);
+          const pending = (approvals as Array<Record<string, unknown>>).find(
+            (a) => (a.run_id as string | undefined) === runId,
+          );
+          if (pending) {
+            const reviewId = (pending.id as string | undefined) ?? "";
+            const reqOuter = (pending.request as Record<string, unknown> | undefined) ?? {};
+            const reqInner = (reqOuter.request as Record<string, unknown> | undefined) ?? {};
+            const toolName = (reqInner.tool_name as string | undefined) ?? (reqOuter.tool as string | undefined) ?? "";
+            const args = reqInner.args ?? reqOuter.arguments ?? {};
+            const category = toolName.split("_")[0] ?? toolName;
+            let effectiveTrust: "autopilot" | "bypass" | "ask";
+            if (globalApprovalMode === "autopilot") effectiveTrust = "autopilot";
+            else if (globalApprovalMode === "bypass") effectiveTrust = "bypass";
+            else effectiveTrust = (loadTrustMap()[category] ?? "ask") as "autopilot" | "bypass" | "ask";
+            if (effectiveTrust === "autopilot") {
+              browser.send("review.approve", { run_id: runId, review_id: reviewId }).catch(() => undefined);
+            } else if (effectiveTrust === "bypass") {
+              browser.send("review.request_changes", { run_id: runId, review_id: reviewId }).catch(() => undefined);
+            } else {
+              dispatch({ type: "setAwaitingApproval", runId, reviewId, toolName, args });
+            }
+          }
+        }
+      } catch {
+        /* best-effort catch-up — the live handler covers the non-raced case */
+      }
     } catch (err) {
       teardown();
       const errMsg = err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
@@ -2646,6 +2845,56 @@ export function App() {
     }
   }, [state.blocks, state.runningBlockId, state.activeChatId, dispatch]);
 
+  // Seed awaitingApproval from snapshot when returning to a chat that still has
+  // a pending tool approval upstream. Covers the chat-switch case where
+  // loadChat resets awaitingApproval but the runtime still holds the review.
+  // The rehydrate path (authority.rs) clears stale reviews on cold start, so
+  // this only re-surfaces live ones from the current process.
+  useEffect(() => {
+    const chatId = state.activeChatId;
+    if (!chatId) return;
+    shells.browser.activity
+      .snapshot()
+      .then((resp: { runs?: unknown[]; pending_reviews?: unknown[] }) => {
+        const rawRuns = (resp.runs ?? []).map((r) => r as Record<string, unknown>);
+        const direct = new Set<string>(
+          rawRuns
+            .filter((r) => (r.session_id as string | undefined) === chatId)
+            .map((r) => r.id as string)
+            .filter(Boolean),
+        );
+        const sessionRunIds = new Set<string>(direct);
+        for (const r of rawRuns) {
+          const flowRunId = r.flow_run_id as string | undefined;
+          if (flowRunId && direct.has(flowRunId)) {
+            const id = r.id as string;
+            if (id) sessionRunIds.add(id);
+          }
+        }
+        const match = (resp.pending_reviews ?? [])
+          .map((r) => r as Record<string, unknown>)
+          .find((r) => {
+            if (!sessionRunIds.has(r.run_id as string)) return false;
+            const req = (r.request as Record<string, unknown>) ?? {};
+            const reqKind = req.kind as string | undefined;
+            return !reqKind || reqKind === "tool_call";
+          });
+        if (!match) return;
+        const req = (match.request as Record<string, unknown>) ?? {};
+        const reviewId = (match.id as string) ?? (match.review_id as string) ?? "";
+        const toolName = (req.tool_name as string) ?? (req.tool as string) ?? (match.tool_name as string) ?? "tool";
+        const args = req.args ?? req.arguments ?? match.args ?? {};
+        dispatch({
+          type: "setAwaitingApproval",
+          runId: match.run_id as string,
+          reviewId,
+          toolName,
+          args,
+        });
+      })
+      .catch(() => undefined);
+  }, [state.activeChatId]);
+
   // Persist blocks after each conversation finalization (state.running transitions)
   useEffect(() => {
     if (!state.running && state.activeChatId && state.blocks.length > 0) {
@@ -2676,6 +2925,10 @@ export function App() {
     });
     const offReconnected = browser.on("runtime.reconnected", () => {
       dispatch({ type: "setReconnecting", reconnecting: false });
+      // Also re-runs after the *first* attach (broadcast by SetRuntimeProxy in
+      // bridge_handler.h) — covers the startup race where refreshAgents fires
+      // before the Rust runtime finished its Hello/Welcome handshake.
+      void refreshAgents();
     });
     return () => {
       offRestarting();
@@ -2683,6 +2936,40 @@ export function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch, state.runningBlockId]);
+
+  // ── extension catalog reconcile ──────────────────────────────────────────
+  // The runtime emits a single `extensions/contributions` signal whenever an
+  // extension activates/deactivates (install / enable / disable / uninstall,
+  // from anywhere). Refetch the agent catalog so a disabled extension's agent
+  // provider stops lingering in the picker; `setAgents` resets the selection
+  // if the chosen agent vanished. Mirrors the activity-bar rail. Re-subscribes
+  // on reconnect since `runtime.on` no-ops until the proxy is attached.
+  useEffect(() => {
+    let off: (() => void) | null = null;
+    // Stream-then-snapshot, atomically. Extensions activate asynchronously
+    // after boot and emit `extensions/contributions` around the time the chat
+    // is still mounting / the runtime proxy is attaching; the topic doesn't
+    // replay, so a snapshot taken *before* the listener is registered can miss
+    // an activation that lands in between — which is why a freshly-enabled
+    // provider only showed up after a live disable/re-enable. Establishing the
+    // listener FIRST and then refetching in the same step closes that gap: the
+    // listener captures every change from here on, and the refetch captures
+    // whatever is already active. (The previous code refetched and subscribed
+    // in two separate effects, so their order on reconnect wasn't guaranteed —
+    // that ordering gap was the bug.)
+    const subscribe = () => {
+      off?.();
+      off = runtime.on("extensions/contributions", () => void refreshAgents());
+      void refreshAgents();
+    };
+    subscribe();
+    const offReconnect = browser.on("runtime.reconnected", () => subscribe());
+    return () => {
+      off?.();
+      offReconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const onShellAction = (action: string, block: ShellBlock) => {
     // Spawn a thread on the block by running a prompt with context
@@ -2696,7 +2983,10 @@ export function App() {
     if (picker) return;
     const typed = inputRef.current?.value.trim() || "";
     if (!typed && attachedPrompts.length === 0) return;
-    if (inputRef.current) inputRef.current.value = "";
+    if (inputRef.current) {
+      inputRef.current.value = "";
+      inputRef.current.style.height = "auto";
+    }
     setInputMode("chat");
     // Collect content from explicitly-attached picker pills.
     const parts = attachedPrompts.map((p) => p.content);
@@ -2733,13 +3023,16 @@ export function App() {
       const all = [...BUILTIN_COMMANDS, ...custom, ...workspacePrompts];
       return all.filter((x) => !q || x.label.toLowerCase().startsWith(q)).slice(0, 8);
     } else {
-      // "at" type: filter agents
+      // "at" type: filter agents. Only *named* agents (builtin + workspace)
+      // are @-mentionable — extension AgentProviders live in the provider/model
+      // list (they back a named agent via `agent_provider:`), never the @ list.
       return state.agents
+        .filter((a) => a.contribution_kind !== ContributionKind.AgentsProvider)
         .filter((a) => !q || a.name.toLowerCase().includes(q))
         .map((a) => ({
           id: a.name,
           label: a.name,
-          description: a.kind ? `kind: ${a.kind}` : undefined,
+          description: agentPickerDescription(a),
         }))
         .slice(0, 8);
     }
@@ -2799,6 +3092,16 @@ export function App() {
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Don't intercept any keys while an IME composition is in flight.
+    // Otherwise Enter that confirms a Chinese / Japanese / Korean
+    // candidate would fall through to requestSubmit() AND end the
+    // composition, leaving the just-committed text in the textarea
+    // and posting the previous draft. Keycode 229 is the historical
+    // "composition still going" signal browsers emit when isComposing
+    // isn't set.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) {
+      return;
+    }
     // When picker is open, intercept navigation keys
     if (picker && pickerItems.length > 0) {
       if (e.key === "ArrowDown") {
@@ -2904,6 +3207,10 @@ export function App() {
 
   return (
     <TooltipProvider>
+      {/* Platform extension notices (crash-disable / memory) render here as
+          toasts. Portaled to <body>, so window-level despite living in the
+          chat panel webview. */}
+      <Toaster position="bottom-right" />
       <main className="flex h-screen flex-col bg-background text-foreground">
         {/* Header */}
         <header className="flex items-center gap-3 border-b border-border bg-card px-3 py-2">
@@ -2959,7 +3266,7 @@ export function App() {
         {agentLoadError && (
           <Alert variant="destructive" className="rounded-none border-0 border-b">
             <TriangleAlert />
-            <AlertTitle>agent.registry.list failed</AlertTitle>
+            <AlertTitle>contribution.list failed</AlertTitle>
             <AlertDescription>{agentLoadError}</AlertDescription>
           </Alert>
         )}
@@ -3229,8 +3536,11 @@ export function App() {
               {/* ── File changes summary ─────────────────────────────────────────── */}
               <FileChangesView changes={sessionFileChanges} />
 
-              {/* Doc reviews are shown in the flow thread view only (task 10.2). */}
-              <ReviewsPanel sessionId={state.activeChatId} />
+              {/* Flow trajectory diagram — shown when a flow is selected and has runs */}
+              {state.selectedFlow && (
+                <FlowTrajectoryDiagram selectedFlow={state.selectedFlow} sessionId={state.activeChatId} />
+              )}
+              <FlowDocReviewPanel sessionId={state.activeChatId} />
             </div>
 
             {/* ── Slash / @ picker ──────────────────────────────────────── */}
@@ -3392,75 +3702,39 @@ export function App() {
                 </Tip>
                 <input ref={fileInputRef} type="file" className="hidden" multiple onChange={onFileChange} />
 
-                {/* Model combobox */}
-                <Popover open={modelComboOpen} onOpenChange={setModelComboOpen}>
-                  <Tip tip="LLM model">
-                    <PopoverTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="max-w-[140px] justify-between font-normal text-muted-foreground"
-                      >
-                        <span className="truncate">{state.model || "provider default"}</span>
-                        <ChevronsUpDown data-icon="inline-end" className="opacity-50" />
-                      </Button>
-                    </PopoverTrigger>
-                  </Tip>
-                  <PopoverContent className="w-[220px] p-0" align="start" side="top">
-                    <Command>
-                      <CommandInput placeholder="Search models…" className="h-7 text-xs" />
-                      <CommandList>
-                        <CommandEmpty className="text-xs">No models.</CommandEmpty>
-                        <CommandGroup>
-                          <CommandItem
-                            value=""
-                            onSelect={() => {
-                              dispatch({ type: "setModel", model: "" });
-                              persistSelectedModel("");
-                              persistSelectedModelProvider(null);
-                              setModelComboOpen(false);
-                            }}
-                            className="text-xs"
-                          >
-                            <Check className={cn("mr-2 size-3 shrink-0", state.model ? "opacity-0" : "opacity-100")} />
-                            <span className="italic text-muted-foreground">provider default</span>
-                          </CommandItem>
-                        </CommandGroup>
-                        {modelGroups.map((g) => (
-                          <CommandGroup key={g.label} heading={g.label}>
-                            {g.models.map((m) => (
-                              <CommandItem
-                                key={m}
-                                value={m}
-                                onSelect={(v) => {
-                                  dispatch({ type: "setModel", model: v });
-                                  persistSelectedModel(v);
-                                  persistSelectedModelProvider({
-                                    id: g.id,
-                                    kind: g.kind,
-                                    base_url: g.base_url,
-                                    api_key: g.api_key,
-                                  });
-                                  setModelComboOpen(false);
-                                }}
-                                className="text-xs"
-                              >
-                                <Check
-                                  className={cn(
-                                    "mr-2 size-3 shrink-0",
-                                    m === state.model ? "opacity-100" : "opacity-0",
-                                  )}
-                                />
-                                <span className="truncate font-mono">{m}</span>
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        ))}
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
+                {/* Model combobox — shared with the Agents editor (one source). */}
+                <ModelGroupCombobox
+                  groups={modelGroups}
+                  value={state.model ? { groupId: "", model: state.model } : null}
+                  triggerLabel={state.model || "provider default"}
+                  triggerClassName="max-w-[140px] text-muted-foreground"
+                  contentClassName="w-[220px] p-0"
+                  side="top"
+                  onPick={(g, m) => {
+                    if (!g) {
+                      dispatch({ type: "setModel", model: "" });
+                      persistSelectedModel("");
+                      persistSelectedModelProvider(null);
+                      return;
+                    }
+                    dispatch({ type: "setModel", model: m });
+                    persistSelectedModel(m);
+                    persistSelectedModelProvider({
+                      id: g.id,
+                      kind: g.kind,
+                      base_url: g.base_url,
+                      api_key: g.api_key,
+                      agent_id: g.agent_id,
+                      contribution_kind: g.contribution_kind,
+                    });
+                    // Picking a model from an extension agent provider group also
+                    // flips the active agent so the next run routes via that
+                    // provider's session API.
+                    if (g.agent_id) {
+                      dispatch({ type: "setAgentId", agentId: g.agent_id });
+                    }
+                  }}
+                />
 
                 {/* Effort selector — provider-kind aware. Anthropic uses its
                   own enum (low/medium/high/max), OpenAI uses

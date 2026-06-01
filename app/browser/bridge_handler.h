@@ -29,6 +29,35 @@ static constexpr char kMsgBrowserCtrl[] = "cronymax.browser.ctrl";
 static constexpr char kMsgBrowserCtrlReply[] = "cronymax.browser.ctrl.reply";
 static constexpr char kMsgBrowserEvent[] = "cronymax.browser.event";
 
+// ── Extension webview bridge (Phase 6) ────────────────────────────────────
+// Renderer → browser: an iframe inside `cronymax-webview://...` called
+// `acquireCronymaxApi().postMessage(payload)`. Carries `(panelId,
+// payload_msgpack)`. Browser-side dispatcher in `BridgeHandler` looks up the
+// panel's owning extension and forwards via the Rust
+// `ExtensionRuntime::forward_panel_message`.
+static constexpr char kMsgWebviewPost[] = "cronymax.webview.post";
+// Browser → renderer: payload sent by `panel.postMessage(...)` inside the
+// owning extension. Carries `(panelId, payload_msgpack)`. The renderer-side
+// `App::OnProcessMessageReceived` matches the panelId to the iframe and
+// dispatches into its `acquireCronymaxApi().onDidReceiveMessage` listeners.
+static constexpr char kMsgWebviewDeliver[] = "cronymax.webview.deliver";
+// Renderer → browser: a `?surface=panel` iframe announced (or tore down) its
+// frame so the browser can route `kMsgWebviewDeliver` back to it. Carries
+// `(panelId)`. The browser keeps a `panelId → (browser, frame)` map used by
+// the `extensions/webview` Message subscription.
+static constexpr char kMsgWebviewRegister[] = "cronymax.webview.register";
+static constexpr char kMsgWebviewUnregister[] = "cronymax.webview.unregister";
+
+// ── Extension content-renderer bridge (Phase 6.5) ─────────────────────────
+// Renderer → browser: a content-renderer iframe inside `cronymax-webview://
+// ...?surface=renderer&id=<inst>` called `acquireCronymaxRendererApi().
+// setHeight(px)` to report its rendered height. Carries `(instance_id,
+// px)`. Browser-side dispatcher packages this as an
+// `ExtensionRendererSetHeight` ControlRequest the Rust side routes to
+// `ExtensionRuntime::forward_renderer_height`, which fans out to chat via
+// the `extensions/renderer` Authority topic.
+static constexpr char kMsgRendererSetHeight[] = "cronymax.renderer.setHeight";
+
 // Forward declaration; defined in bridge_handler.cc.
 class ControlEnricher;
 
@@ -83,6 +112,9 @@ struct ShellCallbacks {
   // Open a URL in the user's default system browser (not in the app).
   // Used for OAuth flows where the app must not navigate its own popover.
   std::function<void(const std::string& url)> open_external;
+  // Reveal a filesystem path in Finder (open folder / select file). Used by
+  // the settings "Logs" tab "Open folder" button.
+  std::function<void(const std::string& path)> reveal_path;
   // Restart the terminal panel (clears blocks + restarts PTY)
   std::function<void()> terminal_restart;
   // Begin a native window drag (used by web chrome to make blank areas
@@ -118,6 +150,21 @@ struct ShellCallbacks {
   // Always creates a fresh tab (multi-instance for terminal/chat). Returns
   // JSON: {"tabId":"tab-N","kind":"..."}. Empty tabId on error.
   std::function<std::string(const std::string& kind)> new_tab_kind;
+  // Activity-bar rail: open or focus an extension-contributed operation
+  // view. `url` is the pre-built `cronymax-webview://` URL (the web rail
+  // assembles it); `view_key` is a stable dedup key ("<extId>::<viewId>");
+  // `title` is the display name; `target` is "main" (replace the main
+  // content area, like Flows) or "right" (the collapsible right dock).
+  // Returns JSON {"ok":bool}.
+  std::function<std::string(const std::string& url,
+                            const std::string& view_key,
+                            const std::string& title,
+                            const std::string& target)>
+      open_extension_view;
+  // Activity-bar rail "Disable": close an extension's open view tab/dock and
+  // switch to the latest chat tab. The Rust-side deactivate (which drops the
+  // rail icon) is a separate runtime control request issued by the rail.
+  std::function<std::string(const std::string& ext_id)> close_extension_views;
   // Renderer push: replace the toolbar widgets for tab_id from a serialized
   // ToolbarState (kind-tagged). The dispatcher pre-validates that
   // payload.state.kind matches the tab's kind. Returns false on mismatch.
@@ -207,9 +254,22 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   void SetRuntimeProxy(RuntimeProxy* proxy) {
     // Bump generation to abort any in-flight restart re-subscription tasks.
     ++restart_generation_;
+    const bool first_attach = (runtime_proxy_ == nullptr) && (proxy != nullptr);
     runtime_proxy_ = proxy;
     if (proxy) {
       SetupCapabilityHandler();
+      // Install the extensions/webview Message → iframe delivery resolver now
+      // that the proxy can be subscribed (idempotent across reattach).
+      InstallWebviewDelivery();
+      // First successful attach after process start. Renderer panels that
+      // mounted during the Rust-runtime handshake window saw their early
+      // contribution.list / space.list calls rejected with "runtime not
+      // available" (HandleRuntimeProcessMessage short-circuits while
+      // runtime_proxy_ is null). Reuse the existing reconnected channel so
+      // those panels' "runtime.reconnected" listeners refetch and clear
+      // their error banners.
+      if (first_attach && shell_cbs_.broadcast_event)
+        shell_cbs_.broadcast_event("runtime.reconnected", "{}");
       // When the supervisor restarts crony:
       //  1. Broadcast runtime.restarting so panels can show a reconnecting UI.
       //  2. Clear stale renderer subscriptions (zombie renderer_subs_).
@@ -296,10 +356,60 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
                             const nlohmann::json& response,
                             bool is_error);
 
+  // ── Extension webview bridge (Phase 6) ───────────────────────────────────
+  // Route a `cronymax.webview.post` process message that originated inside
+  // an extension webview iframe (via `acquireCronymaxApi().postMessage`).
+  // Wraps the payload into an `ExtensionWebviewPost` ControlRequest and
+  // sends it through the RuntimeProxy. Returns true if handled.
+  bool HandleWebviewPost(CefRefPtr<CefBrowser> browser,
+                         CefRefPtr<CefFrame> frame,
+                         CefRefPtr<CefProcessMessage> message);
+
+  // ── Extension content-renderer bridge (Phase 6.5) ────────────────────────
+  // Route a `cronymax.renderer.setHeight` process message that originated
+  // inside a content-renderer iframe (via `acquireCronymaxRendererApi().
+  // setHeight(px)`). Wraps into an `ExtensionRendererSetHeight`
+  // ControlRequest and forwards through the RuntimeProxy. Returns true
+  // if handled.
+  bool HandleRendererSetHeight(CefRefPtr<CefBrowser> browser,
+                               CefRefPtr<CefFrame> frame,
+                               CefRefPtr<CefProcessMessage> message);
+
+  // Wire the renderer-bound delivery side of the webview bridge. Called
+  // once at startup with a callback that locates the renderer browser /
+  // frame that owns the panel id. The BridgeHandler subscribes to the
+  // runtime's `extensions/webview` event topic and, on each `Message`
+  // event, looks up the renderer via the supplied resolver and sends
+  // `kMsgWebviewDeliver`.
+  using WebviewFrameResolver =
+      std::function<std::pair<CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>>(
+          const std::string&)>;
+  void SetWebviewFrameResolver(WebviewFrameResolver resolver);
+
+  // Renderer self-registration of panel iframes (kMsgWebviewRegister /
+  // kMsgWebviewUnregister). Maintains the `panelId → (browser, frame)` map
+  // that the default resolver (installed in SetRuntimeProxy) looks up so
+  // extension → view `postMessage` reaches the right iframe. Return true if
+  // handled.
+  bool HandleWebviewRegister(CefRefPtr<CefBrowser> browser,
+                             CefRefPtr<CefFrame> frame,
+                             CefRefPtr<CefProcessMessage> message);
+  bool HandleWebviewUnregister(CefRefPtr<CefBrowser> browser,
+                               CefRefPtr<CefFrame> frame,
+                               CefRefPtr<CefProcessMessage> message);
+
  private:
   // Install the user_approval capability handler on the RuntimeProxy.
   // Called automatically from SetRuntimeProxy.
   void SetupCapabilityHandler();
+
+  // Install the default `extensions/webview` Message resolver backed by the
+  // renderer-self-registered `webview_panel_frames_` map. Called from
+  // SetRuntimeProxy once the proxy is attached. Idempotent.
+  void InstallWebviewDelivery();
+  // Look up the (browser, frame) a panel iframe registered, or (null, null).
+  std::pair<CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>> LookupPanelFrame(
+      const std::string& panel_id);
 
   // Wire up the RuntimeProxy event subscription for a space and return the
   // ev_token. Extracted from OnSpaceSwitch so restart recovery can reuse it.
@@ -348,6 +458,22 @@ class BridgeHandler : public CefMessageRouterBrowserSide::Handler {
   // closure here; OnBrowserClosed runs them all to release tokens.
   std::mutex browser_subs_mutex_;
   std::map<int, std::vector<std::function<void()>>> browser_subs_;
+
+  // ── Phase 6 webview state ────────────────────────────────────────────────
+  // Resolver that maps panel id → (browser, frame) the renderer mounted the
+  // iframe in. Installed at startup via SetWebviewFrameResolver. Looked up
+  // each time the runtime emits a `Message` event on `extensions/webview`
+  // so the platform can target the right renderer process.
+  std::mutex webview_mu_;
+  WebviewFrameResolver webview_resolver_;
+  // panelId → (browser, frame) for every live `?surface=panel` iframe, kept
+  // current by kMsgWebviewRegister / kMsgWebviewUnregister and cleared in
+  // OnBrowserClosed. The default resolver reads this.
+  std::map<std::string, std::pair<CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>>>
+      webview_panel_frames_;
+  // Token for the RuntimeProxy event subscription that watches the
+  // `extensions/webview` topic. Released in `~BridgeHandler`.
+  int64_t webview_event_token_ = -1;
 
   // (task 4.2) Per-space RuntimeProxy event sub tokens and runtime sub IDs.
   // Key: space_id. Cleaned up by OnSpaceSwitch when space becomes inactive.
