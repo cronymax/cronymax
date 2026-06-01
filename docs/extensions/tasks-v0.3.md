@@ -1593,3 +1593,32 @@ DRI 实测点击无响应。**没有靠推理**——逐层用真机产物 + 设
 - 重载粒度 = 整扩展重启(host respawn),非 HMR;对 v1 dev loop 足够
 - mtime 轮询 500ms 延迟;需要更快可后续换 `notify` 去抖
 - 命令面板 Developer 命令(T05c 那半)仍卡「无命令面板」;导出 .log / Open Log Folder 命令同此
+
+---
+
+## Agent 类插件:provider list vs @ 选择器 + 统一 model 选择器(2026-06-01)
+
+DRI 反馈两点(都已落地):(1) agent 类插件(如 echo-agent)**不该能在 chat 里被 @**——它只进「provider / model 列表」,要用它得在 agent 管理里建个命名 agent 绑定它,再 @ 那个命名 agent;(2) agent 编辑器选 provider/model 不该自造 UI,应和 chat 顶部那个 provider 列表**用同一个**。
+
+### 设计纠正
+
+- **chat @ 选择器 + @ 解析**:剔除扩展 provider(`ContributionKind.AgentsProvider`),只列命名 agent(builtin + workspace)。扩展 provider 仍留在 chat 的 model 列表里(没动)。
+- **命名 agent 绑扩展 provider**:workspace `AgentDef` + 解析新增 `agent_provider`(scalar / `{id,model}`,`builtin`/空 → None);`ContributionSave` 写 `agent_provider:`(与 `llm:` 互斥),`ContributionLoad` 回带;`agent_loader` 在 `agent_provider:` 与 `llm:` 同写时 warn(llm 块被忽略)。P8 的 Case B 链路(命名 agent → 扩展 dispatch)早已通,这里补的是「能从 UI 建出这种 agent」。
+- **flow dispatch 测试**:断言 per-agent model 真到达扩展 `session.create`(此前 `model: None` 无断言)。
+
+### 统一 model 选择器(按标准抽公用件,非平行实现)
+
+DRI 指出第一版在 AgentsTab 自造了「Backed by」两步选择 + 又新写了个跟 chat 几乎一样的 picker——重复造轮子。改为抽**单一来源**:
+
+- `web/src/components/modelGroups.ts`:`fetchLlmGroups` / `fetchExtensionGroups` / `fetchModelGroups`——分组目录构建(每个 LLM provider 一组 + 每个活跃扩展 AgentProvider 一组,各带枚举出的模型)。chat 复用前两个(LLM 慢=一次、扩展快=随激活目录刷新),AgentsTab 用合并的 `fetchModelGroups`。
+- `web/src/components/ModelGroupCombobox.tsx`:分组下拉选择器(trigger className / popover side / content 宽度可配,适配 chat 紧凑工具栏 vs 设置整宽字段)。
+- **chat** 删内联 picker + 两段重复构建,改用上面两件(分组、provider default、选扩展模型自动切 agent 等行为保留)。
+- **AgentsTab** 删「Backed by」两步 + 平行 picker,编辑器「Model」就是同一个分组下拉;选 LLM 模型写 `llm:`,选扩展模型写 `agent_provider:{id,model}`。
+
+教训沉淀进 memory `follow-standard-no-lazy-shortcuts`:有现成规范/组件就复用或抽公用,别上快捷的平行实现或别扭的中间 UI。
+
+### 验证
+
+- `cargo test -p cronymax --lib` → **554 passed**(含 flow model 断言);`cargo clippy -p cronymax --lib --tests` → 0;`cargo fmt --check` → clean
+- web `tsc -b` → 0;biome 干净(仅 1840 行祖传空块 warning,无关);`chat_store` 28 测试过;`cronymax_app` + `cronymax_web_sync` 构建 exit 0 进 .app
+- ⚠️ chat model 选择器(核心面)已重构成公用件,需 DRI 重启眼检:chat 选择器正常 / AgentsTab 同款分组下拉 / 建 agent A 绑 echo-agent → @A 路由到 echo-agent
