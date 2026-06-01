@@ -1533,12 +1533,21 @@ mod tests {
         // Peer answers the three session RPCs; session.create hands back a
         // fixed sessionId so the test knows which session to address.
         let create_method = format!("{}:{}", agents_method::SESSION_CREATE, provider.provider_id);
+        // Capture the session.create params so we can assert the per-agent model
+        // is forwarded into the extension's SessionOptions.
+        let create_capture: std::sync::Arc<std::sync::Mutex<Option<Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let cap = create_capture.clone();
         let peer_server = RpcServer::builder()
-            .handle(create_method, |_p, _| async move {
-                Ok(Value::Map(vec![(
-                    Value::String("sessionId".into()),
-                    Value::String("sess-flow".into()),
-                )]))
+            .handle(create_method, move |p, _| {
+                let cap = cap.clone();
+                async move {
+                    *cap.lock().unwrap() = Some(p);
+                    Ok(Value::Map(vec![(
+                        Value::String("sessionId".into()),
+                        Value::String("sess-flow".into()),
+                    )]))
+                }
             })
             .handle(agents_method::SESSION_PROMPT, |_p, _| async move {
                 Ok(Value::Nil)
@@ -1612,7 +1621,7 @@ mod tests {
             provider,
             provider_ref: AgentProviderRef {
                 id: "test.ext.gpt".into(),
-                model: None,
+                model: Some("flow-model-x".into()),
             },
             run_id,
             run_ctx,
@@ -1697,6 +1706,18 @@ mod tests {
             authority.run_status(run_id).unwrap(),
             crate::runtime::state::RunStatus::Succeeded
         ));
+
+        // The per-agent model (provider_ref.model) reached the extension's
+        // session.create SessionOptions.
+        let created = create_capture
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("session.create should have been called");
+        assert!(
+            format!("{created:?}").contains("flow-model-x"),
+            "session.create payload should carry the per-agent model: {created:?}",
+        );
 
         let _ = std::fs::remove_dir_all(&workspace_root);
     }

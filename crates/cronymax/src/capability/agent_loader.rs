@@ -287,6 +287,16 @@ impl RawAgentDef {
         // `agent_provider:` selects the engine — see `parse_agent_provider`.
         let agent_provider = parse_agent_provider(&self.agent_provider);
 
+        // `agent_provider:` and `llm:` are mutually exclusive: an extension-backed
+        // agent ignores the `llm:` block entirely. Warn so a stray `llm:` left in
+        // the yaml is visible rather than silently dropped.
+        if agent_provider.is_some() && (!llm_provider.is_empty() || !llm_model.is_empty()) {
+            tracing::warn!(
+                agent = %name,
+                "agent_provider: is set — the llm: block is ignored (extension-backed agent)"
+            );
+        }
+
         let critic = self.critic.map(|raw| CriticConfig {
             model: raw.model,
             artifact_kinds: raw.artifact_kinds,

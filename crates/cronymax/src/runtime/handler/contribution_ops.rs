@@ -313,6 +313,13 @@ impl RuntimeHandler {
                                 "llm": d.llm,
                                 "llm_provider": d.llm_provider,
                                 "llm_model": d.llm_model,
+                                // Extension-provider binding (P8), so the editor
+                                // can show / round-trip an agent backed by an
+                                // extension instead of an LLM.
+                                "agent_provider": d.agent_provider.as_ref().map(|p| json!({
+                                    "id": p.id,
+                                    "model": p.model,
+                                })),
                                 "description": d.description,
                                 "system_prompt": d.system_prompt,
                                 "memory_namespace": d.memory_namespace,
@@ -430,8 +437,28 @@ impl RuntimeHandler {
                 } else {
                     memory_namespace
                 };
+                // Engine line: an extension `agent_provider:` (scalar id or
+                // `{id, model}`) is mutually exclusive with `llm:` (P8 schema).
+                // Prefer agent_provider when the payload carries a non-empty id.
+                let engine = (|| {
+                    let p = payload.get("agent_provider").filter(|v| !v.is_null())?;
+                    let pid = p
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| p.as_str())
+                        .filter(|s| !s.is_empty())?;
+                    let model = p
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty());
+                    Some(match model {
+                        Some(m) => format!("agent_provider: {{ id: {pid}, model: {m} }}"),
+                        None => format!("agent_provider: {pid}"),
+                    })
+                })()
+                .unwrap_or_else(|| format!("llm: {llm}"));
                 let yaml = format!(
-                    "name: {id}\nkind: {agent_kind}\nllm: {llm}\nsystem_prompt: |\n  {sp}\nmemory_namespace: {effective_mem}\ntools:{tools_yaml}\n",
+                    "name: {id}\nkind: {agent_kind}\n{engine}\nsystem_prompt: |\n  {sp}\nmemory_namespace: {effective_mem}\ntools:{tools_yaml}\n",
                     sp = system_prompt.replace('\n', "\n  "),
                 );
                 use crate::workspace::{AgentRegistry, Workspace};
