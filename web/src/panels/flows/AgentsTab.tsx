@@ -4,9 +4,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { type LlmProvider, ModelSelect } from "../../components/ModelSelect";
+import { ModelGroupCombobox } from "../../components/ModelGroupCombobox";
+import { fetchModelGroups, type ModelGroup } from "../../components/modelGroups";
 import { WysiwygMarkdown } from "../../components/WysiwygMarkdown";
-import { browser, shells } from "../../shells/bridge";
+import { browser } from "../../shells/bridge";
 import { ContributionKind, type ContributionKindId, contributionRegistry } from "../../shells/runtime";
 import { Field } from "./App";
 
@@ -20,6 +21,9 @@ interface AgentSummary {
 interface AgentDetail {
   name: string;
   llm: string;
+  /** When set, the agent is backed by an extension AgentProvider (P8) instead
+   *  of an LLM — `llm` is then ignored. `model: ""` means the provider default. */
+  agent_provider?: { id: string; model: string } | null;
   system_prompt: string;
   memory_namespace: string;
   tools: string[];
@@ -162,6 +166,7 @@ function ToolCheckboxes({ value, onChange }: { value: string[]; onChange: (v: st
     </div>
   );
 }
+
 export function AgentsTab() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -170,18 +175,23 @@ export function AgentsTab() {
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeProvider, setActiveProvider] = useState<LlmProvider | null>(null);
+  // The same grouped LLM + extension-provider catalog the chat panel uses, so
+  // an agent can be bound to any provider's model from one picker.
+  const [modelGroups, setModelGroups] = useState<ModelGroup[]>([]);
 
   useEffect(() => {
-    shells.browser.llm.providers.get().then((res) => {
-      try {
-        const list = JSON.parse(res.raw || "[]") as LlmProvider[];
-        const p = list.find((x) => x.id === res.active_id) ?? list[0] ?? null;
-        setActiveProvider(p);
-      } catch {
-        /* ignore */
-      }
-    });
+    let cancelled = false;
+    const load = () => {
+      void fetchModelGroups().then((groups) => {
+        if (!cancelled) setModelGroups(groups);
+      });
+    };
+    load();
+    const off = browser.on("runtime.reconnected", load);
+    return () => {
+      cancelled = true;
+      off();
+    };
   }, []);
 
   const loadList = useCallback(async () => {
@@ -294,9 +304,17 @@ export function AgentsTab() {
       try {
         const res = await contributionRegistry.load(kind, name);
         const src = (res.source && typeof res.source === "object" ? res.source : {}) as Record<string, unknown>;
+        const ap = (src.agent_provider && typeof src.agent_provider === "object" ? src.agent_provider : null) as {
+          id?: unknown;
+          model?: unknown;
+        } | null;
         setDraft({
           name: typeof src.name === "string" ? src.name : name,
           llm: typeof src.llm === "string" ? src.llm : "",
+          agent_provider:
+            ap && typeof ap.id === "string" && ap.id
+              ? { id: ap.id, model: typeof ap.model === "string" ? ap.model : "" }
+              : null,
           system_prompt: typeof src.system_prompt === "string" ? src.system_prompt : "",
           memory_namespace: typeof src.memory_namespace === "string" ? src.memory_namespace : "",
           tools: Array.isArray(src.tools) ? (src.tools.filter((t) => typeof t === "string") as string[]) : [],
@@ -343,9 +361,14 @@ export function AgentsTab() {
     setBusy(true);
     setError(null);
     try {
+      const boundToExt = Boolean(draft.agent_provider?.id);
       await contributionRegistry.save(ContributionKind.AgentsWorkspace, draft.name, {
         kind: "worker",
-        llm: draft.llm,
+        // Extension-backed agents write `agent_provider:` (mutually exclusive
+        // with `llm:`); LLM-backed agents write `llm:`.
+        ...(boundToExt
+          ? { agent_provider: { id: draft.agent_provider?.id ?? "", model: draft.agent_provider?.model ?? "" } }
+          : { llm: draft.llm }),
         system_prompt: draft.system_prompt,
         memory_namespace: draft.memory_namespace,
         tools: draft.tools,
@@ -470,21 +493,37 @@ export function AgentsTab() {
                     <p className="mt-1 text-xs text-muted-foreground">Rename by deleting and recreating.</p>
                   )}
                 </Field>
-                <Field label="LLM model">
-                  {activeProvider ? (
-                    <ModelSelect
-                      value={draft.llm}
-                      onChange={(v) => setDraft({ ...draft, llm: v })}
-                      provider={activeProvider}
-                    />
-                  ) : (
-                    <Input
-                      className="h-7 text-xs"
-                      value={draft.llm}
-                      onChange={(e) => setDraft({ ...draft, llm: e.target.value })}
-                      placeholder="(uses provider default)"
-                    />
-                  )}
+                <Field label="Model">
+                  <ModelGroupCombobox
+                    groups={modelGroups}
+                    value={
+                      draft.agent_provider?.id
+                        ? { groupId: `ext:${draft.agent_provider.id}`, model: draft.agent_provider.model }
+                        : draft.llm
+                          ? { groupId: "", model: draft.llm }
+                          : null
+                    }
+                    triggerLabel={(() => {
+                      if (draft.agent_provider?.id) {
+                        const label =
+                          modelGroups.find((g) => g.agent_id === draft.agent_provider?.id)?.label ??
+                          draft.agent_provider.id;
+                        return draft.agent_provider.model
+                          ? `${label}: ${draft.agent_provider.model}`
+                          : `${label} (default)`;
+                      }
+                      return draft.llm || "provider default";
+                    })()}
+                    onPick={(g, m) => {
+                      if (!g) {
+                        setDraft({ ...draft, llm: "", agent_provider: null });
+                      } else if (g.kind === "extension" && g.agent_id) {
+                        setDraft({ ...draft, agent_provider: { id: g.agent_id, model: m }, llm: "" });
+                      } else {
+                        setDraft({ ...draft, llm: m, agent_provider: null });
+                      }
+                    }}
+                  />
                 </Field>
                 <Field label="Memory namespace (optional)">
                   <Input

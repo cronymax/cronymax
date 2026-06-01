@@ -3,7 +3,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  ChevronsUpDown,
   Copy,
   GitFork,
   Image as ImageIcon,
@@ -29,13 +28,14 @@ import {
   useRef,
   useState,
 } from "react";
+import { ModelGroupCombobox } from "@/components/ModelGroupCombobox";
+import { fetchExtensionGroups, fetchLlmGroups, type ModelGroup } from "@/components/modelGroups";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -44,7 +44,6 @@ import { useRuntimeEvent } from "@/hooks/useRuntimeEvent";
 import { cn } from "@/lib/utils";
 import { FlowDocReviewPanel } from "@/panels/chat/FlowDocReviewPanel";
 import { browser, runtime, shells } from "@/shells/bridge";
-import { listProviderModels } from "@/shells/llm";
 import {
   agentRun,
   b64ToUtf8,
@@ -937,21 +936,7 @@ export function App() {
   /** Model options grouped by provider name, loaded from llm.providers.get.
    * Carries each group's provider config so picking a model from a non-active
    * group can override the request's base_url / api_key / kind for that run. */
-  const [modelGroups, setModelGroups] = useState<
-    {
-      label: string;
-      id: string;
-      kind: string;
-      base_url: string;
-      api_key: string;
-      models: string[];
-      /** Set when this group is backed by an extension agent provider rather
-       * than a configured LLM provider. Picking a model from such a group
-       * dispatches the run through the extension instead of an LLM HTTP call. */
-      agent_id?: string;
-      contribution_kind?: string;
-    }[]
-  >([]);
+  const [modelGroups, setModelGroups] = useState<ModelGroup[]>([]);
   /** ID + kind of the currently-active provider — used as the fallback when
    * `state.model` is empty (provider default) or doesn't match any known
    * model entry, and to detect when the picked model belongs to a non-active
@@ -964,7 +949,6 @@ export function App() {
    * provider groups populate. */
   const [llmGroupsLoaded, setLlmGroupsLoaded] = useState(false);
   /** Controls the model Combobox popover */
-  const [modelComboOpen, setModelComboOpen] = useState(false);
   /** Prompt pills attached to the current message (like VS Code slash commands). */
   const [attachedPrompts, setAttachedPrompts] = useState<{ id: string; label: string; content: string }[]>([]);
   /** ID of the pill whose PromptPopover is currently open (null = none). */
@@ -1048,57 +1032,12 @@ export function App() {
         if (active) setWorkspaceRoot(active.root_path);
       })
       .catch(() => undefined);
-    // Load model list from configured providers
-    shells.browser.llm.providers
-      .get()
-      .then(async ({ raw, active_id }) => {
-        if (!raw) return;
-        interface StoredProvider {
-          id: string;
-          name: string;
-          kind: "openai" | "anthropic" | "ollama" | "github_copilot" | "custom";
-          base_url: string;
-          api_key: string;
-          default_model: string;
-        }
-        const providers: StoredProvider[] = JSON.parse(raw);
-        const active = providers.find((p) => p.id === active_id);
-        if (active) {
-          setActiveProviderId(active.id);
-          setActiveProviderKind(active.kind);
-        }
-        const groups: {
-          label: string;
-          id: string;
-          kind: string;
-          base_url: string;
-          api_key: string;
-          models: string[];
-        }[] = [];
-        for (const p of providers) {
-          if (!p.base_url) continue;
-          let models: string[] = [];
-          try {
-            models = await listProviderModels(p);
-          } catch {
-            /* keep models empty; fall through to default_model below */
-          }
-          if (models.length === 0 && p.default_model) models = [p.default_model];
-          if (models.length > 0)
-            groups.push({
-              label: p.name || p.kind,
-              id: p.id,
-              kind: p.kind,
-              base_url: p.base_url,
-              api_key: p.api_key,
-              models,
-            });
-        }
-        // Preserve any extension provider groups that the other useEffect
-        // may have already appended — listing LLM providers can take
-        // seconds (HTTP roundtrip), and the local enumerate IPC usually
-        // wins the race, so an unconditional replace would wipe extension
-        // groups from the picker.
+    // LLM provider groups (shared catalog builder). Slow (HTTP per provider);
+    // preserve any extension groups the fast local-IPC effect already appended.
+    fetchLlmGroups()
+      .then(({ groups, activeProviderId: aid, activeProviderKind: akind }) => {
+        setActiveProviderId(aid);
+        setActiveProviderKind(akind);
         setModelGroups((prev) => [...groups, ...prev.filter((g) => g.kind === "extension")]);
       })
       .catch(() => undefined)
@@ -1233,33 +1172,11 @@ export function App() {
   // the run goes through the extension rather than an LLM HTTP endpoint.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      const providers = state.agents.filter((a) => a.contribution_kind === ContributionKind.AgentsProvider);
-      const groups: typeof modelGroups = [];
-      for (const p of providers) {
-        try {
-          const { items } = await contributionRegistry.enumerate(ContributionKind.AgentsProvider, p.name);
-          if (cancelled) return;
-          if (!items.length) continue;
-          groups.push({
-            label: p.label || p.name,
-            id: `ext:${p.name}`,
-            kind: "extension",
-            base_url: "",
-            api_key: "",
-            models: items.map((it) => it.id),
-            agent_id: p.name,
-            contribution_kind: ContributionKind.AgentsProvider,
-          });
-        } catch {
-          /* skip providers that fail to enumerate */
-        }
-      }
+    void fetchExtensionGroups().then((groups) => {
       if (cancelled) return;
-      // Merge: drop any prior extension groups, then append the freshly
-      // enumerated ones. LLM-provider groups are preserved as-is.
+      // Drop prior extension groups, append the fresh set; LLM groups preserved.
       setModelGroups((prev) => [...prev.filter((g) => g.kind !== "extension"), ...groups]);
-    })();
+    });
     return () => {
       cancelled = true;
     };
@@ -1776,7 +1693,11 @@ export function App() {
 
     let speaker = "";
     let body = rawText;
-    const agentNames = state.agents.map((a) => a.name);
+    // Extension providers aren't @-mentionable (see the @ picker) — exclude them
+    // from mention resolution too, so a bare @<provider> never routes directly.
+    const agentNames = state.agents
+      .filter((a) => a.contribution_kind !== ContributionKind.AgentsProvider)
+      .map((a) => a.name);
     const parsed = parseMention(rawText, agentNames);
     if (parsed.agent) {
       speaker = parsed.agent;
@@ -3086,8 +3007,11 @@ export function App() {
       const all = [...BUILTIN_COMMANDS, ...custom, ...workspacePrompts];
       return all.filter((x) => !q || x.label.toLowerCase().startsWith(q)).slice(0, 8);
     } else {
-      // "at" type: filter agents
+      // "at" type: filter agents. Only *named* agents (builtin + workspace)
+      // are @-mentionable — extension AgentProviders live in the provider/model
+      // list (they back a named agent via `agent_provider:`), never the @ list.
       return state.agents
+        .filter((a) => a.contribution_kind !== ContributionKind.AgentsProvider)
         .filter((a) => !q || a.name.toLowerCase().includes(q))
         .map((a) => ({
           id: a.name,
@@ -3758,84 +3682,39 @@ export function App() {
                 </Tip>
                 <input ref={fileInputRef} type="file" className="hidden" multiple onChange={onFileChange} />
 
-                {/* Model combobox */}
-                <Popover open={modelComboOpen} onOpenChange={setModelComboOpen}>
-                  <Tip tip="LLM model">
-                    <PopoverTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="max-w-[140px] justify-between font-normal text-muted-foreground"
-                      >
-                        <span className="truncate">{state.model || "provider default"}</span>
-                        <ChevronsUpDown data-icon="inline-end" className="opacity-50" />
-                      </Button>
-                    </PopoverTrigger>
-                  </Tip>
-                  <PopoverContent className="w-[220px] p-0" align="start" side="top">
-                    <Command>
-                      <CommandInput placeholder="Search models…" className="h-7 text-xs" />
-                      <CommandList>
-                        <CommandEmpty className="text-xs">No models.</CommandEmpty>
-                        <CommandGroup>
-                          <CommandItem
-                            value=""
-                            onSelect={() => {
-                              dispatch({ type: "setModel", model: "" });
-                              persistSelectedModel("");
-                              persistSelectedModelProvider(null);
-                              setModelComboOpen(false);
-                            }}
-                            className="text-xs"
-                          >
-                            <Check className={cn("mr-2 size-3 shrink-0", state.model ? "opacity-0" : "opacity-100")} />
-                            <span className="italic text-muted-foreground">provider default</span>
-                          </CommandItem>
-                        </CommandGroup>
-                        {modelGroups.map((g) => (
-                          <CommandGroup key={g.label} heading={g.label}>
-                            {g.models.map((m) => (
-                              <CommandItem
-                                key={m}
-                                value={m}
-                                onSelect={(v) => {
-                                  dispatch({ type: "setModel", model: v });
-                                  persistSelectedModel(v);
-                                  persistSelectedModelProvider({
-                                    id: g.id,
-                                    kind: g.kind,
-                                    base_url: g.base_url,
-                                    api_key: g.api_key,
-                                    agent_id: g.agent_id,
-                                    contribution_kind: g.contribution_kind,
-                                  });
-                                  // Picking a model from an extension agent
-                                  // provider group also flips the active
-                                  // agent so the next run routes via that
-                                  // provider's session API.
-                                  if (g.agent_id) {
-                                    dispatch({ type: "setAgentId", agentId: g.agent_id });
-                                  }
-                                  setModelComboOpen(false);
-                                }}
-                                className="text-xs"
-                              >
-                                <Check
-                                  className={cn(
-                                    "mr-2 size-3 shrink-0",
-                                    m === state.model ? "opacity-100" : "opacity-0",
-                                  )}
-                                />
-                                <span className="truncate font-mono">{m}</span>
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        ))}
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
+                {/* Model combobox — shared with the Agents editor (one source). */}
+                <ModelGroupCombobox
+                  groups={modelGroups}
+                  value={state.model ? { groupId: "", model: state.model } : null}
+                  triggerLabel={state.model || "provider default"}
+                  triggerClassName="max-w-[140px] text-muted-foreground"
+                  contentClassName="w-[220px] p-0"
+                  side="top"
+                  onPick={(g, m) => {
+                    if (!g) {
+                      dispatch({ type: "setModel", model: "" });
+                      persistSelectedModel("");
+                      persistSelectedModelProvider(null);
+                      return;
+                    }
+                    dispatch({ type: "setModel", model: m });
+                    persistSelectedModel(m);
+                    persistSelectedModelProvider({
+                      id: g.id,
+                      kind: g.kind,
+                      base_url: g.base_url,
+                      api_key: g.api_key,
+                      agent_id: g.agent_id,
+                      contribution_kind: g.contribution_kind,
+                    });
+                    // Picking a model from an extension agent provider group also
+                    // flips the active agent so the next run routes via that
+                    // provider's session API.
+                    if (g.agent_id) {
+                      dispatch({ type: "setAgentId", agentId: g.agent_id });
+                    }
+                  }}
+                />
 
                 {/* Effort selector — provider-kind aware. Anthropic uses its
                   own enum (low/medium/high/max), OpenAI uses
