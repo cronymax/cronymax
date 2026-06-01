@@ -1645,3 +1645,50 @@ Node 26 之前 staged 在 `crates/cronymax/bundled/` 但**没进 `.app`** → �
 
 - `cmake --build build --target cronymax_app` → `[100%] Built target`;POST_BUILD 打出 `bundle-node: staged 138M ...`;`Contents/Resources/bundled/node/bin/node` 实存、跑 `v26.1.0`;@msgpack + bootstrap.js 在;app 二进制(96M)正常链接。
 - `cargo test -p cronymax --lib extensions::paths` → **5/5**(含新 `.app` 布局测试);`cmake -B build` reconfigure clean。
+
+---
+
+## P10 收尾(无外部依赖):host 生命周期健壮性 + RSS 观测 + 文档(2026-06-01)
+
+本轮做 P10 收尾里**无外部依赖**的部分(范围与用户确认)。**不做**:模板脚手架 P9-T03、预热激活 P10-T04(启动已 eager 激活所有 enabled 扩展,加 `last_activated` 时间戳是为假想「启动慢」加面,无实测依据)、硬性资源强杀、卡外部资源的 P7 coco / npm / Win-Linux CI / 命令面板。
+
+### 动机(实证)
+- **进程泄漏**:实测 14 个 orphan node host。根因:(a) `crony/src/main.rs` transport 断开时 `std::process::exit(0)` **绕过所有 Drop**;(b) `bundled/extension-host-bootstrap.js` 只有 `data`/`error` handler,**无 `close`/`end`** → 父进程死后子 node 的 fd 3 EOF 但无人退出。
+- **崩溃恢复完全没接线**:`restart_count` / `max_restarts`(硬编码 0)/ `HostCrashed` 都在,但没有退出监测、没有重启、health monitor 检测 hung 只 `break`。
+
+### 三层 teardown 模型
+| 退出路径 | 机制 |
+|---|---|
+| 优雅(SIGINT/SIGTERM,tokio 在) | `ExtensionRuntime::shutdown_all().await`(逐个 deactivate) |
+| 硬退出(`process::exit(0)`,Drop 不跑) | **bootstrap.js fd3-close → `process.exit(0)`**(生产主修)+ `kill_all_blocking()` 兜底 |
+| 测试 / panic / 忘记 shutdown | `Drop for NodeHost` 同步 SIGKILL 兜底(flag + `strong_count` 守卫,只最后一个 handle 收割) |
+
+### 崩溃恢复(P10-T01)
+host→runtime 走 **mpsc `HostEvent` channel**(`spawn_and_handshake` 建,sender 进 `SpawnConfig.host_event_sink`,detached supervisor 抽干,rx 关闭即自终止——回避自 abort 风险)。
+
+- `node.rs`:`HostExit` / `HostEvent{Crashed,Hung,RssWarn}`;exit-watcher **拥有 `Child`** 并 `wait()`(解决 `&mut` + 让 shutdown 按 pid 信号);`intentional_shutdown` flag 区分计划内 kill 与崩溃;health monitor ping 超时 → `Hung`(Layer D→E 升级)。
+- `runtime.rs`:`on_host_crashed` → `try_restart`:计数 + audit(`host.log`)+ 退避(0/500ms/2s)+ `respawn`(复用 `spawn_and_handshake`);超 `max_restarts`(默认 3)或 respawn 失败 → `disable_after_crash`(deactivate + `set_disabled_by_crash` + Error notice)。竞态:`restart_in_progress` 闸 + `is_activated` 前后复查 + `deactivate` 先 `mark_deactivated`。
+- `registry.rs`:`DisabledReason::Crash` + `disabled_reason`(`#[serde(default)]`,旧 json 兼容,无 version bump);`set_disabled_by_crash`;`set_enabled(true)` 清 reason。
+
+### 通知 + RSS 观测
+- 新 `extensions/notice` authority topic(`RuntimeAuthority::emit` 自由 topic,**零 C++ 改动**);chat 面板挂 sonner `<Toaster/>` + `useRuntimeEvent("extensions/notice")`(panel 是独立 webview,chat 是主内容面;toast portal 到 body 故窗口级)。settings Extensions tab 显示 **Disabled (crashed)**。
+- RSS 采样折进 health tick:Linux `/proc/<pid>/statm`、macOS `proc_pid_rusage`;超阈值(默认 ~1.5 GB)→ warn + 一次性 notice,**不杀**。
+
+### 改动文件
+`extensions/host/node.rs` · `extensions/runtime.rs` · `extensions/registry.rs` · `runtime/services.rs` · `bundled/extension-host-bootstrap.js` · `crony/src/main.rs` · `web/src/panels/chat/App.tsx` · `web/src/shells/runtime.ts` · `web/src/panels/settings/ExtensionsTab.tsx` · 新 `tests/p10_host_lifecycle_e2e.rs` · 新 `docs/extensions/{developer-guide,sdk-api-reference,trust-model}.md` · 更新 `extension-logs.md`(D/E/F 实装状态)。
+
+### 文档(P10-T05)
+- **`developer-guide.md`**:quickstart → manifest 全字段 → 6 扩展点各最小例 → build/install(目录 / `.cmx`)→ `ext dev --watch` → 日志 → **崩溃恢复行为** → examples 索引。
+- **`sdk-api-reference.md`**:逐 namespace(env/commands/events/workspace/window/secrets/auth/extensions/agents/renderers/logging),源指向 `sdk/extension/src/*.ts`。
+- **`trust-model.md`**:install-time 信任、permission 已撤回、完整 Node 不沙箱、真实隔离(per-extension host 崩溃隔离 + 重启≤3→停用 / webview origin + CSP / secrets·storage 隔离)、RSS 观测不强杀。
+
+### 验证
+- `cargo test -p cronymax --lib` → **559 passed**(+ registry 2:`disabled_reason` round-trip / 旧 json 兼容;+ runtime 2:over-budget disable+notice / inactive ignore)。
+- `cargo test -p cronymax --test p10_host_lifecycle_e2e` → **3 passed**(真 Node 26:kill→restart / 风暴→disable+notice / `shutdown_all` 无 orphan);`p1`(4)/`p2`(3)/`p4`(2)/`p6`(1)e2e 仍全过——spawn/shutdown 重构未破坏既有。
+- `cargo clippy -p cronymax -p crony --lib --bins --tests -- -D warnings` → 0;`cargo fmt --check` → clean;`node --check bundled/extension-host-bootstrap.js` → OK。
+- web:`tsc -b` 0;biome clean(仅祖传空块 warning);`chat_store` 28 测试过;`vite build` 成功。
+
+### 遗留(留 P10 后续 / 各自独立)
+- DRI 手动冒烟:跑 app → kill agent 扩展 host → 看自动重启 + (超budget)toast → 退出 app `ps` 确认 0 orphan(需 `cmake --build build --target cronymax_app cronymax_web_sync` 把 crony + web 同步进 .app)。
+- toast 只在 chat 内容面可见(panel 是独立 webview);flows/settings 在前台时崩溃 toast 不显——v1 够用(agent 扩展崩溃时用户多在 chat)。
+- 「A 平台驱动关视图(崩溃自动停用时也关视图)」仍并 P10 crash-recovery(deactivate 已 emit contributions,settings/rail 列表型已 reconcile;主区/dock 活跃视图的关闭由 settings 的 `close_extension_views` 覆盖手动 disable,崩溃自动停用尚未接 C++ 关视图)。

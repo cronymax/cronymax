@@ -376,6 +376,18 @@ cronymax wait child 进程，监听 exit code。
 | E 进程崩 | OS exit | — | audit | restart 计数 ≤ 3，超后禁用 |
 | F process.exit() | OS exit + 握手缺失 | — | 同 E | 同 E |
 
+### 实装状态（2026-06-01 · P10-T01 / P10-T02）
+
+D / E / F 已落地(`extensions/host/node.rs` 的 exit-watcher + health monitor → `HostEvent` mpsc → `extensions/runtime.rs` 的 supervisor)。与本节原设计的两处差异:
+
+- **`audit.log` 撤回**:随 v1 撤回 Node 26 Permission Model 一并删除(见 [`permission-removal.md`](permission-removal.md))。crashed / hung 事件现记入 `host.log`(NDJSON,与 stderr drain 同格式,在 Logs tab 合并展示)+ 结构化 `tracing`,**不是** security audit。
+- **D(hung)直接升级为 restart**:`$/ping` 超时 → 平台**直接** kill + restart(不再「等用户 / 等 60s」),按 E 的计数走。
+- **E/F 重启策略(实装)**:exit≠0 / 异常退出 / hung → 自动重启,**退避 立即 → 500ms → 2s**;计数 **> 3**(`max_restarts` 默认 3,可配)→ `set_disabled_by_crash`(registry 持久化 `disabled_reason: "crash"`)+ **toast 通知**(`extensions/notice` topic)。设置面板显示 **Disabled (crashed)**,手动 Enable 清零重试。
+- **进程泄漏修复(配套)**:app 退出经 `ExtensionRuntime::shutdown_all`(优雅)/ `kill_all_blocking`(硬退出)+ bootstrap.js fd-3-close → `process.exit(0)`,三层兜底,不再 orphan node host。
+- **内存观测(P10-T02 缩版)**:health tick 采样 RSS,超阈值(默认 ~1.5 GB)→ 日志告警 + 一次 toast,**不杀**(与 install-time 信任模型一致;不做硬资源强杀)。
+
+端到端验证见 `tests/p10_host_lifecycle_e2e.rs`(真 Node 26:kill→restart / 风暴→disable+notice / shutdown_all 无 orphan)。
+
 ---
 
 ## 8. console.* / Node warnings / Extension throw 的统一处理（更新）
